@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>TBCC Importer</title>
+  <style>
+    body { width: 280px; padding: 12px; font-family: system-ui, sans-serif; }
+    body.tbcc-in-panel {
+      width: 100%;
+      max-width: none;
+      min-height: 100%;
+      box-sizing: border-box;
+      background: #1e1e2e;
+      color: #cdd6f4;
+    }
+    body.tbcc-in-panel h3 { color: #f5c2e7; }
+    body.tbcc-in-panel label,
+    body.tbcc-in-panel p { color: #a6adc8; }
+    body.tbcc-in-panel select {
+      background: #313244;
+      color: #cdd6f4;
+      border: 1px solid #45475a;
+      border-radius: 6px;
+    }
+    body.tbcc-in-panel .ms { border-top-color: #45475a; }
+    h3 { margin: 0 0 8px; font-size: 14px; }
+    select { width: 100%; padding: 6px; margin-bottom: 8px; }
+    p { margin: 0; font-size: 12px; color: #666; }
+    .ms { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; }
+    .ms button { margin-top: 6px; padding: 6px 10px; cursor: pointer; background: #1e1e2e; color: #f5c2e7; border: none; border-radius: 4px; font-size: 11px; width: 100%; }
+    .ms button:hover { filter: brightness(1.1); }
+    .ms button.capture { background: #166534; color: #dcfce7; }
+    .ms button.capture:hover { filter: brightness(1.08); }
+    .ms #captureStatus { margin-top: 6px; font-size: 11px; color: #15803d; min-height: 1.2em; }
+    .ms #captureStatus.err { color: #b91c1c; }
+  </style>
+</head>
+<body>
+  <h3>TBCC Importer</h3>
+  <label>Content pool:</label>
+  <select id="poolId">
+    <option value="">Loading...</option>
+  </select>
+  <p>Right-click image/video/link → "Send to TBCC (pool queue)" or "Send to Saved Messages only".</p>
+  <p style="margin-top:8px"><button id="openGallery" type="button" style="padding:6px 10px;cursor:pointer;background:#0d9488;color:#fff;border:none;border-radius:4px;font-size:12px">Open gallery (bulk capture)</button></p>
+  <p style="margin-top:4px;font-size:11px;color:#64748b">Capture images from protected sites (e.g. OnlyFans, FetLife) in the side panel.</p>
+  <div class="ms">
+    <strong style="color:#334155">Shortcuts</strong>
+    <button type="button" class="capture" id="btnCaptureReverse">Capture tab → copy &amp; open reverse search</button>
+    <p id="captureStatus"></p>
+    <p id="modelSearchSummary" style="margin:6px 0 0;font-size:11px">Username: selection → <strong>TBCC — Look up username</strong> (per source or all). Configure sources in Extension options.</p>
+    <p id="reverseImageSummary" style="margin:4px 0 0;font-size:11px">Image: Reverse image search (fan-out).</p>
+    <button type="button" id="openExtensionOptions">Extension options…</button>
+    <button type="button" id="btnDashboardPanel" style="margin-top:8px;width:100%;padding:6px 10px;cursor:pointer;background:#313244;color:#89b4fa;border:1px solid #45475a;border-radius:4px;font-size:11px">Open TBCC dashboard (sidebar)</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

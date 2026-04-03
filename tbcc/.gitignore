@@ -1,0 +1,47 @@
+# Secrets — never commit
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / Vite
+dashboard/node_modules/
+dashboard/dist/
+
+# Local DB & uploads (dev data)
+*.db
+uploads/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Logs & temp
+*.log
+tmp/
+temp/
+
+# Telethon / Celery local state (secrets — do not publish)
+*.session
+*.session-journal
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+
+# TypeScript
+dashboard/tsconfig.tsbuildinfo

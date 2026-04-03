@@ -1,0 +1,23 @@
+# Minimal stack for local dev: Postgres + Redis only.
+# Used by start.ps1 so `docker compose` does not parse api/worker services.
+# Full app-in-Docker layout: see docker-compose.yml
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: tbcc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

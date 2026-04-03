@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "sites": [
+    {
+      "id": "google",
+      "name": "Google Images",
+      "category": "search",
+      "url": "https://www.google.com/searchbyimage?image_url={imageUrl}"
+    },
+    {
+      "id": "tineye",
+      "name": "TinEye",
+      "category": "search",
+      "url": "https://tineye.com/search?url={imageUrl}"
+    },
+    {
+      "id": "yandex",
+      "name": "Yandex Images",
+      "category": "search",
+      "url": "https://yandex.com/images/search?rpt=imageview&url={imageUrl}"
+    },
+    {
+      "id": "bing",
+      "name": "Bing Visual",
+      "category": "search",
+      "url": "https://www.bing.com/images/search?q=imgurl:{imageUrl}"
+    },
+    {
+      "id": "saucenao",
+      "name": "SauceNAO",
+      "category": "search",
+      "url": "https://saucenao.com/search.php?url={imageUrl}"
+    }
+  ]
+}

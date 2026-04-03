@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "sites": [
+    {
+      "id": "coomer",
+      "name": "Coomer",
+      "category": "archives",
+      "url": "https://coomer.st/artists?q={username}&service=&sort_by=favorited&order="
+    },
+    {
+      "id": "fapello",
+      "name": "Fapello",
+      "category": "archives",
+      "url": "https://fapello.com/search/{username}"
+    },
+    {
+      "id": "bestcam",
+      "name": "BestCam",
+      "category": "cam",
+      "url": "https://bestcam.tv/search/{username}"
+    },
+    {
+      "id": "bestcamvideos",
+      "name": "BestCamVideos",
+      "category": "cam",
+      "url": "https://bestcamvideos.com/?s={username}"
+    }
+  ]
+}

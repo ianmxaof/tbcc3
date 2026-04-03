@@ -1,0 +1,78 @@
+# No top-level `version:` — obsolete in Compose v2+
+# Optional Telegram vars use :- so `docker compose up postgres redis` does not warn when unset
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: tbcc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: ../backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude scripts --reload-delay 1
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+      ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  worker_scrape:
+    build: ../backend
+    command: celery -A app.workers.celery_app worker -Q scrape --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+    depends_on:
+      - redis
+      - postgres
+
+  worker_post:
+    build: ../backend
+    command: celery -A app.workers.celery_app worker -Q post --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+    depends_on:
+      - redis
+      - postgres
+
+  worker_subscription:
+    build: ../backend
+    command: celery -A app.workers.celery_app worker -Q subscription,celery -P solo -l info
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+    depends_on:
+      - redis
+      - postgres
+
+  celery_beat:
+    build: ../backend
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    depends_on:
+      - redis
+
+volumes:
+  pgdata:

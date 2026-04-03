@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "pages": [
+    {
+      "id": "google",
+      "name": "Google Images",
+      "url": "https://www.google.com/imghp?hl=en"
+    },
+    {
+      "id": "tineye",
+      "name": "TinEye",
+      "url": "https://tineye.com/"
+    },
+    {
+      "id": "yandex",
+      "name": "Yandex Images",
+      "url": "https://yandex.com/images/"
+    },
+    {
+      "id": "bing",
+      "name": "Bing Images",
+      "url": "https://www.bing.com/images"
+    },
+    {
+      "id": "saucenao",
+      "name": "SauceNAO",
+      "url": "https://saucenao.com/"
+    }
+  ]
+}
