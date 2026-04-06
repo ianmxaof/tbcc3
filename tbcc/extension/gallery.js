@@ -63,6 +63,7 @@ const telegramPostToggleIcon = document.getElementById("telegramPostToggleIcon")
 const btnSend = document.getElementById("btnSend");
 const btnDownload = document.getElementById("btnDownload");
 const btnDownloadZip = document.getElementById("btnDownloadZip");
+const btnCopyJd = document.getElementById("btnCopyJd");
 const fileInput = document.getElementById("fileInput");
 const galleryWrap = document.getElementById("gallery-wrap") || document.querySelector(".gallery-wrap");
 const loadingEl = document.getElementById("loading");
@@ -436,7 +437,10 @@ function isInjectablePageUrl(url) {
 
 async function runCaptureInTab(tabId) {
   const inject = async (allFrames) => {
-    await chrome.scripting.executeScript({ target: { tabId, allFrames }, files: ["capture.js"] });
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames },
+      files: ["media-url-guards.js", "capture.js"],
+    });
     return chrome.scripting.executeScript({
       target: { tabId, allFrames },
       func: () => {
@@ -479,10 +483,70 @@ async function runCaptureInTab(tabId) {
     seenKeys.add(k);
     deduped.push(it);
   }
+  /** OnlyFans: merge media URLs observed via chrome.webRequest (same class as DevTools Network). */
+  const netKey = `tbcc_net_media_${tabId}`;
+  try {
+    const sess = await chrome.storage.session.get(netKey);
+    const netUrls = Array.isArray(sess[netKey]) ? sess[netKey] : [];
+    for (const netU of netUrls) {
+      const nk = (netU || "").slice(0, 400);
+      if (!nk || seenKeys.has(nk)) continue;
+      seenKeys.add(nk);
+      const low = nk.toLowerCase();
+      const isVideo =
+        /\.(mp4|m4v|webm|m3u8|mpd|mov|mkv)(\?|$)/i.test(low) ||
+        /\.m4s(\?|$)/i.test(low) ||
+        (/\.(ts|aac)(\?|$)/i.test(low) && (low.includes("stream") || low.includes("hls") || low.includes("video")));
+      deduped.push({
+        url: netU,
+        width: 0,
+        height: 0,
+        tagName: isVideo ? "video" : "img",
+        naturalWidth: 0,
+        naturalHeight: 0,
+        mediaType: isVideo ? "video" : "image",
+        tbccCaptureSource: "web-request",
+      });
+    }
+  } catch (_) {}
   return { tabId, list: deduped.map((i) => ({ ...i, tabId })) };
 }
 
+function resolveTabIdFromGalleryItems() {
+  if (!Array.isArray(imageList) || !imageList.length) return null;
+  const ids = new Set();
+  for (const it of imageList) {
+    if (it && it.tabId != null && Number.isFinite(it.tabId)) ids.add(it.tabId);
+  }
+  if (ids.size === 1) return [...ids][0];
+  return null;
+}
+
+function guessTabHostnameFromGallery() {
+  if (!Array.isArray(imageList) || !imageList.length) return "";
+  for (const it of imageList) {
+    if (!it || !it.url || !/^https?:\/\//i.test(it.url)) continue;
+    try {
+      return new URL(it.url).hostname.toLowerCase();
+    } catch (_) {}
+  }
+  return "";
+}
+
 async function resolveTargetTabId() {
+  if (currentTabId != null) {
+    try {
+      const t = await chrome.tabs.get(currentTabId);
+      if (t && t.id && isInjectablePageUrl(t.url)) return t.id;
+    } catch (_) {}
+  }
+  const glId = resolveTabIdFromGalleryItems();
+  if (glId != null) {
+    try {
+      const t = await chrome.tabs.get(glId);
+      if (t && t.id && isInjectablePageUrl(t.url)) return t.id;
+    } catch (_) {}
+  }
   const { tbccLastActiveTabId } = await chrome.storage.local.get("tbccLastActiveTabId");
   if (tbccLastActiveTabId != null) {
     try {
@@ -495,6 +559,17 @@ async function resolveTargetTabId() {
   const [tab2] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab2 && tab2.id && isInjectablePageUrl(tab2.url)) return tab2.id;
   const inLast = await chrome.tabs.query({ lastFocusedWindow: true });
+  const hintedHost = guessTabHostnameFromGallery();
+  if (hintedHost) {
+    const norm = (h) => String(h || "").replace(/^www\./, "");
+    const want = norm(hintedHost);
+    for (const t of inLast) {
+      if (!t.id || !t.url || !isInjectablePageUrl(t.url)) continue;
+      try {
+        if (norm(new URL(t.url).hostname) === want) return t.id;
+      } catch (_) {}
+    }
+  }
   for (const t of inLast) {
     if (t.id && isInjectablePageUrl(t.url)) return t.id;
   }
@@ -572,6 +647,116 @@ async function resolveMotherlessGalleryItems(list) {
   return out;
 }
 
+/**
+ * coomer.st / kemono: gallery thumbs are CDN previews; POST /user/…/post/… JSON API lists full /data/… files (main + attachments).
+ */
+async function resolveCoomerGalleryItems(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const tagged = arr.filter((i) => i && i.coomerPostUrl);
+  if (!tagged.length) return arr;
+  const unique = [...new Set(tagged.map((i) => i.coomerPostUrl))];
+  const map = await new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: "tbcc-resolve-coomer", postUrls: unique }, (r) => {
+        if (chrome.runtime.lastError) {
+          console.warn("resolveCoomerGalleryItems", chrome.runtime.lastError);
+          resolve({});
+          return;
+        }
+        resolve(r && r.map && typeof r.map === "object" ? r.map : {});
+      });
+    } catch (e) {
+      console.warn(e);
+      resolve({});
+    }
+  });
+  const seenPost = new Set();
+  const out = [];
+  for (const entry of arr) {
+    if (!entry) continue;
+    if (!entry.coomerPostUrl) {
+      out.push(entry);
+      continue;
+    }
+    if (seenPost.has(entry.coomerPostUrl)) continue;
+    seenPost.add(entry.coomerPostUrl);
+    const fullList = map[entry.coomerPostUrl];
+    if (!fullList || !Array.isArray(fullList) || !fullList.length) {
+      out.push(entry);
+      continue;
+    }
+    for (const u of fullList) {
+      if (!u || typeof u !== "string") continue;
+      out.push({
+        ...entry,
+        url: u,
+        coomerPostUrl: undefined,
+        thumbUrl: entry.url,
+        source: "coomer:full",
+        mediaType: /\.(mp4|webm|mov|m4v)(\?|$)/i.test(u) ? "video" : "image",
+        width: 0,
+        height: 0,
+        naturalWidth: 0,
+        naturalHeight: 0,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Same-origin gallery thumbs (e.g. nudogram): <a href="/photo/…"><img src=thumb></a> — fetch detail HTML and replace url with og:image / main image.
+ */
+async function resolveDetailPageGalleryItems(list) {
+  const arr = Array.isArray(list) ? list : [];
+  const tagged = arr.filter((i) => i && i.detailPageUrl && !i.motherlessDetailUrl);
+  if (!tagged.length) return arr;
+  const unique = [...new Set(tagged.map((i) => i.detailPageUrl))].slice(0, 200);
+  const map = await new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ action: "tbcc-resolve-detail-page", detailUrls: unique }, (r) => {
+        if (chrome.runtime.lastError) {
+          console.warn("resolveDetailPageGalleryItems", chrome.runtime.lastError);
+          resolve({});
+          return;
+        }
+        resolve(r && r.map && typeof r.map === "object" ? r.map : {});
+      });
+    } catch (e) {
+      console.warn(e);
+      resolve({});
+    }
+  });
+  const seenResolved = new Set();
+  const out = [];
+  for (const entry of arr) {
+    if (!entry) continue;
+    if (!entry.detailPageUrl) {
+      out.push(entry);
+      continue;
+    }
+    const resolved = map[entry.detailPageUrl];
+    if (!resolved) {
+      out.push(entry);
+      continue;
+    }
+    if (seenResolved.has(resolved)) continue;
+    seenResolved.add(resolved);
+    const next = { ...entry };
+    delete next.detailPageUrl;
+    next.url = resolved;
+    next.thumbUrl = entry.url;
+    next.source = "detail-page";
+    next.mediaType = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(resolved) ? "video" : "image";
+    next.width = 0;
+    next.height = 0;
+    next.naturalWidth = 0;
+    next.naturalHeight = 0;
+    out.push(next);
+  }
+  return out;
+}
+
 async function doRefresh() {
   showLoading(true);
   try {
@@ -581,17 +766,33 @@ async function doRefresh() {
       imageList = await captureAllTabs();
     } else {
       imageList = await captureCurrentTab();
+      if (imageList.length === 0) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const retry = await captureCurrentTab();
+        if (retry.length) imageList = retry;
+      }
     }
     imageList = await resolveMotherlessGalleryItems(imageList);
+    imageList = await resolveCoomerGalleryItems(imageList);
+    imageList = await resolveDetailPageGalleryItems(imageList);
     const urlsInList = new Set(imageList.map((i) => i.url));
     const thumbToFull = new Map();
     imageList.forEach((i) => {
-      if (i && i.thumbUrl) thumbToFull.set(i.thumbUrl, i.url);
+      if (!i || !i.thumbUrl) return;
+      const prev = thumbToFull.get(i.thumbUrl);
+      if (prev == null) thumbToFull.set(i.thumbUrl, i.url);
+      else if (Array.isArray(prev)) {
+        if (prev[prev.length - 1] !== i.url) prev.push(i.url);
+      } else if (prev !== i.url) thumbToFull.set(i.thumbUrl, [prev, i.url]);
     });
     selectedUrls = new Set();
     for (const u of storedSel) {
       if (urlsInList.has(u)) selectedUrls.add(u);
-      else if (thumbToFull.has(u)) selectedUrls.add(thumbToFull.get(u));
+      else if (thumbToFull.has(u)) {
+        const mapped = thumbToFull.get(u);
+        if (Array.isArray(mapped)) mapped.forEach((x) => selectedUrls.add(x));
+        else selectedUrls.add(mapped);
+      }
     }
     if (activeTab === "current") {
       for (const u of storedSel) {
@@ -634,6 +835,32 @@ function formatDimsLabel(item) {
   return "…";
 }
 
+function formatDurationSeconds(sec) {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return "";
+  const s = Math.floor(sec % 60);
+  const m = Math.floor((sec / 60) % 60);
+  const h = Math.floor(sec / 3600);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Video tiles: duration (from schema or element) + dimensions, same pattern for every video cell. */
+function formatVideoCellLabel(item, videoEl) {
+  let dur = "";
+  if (videoEl && Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+    dur = formatDurationSeconds(videoEl.duration);
+  } else if (item.durationSec != null && Number.isFinite(item.durationSec) && item.durationSec > 0) {
+    dur = formatDurationSeconds(item.durationSec);
+  }
+  const w = videoEl && videoEl.videoWidth ? videoEl.videoWidth : item.naturalWidth || item.width || 0;
+  const h = videoEl && videoEl.videoHeight ? videoEl.videoHeight : item.naturalHeight || item.height || 0;
+  const dim = w > 0 && h > 0 ? `${w}×${h}` : "";
+  if (dur && dim) return `${dur} · ${dim}`;
+  if (dur) return dur;
+  if (dim) return dim;
+  return "…";
+}
+
 function renderGrid() {
   if (!gridEl) return;
   const list = getFilteredList();
@@ -656,8 +883,8 @@ function renderGrid() {
     div.appendChild(cb);
     const dimsEl = document.createElement("div");
     dimsEl.className = "cell-dims";
-    dimsEl.textContent = formatDimsLabel(item);
     const isVideo = (item.mediaType || item.tagName || "").toLowerCase() === "video";
+    dimsEl.textContent = isVideo ? formatVideoCellLabel(item, null) : formatDimsLabel(item);
     if (isVideo) {
       const v = document.createElement("video");
       v.src = item.url;
@@ -672,7 +899,7 @@ function renderGrid() {
         v.remove();
       };
       v.addEventListener("loadedmetadata", () => {
-        if (v.videoWidth && v.videoHeight) dimsEl.textContent = `${v.videoWidth}×${v.videoHeight}`;
+        dimsEl.textContent = formatVideoCellLabel(item, v);
       });
       div.appendChild(v);
     } else {
@@ -711,6 +938,7 @@ function updateCountAndSend() {
   if (btnSend) btnSend.disabled = selectedUrls.size === 0;
   if (btnDownload) btnDownload.disabled = selectedUrls.size === 0;
   if (btnDownloadZip) btnDownloadZip.disabled = selectedUrls.size === 0;
+  if (btnCopyJd) btnCopyJd.disabled = selectedUrls.size === 0;
   updateSendButtonLabel();
   updateForumCheckboxLabel();
   persistSelection();
@@ -797,6 +1025,15 @@ async function getBlobAndNameForZipItem(it, idx) {
     return { filename: pad + "_media", blob };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
+    if (
+      typeof tbccIsLikelyHtmlPageUrl === "function" &&
+      (it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video") &&
+      tbccIsLikelyHtmlPageUrl(it.url)
+    ) {
+      throw new Error(
+        "URL looks like a video page (HTML), not a direct file — use a resolved stream URL or another downloader."
+      );
+    }
     const url = normalizeTbccMediaUrlForImport(it.url);
     const blob = await fetchUrlBytesToBlob(url);
     if (!blob) throw new Error("Could not fetch: " + String(it.url).slice(0, 96));
@@ -875,10 +1112,12 @@ async function downloadSelectedAsZip() {
     if (progressStatus) progressStatus.textContent = "JSZip library missing — reload the side panel.";
     if (btnDownloadZip) btnDownloadZip.disabled = selectedUrls.size === 0;
     if (btnDownload) btnDownload.disabled = selectedUrls.size === 0;
+    if (btnCopyJd) btnCopyJd.disabled = selectedUrls.size === 0;
     return;
   }
   btnDownloadZip.disabled = true;
   if (btnDownload) btnDownload.disabled = true;
+  if (btnCopyJd) btnCopyJd.disabled = true;
   if (progressError) progressError.textContent = "";
   if (progressEl) progressEl.classList.add("visible");
   if (progressTitle) progressTitle.textContent = "ZIP bundle";
@@ -904,6 +1143,7 @@ async function downloadSelectedAsZip() {
     if (progressStatus) progressStatus.textContent = "No files added to ZIP.";
     btnDownloadZip.disabled = false;
     if (btnDownload) btnDownload.disabled = selectedUrls.size === 0;
+    if (btnCopyJd) btnCopyJd.disabled = selectedUrls.size === 0;
     return;
   }
 
@@ -931,6 +1171,26 @@ async function downloadSelectedAsZip() {
   }
   btnDownloadZip.disabled = false;
   if (btnDownload) btnDownload.disabled = selectedUrls.size === 0;
+  if (btnCopyJd) btnCopyJd.disabled = selectedUrls.size === 0;
+}
+
+async function copySelectedUrlsForJDownloader() {
+  const list = getFilteredList();
+  const selected = list.filter((i) => selectedUrls.has(i.url));
+  const lines = selected
+    .map((i) => i.url)
+    .filter((u) => typeof u === "string" && (u.startsWith("http://") || u.startsWith("https://")));
+  if (!lines.length) return;
+  try {
+    await navigator.clipboard.writeText(lines.join("\n"));
+    if (progressEl) progressEl.classList.add("visible");
+    if (progressStatus)
+      progressStatus.textContent =
+        "Copied " + lines.length + " URL(s). Paste into JDownloader LinkGrabber or MyJDownloader.";
+  } catch (e) {
+    if (progressEl) progressEl.classList.add("visible");
+    if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "clipboard failed") + "; ";
+  }
 }
 
 async function downloadSelected() {
@@ -939,6 +1199,7 @@ async function downloadSelected() {
   if (selected.length === 0 || !chrome.downloads) return;
   btnDownload.disabled = true;
   if (btnDownloadZip) btnDownloadZip.disabled = true;
+  if (btnCopyJd) btnCopyJd.disabled = true;
   let n = 0;
   for (let i = 0; i < selected.length; i++) {
     const it = selected[i];
@@ -954,6 +1215,15 @@ async function downloadSelected() {
           });
         });
       } else if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
+        if (
+          typeof tbccIsLikelyHtmlPageUrl === "function" &&
+          (it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video") &&
+          tbccIsLikelyHtmlPageUrl(it.url)
+        ) {
+          throw new Error(
+            "That URL is a page (HTML), not a video file. The extension needs a direct .mp4 (or similar) link — or use JDownloader / your backend to resolve the stream."
+          );
+        }
         const base = filenameFromUrl(it.url);
         const ext = it.mediaType === "video" || (it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
         const hasExt = /\.\w{2,5}$/i.test(base);
@@ -980,10 +1250,12 @@ async function downloadSelected() {
   }
   btnDownload.disabled = false;
   if (btnDownloadZip) btnDownloadZip.disabled = selectedUrls.size === 0;
+  if (btnCopyJd) btnCopyJd.disabled = selectedUrls.size === 0;
 }
 
 btnDownload && btnDownload.addEventListener("click", () => downloadSelected());
 btnDownloadZip && btnDownloadZip.addEventListener("click", () => downloadSelectedAsZip());
+btnCopyJd && btnCopyJd.addEventListener("click", () => copySelectedUrlsForJDownloader());
 
 selectAllCb && selectAllCb.addEventListener("change", () => {
   const list = getFilteredList();
@@ -1093,7 +1365,12 @@ function hostNeedsSessionFetch(url) {
       h.endsWith(".erome.com") ||
       h === "motherless.com" ||
       h.endsWith(".motherless.com") ||
-      h.includes("motherlessmedia.com")
+      h.includes("motherlessmedia.com") ||
+      h.includes("coomer.st") ||
+      h.includes("coomer.party") ||
+      h.includes("kemono.party") ||
+      h.includes("kemono.su") ||
+      h.includes("kemono.si")
     );
   } catch (_) {
     return false;
@@ -1532,7 +1809,7 @@ async function fetchAndUploadViaTab(tabId, urls, poolId, savedOnly) {
   const savedCaption = so ? getAlbumCaptionForSend() : "";
   /** Saved Msgs: one injection with all URLs so capture.js can batch /import/saved-batch (albums). */
   if (so && urlList.length > 0) {
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["capture.js"] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["media-url-guards.js", "capture.js"] });
     const exec = chrome.scripting.executeScript({
       target: { tabId },
       func: (allUrls, pid, savedOnlyFlag, src, captionStr) =>
@@ -1562,7 +1839,7 @@ async function fetchAndUploadViaTab(tabId, urls, poolId, savedOnly) {
   }
   for (let u = 0; u < urlList.length; u++) {
     const oneUrl = urlList[u];
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["capture.js"] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["media-url-guards.js", "capture.js"] });
     const exec = chrome.scripting.executeScript({
       target: { tabId },
       func: (singleUrl, pid, savedOnlyFlag, src, captionStr) =>

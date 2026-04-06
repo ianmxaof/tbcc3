@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from typing import Annotated
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from app.database.session import get_db
 from app.services.telegram_admin import get_telegram_storage, import_lock
-from app.services.media_sniff import sniff_media_kind, telegram_media_type_from_sniff
+from app.services.media_sniff import maybe_remux_mp4_for_playback, sniff_media_kind, telegram_media_type_from_sniff
 from app.services.tbcc_media_url import sanitize_import_source_url
 from telethon.errors.rpcerrorlist import ImageProcessFailedError
 
@@ -194,6 +195,7 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
             logger.warning("saved-batch-urls fetch failed url=%s err=%s", url[:80], e)
             return {"error": f"Could not download URL ({e})"}
 
+        file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
         media_type = _guess_media_type(url, content_type)
         media_type = _refine_media_type_from_bytes(file_bytes, media_type)
         items.append((file_bytes, media_type))
@@ -244,6 +246,7 @@ async def import_from_url(data: dict, db: Session = Depends(get_db)):
         logger.warning("import/url fetch failed url=%s err=%s", url[:80], e)
         return {"error": f"Could not download URL ({e})"}
 
+    file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
     media_type = _guess_media_type(url, content_type)
     cap = _caption_from_body(data)
     async with import_lock():
@@ -279,6 +282,8 @@ async def import_from_bytes(
     file_bytes = await file.read()
     if not file_bytes:
         return {"error": "Empty file"}
+
+    file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
 
     content_type = file.content_type or ""
     fn = (file.filename or "").lower()
@@ -330,6 +335,7 @@ async def import_saved_batch(
         raw = await uf.read()
         if not raw:
             continue
+        raw = await asyncio.to_thread(maybe_remux_mp4_for_playback, raw)
         content_type = uf.content_type or ""
         fn = (uf.filename or "").lower()
         if any(fn.endswith(ext) for ext in (".mp4", ".webm", ".mov", ".m4v", ".mkv")):

@@ -6,6 +6,34 @@
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; padding: 10px; font-family: system-ui, sans-serif; font-size: 12px; background: #1e1e2e; color: #cdd6f4; min-height: 100vh; display: flex; flex-direction: column; }
+    .nav-top {
+      flex-shrink: 0;
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #45475a;
+    }
+    .nav-top-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 10px;
+      row-gap: 8px;
+    }
+    .nav-top-row .tabs {
+      margin-bottom: 0;
+      border-bottom: none;
+      flex-shrink: 0;
+    }
+    .nav-top-row .footer-links {
+      margin-top: 0;
+      flex: 1 1 140px;
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0;
+      justify-content: flex-start;
+    }
     .tabs { display: flex; gap: 0; margin-bottom: 10px; border-bottom: 1px solid #45475a; }
     .tabs button { padding: 8px 14px; border: none; border-bottom: 2px solid transparent; background: transparent; color: #a6adc8; cursor: pointer; font-size: 12px; }
     .tabs button.active { color: #89b4fa; border-bottom-color: #89b4fa; }
@@ -85,6 +113,8 @@
       pointer-events: none;
       z-index: 1;
       font-variant-numeric: tabular-nums;
+      white-space: normal;
+      word-break: break-word;
     }
     .cell .placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #6c7086; font-size: 10px; text-align: center; padding: 4px; }
     .progress { margin-top: 8px; padding: 6px; background: #313244; border-radius: 6px; display: none; }
@@ -93,7 +123,7 @@
     .progress .fill { height: 100%; background: #89b4fa; transition: width 0.2s; }
     .progress .status { font-size: 11px; color: #a6adc8; margin-top: 4px; }
     .progress .error { color: #f38ba8; font-size: 11px; margin-top: 2px; }
-    .footer-links { margin-top: 10px; font-size: 11px; }
+    .footer-links { margin-top: 0; font-size: 11px; }
     .footer-links a { color: #89b4fa; text-decoration: none; }
     .footer-links a:hover { text-decoration: underline; }
     .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 100; }
@@ -172,13 +202,28 @@
   </style>
 </head>
 <body>
+  <div class="nav-top">
+    <div class="nav-top-row">
+      <div class="tabs">
+        <button type="button" id="tabCurrent" class="active">Current tab</button>
+        <button type="button" id="tabAll">All tabs</button>
+      </div>
+      <div class="footer-links">
+        <a href="#" id="linkGalleryView" data-panel="collected">Gallery view (collected)</a>
+        <span style="color:#45475a;margin:0 6px">·</span>
+        <a href="#" id="linkPopupTools" data-panel="tools">Quick tools</a>
+        <span style="color:#45475a;margin:0 6px">·</span>
+        <a href="#" id="linkExtensionOptions" data-panel="options">Extension options</a>
+        <span style="color:#45475a;margin:0 6px">·</span>
+        <a href="http://127.0.0.1:5173/" id="linkDashboard">Dashboard</a>
+        <span style="color:#45475a;margin:0 6px">·</span>
+        <a href="#" id="linkLaunchFull" title="Runs start.ps1 -Full (daemon :8765 or API)">Launch full stack</a>
+      </div>
+    </div>
+  </div>
   <div class="panel-stack">
   <div id="view-main" class="panel-view">
-  <div class="tabs">
-    <button type="button" id="tabCurrent" class="active">Current tab</button>
-    <button type="button" id="tabAll">All tabs</button>
-  </div>
-  <p id="scanHint" style="margin:0 0 8px;font-size:11px;color:#6c7086;">When you open this panel, the page is scanned automatically (spinner → gallery). Use ↻ if you navigated or switched tabs. <strong>Shift+click</strong> two thumbnails to select the range; hold <strong>Ctrl</strong> (⌘ on Mac) and drag to marquee-select like Telegram. Footer links (collected / quick tools / options / dashboard) open inside this panel — click the same link again to return here.</p>
+  <p id="scanHint" style="margin:0 0 8px;font-size:11px;color:#6c7086;">When you open this panel, the page is scanned automatically (spinner → gallery). Use ↻ if you navigated or switched tabs. If a video only appears after playback (CDN URLs like full-quality MP4), start playback then click ↻. <strong>Shift+click</strong> two thumbnails to select the range; hold <strong>Ctrl</strong> (⌘ on Mac) and drag to marquee-select like Telegram. <strong>Gallery view</strong>, <strong>Quick tools</strong>, and <strong>Extension options</strong> open inside this panel (click again to return). <strong>Dashboard</strong> opens in a new tab.</p>
   <div id="tbccModelSearchSummary" style="margin:0 0 10px;padding:8px 10px;background:#181825;border:1px solid #45475a;border-radius:8px;font-size:10px;line-height:1.4;"></div>
   <div class="toolbar">
     <button type="button" id="btnRefresh" class="icon-btn" title="Refresh">↻</button>
@@ -210,7 +255,8 @@
     <select id="poolSelect" title="Pool" style="padding:4px 8px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:11px;"></select>
     <button type="button" id="btnSend" class="primary" disabled>Send to TBCC</button>
     <button type="button" id="btnDownload" disabled title="Save each selected file to your Downloads folder (separate files)">Download</button>
-    <button type="button" id="btnDownloadZip" disabled title="Pack all selected images/videos into one .zip (good for digital bundles)">ZIP</button>
+    <button type="button" id="btnDownloadZip" disabled title="Pack all selected images/videos into one .zip (good for digital bundle uploads)">ZIP</button>
+    <button type="button" id="btnCopyJd" class="secondary" disabled title="Copy selected http(s) URLs to clipboard for JDownloader / LinkGrabber">Copy for JDownloader</button>
     <button type="button" id="btnToggleOverlay" class="secondary" title="Show checkboxes on images/videos in the page (same selection as here)">On-page boxes</button>
     <button type="button" id="btnSelectAllOnPage" class="secondary" title="Select every image/video on the current tab (merges into selection)">Select all on tab</button>
   </div>
@@ -282,24 +328,10 @@
   <div id="view-options" class="panel-view panel-view--iframe" hidden>
     <iframe id="iframe-options" title="Extension options"></iframe>
   </div>
-  <div id="view-dashboard" class="panel-view panel-view--iframe" hidden>
-    <p style="margin:0 0 6px;font-size:10px;color:#6c7086;line-height:1.35;">
-      Side panel uses <code style="font-size:10px;">http://127.0.0.1:5173</code> (IPv4). Run <code style="font-size:10px;">cd tbcc/dashboard && npm run dev</code>, restart Vite after config changes, reload the extension, then click <strong>Dashboard</strong> again.
-      <a href="#" id="linkDashboardOpenTab" style="color:#89b4fa;margin-left:4px;">Open dashboard in a tab</a>
-    </p>
-    <iframe id="iframe-dashboard" title="TBCC dashboard"></iframe>
-  </div>
-  </div>
-  <div class="footer-links">
-    <a href="#" id="linkGalleryView" data-panel="collected">Gallery view (collected)</a>
-    <span style="color:#45475a;margin:0 6px">·</span>
-    <a href="#" id="linkPopupTools" data-panel="tools">Quick tools</a>
-    <span style="color:#45475a;margin:0 6px">·</span>
-    <a href="#" id="linkExtensionOptions" data-panel="options">Extension options</a>
-    <span style="color:#45475a;margin:0 6px">·</span>
-    <a href="#" id="linkDashboard" data-panel="dashboard">Dashboard</a>
   </div>
   <script src="vendor/jszip.min.js"></script>
+  <script src="media-url-guards.js"></script>
+  <script src="launch-full-stack.js"></script>
   <script src="gallery.js"></script>
   <script src="gallery-panel.js"></script>
   <script src="gallery-model-search.js"></script>

@@ -27,6 +27,24 @@
           return { error: String(e.message || e), url: url };
         });
     }
+    /**
+     * blob: URLs are scoped to this document — the service worker cannot fetch them.
+     * Many players assign MediaRecorder or stream output as blob URLs for <video>.
+     */
+    if (url && String(url).startsWith("blob:")) {
+      return fetch(url)
+        .then(function (r) {
+          return r.blob();
+        })
+        .then(function (blob) {
+          return blob.arrayBuffer().then(function (buffer) {
+            return { buffer: buffer, url: url, blobMime: blob.type || "" };
+          });
+        })
+        .catch(function (e) {
+          return { error: String(e.message || e), url: url };
+        });
+    }
     return new Promise(function (resolve) {
       try {
         chrome.runtime.sendMessage({ action: "tbcc-content-fetch-bytes", url: url }, function (resp) {
@@ -311,6 +329,148 @@
     }
   }
 
+  /** True if URL path looks like a direct image file (not an HTML page). */
+  function isDirectHttpImageUrl(url) {
+    try {
+      var p = new URL(url, location.href).pathname.toLowerCase();
+      return /\.(jpe?g|png|gif|webp|bmp|avif)(\?|$)/i.test(p);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Find a same-origin link to a detail page near the thumb (wrapper or sibling, like motherless grids).
+   */
+  function findGenericGalleryLink(el) {
+    var a = el.closest && el.closest("a[href]");
+    if (a && a.href) {
+      try {
+        var u0 = new URL(a.href, location.href);
+        if (
+          (u0.protocol === "http:" || u0.protocol === "https:") &&
+          !isDirectHttpImageUrl(a.href) &&
+          u0.origin === new URL(location.href).origin
+        )
+          return a;
+      } catch (_) {}
+    }
+    var node = el.parentElement;
+    for (var d = 0; d < 12 && node; d++) {
+      var ch = node.children;
+      for (var i = 0; i < ch.length; i++) {
+        var c = ch[i];
+        if (c.tagName === "A" && c.href) {
+          try {
+            var u = new URL(c.href, location.href);
+            if (
+              (u.protocol === "http:" || u.protocol === "https:") &&
+              !isDirectHttpImageUrl(c.href) &&
+              u.origin === new URL(location.href).origin
+            )
+              return c;
+          } catch (_) {}
+        }
+        if (c.querySelector) {
+          var inner = c.querySelector("a[href]");
+          if (inner && inner.href) {
+            try {
+              var u2 = new URL(inner.href, location.href);
+              if (
+                (u2.protocol === "http:" || u2.protocol === "https:") &&
+                !isDirectHttpImageUrl(inner.href) &&
+                u2.origin === new URL(location.href).origin
+              )
+                return inner;
+            } catch (_) {}
+          }
+        }
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  /**
+   * Same-origin gallery: thumb links to a detail HTML page → background fetch reads og:image / main image.
+   * Skips motherless (handled separately) and links that already point to a raw image file.
+   */
+  /** coomer.st / kemono.party: SPA — no og:image in fetched HTML; resolver uses /api/v1 JSON instead. */
+  function isCoomerLikeHost() {
+    try {
+      var h = location.hostname.toLowerCase();
+      return /(^|\.)coomer\.(st|party)$/.test(h) || /(^|\.)kemono\.(party|su|si)$/.test(h);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function coomerPostUrlFromHref(href) {
+    try {
+      var u = new URL(href, location.href);
+      var hn = u.hostname.toLowerCase();
+      if (!/(^|\.)coomer\.(st|party)$/.test(hn) && !/(^|\.)kemono\.(party|su|si)$/.test(hn)) return "";
+      var path = (u.pathname || "").replace(/\/+$/, "");
+      if (!/\/[^/]+\/user\/[^/]+\/post\/\d+$/.test(path)) return "";
+      return u.origin + path;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function findCoomerPostLink(el) {
+    if (!isCoomerLikeHost() || !el) return null;
+    var a = el.closest && el.closest("a[href]");
+    if (a && coomerPostUrlFromHref(a.href)) return a;
+    var node = el.parentElement;
+    for (var d = 0; d < 14 && node; d++) {
+      var ch = node.children;
+      for (var i = 0; i < ch.length; i++) {
+        var c = ch[i];
+        if (c.tagName === "A" && c.href && coomerPostUrlFromHref(c.href)) return c;
+        if (c.querySelector) {
+          var inner = c.querySelector("a[href]");
+          if (inner && inner.href && coomerPostUrlFromHref(inner.href)) return inner;
+        }
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function coomerPostDetailUrlIfEligible(el) {
+    if (!isCoomerLikeHost() || !el) return "";
+    var tag = el.tagName;
+    if (tag !== "IMG" && tag !== "VIDEO") return "";
+    var link = findCoomerPostLink(el);
+    if (link && link.href) {
+      var fromA = coomerPostUrlFromHref(link.href);
+      if (fromA) return fromA;
+    }
+    return coomerPostUrlFromHref(location.href);
+  }
+
+  function genericDetailPageUrlIfEligible(el) {
+    if (!el || el.tagName !== "IMG") return "";
+    if (isMotherlessHost()) return "";
+    if (isCoomerLikeHost()) return "";
+    var link = findGenericGalleryLink(el);
+    if (!link || !link.href) return "";
+    try {
+      var u = new URL(link.href, location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+      var cur = new URL(location.href);
+      if (u.origin !== cur.origin) return "";
+      if (u.href.split("#")[0] === cur.href.split("#")[0]) return "";
+      if (isDirectHttpImageUrl(u.href)) return "";
+      var path = u.pathname || "";
+      if (path.length < 2) return "";
+      return u.href.split("#")[0];
+    } catch (_) {
+      return "";
+    }
+  }
+
   function getImageList() {
     var seen = new Set();
     var out = [];
@@ -340,7 +500,75 @@
         mediaType: type,
       };
       if (extra && extra.motherlessDetailUrl) row.motherlessDetailUrl = extra.motherlessDetailUrl;
+      if (extra && extra.coomerPostUrl) row.coomerPostUrl = extra.coomerPostUrl;
+      if (extra && extra.detailPageUrl) row.detailPageUrl = extra.detailPageUrl;
+      if (extra && extra.durationSec != null && typeof extra.durationSec === "number" && isFinite(extra.durationSec) && extra.durationSec > 0)
+        row.durationSec = extra.durationSec;
+      if (extra && extra.tbccCaptureSource) row.tbccCaptureSource = extra.tbccCaptureSource;
+      if (extra && extra.tbccStreamManifest) row.tbccStreamManifest = true;
       out.push(row);
+    }
+    function tbccParseIso8601Duration(s) {
+      if (!s || typeof s !== "string") return null;
+      var m = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(s.trim());
+      if (!m) return null;
+      var h = parseInt(m[1] || "0", 10) || 0;
+      var mi = parseInt(m[2] || "0", 10) || 0;
+      var se = parseFloat(m[3] || "0") || 0;
+      return h * 3600 + mi * 60 + se;
+    }
+    function walkForVideoObject(obj, acc) {
+      if (!obj || typeof obj !== "object") return;
+      if (Array.isArray(obj)) {
+        for (var i = 0; i < obj.length; i++) walkForVideoObject(obj[i], acc);
+        return;
+      }
+      var t = obj["@type"];
+      var types = Array.isArray(t) ? t : t ? [t] : [];
+      var isVo = types.some(function (x) {
+        return String(x).toLowerCase() === "videoobject";
+      });
+      if (isVo) acc.push(obj);
+      for (var k in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, k)) walkForVideoObject(obj[k], acc);
+      }
+    }
+    function collectJsonLdVideoObjects() {
+      var acc = [];
+      var scripts = document.querySelectorAll('script[type="application/ld+json"]');
+      for (var si = 0; si < scripts.length; si++) {
+        var txt = scripts[si].textContent;
+        if (!txt || !String(txt).trim()) continue;
+        try {
+          walkForVideoObject(JSON.parse(txt), acc);
+        } catch (_) {}
+      }
+      return acc;
+    }
+    function pushUrlsFromVideoObject(vo, list) {
+      var u = vo.contentUrl;
+      if (typeof u === "string" && u.trim()) list.push(u.trim());
+      else if (Array.isArray(u))
+        u.forEach(function (x) {
+          if (typeof x === "string" && x.trim()) list.push(x.trim());
+        });
+    }
+    var jsonLdVos = collectJsonLdVideoObjects();
+    for (var j = 0; j < jsonLdVos.length; j++) {
+      var vo = jsonLdVos[j];
+      var urlList = [];
+      pushUrlsFromVideoObject(vo, urlList);
+      var dIso = vo.duration;
+      var dSec = typeof dIso === "string" ? tbccParseIso8601Duration(dIso) : null;
+      var extraLd = {};
+      if (dSec != null && isFinite(dSec) && dSec > 0) extraLd.durationSec = dSec;
+      for (var ui = 0; ui < urlList.length; ui++) {
+        var rawU = urlList[ui];
+        if (!/^https?:\/\//i.test(rawU)) continue;
+        var au = absUrl(rawU);
+        if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) continue;
+        add(au, 0, 0, "video", 0, 0, extraLd);
+      }
     }
     function processImg(el) {
       var cands = [];
@@ -348,8 +576,16 @@
       var src = bestUrlFromCandidates(cands);
       if (!src) return;
       var extra = {};
-      var md = motherlessDetailUrlIfEligible(el);
-      if (md) extra.motherlessDetailUrl = md;
+      var cp = coomerPostDetailUrlIfEligible(el);
+      if (cp) extra.coomerPostUrl = cp;
+      else {
+        var md = motherlessDetailUrlIfEligible(el);
+        if (md) extra.motherlessDetailUrl = md;
+        else {
+          var gdu = genericDetailPageUrlIfEligible(el);
+          if (gdu) extra.detailPageUrl = gdu;
+        }
+      }
       add(absUrl(src), el.width, el.height, "img", el.naturalWidth, el.naturalHeight, extra);
     }
     /**
@@ -375,12 +611,68 @@
       } catch (_) {}
     }
     function processVideo(el) {
-      var src = el.currentSrc || el.src || (el.querySelector("source") && el.querySelector("source").src);
-      if (!src) return;
+      var candidates = [];
+      try {
+        if (el.currentSrc) candidates.push(el.currentSrc);
+        if (el.src) candidates.push(el.src);
+        var dataAttrs = [
+          "data-src",
+          "data-mp4",
+          "data-video",
+          "data-video-src",
+          "data-video-url",
+          "data-url",
+          "data-file",
+          "data-original",
+          "data-hls",
+        ];
+        for (var di = 0; di < dataAttrs.length; di++) {
+          var dv = el.getAttribute && el.getAttribute(dataAttrs[di]);
+          if (dv && String(dv).trim()) candidates.push(String(dv).trim());
+        }
+        var sources = el.querySelectorAll && el.querySelectorAll("source[src], source[srcset]");
+        if (sources) {
+          for (var si = 0; si < sources.length; si++) {
+            var snode = sources[si];
+            var su = snode.getAttribute("src");
+            if (su) candidates.push(su);
+            var sset = snode.getAttribute("srcset");
+            if (sset) {
+              var b = bestUrlFromSrcset(sset);
+              if (b) candidates.push(b);
+            }
+          }
+        }
+      } catch (_) {}
+      var seen = {};
+      var best = "";
+      for (var ci = 0; ci < candidates.length; ci++) {
+        var c = candidates[ci];
+        if (!c || seen[c]) continue;
+        seen[c] = 1;
+        if (!best) best = c;
+        var low = c.toLowerCase().split("?")[0];
+        if (/\.(mp4|m4v)(\?|$)/i.test(low)) {
+          best = c;
+          break;
+        }
+        if (/\.(webm|mov|mkv)(\?|$)/i.test(low) && !/\.(mp4|m4v)(\?|$)/i.test(String(best).toLowerCase())) best = c;
+      }
+      if (!best) return;
+      var absBest = absUrl(best);
+      if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(absBest, location.href)) return;
       var extra = {};
-      var md = motherlessDetailUrlIfEligible(el);
-      if (md) extra.motherlessDetailUrl = md;
-      add(absUrl(src), el.videoWidth || el.width, el.videoHeight || el.height, "video", 0, 0, extra);
+      var cpv = coomerPostDetailUrlIfEligible(el);
+      if (cpv) extra.coomerPostUrl = cpv;
+      else {
+        var mdv = motherlessDetailUrlIfEligible(el);
+        if (mdv) extra.motherlessDetailUrl = mdv;
+      }
+      try {
+        var dur = el.duration;
+        if (typeof dur === "number" && isFinite(dur) && dur > 0) extra.durationSec = dur;
+      } catch (_) {}
+      add(absBest, el.videoWidth || el.width, el.videoHeight || el.height, "video", 0, 0, extra);
     }
     walkElements(document.documentElement, function (el) {
       var t = el.tagName;
@@ -404,11 +696,156 @@
         var c = m.getAttribute("content");
         if (c && c.length < 8000) add(absUrl(c.trim()), 0, 0, "meta");
       });
+      var vmetas = document.head.querySelectorAll(
+        'meta[property="og:video:url"], meta[property="og:video:secure_url"], meta[property="og:video"], meta[name="twitter:player:stream"]'
+      );
+      vmetas.forEach(function (m) {
+        var c = m.getAttribute("content");
+        if (!c || c.length >= 8000 || !/^https?:\/\//i.test(c.trim())) return;
+        var au = absUrl(c.trim());
+        if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) return;
+        add(au, 0, 0, "video");
+      });
     }
+    /**
+     * Same URLs DevTools Network shows for media requests: performance.getEntriesByType("resource").
+     * Picks up CDN files like full-d.mp4 when the player loaded them even if <video> src was opaque.
+     */
+    function scoreResourceTimingVideoUrl(u) {
+      var s = (u || "").toLowerCase();
+      var sc = 0;
+      if (s.indexOf("full-d") >= 0) sc += 100;
+      if (/[\/._-]full[._-]/i.test(s) || /\/full\//i.test(s)) sc += 55;
+      if (s.indexOf("2160") >= 0 || s.indexOf("4k") >= 0) sc += 45;
+      if (s.indexOf("1080") >= 0) sc += 35;
+      if (s.indexOf("720") >= 0) sc += 18;
+      if (s.indexOf("thumbnail-hq") >= 0) sc -= 8;
+      if (s.indexOf("thumb") >= 0 || s.indexOf("thumbnail") >= 0) sc -= 38;
+      if (s.indexOf("preview") >= 0 || s.indexOf("teaser") >= 0) sc -= 28;
+      if (s.indexOf("sample") >= 0) sc -= 15;
+      return sc;
+    }
+    function mergeResourceTimingVideos() {
+      try {
+        if (typeof performance === "undefined" || !performance.getEntriesByType) return;
+        var entries = performance.getEntriesByType("resource");
+        var uniq = {};
+        var list = [];
+        for (var i = 0; i < entries.length; i++) {
+          var name = (entries[i] && entries[i].name) || "";
+          if (!name || name.indexOf("http") !== 0) continue;
+          var pathOnly = name.split("?")[0].toLowerCase();
+          if (!/\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(pathOnly)) continue;
+          if (uniq[name]) continue;
+          uniq[name] = 1;
+          list.push(name);
+        }
+        list.sort(function (a, b) {
+          return scoreResourceTimingVideoUrl(b) - scoreResourceTimingVideoUrl(a);
+        });
+        var max = 28;
+        for (var j = 0; j < list.length && j < max; j++) {
+          var au = absUrl(list[j]);
+          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) continue;
+          add(au, 0, 0, "video", 0, 0, { tbccCaptureSource: "resource-timing" });
+        }
+      } catch (_) {}
+    }
+    /** OnlyFans often serves HLS/DASH; list manifests for discovery (full transmux needs ffmpeg elsewhere). */
+    function mergeOnlyfansStreamManifests() {
+      try {
+        if (typeof performance === "undefined" || !performance.getEntriesByType) return;
+        var h = (location.hostname || "").toLowerCase();
+        if (h !== "onlyfans.com" && !h.endsWith(".onlyfans.com")) return;
+        var entries = performance.getEntriesByType("resource");
+        var seen = {};
+        for (var i = 0; i < entries.length; i++) {
+          var name = (entries[i] && entries[i].name) || "";
+          if (!name || name.indexOf("http") !== 0) continue;
+          var pathOnly = name.split("?")[0].toLowerCase();
+          if (!/\.(m3u8|mpd)(\?|$)/i.test(pathOnly)) continue;
+          if (seen[name]) continue;
+          seen[name] = 1;
+          var au = absUrl(name);
+          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) continue;
+          add(au, 0, 0, "video", 0, 0, {
+            tbccCaptureSource: "resource-timing",
+            tbccStreamManifest: true,
+          });
+        }
+      } catch (_) {}
+    }
+    /**
+     * OnlyFans /media: <img> may be a smaller variant; resource timing lists CDN URLs actually loaded.
+     * Sort so paths hinting at full/original rank above obvious thumbs.
+     */
+    function scoreResourceTimingImageUrl(u) {
+      var s = (u || "").toLowerCase();
+      var sc = 0;
+      if (s.indexOf("2160") >= 0 || s.indexOf("4k") >= 0) sc += 45;
+      if (s.indexOf("1080") >= 0) sc += 35;
+      if (s.indexOf("720") >= 0) sc += 18;
+      if (/\/full\//i.test(s) || /[\/._-]full[._-]/i.test(s)) sc += 55;
+      if (s.indexOf("original") >= 0) sc += 40;
+      if (s.indexOf("thumb") >= 0 || s.indexOf("thumbnail") >= 0) sc -= 38;
+      if (s.indexOf("avatar") >= 0) sc -= 50;
+      if (s.indexOf("preview") >= 0) sc -= 28;
+      if (s.indexOf("profile-photos") >= 0) sc -= 22;
+      if (s.indexOf("icon") >= 0) sc -= 40;
+      return sc;
+    }
+    function mergeOnlyfansResourceTimingImages() {
+      try {
+        if (typeof performance === "undefined" || !performance.getEntriesByType) return;
+        var h2 = (location.hostname || "").toLowerCase();
+        if (h2 !== "onlyfans.com" && !h2.endsWith(".onlyfans.com")) return;
+        var entries2 = performance.getEntriesByType("resource");
+        var uniq2 = {};
+        var list2 = [];
+        for (var ii = 0; ii < entries2.length; ii++) {
+          var name2 = (entries2[ii] && entries2[ii].name) || "";
+          if (!name2 || name2.indexOf("http") !== 0) continue;
+          var pathOnly2 = name2.split("?")[0].toLowerCase();
+          if (!/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(pathOnly2)) continue;
+          var low2 = name2.toLowerCase();
+          if (low2.indexOf("avatar") >= 0 || low2.indexOf("/icon") >= 0 || low2.indexOf("emoji") >= 0 || low2.indexOf("favicon") >= 0)
+            continue;
+          if (uniq2[name2]) continue;
+          uniq2[name2] = 1;
+          list2.push(name2);
+        }
+        list2.sort(function (a, b) {
+          return scoreResourceTimingImageUrl(b) - scoreResourceTimingImageUrl(a);
+        });
+        var maxImg = 96;
+        for (var jj = 0; jj < list2.length && jj < maxImg; jj++) {
+          var au2 = absUrl(list2[jj]);
+          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au2, location.href)) continue;
+          add(au2, 0, 0, "img", 0, 0, { tbccCaptureSource: "resource-timing" });
+        }
+      } catch (_) {}
+    }
+    mergeResourceTimingVideos();
+    mergeOnlyfansStreamManifests();
+    mergeOnlyfansResourceTimingImages();
     return out;
   }
 
-  function blobMetaForUrl(url) {
+  function blobMetaForUrl(url, blobMime) {
+    if (blobMime && String(blobMime).indexOf("/") > 0) {
+      var bm = String(blobMime).toLowerCase();
+      if (bm.indexOf("video") >= 0) {
+        if (bm.indexOf("webm") >= 0) return { name: "media.webm", type: blobMime };
+        if (bm.indexOf("quicktime") >= 0 || bm.indexOf("mov") >= 0) return { name: "media.mov", type: blobMime };
+        return { name: "media.mp4", type: blobMime };
+      }
+      if (bm.indexOf("image/") === 0) {
+        if (bm.indexOf("png") >= 0) return { name: "media.png", type: blobMime };
+        if (bm.indexOf("gif") >= 0) return { name: "media.gif", type: blobMime };
+        if (bm.indexOf("webp") >= 0) return { name: "media.webp", type: blobMime };
+        return { name: "media.jpg", type: blobMime };
+      }
+    }
     var u = url || "";
     var low = u.toLowerCase();
     if (low.startsWith("data:image/jpeg") || low.startsWith("data:image/jpg")) return { name: "media.jpg", type: "image/jpeg" };
@@ -419,6 +856,10 @@
     if (/\.mp4($|\/)/i.test(s)) return { name: "media.mp4", type: "video/mp4" };
     if (/\.webm($|\/)/i.test(s)) return { name: "media.webm", type: "video/webm" };
     if (/\.mov($|\/)/i.test(s)) return { name: "media.mov", type: "video/quicktime" };
+    if (/\.m4v($|\/)/i.test(s)) return { name: "media.m4v", type: "video/x-m4v" };
+    if (/\.mkv($|\/)/i.test(s)) return { name: "media.mkv", type: "video/x-matroska" };
+    if (/\.m3u8($|\/)/i.test(s)) return { name: "playlist.m3u8", type: "application/vnd.apple.mpegurl" };
+    if (/\.mpd($|\/)/i.test(s)) return { name: "manifest.mpd", type: "application/dash+xml" };
     if (/\.gif($|\/)/i.test(s)) return { name: "media.gif", type: "image/gif" };
     if (/\.png($|\/)/i.test(s)) return { name: "media.png", type: "image/png" };
     if (/\.webp($|\/)/i.test(s)) return { name: "media.webp", type: "image/webp" };
@@ -426,8 +867,8 @@
     return { name: "media.jpg", type: "application/octet-stream" };
   }
 
-  function uploadBytes(buffer, poolId, savedOnly, source, mediaUrl, caption) {
-    var meta = blobMetaForUrl(mediaUrl || "");
+  function uploadBytes(buffer, poolId, savedOnly, source, mediaUrl, caption, blobMime) {
+    var meta = blobMetaForUrl(mediaUrl || "", blobMime);
     var blob = new Blob([buffer], { type: meta.type });
     var form = new FormData();
     form.append("file", blob, meta.name);
@@ -465,7 +906,7 @@
             pos += SAVED_ALBUM_CHUNK;
             var form = new FormData();
             chunk.forEach(function (p) {
-              var meta = blobMetaForUrl(p.url || "");
+              var meta = blobMetaForUrl(p.url || "", p.blobMime);
               var blob = new Blob([p.buffer], { type: meta.type });
               form.append("files", blob, meta.name);
             });
@@ -499,7 +940,7 @@
             results.errors.push({ url: (url || "").slice(0, 80), error: one.error });
             return fetchAllForSaved();
           }
-          pairs.push({ buffer: one.buffer, url: url });
+          pairs.push({ buffer: one.buffer, url: url, blobMime: one.blobMime });
           return fetchAllForSaved();
         });
       }
@@ -517,7 +958,7 @@
             try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: i, total: total, error: one.error }); } catch (_) {}
             return next();
           }
-          return uploadBytes(one.buffer, poolId, savedOnly, source, url, cap).then(function (data) {
+          return uploadBytes(one.buffer, poolId, savedOnly, source, url, cap, one.blobMime).then(function (data) {
             if (data.status === "imported" && data.media_id) {
               results.imported += 1;
               results.media_ids.push(data.media_id);

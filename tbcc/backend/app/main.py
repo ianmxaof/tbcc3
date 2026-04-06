@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch
 from app.database.session import engine
 from app.models.base import Base
 from app.services.promo_storage import ensure_promo_dir
@@ -161,6 +161,7 @@ app.include_router(external_payment_orders.router, prefix="/external-payment-ord
 app.include_router(subscription_plans.router, prefix="/subscription-plans", tags=["subscription-plans"])
 app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 app.include_router(scheduled_posts.router, prefix="/scheduled-posts", tags=["scheduled-posts"])
+app.include_router(internal_launch.router, prefix="/internal", tags=["internal"])
 
 
 @app.get("/")

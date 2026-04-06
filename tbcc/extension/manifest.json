@@ -1,16 +1,29 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.17.0",
+  "version": "1.17.9",
   "icons": {
     "16": "icons/icon16.png"
   },
-  "permissions": ["contextMenus", "activeTab", "tabs", "storage", "notifications", "scripting", "sidePanel", "downloads", "cookies"],
+  "permissions": [
+    "contextMenus",
+    "activeTab",
+    "tabs",
+    "storage",
+    "notifications",
+    "scripting",
+    "sidePanel",
+    "downloads",
+    "cookies",
+    "clipboardWrite",
+    "webRequest"
+  ],
   "host_permissions": [
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
     "http://127.0.0.1:5173/*",
     "http://localhost:5173/*",
+    "http://127.0.0.1:8765/*",
     "<all_urls>"
   ],
   "content_security_policy": {

@@ -86,11 +86,14 @@ document.getElementById("openExtensionOptions").addEventListener("click", (e) =>
 
 document.getElementById("btnDashboardPanel").addEventListener("click", (e) => {
   e.preventDefault();
-  if (inGalleryPanel) {
-    window.parent.postMessage({ type: "tbcc-panel-view", view: "dashboard" }, "*");
-    return;
-  }
   chrome.tabs.create({ url: "http://127.0.0.1:5173/" });
+});
+
+document.getElementById("btnLaunchFull").addEventListener("click", (e) => {
+  e.preventDefault();
+  if (typeof window.tbccLaunchFullStack === "function") {
+    window.tbccLaunchFullStack();
+  }
 });
 
 async function loadScreenshotUploadPages() {

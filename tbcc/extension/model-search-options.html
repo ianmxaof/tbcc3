@@ -131,8 +131,34 @@
 </head>
 <body>
   <nav class="top">
-    <a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
+    <a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
   </nav>
+
+  <section id="local-stack">
+    <h1>Local stack</h1>
+    <p class="sub">
+      The extension can run <code>tbcc/start.ps1 -Full</code> from the side panel or Quick tools: either the small daemon on <code>http://127.0.0.1:8765</code> (cold start) or <code>POST /internal/launch-full-stack</code> when the API is already running.
+    </p>
+    <fieldset>
+      <legend>Launch from extension</legend>
+      <p class="sub" style="margin:0 0 10px; font-size:12px">
+        <strong>Daemon (recommended):</strong> <code>cd tbcc\tools</code> then <code>.\tbcc-launch-daemon.ps1</code> — leave the window open or add a logon task. Then use <strong>Launch full stack</strong> in the gallery footer or Quick tools.
+      </p>
+      <p class="sub" style="margin:0 0 10px; font-size:12px">
+        <strong>API fallback:</strong> if the daemon is not running but Uvicorn is on :8000, the extension calls the API. When <code>TBCC_INTERNAL_API_KEY</code> is set in <code>tbcc/.env</code>, paste the same value below.
+      </p>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:140px">TBCC internal key</span>
+        <input
+          type="password"
+          id="tbccInternalApiKey"
+          autocomplete="off"
+          placeholder="(optional)"
+          style="flex:1;min-width:200px;padding:6px 8px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:13px"
+        />
+      </label>
+    </fieldset>
+  </section>
   <h1 id="model">Model search</h1>
   <p class="sub">
     Select a <strong>username</strong> on any page → right‑click → <strong>TBCC — Look up username</strong> → choose one source or <strong>Search all enabled sites</strong>.

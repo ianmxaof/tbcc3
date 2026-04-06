@@ -376,3 +376,18 @@ function renderReverseSites(cfg, enabledMap) {
     });
   });
 })();
+
+const STORAGE_TBCC_INTERNAL_KEY = "tbccInternalApiKey";
+(function () {
+  const el = document.getElementById("tbccInternalApiKey");
+  if (!el) return;
+  chrome.storage.local.get([STORAGE_TBCC_INTERNAL_KEY], (data) => {
+    el.value = data[STORAGE_TBCC_INTERNAL_KEY] || "";
+  });
+  el.addEventListener("blur", () => {
+    chrome.storage.local.set({ [STORAGE_TBCC_INTERNAL_KEY]: (el.value || "").trim() }, () => {
+      setStatus("Saved.");
+      setTimeout(() => setStatus(""), 1600);
+    });
+  });
+})();

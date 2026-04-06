@@ -1,17 +1,16 @@
 /* global chrome */
 /**
- * In-panel views (collected / quick tools / options / dashboard) with footer toggles.
- * Click the same footer link again to return to the main gallery (underlying page visible beside the sidebar).
+ * In-panel views (collected / quick tools / options) via top nav links.
+ * Click the same link again to return to the main gallery (underlying page visible beside the sidebar).
+ * Dashboard opens in a new browser tab (http://127.0.0.1:5173/).
  */
 (function () {
-  /** Use IPv4 literal — "localhost" in the side panel often resolves to ::1 while Vite listens on 127.0.0.1 only, causing ERR_CONNECTION_REFUSED. */
-  const DASHBOARD_IFRAME_URL = "http://127.0.0.1:5173/";
+  const DASHBOARD_TAB_URL = "http://127.0.0.1:5173/";
 
   const linkGalleryView = document.getElementById("linkGalleryView");
   const linkPopupTools = document.getElementById("linkPopupTools");
   const linkExtensionOptions = document.getElementById("linkExtensionOptions");
   const linkDashboard = document.getElementById("linkDashboard");
-  const linkDashboardOpenTab = document.getElementById("linkDashboardOpenTab");
 
   let panelView = "main";
 
@@ -24,7 +23,7 @@
   })();
 
   function updateFooterActive() {
-    [linkGalleryView, linkPopupTools, linkExtensionOptions, linkDashboard].forEach((a) => {
+    [linkGalleryView, linkPopupTools, linkExtensionOptions].forEach((a) => {
       if (!a) return;
       const v = a.getAttribute("data-panel");
       a.classList.toggle("active", v === panelView);
@@ -38,21 +37,12 @@
     }
   }
 
-  /** Dashboard iframe must reload each time: first load may fail if Vite is not up yet (ensureIframe alone never retries). */
-  function loadDashboardIframe() {
-    const el = document.getElementById("iframe-dashboard");
-    if (!el) return;
-    const u = new URL(DASHBOARD_IFRAME_URL);
-    u.searchParams.set("_tbcc", String(Date.now()));
-    el.setAttribute("src", u.href);
-  }
-
   function setPanelView(next) {
     if (next !== "main" && panelView === next) {
       next = "main";
     }
     panelView = next;
-    ["main", "collected", "tools", "options", "dashboard"].forEach((v) => {
+    ["main", "collected", "tools", "options"].forEach((v) => {
       const el = document.getElementById("view-" + v);
       if (el) el.hidden = v !== panelView;
     });
@@ -65,9 +55,6 @@
     if (panelView === "options") {
       ensureIframe("iframe-options", chrome.runtime.getURL("model-search-options.html?embed=1"));
     }
-    if (panelView === "dashboard") {
-      loadDashboardIframe();
-    }
     updateFooterActive();
   }
 
@@ -77,7 +64,11 @@
     if (!ev.data || ev.data.type !== "tbcc-panel-view") return;
     if (extOrigin && ev.origin !== extOrigin) return;
     const v = ev.data.view;
-    if (v === "main" || v === "collected" || v === "tools" || v === "options" || v === "dashboard") {
+    if (v === "dashboard") {
+      chrome.tabs.create({ url: DASHBOARD_TAB_URL });
+      return;
+    }
+    if (v === "main" || v === "collected" || v === "tools" || v === "options") {
       setPanelView(v);
     }
   });
@@ -100,12 +91,16 @@
   linkDashboard &&
     linkDashboard.addEventListener("click", (e) => {
       e.preventDefault();
-      setPanelView("dashboard");
+      chrome.tabs.create({ url: DASHBOARD_TAB_URL });
     });
-  linkDashboardOpenTab &&
-    linkDashboardOpenTab.addEventListener("click", (e) => {
+
+  const linkLaunchFull = document.getElementById("linkLaunchFull");
+  linkLaunchFull &&
+    linkLaunchFull.addEventListener("click", (e) => {
       e.preventDefault();
-      chrome.tabs.create({ url: DASHBOARD_IFRAME_URL });
+      if (typeof window.tbccLaunchFullStack === "function") {
+        window.tbccLaunchFullStack();
+      }
     });
 
   updateFooterActive();

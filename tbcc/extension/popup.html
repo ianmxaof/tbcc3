@@ -51,8 +51,11 @@
     <p id="modelSearchSummary" style="margin:6px 0 0;font-size:11px">Username: selection → <strong>TBCC — Look up username</strong> (per source or all). Configure sources in Extension options.</p>
     <p id="reverseImageSummary" style="margin:4px 0 0;font-size:11px">Image: Reverse image search (fan-out).</p>
     <button type="button" id="openExtensionOptions">Extension options…</button>
-    <button type="button" id="btnDashboardPanel" style="margin-top:8px;width:100%;padding:6px 10px;cursor:pointer;background:#313244;color:#89b4fa;border:1px solid #45475a;border-radius:4px;font-size:11px">Open TBCC dashboard (sidebar)</button>
+    <button type="button" id="btnDashboardPanel" style="margin-top:8px;width:100%;padding:6px 10px;cursor:pointer;background:#313244;color:#89b4fa;border:1px solid #45475a;border-radius:4px;font-size:11px">Open TBCC dashboard (new tab)</button>
+    <button type="button" id="btnLaunchFull" style="margin-top:8px;width:100%;padding:6px 10px;cursor:pointer;background:#313244;color:#a6e3a1;border:1px solid #45475a;border-radius:4px;font-size:11px">Launch full stack (start.ps1 -Full)</button>
+    <p style="margin:4px 0 0;font-size:10px;color:#64748b">Uses local daemon :8765 or API; see Extension options → Local stack.</p>
   </div>
+  <script src="launch-full-stack.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
