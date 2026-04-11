@@ -10,3 +10,5 @@ class Channel(Base):
     name = Column(String)
     identifier = Column(String, nullable=False)  # @username or -100xxxxxxxxxx
     invite_link = Column(String, nullable=True)  # t.me/joinchat/xxx or t.me/channel for public
+    # Optional HTTPS URL — POST JSON on scheduled post send / pool album post (see outbound_webhook).
+    webhook_url = Column(String, nullable=True)

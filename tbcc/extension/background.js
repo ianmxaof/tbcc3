@@ -4,6 +4,28 @@ const API_URL = "http://localhost:8000/import/url";
 const API_BYTES = "http://localhost:8000/import/bytes";
 const API_SAVED_BATCH = "http://localhost:8000/import/saved-batch";
 const SAVED_ALBUM_CHUNK = 10;
+/** Match capture.js: overlap session fetches before sequential /import/saved-batch POSTs. */
+const TBCC_FETCH_CONCURRENCY = 3;
+
+/**
+ * Run fetchFn(url, idx) for each URL with at most TBCC_FETCH_CONCURRENCY in flight; results match urls order.
+ */
+async function fetchUrlsWithConcurrency(urls, fetchFn) {
+  const n = urls.length;
+  if (n === 0) return [];
+  const results = new Array(n);
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const idx = nextIndex++;
+      if (idx >= n) return;
+      results[idx] = await fetchFn(urls[idx], idx);
+    }
+  }
+  const w = Math.min(TBCC_FETCH_CONCURRENCY, n);
+  await Promise.all(Array.from({ length: w }, () => worker()));
+  return results;
+}
 const STORAGE_LAST_TAB = "tbccLastActiveTabId";
 const STORAGE_COLLECTED = "tbcc_collected";
 const STORAGE_MODEL_SEARCH_ENABLED = "tbccModelSearchEnabledSites";
@@ -14,7 +36,7 @@ const STORAGE_MODEL_SEARCH_LAST_SUMMARY = "tbccModelSearchLastSummary";
 
 /**
  * Fan out username search across enabled sites (config JSON + options).
- * Modes: dashboard (single aggregator tab), foreground (first tab active), background (all inactive).
+ * Modes: foreground (first tab active), background (all inactive). Legacy "dashboard" is treated as foreground.
  */
 async function loadReverseImageConfig() {
   const r = await fetch(chrome.runtime.getURL("reverse-image-sites.json"));
@@ -28,7 +50,7 @@ function buildReverseEngineUrl(template, imageUrl) {
 
 /**
  * Public http(s) image URL → multi-engine reverse search (config + options).
- * Uses session storage to pass long URLs into reverse-aggregator.html.
+ * Fan-out opens one tab per engine (foreground or background).
  */
 async function launchReverseImageSearch(imageUrl) {
   imageUrl = normalizeTbccMediaUrlForImport((imageUrl || "").trim()) || (imageUrl || "").trim();
@@ -61,15 +83,8 @@ async function launchReverseImageSearch(imageUrl) {
     notify("TBCC", "No reverse-image sources enabled — open extension Options.");
     return;
   }
-  const mode = data[STORAGE_REVERSE_IMAGE_MODE] || "dashboard";
-  if (mode === "dashboard") {
-    const key =
-      "tbcc_ri_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
-    await chrome.storage.session.set({ [key]: imageUrl });
-    const pageUrl = chrome.runtime.getURL(`reverse-aggregator.html?k=${encodeURIComponent(key)}`);
-    await chrome.tabs.create({ url: pageUrl, active: true });
-    return;
-  }
+  let mode = data[STORAGE_REVERSE_IMAGE_MODE] || "foreground";
+  if (mode === "dashboard") mode = "foreground";
   const wantActive = mode === "foreground";
   let first = true;
   for (const s of sites) {
@@ -150,7 +165,6 @@ async function fetchCountsForSites(username, sites) {
 }
 
 async function launchModelSearch(username, onlySiteId = null) {
-  const usernameEnc = encodeURIComponent(username.trim());
   let cfg;
   try {
     cfg = await getMergedModelSearchSites();
@@ -168,15 +182,8 @@ async function launchModelSearch(username, onlySiteId = null) {
     notify("TBCC", "No model search sources enabled — open Extension options (Model search).");
     return;
   }
-  const mode = data[STORAGE_MODEL_SEARCH_MODE] || "dashboard";
-  if (mode === "dashboard") {
-    let url = chrome.runtime.getURL(`aggregator.html?q=${usernameEnc}`);
-    if (onlySiteId) url += "&site=" + encodeURIComponent(onlySiteId);
-    await chrome.tabs.create({ url, active: true });
-    await recordModelSearchSummary(username, sites, onlySiteId);
-    void fetchCountsForSites(username, sites);
-    return;
-  }
+  let mode = data[STORAGE_MODEL_SEARCH_MODE] || "foreground";
+  if (mode === "dashboard") mode = "foreground";
   const wantActive = mode === "foreground";
   let first = true;
   for (const s of sites) {
@@ -551,12 +558,11 @@ async function importViaExtensionBytes(url, poolId, savedOnly, source, caption) 
 
 /** Fetch multiple session URLs and POST to /import/saved-batch in chunks (Telegram albums ≤10). */
 async function importViaExtensionBytesSavedBatch(urls) {
-  const parts = [];
-  for (const url of urls) {
+  const parts = await fetchUrlsWithConcurrency(urls, async (url) => {
     const ab = await fetchUrlWithBrowserSession(normalizeTbccMediaUrlForImport(url));
     const { name, type } = blobNameAndTypeForUrl(url);
-    parts.push({ ab, name, type });
-  }
+    return { ab, name, type };
+  });
   for (let i = 0; i < parts.length; i += SAVED_ALBUM_CHUNK) {
     const chunk = parts.slice(i, i + SAVED_ALBUM_CHUNK);
     const form = new FormData();
@@ -595,6 +601,7 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 const TBCC_TAB_URL_CACHE = new Map();
 /** Media gallery pages can load many photo CDN requests; keep a larger cap for OnlyFans. */
 const TBCC_NET_MEDIA_MAX = 192;
+const TBCC_NET_MANIFEST_MAX = 48;
 
 function tbccTabPageLooksLikeOnlyfans(url) {
   if (!url || typeof url !== "string") return false;
@@ -666,11 +673,32 @@ async function tbccAppendObservedMediaUrl(tabId, url) {
   await chrome.storage.session.set({ [key]: next });
 }
 
+function tbccWebRequestUrlLooksLikeHlsManifest(url) {
+  if (!url || typeof url !== "string") return false;
+  if (url.length > 8000) return false;
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    return /\.(m3u8|mpd)(\?|$)/i.test(path);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function tbccAppendObservedManifestUrl(tabId, url) {
+  const key = `tbcc_net_manifest_${tabId}`;
+  const got = await chrome.storage.session.get(key);
+  const cur = Array.isArray(got[key]) ? got[key] : [];
+  if (cur.includes(url)) return;
+  const next = [...cur, url].slice(-TBCC_NET_MANIFEST_MAX);
+  await chrome.storage.session.set({ [key]: next });
+}
+
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.url) {
     const prev = TBCC_TAB_URL_CACHE.get(tabId);
     if (prev != null && prev !== info.url) {
       void chrome.storage.session.remove(`tbcc_net_media_${tabId}`);
+      void chrome.storage.session.remove(`tbcc_net_manifest_${tabId}`);
     }
     TBCC_TAB_URL_CACHE.set(tabId, info.url);
   } else if (tab && tab.url) {
@@ -702,12 +730,16 @@ try {
       if (details.statusCode && details.statusCode >= 400) return;
       const u = details.url;
       const looksVideo = tbccWebRequestUrlLooksLikeMedia(u);
+      const isManifest = tbccWebRequestUrlLooksLikeHlsManifest(u);
       chrome.tabs
         .get(details.tabId)
         .then((tab) => {
           const pageUrl = tab && tab.url;
-          if (!tbccTabPageLooksLikeOnlyfans(pageUrl)) return;
-          if (looksVideo || tbccWebRequestUrlLooksLikeOnlyfansImage(u)) void tbccAppendObservedMediaUrl(details.tabId, u);
+          if (!tbccIsInjectableHttpUrl(pageUrl)) return;
+          if (tbccTabPageLooksLikeOnlyfans(pageUrl)) {
+            if (looksVideo || tbccWebRequestUrlLooksLikeOnlyfansImage(u)) void tbccAppendObservedMediaUrl(details.tabId, u);
+          }
+          if (isManifest) void tbccAppendObservedManifestUrl(details.tabId, u);
         })
         .catch(() => {});
     },
@@ -843,48 +875,21 @@ function installContextMenus() {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
     const mac = chrome.contextMenus.create.bind(chrome.contextMenus);
-    mac({ id: "sendToTBCC", title: "TBCC → Pool queue (media/link)", contexts: ["image", "video", "link"] });
+    mac({ id: "sendToTBCC", title: "TBCC: Save to pool", contexts: ["image", "video", "link"] });
+    mac({ id: "sendToSaved", title: "TBCC: Saved Messages", contexts: ["image", "video", "link"] });
+    mac({ id: "sendPageToTBCC", title: "TBCC: Save to pool (this tab URL)", contexts: ["page", "frame"] });
+    mac({ id: "sendPageToSaved", title: "TBCC: Saved Messages (this tab URL)", contexts: ["page", "frame"] });
+    mac({ id: "sendSelectionToTBCC", title: "TBCC: Save to pool (selected URL)", contexts: ["selection"] });
+    mac({ id: "sendSelectionToSaved", title: "TBCC: Saved Messages (selected URL)", contexts: ["selection"] });
     mac({
       id: "tbccReverseImageFanout",
-      title: "Reverse image search (fan-out)",
+      title: "TBCC: Reverse image search",
       contexts: ["image"],
     });
     mac({
       id: "tbccCaptureTabReverse",
-      title: "Capture tab → screenshot for reverse search",
+      title: "TBCC: Capture tab for reverse search",
       contexts: ["page", "frame"],
-    });
-    mac({ id: "sendToSaved", title: "TBCC → Saved Messages (media/link)", contexts: ["image", "video", "link"] });
-    mac({ id: "sendPageToTBCC", title: "TBCC → Pool queue (this tab URL)", contexts: ["page", "frame"] });
-    mac({ id: "sendPageToSaved", title: "TBCC → Saved Messages (this tab URL)", contexts: ["page", "frame"] });
-    mac({ id: "sendSelectionToTBCC", title: "TBCC → Pool queue (selected URL text)", contexts: ["selection"] });
-    mac({ id: "sendSelectionToSaved", title: "TBCC → Saved Messages (selected URL text)", contexts: ["selection"] });
-    mac({ id: "tbccPageMenu", title: "TBCC", contexts: ["page", "frame"] });
-    mac({
-      id: "tbccToggleOverlay",
-      parentId: "tbccPageMenu",
-      title: "Toggle on-page checkboxes",
-      contexts: ["page", "frame"],
-    });
-    mac({
-      id: "tbccSelectAllPage",
-      parentId: "tbccPageMenu",
-      title: "Select all media on this page",
-      contexts: ["page", "frame"],
-    });
-    /** Same actions when right-clicking an image/video/link — page/frame context is NOT used there. */
-    mac({ id: "tbccMediaMenu", title: "TBCC (page tools)", contexts: ["image", "video", "link"] });
-    mac({
-      id: "tbccToggleOverlayMedia",
-      parentId: "tbccMediaMenu",
-      title: "Toggle on-page checkboxes",
-      contexts: ["image", "video", "link"],
-    });
-    mac({
-      id: "tbccSelectAllPageMedia",
-      parentId: "tbccMediaMenu",
-      title: "Select all media on this page",
-      contexts: ["image", "video", "link"],
     });
     void (async () => {
       try {
@@ -909,7 +914,7 @@ async function addModelSearchContextMenus(mac) {
   if (!sites.length) return;
   mac({
     id: "tbccModelSearchRoot",
-    title: "TBCC — Look up username",
+    title: "TBCC: Look up username",
     contexts: ["selection"],
   });
   mac({
@@ -1050,26 +1055,6 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const pageUrl = chrome.runtime.getURL(`screenshot-reverse.html?k=${encodeURIComponent(key)}`);
     await chrome.tabs.create({ url: pageUrl, active: true });
     notify("TBCC", "Screenshot ready — click Copy image, then paste in each tab.");
-    return;
-  }
-
-  if (id === "tbccToggleOverlay" || id === "tbccToggleOverlayMedia") {
-    const { tbccOverlayMode } = await chrome.storage.local.get("tbccOverlayMode");
-    await chrome.storage.local.set({ tbccOverlayMode: !tbccOverlayMode });
-    notify("TBCC", !tbccOverlayMode ? "On-page checkboxes: ON" : "On-page checkboxes: OFF");
-    return;
-  }
-  if (id === "tbccSelectAllPage" || id === "tbccSelectAllPageMedia") {
-    if (!tab || tab.id == null) {
-      notify("TBCC", "No active tab.");
-      return;
-    }
-    try {
-      await chrome.tabs.sendMessage(tab.id, { action: "tbcc-overlay-select-all" });
-      notify("TBCC", "Selected all media on this page (merged into TBCC selection).");
-    } catch (_) {
-      notify("TBCC", "Could not reach this page — reload the tab or use the sidebar.");
-    }
     return;
   }
 

@@ -6,10 +6,14 @@ import { Scheduler } from "./panels/Scheduler";
 import { Subscriptions } from "./panels/Subscriptions";
 import { BotsPanel } from "./panels/BotsPanel";
 import { Growth } from "./panels/Growth";
+import { TagsPanel } from "./panels/TagsPanel";
+import { Analytics } from "./panels/Analytics";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const nav = [
   { to: "/", label: "Media" },
+  { to: "/analytics", label: "Analytics" },
+  { to: "/tags", label: "Tags" },
   { to: "/pools", label: "Pools" },
   { to: "/sources", label: "Sources" },
   { to: "/scheduler", label: "Scheduler" },
@@ -45,6 +49,22 @@ function App() {
               element={
                 <ErrorBoundary name="Media">
                   <MediaLibrary />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/analytics"
+              element={
+                <ErrorBoundary name="Analytics">
+                  <Analytics />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/tags"
+              element={
+                <ErrorBoundary name="Tags">
+                  <TagsPanel />
                 </ErrorBoundary>
               }
             />

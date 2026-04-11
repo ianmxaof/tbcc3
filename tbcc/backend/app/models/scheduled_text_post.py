@@ -26,6 +26,13 @@ class ScheduledTextPost(Base):
     content_variations = Column(Text, nullable=True)
     caption_rotation_index = Column(Integer, nullable=True)  # advances after each send; NULL starts at variation 0
     buttons = Column(Text, nullable=True)  # JSON: [{"text": "Label", "url": "https://..."}]
+    # JSON list of public URLs (legacy single-album); superseded by album_variants_json when set
+    attachment_urls_json = Column(Text, nullable=True)
+    # JSON array of {"attachment_urls": [...], "media_ids": [...]} — aligned with caption rotation via modulo
+    album_variants_json = Column(Text, nullable=True)
+    # static | shuffle | carousel — reorder items in each send (carousel rotates starting index)
+    album_order_mode = Column(String(16), nullable=True)
+    album_carousel_index = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=True)
 
     def get_media_ids(self) -> list[int]:
@@ -59,3 +66,64 @@ class ScheduledTextPost(Base):
             return out
         except (json.JSONDecodeError, TypeError):
             return []
+
+    def _urls_from_attachment_urls_json_column(self) -> list[str]:
+        """Legacy flat column attachment_urls_json."""
+        if not self.attachment_urls_json:
+            return []
+        try:
+            raw = json.loads(self.attachment_urls_json)
+            if not isinstance(raw, list):
+                return []
+            out: list[str] = []
+            for x in raw:
+                if isinstance(x, str) and x.strip():
+                    out.append(x.strip())
+            return out[:10]
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def get_attachment_urls(self) -> list[str]:
+        """First album variant promo URLs, or legacy flat list (backward compat for API)."""
+        if self.album_variants_json:
+            vars_ = self.get_album_variants()
+            if vars_:
+                urls = vars_[0].get("attachment_urls") or []
+                return [u for u in urls if isinstance(u, str) and u.strip()][:10]
+            return []
+        return self._urls_from_attachment_urls_json_column()
+
+    @staticmethod
+    def _normalize_album_variant_entry(obj) -> dict:
+        out: dict = {"attachment_urls": [], "media_ids": []}
+        if not isinstance(obj, dict):
+            return out
+        raw_u = obj.get("attachment_urls")
+        if isinstance(raw_u, list):
+            out["attachment_urls"] = [str(x).strip() for x in raw_u if str(x).strip()][:10]
+        raw_m = obj.get("media_ids")
+        if isinstance(raw_m, list):
+            for x in raw_m:
+                try:
+                    out["media_ids"].append(int(x))
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    def get_album_variants(self) -> list[dict]:
+        """
+        List of per-caption album specs: {attachment_urls, media_ids}.
+        If album_variants_json is unset, synthesize one variant from legacy media_ids + attachment_urls_json.
+        """
+        if self.album_variants_json:
+            try:
+                raw = json.loads(self.album_variants_json)
+                if isinstance(raw, list) and raw:
+                    return [self._normalize_album_variant_entry(x) for x in raw]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        mids = self.get_media_ids()
+        legacy_urls = self._urls_from_attachment_urls_json_column()
+        if not mids and not legacy_urls:
+            return []
+        return [{"attachment_urls": legacy_urls, "media_ids": mids}]

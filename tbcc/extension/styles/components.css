@@ -1,0 +1,211 @@
+/* Shared TBCC extension UI — options pages, embeds; uses tokens.css */
+* {
+  box-sizing: border-box;
+}
+
+body.tbcc-options-page {
+  margin: 0;
+  padding: 20px 24px 40px;
+  max-width: 720px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  background: var(--tbcc-bg-base);
+  color: var(--tbcc-text-primary);
+  line-height: 1.45;
+}
+
+body.tbcc-options-page h1 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--tbcc-text-heading);
+}
+
+body.tbcc-options-page .sub {
+  margin: 0 0 20px;
+  font-size: 12px;
+  color: var(--tbcc-text-muted);
+}
+
+body.tbcc-options-page h2 {
+  margin: 22px 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tbcc-text-section);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+body.tbcc-options-page fieldset {
+  border: 1px solid var(--tbcc-bg-elevated);
+  border-radius: var(--tbcc-radius);
+  padding: 12px 14px;
+  margin: 0 0 12px;
+  background: var(--tbcc-bg-card);
+}
+
+body.tbcc-options-page legend {
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--tbcc-text-secondary);
+}
+
+body.tbcc-options-page label.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+body.tbcc-options-page label.row input {
+  margin: 0;
+}
+
+body.tbcc-options-page .cat {
+  font-size: var(--tbcc-font-caption);
+  color: var(--tbcc-text-muted);
+  margin-left: auto;
+  text-transform: lowercase;
+}
+
+body.tbcc-options-page .modes label {
+  display: block;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+body.tbcc-options-page .modes input {
+  margin-right: 8px;
+}
+
+body.tbcc-options-page .modes .desc {
+  display: block;
+  margin-left: 22px;
+  font-size: var(--tbcc-font-caption);
+  color: var(--tbcc-text-muted);
+}
+
+body.tbcc-options-page .footer {
+  margin-top: 20px;
+  font-size: 12px;
+  color: var(--tbcc-text-muted);
+}
+
+body.tbcc-options-page .footer code {
+  background: var(--tbcc-bg-surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+body.tbcc-options-page #status {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--tbcc-success);
+  min-height: 1.2em;
+}
+
+body.tbcc-options-page .err {
+  color: var(--tbcc-error);
+}
+
+body.tbcc-options-page nav.top {
+  padding: 8px 0 4px;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+body.tbcc-options-page nav.top a {
+  color: var(--tbcc-accent);
+  text-decoration: none;
+}
+
+body.tbcc-options-page nav.top a:hover {
+  text-decoration: underline;
+}
+
+body.tbcc-options-page nav.top span.sep {
+  color: var(--tbcc-bg-elevated);
+  margin: 0 6px;
+}
+
+body.tbcc-options-page .card {
+  border: 1px solid var(--tbcc-bg-elevated);
+  border-radius: var(--tbcc-radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  background: var(--tbcc-bg-card);
+}
+
+body.tbcc-options-page .card h1 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--tbcc-text-heading);
+}
+
+body.tbcc-options-page .card label.row2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+body.tbcc-options-page .card select,
+body.tbcc-options-page .card input[type="number"] {
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: var(--tbcc-radius-sm);
+  border: 1px solid var(--tbcc-bg-elevated);
+  background: var(--tbcc-bg-surface);
+  color: var(--tbcc-text-primary);
+  font-size: 13px;
+}
+
+body.tbcc-options-page .tbcc-options-split {
+  margin-top: 8px;
+}
+
+html.tbcc-options-embed body.tbcc-options-page {
+  max-width: none;
+  padding: 12px 14px 28px;
+}
+
+html.tbcc-options-embed body.tbcc-options-page .tbcc-options-split {
+  margin-top: 4px;
+}
+
+body.tbcc-options-page .tbcc-input {
+  flex: 1;
+  min-width: 160px;
+  padding: 6px 8px;
+  background: var(--tbcc-bg-surface);
+  color: var(--tbcc-text-primary);
+  border: 1px solid var(--tbcc-bg-elevated);
+  border-radius: var(--tbcc-radius-sm);
+  font-size: 13px;
+}
+
+body.tbcc-options-page .tbcc-btn-primary {
+  margin-top: 10px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: var(--tbcc-radius-sm);
+  background: var(--tbcc-accent);
+  color: var(--tbcc-bg-base);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+body.tbcc-options-page .tbcc-btn-secondary {
+  margin-top: 8px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: var(--tbcc-radius-sm);
+  background: var(--tbcc-bg-elevated);
+  color: var(--tbcc-text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}

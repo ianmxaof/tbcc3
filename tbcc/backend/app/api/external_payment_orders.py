@@ -15,11 +15,19 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.subscriptions import subscription_create_from_payload
 from app.database.session import get_db
 from app.models.external_payment_order import ExternalPaymentOrder
 from app.models.subscription_plan import SubscriptionPlan
 from app.schemas.common import orm_to_dict
+from app.services.external_payment_fulfill import fulfill_external_order
+from app.services.nowpayments_client import (
+    can_use_nowpayments_ipn,
+    checkout_url_and_hint,
+    create_payment,
+    nowpayments_configured,
+    public_api_base_url,
+    stars_to_usd,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,12 +176,31 @@ def create_external_order(
             ) from e
 
         instr = _instructions_html(code, plan.name or "Product", int(plan.price_stars or 0))
-        return {
+        out: dict = {
             "order": orm_to_dict(row),
             "plan_name": plan.name,
             "price_stars": plan.price_stars,
             "instructions_html": instr,
         }
+        # Automatic crypto checkout (IPN → /webhooks/nowpayments) when keys + public HTTPS base are set.
+        if nowpayments_configured() and can_use_nowpayments_ipn():
+            try:
+                base = public_api_base_url()
+                ipn_url = f"{base}/webhooks/nowpayments"
+                usd = stars_to_usd(int(plan.price_stars or 0))
+                np = create_payment(
+                    order_id=code,
+                    price_usd=usd,
+                    order_description=(plan.name or "TBCC")[:512],
+                    ipn_callback_url=ipn_url,
+                )
+                url, extra = checkout_url_and_hint(np)
+                out["crypto_pay_url"] = url
+                if extra:
+                    out["crypto_pay_details"] = extra
+            except Exception as e:
+                logger.warning("NOWPayments checkout not created for %s: %s", code, e)
+        return out
 
     logger.error(
         "external_payment_orders: exhausted insert attempts without success plan_id=%s",
@@ -216,7 +243,7 @@ def mark_paid(
     x_tbcc_internal_key: str | None = Header(None),
 ):
     """
-    Admin confirms payment off-platform. Fulfills subscription the same way as Stars (payment_method=manual).
+    Admin confirms payment off-platform (legacy/manual). Prefer NOWPayments IPN or /webhooks/instant-payment for automation.
     """
     _require_internal(x_tbcc_internal_key)
 
@@ -227,26 +254,12 @@ def mark_paid(
         raise HTTPException(status_code=400, detail=f"Order is not pending (status={order.status})")
 
     charge_id = f"manual_ext_{order.id}_{order.reference_code}"
-    order.status = "paid"
-    order.paid_at = datetime.utcnow()
-    db.commit()
-
-    result = subscription_create_from_payload(
-        {
-            "telegram_user_id": order.telegram_user_id,
-            "plan_id": order.plan_id,
-            "payment_method": "manual",
-            "telegram_payment_charge_id": charge_id,
-            "referral_reward_days": 7,
-        },
+    result = fulfill_external_order(
         db,
+        order,
+        payment_method="manual",
+        telegram_charge_id=charge_id,
     )
     if result.get("error"):
-        order.status = "pending"
-        order.paid_at = None
-        db.commit()
         raise HTTPException(status_code=400, detail=result.get("error"))
-
-    result["external_order_id"] = order.id
-    result["reference_code"] = order.reference_code
     return result

@@ -27,14 +27,11 @@ export function Subscriptions() {
     queryFn: () => api.analytics.subscriptions(),
   });
 
-  const statusCounts = (subs as Array<Record<string, unknown>>).reduce(
-    (acc, s) => {
-      const st = String(s.status || "unknown");
-      acc[st] = (acc[st] || 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>
-  );
+  const statusCounts = (subs as Array<Record<string, unknown>>).reduce<Record<string, number>>((acc, s) => {
+    const st = String(s.status || "unknown");
+    acc[st] = (acc[st] ?? 0) + 1;
+    return acc;
+  }, {});
   const pieData = Object.entries(statusCounts).map(([name, value]) => ({ name, value }));
   const COLORS = ["#22c55e", "#eab308", "#ef4444", "#64748b"];
 
@@ -164,9 +161,11 @@ export function Subscriptions() {
                 <td className="p-3">{String(s.id)}</td>
                 <td className="p-3 font-mono text-sm">{String(s.telegram_user_id)}</td>
                 <td className="p-3">
-                  {s.plan_id != null
-                    ? (plans as Array<Record<string, unknown>>).find((p) => p.id === s.plan_id)?.name ?? `#${s.plan_id}`
-                    : String(s.plan ?? "—")}
+                  {String(
+                    s.plan_id != null
+                      ? (plans as Array<Record<string, unknown>>).find((p) => p.id === s.plan_id)?.name ?? `#${s.plan_id}`
+                      : s.plan ?? "—"
+                  )}
                 </td>
                 <td className="p-3">
                   <span

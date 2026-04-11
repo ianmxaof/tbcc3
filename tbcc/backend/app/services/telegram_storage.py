@@ -253,6 +253,12 @@ class TelegramStorage:
         db.add(record)
         db.commit()
         db.refresh(record)
+        try:
+            from app.services.media_tagging import apply_auto_tags_for_new_media
+
+            apply_auto_tags_for_new_media(db, record.id)
+        except Exception:
+            logger.exception("auto-tag failed for media id=%s", getattr(record, "id", "?"))
         return record
 
     async def index_from_saved_messages(

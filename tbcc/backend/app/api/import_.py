@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from app.database.session import get_db
 from app.services.telegram_admin import get_telegram_storage, import_lock
+from app.services.hls_import import hls_or_dash_url_to_mp4_bytes
 from app.services.media_sniff import maybe_remux_mp4_for_playback, sniff_media_kind, telegram_media_type_from_sniff
 from app.services.tbcc_media_url import sanitize_import_source_url
 from telethon.errors.rpcerrorlist import ImageProcessFailedError
@@ -20,6 +21,16 @@ from telethon.errors.rpcerrorlist import ImageProcessFailedError
 router = APIRouter()
 
 SAVED_BATCH_MAX_FILES = 100
+
+
+class HlsManifestUrlBody(BaseModel):
+    """HLS (.m3u8) or DASH (.mpd) manifest URL — server runs ffmpeg to produce one MP4 (requires ffmpeg on PATH)."""
+
+    url: str = Field(..., min_length=12, max_length=8000)
+    pool_id: int = 1
+    saved_only: bool = False
+    referer: str | None = Field(default=None, description="Optional Referer for ffmpeg HTTP requests")
+    source: str = Field(default="import:hls-url", max_length=200)
 
 
 class SavedBatchUrlsBody(BaseModel):
@@ -313,6 +324,52 @@ async def import_from_bytes(
         except ImageProcessFailedError as e:
             logger.warning("Telegram rejected bytes import err=%s", e)
             return {"error": f"Telegram rejected this file (corrupt or unsupported): {e}"}
+
+
+@router.post("/hls-url")
+async def import_hls_manifest_url(body: HlsManifestUrlBody, db: Session = Depends(get_db)):
+    """
+    Download muxed video from an HLS (.m3u8) or DASH (.mpd) manifest using ffmpeg.
+    Requires ffmpeg on the server PATH. DRM-protected streams will fail.
+    """
+    if os.environ.get("TBCC_DISABLE_HLS_IMPORT", "").strip().lower() in ("1", "true", "yes"):
+        return {"error": "HLS import disabled (TBCC_DISABLE_HLS_IMPORT)"}
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return {"error": "Telegram API not configured"}
+    url = (body.url or "").strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        return {"error": "Invalid URL"}
+    try:
+        ref = body.referer
+        if not ref:
+            try:
+                p = urlparse(url)
+                if p.scheme and p.netloc:
+                    ref = f"{p.scheme}://{p.netloc}/"
+            except Exception:
+                ref = None
+        file_bytes = await asyncio.to_thread(lambda: hls_or_dash_url_to_mp4_bytes(url, referer=ref))
+    except Exception as e:
+        logger.warning("hls-url import failed: %s", e)
+        return {"error": str(e)}
+
+    file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
+    media_type = _refine_media_type_from_bytes(file_bytes, "video")
+    src = sanitize_import_source_url(body.source or "import:hls-url")
+    async with import_lock():
+        storage = await get_telegram_storage()
+        try:
+            if body.saved_only:
+                await storage.save_to_saved_only(file_bytes, media_type, caption=None)
+                return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+            record = await storage.store_from_bytes(file_bytes, media_type, src, body.pool_id, db)
+            if record:
+                logger.info("Imported HLS media id=%s pool_id=%s", record.id, body.pool_id)
+                return {"status": "imported", "media_id": record.id}
+            return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
+        except ImageProcessFailedError as e:
+            logger.warning("Telegram rejected HLS import err=%s", e)
+            return {"error": f"Telegram rejected this file: {e}"}
 
 
 @router.post("/saved-batch")

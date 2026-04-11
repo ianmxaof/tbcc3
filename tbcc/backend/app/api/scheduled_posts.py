@@ -23,10 +23,51 @@ def _normalize_variations(raw: list[str] | None) -> list[str]:
     return out
 
 
+def _normalize_attachment_urls(raw: list[str] | None) -> list[str]:
+    if not raw:
+        return []
+    out: list[str] = []
+    for x in raw:
+        if isinstance(x, str) and x.strip():
+            out.append(x.strip())
+    return out[:10]
+
+
+def _normalize_album_variants(raw: list | None) -> list[dict]:
+    if not raw or not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for x in raw:
+        if isinstance(x, dict):
+            out.append(ScheduledTextPost._normalize_album_variant_entry(x))
+    return out
+
+
+def _has_media_or_promo(body) -> bool:
+    av = _normalize_album_variants(getattr(body, "album_variants", None))
+    for v in av:
+        if v.get("media_ids") or v.get("attachment_urls"):
+            return True
+    att = _normalize_attachment_urls(getattr(body, "attachment_urls", None))
+    if att:
+        return True
+    mids = getattr(body, "media_ids", None)
+    if mids:
+        return True
+    if getattr(body, "pool_id", None):
+        return True
+    return False
+
+
 def scheduled_post_to_api_dict(post: ScheduledTextPost) -> dict:
-    """JSON-serializable dict with parsed content_variations list."""
+    """JSON-serializable dict with parsed content_variations, attachment_urls, album_variants."""
     d = orm_to_dict(post)
+    d.pop("attachment_urls_json", None)
+    d.pop("album_variants_json", None)
     d["content_variations"] = post.get_content_variations()
+    d["attachment_urls"] = post.get_attachment_urls()
+    d["album_variants"] = post.get_album_variants()
+    d["album_order_mode"] = post.album_order_mode or "static"
     return d
 
 
@@ -46,6 +87,11 @@ class ScheduledPostCreate(BaseModel):
     pool_randomize: bool | None = None
     # 2+ non-empty strings: captions rotate in order each time the job runs (e.g. hourly A, B, A, …)
     content_variations: list[str] | None = None
+    # Dashboard promo uploads (/static/promo/…) — same store as Bot Shop; used when pool/media_ids yield no media
+    attachment_urls: list[str] | None = None
+    # Per-caption album variants (aligned with rotating captions via index % len); overrides flat attachment_urls when set
+    album_variants: list[dict] | None = None
+    album_order_mode: str | None = None  # static | shuffle | carousel
 
 
 class ScheduledPostUpdate(BaseModel):
@@ -61,6 +107,9 @@ class ScheduledPostUpdate(BaseModel):
     album_size: int | None = None
     pool_randomize: bool | None = None
     content_variations: list[str] | None = None
+    attachment_urls: list[str] | None = None
+    album_variants: list[dict] | None = None
+    album_order_mode: str | None = None
 
 
 @router.get("/")
@@ -90,15 +139,21 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
         content_val = (body.content or "").strip()
         variations_json = None
 
-    if not content_val and not body.media_ids and not body.pool_id:
+    if not content_val and not _has_media_or_promo(body):
         raise HTTPException(
             400,
-            "Provide caption text, at least two caption variations, or media/pool for scheduled content",
+            "Provide caption text, at least two caption variations, media/pool, promotional URLs, or album variants",
         )
 
     asize = body.album_size
     if asize is not None:
         asize = min(10, max(1, int(asize)))
+    av_norm = _normalize_album_variants(body.album_variants)
+    att_urls = _normalize_attachment_urls(body.attachment_urls)
+    mode = (body.album_order_mode or "").strip().lower()
+    if mode not in ("static", "shuffle", "carousel", ""):
+        raise HTTPException(400, "album_order_mode must be static, shuffle, or carousel")
+    order_mode = mode if mode else None
     try:
         post = ScheduledTextPost(
             name=body.name,
@@ -114,6 +169,10 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
             pool_randomize=body.pool_randomize,
             content_variations=variations_json,
             caption_rotation_index=None,
+            attachment_urls_json=None if av_norm else (json.dumps(att_urls) if att_urls else None),
+            album_variants_json=json.dumps(av_norm) if av_norm else None,
+            album_order_mode=order_mode,
+            album_carousel_index=None,
         )
         db.add(post)
         db.commit()
@@ -131,7 +190,7 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
         return {"error": "Not found"}
     if post.interval_minutes is None and post.sent_at:
         return {"error": "Cannot edit already sent post"}
-    fs = getattr(body, "model_fields_set", None) or set()
+    fs = getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", None) or set()
 
     if body.name is not None:
         post.name = body.name
@@ -177,6 +236,19 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
         post.album_size = min(10, max(1, int(v))) if v is not None else None
     if "pool_randomize" in fs:
         post.pool_randomize = body.pool_randomize
+    if "album_variants" in fs:
+        av = _normalize_album_variants(body.album_variants)
+        post.album_variants_json = json.dumps(av) if av else None
+        if av:
+            post.attachment_urls_json = None
+    elif "attachment_urls" in fs:
+        au = _normalize_attachment_urls(body.attachment_urls)
+        post.attachment_urls_json = json.dumps(au) if au else None
+    if "album_order_mode" in fs:
+        m = (body.album_order_mode or "").strip().lower()
+        if m not in ("static", "shuffle", "carousel", ""):
+            raise HTTPException(400, "album_order_mode must be static, shuffle, or carousel")
+        post.album_order_mode = m if m else None
     db.commit()
     db.refresh(post)
     return scheduled_post_to_api_dict(post)

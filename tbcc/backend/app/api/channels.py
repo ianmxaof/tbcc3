@@ -102,6 +102,9 @@ def update_channel(channel_id: int, data: dict = Body(...), db: Session = Depend
         ch.identifier = data["identifier"]
     if "invite_link" in data:
         ch.invite_link = data["invite_link"] or None
+    if "webhook_url" in data:
+        w = data.get("webhook_url")
+        ch.webhook_url = (str(w).strip()[:1024]) if w else None
     db.commit()
     db.refresh(ch)
     return orm_to_dict(ch)

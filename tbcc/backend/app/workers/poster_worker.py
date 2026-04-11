@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+
 from app.workers.celery_app import celery
 
 logger = logging.getLogger(__name__)
@@ -44,12 +45,41 @@ def post_scheduled_text(post_id: int):
                     post.last_posted_at = now
                 else:
                     post.sent_at = now
+                from app.services.post_analytics import record_post_outbound_event
+
+                record_post_outbound_event(
+                    db,
+                    event_type="scheduled_post_sent",
+                    channel_id=post.channel_id,
+                    scheduled_post_id=post_id,
+                    ok=True,
+                )
                 db.commit()
                 logger.info("Sent scheduled post %s to %s", post_id, channel.identifier)
             finally:
                 await client.disconnect()
         except Exception as e:
             logger.exception("Post scheduled text failed: %s", e)
+            try:
+                from app.services.post_analytics import record_post_outbound_event
+
+                db_fail = SessionLocal()
+                try:
+                    p2 = db_fail.query(ScheduledTextPost).filter(ScheduledTextPost.id == post_id).first()
+                    ch_id = p2.channel_id if p2 else None
+                    record_post_outbound_event(
+                        db_fail,
+                        event_type="scheduled_post_sent",
+                        channel_id=ch_id,
+                        scheduled_post_id=post_id,
+                        ok=False,
+                        error_message=str(e),
+                    )
+                    db_fail.commit()
+                finally:
+                    db_fail.close()
+            except Exception:
+                logger.debug("post analytics failure log skipped", exc_info=True)
             raise
         finally:
             db.close()
@@ -91,8 +121,52 @@ def post_pool(pool_id: int, channel_identifier: str):
                 album_size=album_size,
                 randomize=randomize,
             )
+            if pool:
+                pool.last_posted = datetime.utcnow()
+            from app.services.post_analytics import record_post_outbound_event
+
+            record_post_outbound_event(
+                db,
+                event_type="pool_album_posted",
+                channel_id=pool.channel_id if pool else None,
+                pool_id=pool_id,
+                ok=True,
+            )
+            db.commit()
+            try:
+                from app.models.channel import Channel as Ch
+                from app.services.outbound_webhook import notify_outbound_webhook
+
+                ch = db.query(Ch).filter(Ch.id == pool.channel_id).first() if pool else None
+                if ch:
+                    notify_outbound_webhook(
+                        getattr(ch, "webhook_url", None),
+                        {"event": "pool_album_posted", "pool_id": pool_id, "channel_id": ch.id},
+                    )
+            except Exception:
+                logger.debug("pool webhook notify skipped", exc_info=True)
         except Exception as e:
             logger.exception("Post pool failed: %s", e)
+            try:
+                from app.services.post_analytics import record_post_outbound_event
+
+                db_fail = SessionLocal()
+                try:
+                    pl = db_fail.query(ContentPool).filter(ContentPool.id == pool_id).first()
+                    cid = pl.channel_id if pl else None
+                    record_post_outbound_event(
+                        db_fail,
+                        event_type="pool_album_posted",
+                        channel_id=cid,
+                        pool_id=pool_id,
+                        ok=False,
+                        error_message=str(e),
+                    )
+                    db_fail.commit()
+                finally:
+                    db_fail.close()
+            except Exception:
+                logger.debug("post analytics failure log skipped", exc_info=True)
             raise
         finally:
             db.close()

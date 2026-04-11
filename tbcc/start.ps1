@@ -1,10 +1,16 @@
-# TBCC Launch Script (Windows PowerShell 5.1 compatible — no && in double-quoted parser positions)
+# TBCC Launch Script (Windows PowerShell 5.1+ and pwsh 7+). Cmd lines use single & between commands (cmd.exe).
 #   .\start.ps1              — backend + dashboard; opens http://127.0.0.1:5173 in Brave if installed, else default browser
 #   .\start.ps1 -NoOpen      — do not open a browser
 #   .\start.ps1 -Open        — also open http://127.0.0.1:8000/docs (Swagger) in the same browser
 #   .\start.ps1 -Full        — backend + dashboard + Redis + Celery + Beat + payment bot
 #   .\start.ps1 -SkipDocker     — skip Postgres/Redis step (use when Docker DBs already running)
 #   .\start.ps1 -SkipMigrations — skip alembic upgrade (rare; only if you manage schema yourself)
+#
+# Console layout (many windows are easier if smaller, or use one Terminal with tabs):
+#   .\start.ps1 -CompactConsole  — smaller cmd windows (88×24 buffer) so they tile more easily
+#   .\start.ps1 -WideConsole     — larger windows (140×40)
+#   .\start.ps1 -WtTabs          — one Windows Terminal window, one tab per service (needs wt.exe / Windows Terminal)
+#   .\start.ps1 -WtTabs -Full    — all five workers (backend, dashboard, celery, beat, payment) as tabs
 #
 # When Docker is needed, the script starts Docker Desktop if the engine is not up yet (Windows).
 # New windows use cmd.exe /k so they show reliably when run from Cursor / VS Code / ISE.
@@ -16,6 +22,18 @@ $skipDocker = $args -contains "-SkipDocker"
 $skipMigrations = $args -contains "-SkipMigrations"
 $noOpenBrowser = $args -contains "-NoOpen"
 $openDocsToo = $args -contains "-Open"
+$wtTabs = ($args -contains "-WtTabs") -or ($args -contains "-WindowsTerminalTabs")
+$compactConsole = $args -contains "-CompactConsole"
+$wideConsole = $args -contains "-WideConsole"
+
+$consoleCols = 100
+$consoleLines = 28
+if ($compactConsole) { $consoleCols = 88;  $consoleLines = 24 }
+if ($wideConsole)   { $consoleCols = 140; $consoleLines = 40 }
+if ($compactConsole -and $wideConsole) {
+  Write-Host "  Note: -WideConsole wins over -CompactConsole." -ForegroundColor DarkYellow
+  $consoleCols = 140; $consoleLines = 40
+}
 
 function Get-BraveExecutable {
   $candidates = @(
@@ -68,11 +86,59 @@ function Wait-HttpOk {
 function Start-TbccCmdWindow {
   param(
     [Parameter(Mandatory = $true)][string]$Title,
-    [Parameter(Mandatory = $true)][string]$Command
+    [Parameter(Mandatory = $true)][string]$Command,
+    [int]$Cols = 100,
+    [int]$Lines = 28
   )
-  # Build one cmd.exe line: title "..." && rest (&& is for cmd, not PowerShell)
-  $run = 'title "' + $Title + '" && ' + $Command
+  # mode con sets buffer/size so multiple windows are easier to arrange (classic conhost)
+  $part1 = "mode con: cols=$Cols lines=$Lines"
+  $part2 = [string]::Concat('title "', $Title, '"')
+  $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Command)
   Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", $run) -WindowStyle Normal
+}
+
+function Start-TbccWtTabs {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Titles,
+    [Parameter(Mandatory = $true)][string[]]$Commands,
+    [int]$Cols = 100,
+    [int]$Lines = 28
+  )
+  $wtExe = $null
+  try {
+    $c = Get-Command "wt.exe" -ErrorAction Stop
+    $wtExe = $c.Source
+  } catch {}
+  if (-not $wtExe) {
+    foreach ($p in @(
+      (Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\wt.exe"),
+      (Join-Path ${env:ProgramFiles} "Windows Terminal\wt.exe")
+    )) {
+      if (Test-Path -LiteralPath $p) { $wtExe = $p; break }
+    }
+  }
+  if (-not $wtExe) {
+    Write-Host '  Windows Terminal (wt.exe) not found - opening separate cmd windows instead.' -ForegroundColor DarkYellow
+    return $false
+  }
+  if ($Titles.Length -ne $Commands.Length) {
+    throw "Start-TbccWtTabs: Titles and Commands count must match."
+  }
+  $al = New-Object System.Collections.ArrayList
+  for ($i = 0; $i -lt $Titles.Length; $i++) {
+    $part1 = "mode con: cols=$Cols lines=$Lines"
+    $part2 = [string]::Concat('title "', $Titles[$i], '"')
+    $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Commands[$i])
+    if ($i -gt 0) { [void]$al.Add(';') }
+    [void]$al.Add('new-tab')
+    [void]$al.Add('--title')
+    [void]$al.Add($Titles[$i])
+    [void]$al.Add('cmd')
+    [void]$al.Add('/k')
+    [void]$al.Add($run)
+  }
+  Start-Process -FilePath $wtExe -ArgumentList @($al.ToArray()) -WindowStyle Normal
+  return $true
 }
 
 function Ensure-DockerDesktopRunning {
@@ -94,7 +160,7 @@ function Ensure-DockerDesktopRunning {
     Write-Host "  Docker Desktop executable not found. Install Docker Desktop for Windows or start the engine manually." -ForegroundColor Red
     return $false
   }
-  Write-Host "  Starting Docker Desktop (waiting for engine, up to $MaxWaitSeconds s)..." -ForegroundColor Yellow
+  Write-Host ('  Starting Docker Desktop (waiting for engine, up to ' + $MaxWaitSeconds + ' s)...') -ForegroundColor Yellow
   Start-Process -FilePath $dd
   $deadline = (Get-Date).AddSeconds($MaxWaitSeconds)
   while ((Get-Date) -lt $deadline) {
@@ -112,8 +178,9 @@ function Ensure-DockerDesktopRunning {
 Write-Host "TBCC Launch" -ForegroundColor Cyan
 Write-Host '  Backend:  http://localhost:8000 | Dashboard: http://127.0.0.1:5173' -ForegroundColor Gray
 if ($fullStack) {
-  Write-Host "  Full stack: Postgres+Redis (Docker) + 5 console windows (Backend, Dashboard, Celery, Beat, Payment bot)" -ForegroundColor Gray
+  Write-Host '  Full stack: Postgres+Redis (Docker) + 5 processes (Backend, Dashboard, Celery, Beat, Payment bot)' -ForegroundColor Gray
 }
+Write-Host ('  Console: ' + $consoleCols + 'x' + $consoleLines + ' - use -CompactConsole / -WideConsole for window size, or -WtTabs for one Windows Terminal with tabs') -ForegroundColor Gray
 Write-Host ""
 
 # 0. Postgres + Redis via compose (minimal file: infra/docker-compose.infra.yml)
@@ -130,10 +197,10 @@ if ($needsDockerEngine) {
 }
 
 if ($skipDocker) {
-  Write-Host "[0] Skipping Docker (-SkipDocker). Ensure Postgres :5432 and Redis :6379 are up if your .env needs them." -ForegroundColor DarkYellow
+  Write-Host '[0] Skipping Docker (-SkipDocker). Ensure Postgres :5432 and Redis :6379 are up if your .env needs them.' -ForegroundColor DarkYellow
 } elseif ($composeFile) {
   Write-Host "[0] Docker: postgres + redis ($([IO.Path]::GetFileName($composeFile)))..." -ForegroundColor Yellow
-  Write-Host "  FIRST RUN: image download can take 5-20+ minutes (Postgres is large). Let it finish." -ForegroundColor Yellow
+  Write-Host '  FIRST RUN: image download can take 5-20+ minutes (Postgres is large). Let it finish.' -ForegroundColor Yellow
   Write-Host "  Do NOT press Ctrl+C here - the script will not start backend/dashboard until this completes." -ForegroundColor Yellow
   Push-Location (Join-Path $tbccDir "infra")
   try {
@@ -149,7 +216,7 @@ if ($skipDocker) {
       cmd /c ('docker compose -f "' + $composeName + '" up -d postgres redis')
     }
     if ($LASTEXITCODE -ne 0) {
-      Write-Host "  docker compose exited with code $LASTEXITCODE (check Docker Desktop / disk space)." -ForegroundColor Red
+      Write-Host ('  docker compose exited with code ' + $LASTEXITCODE + ' (check Docker Desktop / disk space).') -ForegroundColor Red
     }
   } finally {
     Pop-Location
@@ -179,15 +246,61 @@ if (-not $skipMigrations) {
     Pop-Location
   }
 } else {
-  Write-Host "[0.5] Skipping migrations (-SkipMigrations)." -ForegroundColor DarkYellow
+  Write-Host '[0.5] Skipping migrations (-SkipMigrations).' -ForegroundColor DarkYellow
 }
 
-# 1. Backend (port 8000)
-Write-Host "[1/2] Starting backend (new window)..." -ForegroundColor Yellow
-$cmdBackend = 'cd /d "' + $backendDir + '" && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-exclude scripts --reload-delay 1'
-Start-TbccCmdWindow -Title "TBCC-Backend" -Command $cmdBackend
+# Service commands (cmd.exe: use one & between parts - avoids PS7 tokenizing && in scripts)
+$cmdBackend = 'cd /d "' + $backendDir + '" & python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-exclude scripts --reload-delay 1'
+$cmdDashboard = 'cd /d "' + $dashboardDir + '" & npm run dev'
+$cmdCelery = 'cd /d "' + $backendDir + '" & python -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,post,scrape,subscription'
+$cmdBeat = 'cd /d "' + $backendDir + '" & python -m celery -A app.workers.celery_app beat -l info'
+$cmdPay = 'cd /d "' + $backendDir + '" & python -m bots.payment_bot'
 
-Write-Host "  Waiting for API (http://127.0.0.1:8000/health) ..." -ForegroundColor Gray
+$redisOk = $false
+if ($fullStack) {
+  Start-Sleep -Seconds 1
+  Write-Host "[Full] Checking Redis on :6379..." -ForegroundColor Yellow
+  $r = docker ps -q -f "ancestor=redis" 2>$null
+  if ($r) { $redisOk = $true }
+  if (-not $redisOk) {
+    try {
+      $null = docker run -d -p 6379:6379 redis 2>&1
+      if ($LASTEXITCODE -eq 0) { $redisOk = $true }
+    } catch {}
+  }
+  if (-not $redisOk) {
+    $r2 = docker ps --format "{{.Ports}}" 2>$null | Select-String "6379"
+    if ($r2) { $redisOk = $true }
+  }
+  if ($redisOk) {
+    Write-Host '  Redis reachable (container or port 6379).' -ForegroundColor Green
+  } else {
+    Write-Host "  Redis not detected - Celery/payment bot may fail. Run: cd infra; docker compose up -d redis" -ForegroundColor Red
+  }
+}
+
+$wtLaunched = $false
+if ($wtTabs) {
+  $titles = @('TBCC-Backend', 'TBCC-Dashboard')
+  $cmds = @($cmdBackend, $cmdDashboard)
+  if ($fullStack -and $redisOk) {
+    $titles += 'TBCC-Celery', 'TBCC-Beat', 'TBCC-PaymentBot'
+    $cmds += $cmdCelery, $cmdBeat, $cmdPay
+  } elseif ($fullStack -and -not $redisOk) {
+    Write-Host '  (-WtTabs) Redis unavailable - only Backend + Dashboard tabs (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
+  }
+  $wtLaunched = Start-TbccWtTabs -Titles $titles -Commands $cmds -Cols $consoleCols -Lines $consoleLines
+}
+
+# 1. Backend (port 8000) — and 2. Dashboard when not using wt tabs
+if (-not $wtLaunched) {
+  Write-Host '[1/2] Starting backend (new window)...' -ForegroundColor Yellow
+  Start-TbccCmdWindow -Title "TBCC-Backend" -Command $cmdBackend -Cols $consoleCols -Lines $consoleLines
+} else {
+  Write-Host '[1/2] Started backend + dashboard in Windows Terminal (tabs).' -ForegroundColor Yellow
+}
+
+Write-Host '  Waiting for API (http://127.0.0.1:8000/health) ...' -ForegroundColor Gray
 Start-Sleep -Seconds 3
 $backendUp = $false
 for ($i = 0; $i -lt 35; $i++) {
@@ -207,63 +320,48 @@ if ($backendUp) {
 } else {
   Write-Host "" 
   Write-Host "  *** BACKEND NOT REACHABLE ON PORT 8000 ***" -ForegroundColor Red
-  Write-Host "  Open the window titled TBCC-Backend and read the error (Python traceback, missing module, DB)." -ForegroundColor Yellow
+  Write-Host '  Open the window titled TBCC-Backend and read the error (Python traceback, missing module, DB).' -ForegroundColor Yellow
   Write-Host "  Try in a terminal: cd `"$backendDir`" ; pip install -r requirements.txt ; python -m uvicorn app.main:app --host 127.0.0.1 --port 8000" -ForegroundColor Yellow
   Write-Host "  Test in browser: http://127.0.0.1:8000/docs" -ForegroundColor Yellow
   Write-Host ""
 }
 
 # 2. Dashboard (port 5173)
-Write-Host "[2/2] Starting dashboard (new window)..." -ForegroundColor Yellow
-$cmdDashboard = 'cd /d "' + $dashboardDir + '" && npm run dev'
-Start-TbccCmdWindow -Title "TBCC-Dashboard" -Command $cmdDashboard
+if (-not $wtLaunched) {
+  Write-Host '[2/2] Starting dashboard (new window)...' -ForegroundColor Yellow
+  Start-TbccCmdWindow -Title "TBCC-Dashboard" -Command $cmdDashboard -Cols $consoleCols -Lines $consoleLines
+} else {
+  Write-Host '[2/2] Dashboard tab already running (Windows Terminal).' -ForegroundColor Gray
+}
 
 if ($fullStack) {
-  Start-Sleep -Seconds 2
-  Write-Host "[3/6] Checking Redis on :6379..." -ForegroundColor Yellow
-  $redisOk = $false
-  $r = docker ps -q -f "ancestor=redis" 2>$null
-  if ($r) { $redisOk = $true }
-  if (-not $redisOk) {
-    try {
-      $null = docker run -d -p 6379:6379 redis 2>&1
-      if ($LASTEXITCODE -eq 0) { $redisOk = $true }
-    } catch {}
-  }
-  if (-not $redisOk) {
-    $r2 = docker ps --format "{{.Ports}}" 2>$null | Select-String "6379"
-    if ($r2) { $redisOk = $true }
-  }
-  if ($redisOk) {
-    Write-Host "  Redis reachable (container or port 6379)." -ForegroundColor Green
-  } else {
-    Write-Host "  Redis not detected - Celery/payment bot may fail. Run: cd infra; docker compose up -d redis" -ForegroundColor Red
-  }
-
-  if ($redisOk) {
+  if ($wtLaunched) {
+    Write-Host '[3/6]–[6/6] Full stack already in Terminal tabs (or only Backend+Dashboard if Redis was down).' -ForegroundColor Gray
+  } elseif ($redisOk) {
     Start-Sleep -Seconds 1
-    Write-Host "[4/6] Starting Celery worker (new window)..." -ForegroundColor Yellow
-    $cmdCelery = 'cd /d "' + $backendDir + '" && python -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,post,scrape,subscription'
-    Start-TbccCmdWindow -Title "TBCC-Celery" -Command $cmdCelery
+    Write-Host '[4/6] Starting Celery worker (new window)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-Celery" -Command $cmdCelery -Cols $consoleCols -Lines $consoleLines
     Write-Host "  Celery worker started." -ForegroundColor Green
-    Write-Host "[5/6] Starting Celery Beat (new window)..." -ForegroundColor Yellow
-    $cmdBeat = 'cd /d "' + $backendDir + '" && python -m celery -A app.workers.celery_app beat -l info'
-    Start-TbccCmdWindow -Title "TBCC-Beat" -Command $cmdBeat
+    Write-Host '[5/6] Starting Celery Beat (new window)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-Beat" -Command $cmdBeat -Cols $consoleCols -Lines $consoleLines
     Write-Host "  Celery Beat started." -ForegroundColor Green
-    Write-Host "[6/6] Starting payment bot (new window)..." -ForegroundColor Yellow
-    $cmdPay = 'cd /d "' + $backendDir + '" && python -m bots.payment_bot'
-    Start-TbccCmdWindow -Title "TBCC-PaymentBot" -Command $cmdPay
+    Write-Host '[6/6] Starting payment bot (new window)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-PaymentBot" -Command $cmdPay -Cols $consoleCols -Lines $consoleLines
     Write-Host "  Payment bot started." -ForegroundColor Green
   }
 }
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
-Write-Host "  You should see separate CMD windows titled TBCC-* - check them for errors." -ForegroundColor Gray
+if ($wtLaunched) {
+  Write-Host '  Services run in one Windows Terminal window (tabs TBCC-*). Switch tabs at the top.' -ForegroundColor Gray
+} else {
+  Write-Host '  You should see separate CMD windows titled TBCC-* - check them for errors.' -ForegroundColor Gray
+}
 Write-Host "  If the dashboard cannot reach the backend, wait ~10s then refresh. Check DB, .env, and Python deps." -ForegroundColor Gray
 if (-not $fullStack) {
   Write-Host 'For posting (Post now), run with -Full:  .\start.ps1 -Full' -ForegroundColor Gray
-  Write-Host "Or start Redis + Celery manually (see README)." -ForegroundColor Gray
+  Write-Host 'Or start Redis + Celery manually (see README).' -ForegroundColor Gray
 }
 Write-Host ""
 if (-not $noOpenBrowser) {

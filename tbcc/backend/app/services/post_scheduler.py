@@ -22,6 +22,8 @@ def check_and_schedule(db: Session):
 
         if should_post:
             post_pool.delay(pool.id, channel.identifier)
+            # Advance interval immediately so we do not enqueue duplicate pool jobs every 5 minutes.
+            # poster_worker.post_pool overwrites this on success with the actual completion time.
             pool.last_posted = now
 
     # Process scheduled posts: one-time (scheduled_at <= now, not sent) or recurring (interval elapsed)

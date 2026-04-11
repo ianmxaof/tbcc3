@@ -8,6 +8,8 @@
   var API_BYTES = "http://localhost:8000/import/bytes";
   var API_SAVED_BATCH = "http://localhost:8000/import/saved-batch";
   var SAVED_ALBUM_CHUNK = 10;
+  /** Parallel remote fetches before sequential POST /import/bytes (Telegram stays serialized on server). */
+  var FETCH_CONCURRENCY = 3;
 
   /**
    * Fetch bytes via background service worker (cookies + Referer rules).
@@ -132,6 +134,8 @@
     if (s.indexOf("preview") >= 0 || s.indexOf("/mini/") >= 0) score -= 25;
     if (/_s\.(jpe?g|png|gif|webp)/i.test(s)) score -= 20;
     if (s.indexOf("avatar") >= 0 || s.indexOf("icon") >= 0) score -= 15;
+    /** Fapello grid: …/slug_NNN_300px.jpg — prefer …/slug_NNN.jpg when both are candidates. */
+    if (s.indexOf("fapello.com") >= 0 && /_\d+px\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(s)) score -= 55;
     score += Math.min(s.length, 240) / 12;
     return score;
   }
@@ -206,6 +210,12 @@
       "data-url",
       "data-big",
       "data-fullsrc",
+      "data-hires",
+      "data-highres",
+      "data-hi-res",
+      "data-master",
+      "data-1024",
+      "data-2048",
     ].forEach(function (attr) {
       push(el.getAttribute(attr));
     });
@@ -221,6 +231,14 @@
     if (link && link.href) {
       var href = link.href.split("#")[0];
       if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(href)) push(href);
+    }
+    /** Fapello: always add full-res sibling URL so bestUrlFromCandidates can prefer it over _NNNpx thumbs. */
+    if (isFapelloHost()) {
+      var snap = arr.slice();
+      for (var fpi = 0; fpi < snap.length; fpi++) {
+        var ff = fapelloFullImageUrlFromThumb(snap[fpi]);
+        if (ff && ff !== snap[fpi]) push(ff);
+      }
     }
   }
 
@@ -405,6 +423,34 @@
     }
   }
 
+  /**
+   * fapello.com (and language subdomains): grid thumbs use .../slug_123_300px.jpg; full still is .../slug_123.jpg on same host.
+   * Upgrading in-page avoids opening each /slug/123/ tab and matches Motherless-style “full from grid” behavior.
+   */
+  function isFapelloHost() {
+    try {
+      var h = location.hostname.toLowerCase();
+      return h === "fapello.com" || h.endsWith(".fapello.com");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function fapelloFullImageUrlFromThumb(url) {
+    if (!url || typeof url !== "string") return "";
+    try {
+      var u = new URL(url, location.href);
+      var h = u.hostname.toLowerCase();
+      if (h !== "fapello.com" && !h.endsWith(".fapello.com")) return "";
+      var path = u.pathname || "";
+      if (!/_\d+px\.(jpe?g|png|webp|gif|avif)$/i.test(path)) return "";
+      u.pathname = path.replace(/_\d+px(\.(?:jpe?g|png|webp|gif|avif))$/i, "$1");
+      return u.href.split("#")[0];
+    } catch (_) {
+      return "";
+    }
+  }
+
   function coomerPostUrlFromHref(href) {
     try {
       var u = new URL(href, location.href);
@@ -454,6 +500,7 @@
     if (!el || el.tagName !== "IMG") return "";
     if (isMotherlessHost()) return "";
     if (isCoomerLikeHost()) return "";
+    if (isFapelloHost()) return "";
     var link = findGenericGalleryLink(el);
     if (!link || !link.href) return "";
     try {
@@ -575,7 +622,19 @@
       pushImageCandidates(el, cands);
       var src = bestUrlFromCandidates(cands);
       if (!src) return;
+      var abs = absUrl(src);
       var extra = {};
+      var fapFull = isFapelloHost() ? fapelloFullImageUrlFromThumb(abs) : "";
+      if (fapFull && fapFull !== abs) {
+        var cpF = coomerPostDetailUrlIfEligible(el);
+        if (cpF) extra.coomerPostUrl = cpF;
+        else {
+          var mdF = motherlessDetailUrlIfEligible(el);
+          if (mdF) extra.motherlessDetailUrl = mdF;
+        }
+        add(fapFull, el.width, el.height, "img", el.naturalWidth, el.naturalHeight, extra);
+        return;
+      }
       var cp = coomerPostDetailUrlIfEligible(el);
       if (cp) extra.coomerPostUrl = cp;
       else {
@@ -586,7 +645,7 @@
           if (gdu) extra.detailPageUrl = gdu;
         }
       }
-      add(absUrl(src), el.width, el.height, "img", el.naturalWidth, el.naturalHeight, extra);
+      add(abs, el.width, el.height, "img", el.naturalWidth, el.naturalHeight, extra);
     }
     /**
      * Many generators (e.g. perchance.org) paint to <canvas> with no <img> — export as JPEG data URL.
@@ -625,6 +684,9 @@
           "data-file",
           "data-original",
           "data-hls",
+          "data-hls-url",
+          "data-dash",
+          "data-stream",
         ];
         for (var di = 0; di < dataAttrs.length; di++) {
           var dv = el.getAttribute && el.getAttribute(dataAttrs[di]);
@@ -644,22 +706,39 @@
           }
         }
       } catch (_) {}
+      var scoreFn =
+        typeof tbccScoreVideoUrl === "function"
+          ? tbccScoreVideoUrl
+          : function (u) {
+              var z = (u || "").toLowerCase();
+              var sc = 0;
+              if (/\.m3u8(\?|$)/i.test(z)) sc += 80;
+              if (z.indexOf("thumb") >= 0) sc -= 30;
+              return sc;
+            };
       var seen = {};
       var best = "";
+      var bestScore = -999999;
+      var blobFallback = "";
       for (var ci = 0; ci < candidates.length; ci++) {
         var c = candidates[ci];
         if (!c || seen[c]) continue;
         seen[c] = 1;
-        if (!best) best = c;
-        var low = c.toLowerCase().split("?")[0];
-        if (/\.(mp4|m4v)(\?|$)/i.test(low)) {
-          best = c;
-          break;
+        var absC = absUrl(c);
+        if (absC.indexOf("blob:") === 0 || absC.indexOf("data:") === 0) {
+          if (!blobFallback) blobFallback = absC;
+          continue;
         }
-        if (/\.(webm|mov|mkv)(\?|$)/i.test(low) && !/\.(mp4|m4v)(\?|$)/i.test(String(best).toLowerCase())) best = c;
+        if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(absC, location.href)) continue;
+        var sc = scoreFn(absC);
+        if (sc > bestScore) {
+          bestScore = sc;
+          best = absC;
+        }
       }
+      if (!best) best = blobFallback;
       if (!best) return;
-      var absBest = absUrl(best);
+      var absBest = best;
       if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(absBest, location.href)) return;
       var extra = {};
       var cpv = coomerPostDetailUrlIfEligible(el);
@@ -669,10 +748,34 @@
         if (mdv) extra.motherlessDetailUrl = mdv;
       }
       try {
+        var posterAttr = el.getAttribute && el.getAttribute("poster");
+        if (posterAttr && String(posterAttr).trim()) {
+          var pAbs = absUrl(String(posterAttr).trim());
+          if (
+            /^https?:\/\//i.test(pAbs) &&
+            (!tbccIsLikelyHtmlPageUrl || !tbccIsLikelyHtmlPageUrl(pAbs, location.href))
+          ) {
+            extra.posterUrl = pAbs;
+          }
+        }
+      } catch (_) {}
+      try {
         var dur = el.duration;
         if (typeof dur === "number" && isFinite(dur) && dur > 0) extra.durationSec = dur;
       } catch (_) {}
-      add(absBest, el.videoWidth || el.width, el.videoHeight || el.height, "video", 0, 0, extra);
+      var lowB = (absBest || "").toLowerCase();
+      var isManifestPick = /\.(m3u8|mpd)(\?|$)/i.test(lowB);
+      try {
+        var curAbs = el.currentSrc ? absUrl(el.currentSrc) : "";
+        var srcAbs = el.src ? absUrl(el.src) : "";
+        var dimsFromEl =
+          !isManifestPick && (absBest === curAbs || absBest === srcAbs);
+        var vw = dimsFromEl ? el.videoWidth || el.width || 0 : 0;
+        var vh = dimsFromEl ? el.videoHeight || el.height || 0 : 0;
+        add(absBest, vw, vh, "video", 0, 0, extra);
+      } catch (_) {
+        add(absBest, 0, 0, "video", 0, 0, extra);
+      }
     }
     walkElements(document.documentElement, function (el) {
       var t = el.tagName;
@@ -712,6 +815,7 @@
      * Picks up CDN files like full-d.mp4 when the player loaded them even if <video> src was opaque.
      */
     function scoreResourceTimingVideoUrl(u) {
+      if (typeof tbccScoreVideoUrl === "function") return tbccScoreVideoUrl(u);
       var s = (u || "").toLowerCase();
       var sc = 0;
       if (s.indexOf("full-d") >= 0) sc += 100;
@@ -794,6 +898,75 @@
       if (s.indexOf("icon") >= 0) sc -= 40;
       return sc;
     }
+    function mergeBackgroundImageUrls() {
+      try {
+        var checked = 0;
+        var maxCheck = 120;
+        var maxAdds = 40;
+        var added = 0;
+        walkElements(document.documentElement, function (el) {
+          if (added >= maxAdds || checked >= maxCheck) return;
+          if (!el || el.nodeType !== 1) return;
+          var tag = el.tagName;
+          if (tag === "IMG" || tag === "SCRIPT" || tag === "STYLE" || tag === "SVG") return;
+          var cls = (el.className && String(el.className)) || "";
+          var id = (el.id && String(el.id)) || "";
+          if (!/gallery|photo|image|thumb|media|tile|card|figure|poster|cover|hero|banner|slideshow/i.test(cls + id))
+            return;
+          checked++;
+          var bg = "";
+          try {
+            bg = getComputedStyle(el).backgroundImage || "";
+          } catch (_) {}
+          if (!bg || bg.indexOf("url(") < 0) return;
+          var m = /url\(["']?([^"')]+)["']?\)/i.exec(bg);
+          if (!m || !m[1]) return;
+          var u = m[1].trim();
+          if (u.indexOf("data:") === 0) return;
+          if (!/^https?:\/\//i.test(u)) return;
+          var pathOnly = u.split("?")[0].toLowerCase();
+          if (!/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(pathOnly)) return;
+          added++;
+          var au = absUrl(u);
+          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) return;
+          add(au, 0, 0, "img", 0, 0, { tbccCaptureSource: "background-image" });
+        });
+      } catch (_) {}
+    }
+
+    function mergeGenericResourceTimingImages() {
+      try {
+        if (typeof performance === "undefined" || !performance.getEntriesByType) return;
+        var h2 = (location.hostname || "").toLowerCase();
+        if (h2 === "onlyfans.com" || h2.endsWith(".onlyfans.com")) return;
+        var wantAll = typeof window.__tbccResourceTimingAllImages !== "undefined" && window.__tbccResourceTimingAllImages;
+        var maxImg = wantAll ? 80 : 28;
+        var entries2 = performance.getEntriesByType("resource");
+        var uniq2 = {};
+        var list2 = [];
+        for (var ii = 0; ii < entries2.length; ii++) {
+          var name2 = (entries2[ii] && entries2[ii].name) || "";
+          if (!name2 || name2.indexOf("http") !== 0) continue;
+          var pathOnly2 = name2.split("?")[0].toLowerCase();
+          if (!/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(pathOnly2)) continue;
+          var low2 = name2.toLowerCase();
+          if (low2.indexOf("avatar") >= 0 || low2.indexOf("/icon") >= 0 || low2.indexOf("emoji") >= 0 || low2.indexOf("favicon") >= 0)
+            continue;
+          if (uniq2[name2]) continue;
+          uniq2[name2] = 1;
+          list2.push(name2);
+        }
+        list2.sort(function (a, b) {
+          return scoreResourceTimingImageUrl(b) - scoreResourceTimingImageUrl(a);
+        });
+        for (var jj = 0; jj < list2.length && jj < maxImg; jj++) {
+          var au2 = absUrl(list2[jj]);
+          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au2, location.href)) continue;
+          add(au2, 0, 0, "img", 0, 0, { tbccCaptureSource: "resource-timing" });
+        }
+      } catch (_) {}
+    }
+
     function mergeOnlyfansResourceTimingImages() {
       try {
         if (typeof performance === "undefined" || !performance.getEntriesByType) return;
@@ -828,6 +1001,8 @@
     mergeResourceTimingVideos();
     mergeOnlyfansStreamManifests();
     mergeOnlyfansResourceTimingImages();
+    mergeGenericResourceTimingImages();
+    mergeBackgroundImageUrls();
     return out;
   }
 
@@ -867,6 +1042,53 @@
     return { name: "media.jpg", type: "application/octet-stream" };
   }
 
+  /**
+   * Fetch each URL with up to FETCH_CONCURRENCY in flight; preserves input order in the result array.
+   * Single-threaded scheduling: each slot grabs the next index, so downloads overlap without unbounded RAM.
+   */
+  function fetchUrlsOrderedConcurrently(urls) {
+    var n = urls.length;
+    var results = new Array(n);
+    return new Promise(function (resolve, reject) {
+      if (n === 0) {
+        resolve(results);
+        return;
+      }
+      var nextIndex = 0;
+      var completed = 0;
+      var rejected = false;
+      function finishOne(err) {
+        if (rejected) return;
+        if (err) {
+          rejected = true;
+          reject(err);
+          return;
+        }
+        completed++;
+        if (completed === n) resolve(results);
+      }
+      function worker() {
+        function run() {
+          if (rejected) return;
+          var idx = nextIndex++;
+          if (idx >= n) return;
+          fetchOneInPage(urls[idx])
+            .then(function (one) {
+              results[idx] = { url: urls[idx], one: one };
+              finishOne(null);
+              run();
+            })
+            .catch(function (e) {
+              finishOne(e);
+            });
+        }
+        run();
+      }
+      var initial = Math.min(FETCH_CONCURRENCY, n);
+      for (var w = 0; w < initial; w++) worker();
+    });
+  }
+
   function uploadBytes(buffer, poolId, savedOnly, source, mediaUrl, caption, blobMime) {
     var meta = blobMetaForUrl(mediaUrl || "", blobMime);
     var blob = new Blob([buffer], { type: meta.type });
@@ -891,94 +1113,172 @@
     var cap = caption && String(caption).trim() ? String(caption).trim() : "";
     var results = { imported: 0, skipped: 0, errors: [], media_ids: [] };
     var total = urls.length;
-    /** Saved Messages: batch POST /import/saved-batch so Telegram groups into albums (≤10). */
+    /** Saved Messages: parallel fetch, then batch POST /import/saved-batch (albums ≤10). */
     if (savedOnly) {
       if (!urls.length) return Promise.resolve(results);
-      var idx = 0;
-      var pairs = [];
-      function fetchAllForSaved() {
-        if (idx >= urls.length) {
-          if (!pairs.length) return Promise.resolve(results);
-          var pos = 0;
-          function uploadSavedChunks() {
-            if (pos >= pairs.length) return Promise.resolve(results);
-            var chunk = pairs.slice(pos, pos + SAVED_ALBUM_CHUNK);
-            pos += SAVED_ALBUM_CHUNK;
-            var form = new FormData();
-            chunk.forEach(function (p) {
-              var meta = blobMetaForUrl(p.url || "", p.blobMime);
-              var blob = new Blob([p.buffer], { type: meta.type });
-              form.append("files", blob, meta.name);
-            });
-            if (cap) form.append("caption", cap);
-            return fetch(API_SAVED_BATCH, { method: "POST", body: form })
-              .then(function (r) {
-                return r.text();
-              })
-              .then(function (text) {
-                var data = {};
-                try {
-                  data = text ? JSON.parse(text) : {};
-                } catch (_) {}
-                if (data.status === "saved_only" && !data.error) {
-                  results.skipped += chunk.length;
-                } else {
-                  results.errors.push({ error: data.error || "saved-batch failed" });
-                }
-                try {
-                  chrome.runtime.sendMessage({ type: "tbcc-progress", index: pos, total: pairs.length });
-                } catch (_) {}
-                return uploadSavedChunks();
-              });
-          }
-          return uploadSavedChunks();
-        }
-        var url = urls[idx];
-        idx++;
-        return fetchOneInPage(url).then(function (one) {
+      return fetchUrlsOrderedConcurrently(urls).then(function (fetched) {
+        var pairs = [];
+        for (var fi = 0; fi < fetched.length; fi++) {
+          var item = fetched[fi];
+          var url = item.url;
+          var one = item.one;
           if (one.error) {
             results.errors.push({ url: (url || "").slice(0, 80), error: one.error });
-            return fetchAllForSaved();
+          } else {
+            pairs.push({ buffer: one.buffer, url: url, blobMime: one.blobMime });
           }
-          pairs.push({ buffer: one.buffer, url: url, blobMime: one.blobMime });
-          return fetchAllForSaved();
-        });
-      }
-      return fetchAllForSaved();
+        }
+        if (!pairs.length) return Promise.resolve(results);
+        var pos = 0;
+        function uploadSavedChunks() {
+          if (pos >= pairs.length) return Promise.resolve(results);
+          var chunk = pairs.slice(pos, pos + SAVED_ALBUM_CHUNK);
+          pos += SAVED_ALBUM_CHUNK;
+          var form = new FormData();
+          chunk.forEach(function (p) {
+            var meta = blobMetaForUrl(p.url || "", p.blobMime);
+            var blob = new Blob([p.buffer], { type: meta.type });
+            form.append("files", blob, meta.name);
+          });
+          if (cap) form.append("caption", cap);
+          return fetch(API_SAVED_BATCH, { method: "POST", body: form })
+            .then(function (r) {
+              return r.text();
+            })
+            .then(function (text) {
+              var data = {};
+              try {
+                data = text ? JSON.parse(text) : {};
+              } catch (_) {}
+              if (data.status === "saved_only" && !data.error) {
+                results.skipped += chunk.length;
+              } else {
+                results.errors.push({ error: data.error || "saved-batch failed" });
+              }
+              try {
+                chrome.runtime.sendMessage({ type: "tbcc-progress", index: pos, total: pairs.length });
+              } catch (_) {}
+              return uploadSavedChunks();
+            });
+        }
+        return uploadSavedChunks();
+      });
     }
-    var i = 0;
-    function next() {
-      if (i >= urls.length) return Promise.resolve(results);
-      var url = urls[i];
-      i++;
-      return fetchOneInPage(url)
-        .then(function (one) {
-          if (one.error) {
-            results.errors.push({ url: url.slice(0, 80), error: one.error });
-            try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: i, total: total, error: one.error }); } catch (_) {}
-            return next();
-          }
-          return uploadBytes(one.buffer, poolId, savedOnly, source, url, cap, one.blobMime).then(function (data) {
+    return fetchUrlsOrderedConcurrently(urls).then(function (fetched) {
+      var j = 0;
+      function uploadNext() {
+        if (j >= fetched.length) return Promise.resolve(results);
+        var item = fetched[j];
+        var url = item.url;
+        var one = item.one;
+        j++;
+        if (one.error) {
+          results.errors.push({ url: url.slice(0, 80), error: one.error });
+          try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: j, total: total, error: one.error }); } catch (_) {}
+          return uploadNext();
+        }
+        return uploadBytes(one.buffer, poolId, savedOnly, source, url, cap, one.blobMime)
+          .then(function (data) {
             if (data.status === "imported" && data.media_id) {
               results.imported += 1;
               results.media_ids.push(data.media_id);
             } else results.skipped += 1;
-            try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: i, total: total, mediaId: data.media_id }); } catch (_) {}
-            return next();
+            try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: j, total: total, mediaId: data.media_id }); } catch (_) {}
+            return uploadNext();
+          })
+          .catch(function (e) {
+            results.errors.push({ url: url.slice(0, 80), error: String(e.message || e) });
+            try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: j, total: total, error: String(e.message || e) }); } catch (_) {}
+            return uploadNext();
           });
-        })
-        .catch(function (e) {
-          results.errors.push({ url: url.slice(0, 80), error: String(e.message || e) });
-          try { chrome.runtime.sendMessage({ type: "tbcc-progress", index: i, total: total, error: String(e.message || e) }); } catch (_) {}
-          return next();
-        });
-    }
-    return next();
+      }
+      return uploadNext();
+    });
   }
 
   /** Exposed for programmatic inject (side panel); avoids relying on runtime.sendMessage reaching this script. */
   window.__tbccGetImageList = getImageList;
   window.__tbccFetchAndUpload = fetchAndUpload;
+
+  /**
+   * Heuristic tag hints from the open page (hashtags, title segments, meta keywords, hostname).
+   * Exposed for gallery "Suggest from page"; keep cheap and read-only.
+   */
+  function collectTagHints() {
+    var out = [];
+    var seen = Object.create(null);
+    function add(s) {
+      if (!s || typeof s !== "string") return;
+      s = s.trim();
+      if (s.length < 2 || s.length > 64) return;
+      var k = s.toLowerCase();
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push(s);
+    }
+    try {
+      add(String(location.hostname || "").replace(/^www\./, ""));
+    } catch (_) {}
+    try {
+      var title = document.title || "";
+      if (title) {
+        title.split(/[|\-–—·]/).forEach(function (part) {
+          add(part);
+        });
+      }
+    } catch (_) {}
+    try {
+      var metas = document.querySelectorAll('meta[name="keywords"], meta[property="article:tag"]');
+      for (var mi = 0; mi < metas.length; mi++) {
+        var raw = metas[mi].getAttribute("content") || "";
+        raw.split(/[,;]/).forEach(function (bit) {
+          add(bit);
+        });
+      }
+    } catch (_) {}
+    var text = "";
+    try {
+      text = document.body && document.body.innerText ? String(document.body.innerText).slice(0, 12000) : "";
+    } catch (_) {}
+    var re = /#([\w\u00C0-\u024F]{2,40})/g;
+    var m;
+    var guard = 0;
+    while (guard < 100 && (m = re.exec(text))) {
+      add(m[1]);
+      guard++;
+    }
+    return out.slice(0, 48);
+  }
+  window.__tbccCollectTagHints = collectTagHints;
+
+  /** Title + meta description for Telegram album caption (read-only). */
+  function getCaptionTitleLine() {
+    try {
+      var t = (document.title || "").trim();
+      if (!t) return "";
+      var first = t.split(/[|\-–—·]/)[0].trim();
+      if (first.length > 220) first = first.slice(0, 217) + "…";
+      return first;
+    } catch (_) {
+      return "";
+    }
+  }
+  function getCaptionDescriptionLine() {
+    try {
+      var el =
+        document.querySelector('meta[property="og:description"]') ||
+        document.querySelector('meta[name="description"]');
+      var c = el && el.getAttribute("content") ? String(el.getAttribute("content")).trim().replace(/\s+/g, " ") : "";
+      if (c.length > 300) c = c.slice(0, 297) + "…";
+      return c;
+    } catch (_) {
+      return "";
+    }
+  }
+  function getCaptionBundle() {
+    return { title: getCaptionTitleLine(), description: getCaptionDescriptionLine() };
+  }
+  window.__tbccGetCaptionBundle = getCaptionBundle;
 
   chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
     if (msg.action === "tbcc-getImageList") {

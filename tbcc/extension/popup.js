@@ -1,5 +1,4 @@
 const API_BASE = "http://localhost:8000";
-// Pool selection is saved to chrome.storage.local.tbccPoolId; background.js reads it for imports.
 
 const inGalleryPanel = typeof window !== "undefined" && window.parent !== window;
 
@@ -32,6 +31,30 @@ async function loadPools() {
   }
 }
 
+function setBackendStatus(ok, text) {
+  const dot = document.getElementById("backendDot");
+  const el = document.getElementById("backendStatus");
+  if (dot) {
+    dot.classList.remove("ok", "bad");
+    dot.classList.add(ok ? "ok" : "bad");
+  }
+  if (el) el.textContent = text;
+}
+
+async function pingBackend() {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 4000);
+  try {
+    const r = await fetch(`${API_BASE}/health`, { signal: ac.signal });
+    clearTimeout(t);
+    if (r.ok) setBackendStatus(true, "Backend connected (localhost:8000)");
+    else setBackendStatus(false, "Backend returned " + r.status);
+  } catch (_) {
+    clearTimeout(t);
+    setBackendStatus(false, "Backend offline");
+  }
+}
+
 document.getElementById("poolId").addEventListener("change", (e) => {
   const v = e.target.value;
   if (v) chrome.storage.local.set({ tbccPoolId: parseInt(v, 10) });
@@ -56,25 +79,6 @@ document.getElementById("openGallery").addEventListener("click", (e) => {
   });
 });
 
-function openModeLabel(mode) {
-  if (mode === "foreground") return "new tabs (first focused)";
-  if (mode === "background") return "background tabs";
-  return "one dashboard tab";
-}
-
-function refreshShortcutSummaries() {
-  chrome.storage.local.get(["tbccModelSearchOpenMode", "tbccReverseImageOpenMode"], (data) => {
-    const m = data.tbccModelSearchOpenMode || "dashboard";
-    const r = data.tbccReverseImageOpenMode || "dashboard";
-    const ms = document.getElementById("modelSearchSummary");
-    const ri = document.getElementById("reverseImageSummary");
-    if (ms)
-      ms.textContent =
-        "Username: TBCC — Look up username (submenu) → " + openModeLabel(m) + ". Options: add sources.";
-    if (ri) ri.textContent = "Image: Reverse image search → " + openModeLabel(r) + ".";
-  });
-}
-
 document.getElementById("openExtensionOptions").addEventListener("click", (e) => {
   if (inGalleryPanel) {
     e.preventDefault();
@@ -82,18 +86,6 @@ document.getElementById("openExtensionOptions").addEventListener("click", (e) =>
     return;
   }
   chrome.runtime.openOptionsPage();
-});
-
-document.getElementById("btnDashboardPanel").addEventListener("click", (e) => {
-  e.preventDefault();
-  chrome.tabs.create({ url: "http://127.0.0.1:5173/" });
-});
-
-document.getElementById("btnLaunchFull").addEventListener("click", (e) => {
-  e.preventDefault();
-  if (typeof window.tbccLaunchFullStack === "function") {
-    window.tbccLaunchFullStack();
-  }
 });
 
 async function loadScreenshotUploadPages() {
@@ -122,8 +114,7 @@ document.getElementById("btnCaptureReverse").addEventListener("click", async () 
   } catch (e) {
     st.className = "err";
     st.textContent =
-      "Could not capture (restricted pages like chrome:// or the store won’t work). " +
-      String(e.message || e);
+      "Could not capture (restricted pages like chrome:// won't work). " + String(e.message || e);
     return;
   }
   try {
@@ -143,23 +134,25 @@ document.getElementById("btnCaptureReverse").addEventListener("click", async () 
     st.textContent = "Copied, but could not open tabs: " + String(e.message || e);
     return;
   }
-  st.textContent = "Copied — paste (Ctrl+V) in each new tab’s image search.";
-});
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (
-    area === "local" &&
-    (changes.tbccModelSearchOpenMode || changes.tbccReverseImageOpenMode)
-  ) {
-    refreshShortcutSummaries();
-  }
+  st.textContent = "Copied — paste (Ctrl+V) in each new tab.";
 });
 
 if (inGalleryPanel) {
   document.body.classList.add("tbcc-in-panel");
   const og = document.getElementById("openGallery");
-  if (og) og.textContent = "Back to main gallery";
+  if (og) og.textContent = "Back to gallery";
 }
 
-refreshShortcutSummaries();
+const liteCb = document.getElementById("tbccLiteMode");
+if (liteCb) {
+  chrome.storage.local.get("tbccLiteMode", (o) => {
+    liteCb.checked = !!o.tbccLiteMode;
+  });
+  liteCb.addEventListener("change", () => {
+    chrome.storage.local.set({ tbccLiteMode: !!liteCb.checked });
+  });
+}
+
 loadPools();
+pingBackend();
+setInterval(pingBackend, 20000);

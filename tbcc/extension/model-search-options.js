@@ -13,6 +13,12 @@ const STORAGE_MODE = "tbccModelSearchOpenMode";
 const STORAGE_REVERSE_ENABLED = "tbccReverseImageEnabledSites";
 const STORAGE_REVERSE_MODE = "tbccReverseImageOpenMode";
 
+/** Legacy "dashboard" single-tab aggregator removed — map to foreground tabs. */
+function normalizeOpenMode(stored) {
+  if (stored === "background") return "background";
+  return "foreground";
+}
+
 const statusEl = document.getElementById("status");
 const siteFields = document.getElementById("siteFields");
 const reverseSiteFields = document.getElementById("reverseSiteFields");
@@ -256,7 +262,8 @@ async function refreshModelSearchUi() {
   const data = await new Promise((resolve) => {
     chrome.storage.local.get([STORAGE_MODE], resolve);
   });
-  const mode = data[STORAGE_MODE] || "dashboard";
+  const mode = normalizeOpenMode(data[STORAGE_MODE]);
+  if (data[STORAGE_MODE] !== mode) await saveMode(mode);
   document.querySelectorAll('input[name="openMode"]').forEach((r) => {
     r.checked = r.value === mode;
     r.addEventListener("change", async () => {
@@ -364,9 +371,10 @@ function renderReverseSites(cfg, enabledMap) {
 
   renderReverseSites(cfg, enabledMap);
 
-  const mode = data[STORAGE_REVERSE_MODE] || "dashboard";
+  const revMode = normalizeOpenMode(data[STORAGE_REVERSE_MODE]);
+  if (data[STORAGE_REVERSE_MODE] !== revMode) await saveReverseMode(revMode);
   document.querySelectorAll('input[name="openModeReverse"]').forEach((r) => {
-    r.checked = r.value === mode;
+    r.checked = r.value === revMode;
     r.addEventListener("change", async () => {
       if (r.checked) {
         await saveReverseMode(r.value);

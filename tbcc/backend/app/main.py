@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment
 from app.database.session import engine
 from app.models.base import Base
 from app.services.promo_storage import ensure_promo_dir
@@ -81,6 +81,21 @@ def on_startup():
                             )
                         )
                         logger.info("SQLite: added subscription_plans.bundle_zip_original_name (dev migration)")
+                    if "promo_image_urls_json" not in sp_cols:
+                        conn.execute(text("ALTER TABLE subscription_plans ADD COLUMN promo_image_urls_json TEXT"))
+                        logger.info("SQLite: added subscription_plans.promo_image_urls_json (dev migration)")
+                    if "bundle_zip2_original_name" not in sp_cols:
+                        conn.execute(text("ALTER TABLE subscription_plans ADD COLUMN bundle_zip2_original_name VARCHAR(512)"))
+                        logger.info("SQLite: added subscription_plans.bundle_zip2_original_name (dev migration)")
+                    if "bundle_zip_parts_json" not in sp_cols:
+                        conn.execute(text("ALTER TABLE subscription_plans ADD COLUMN bundle_zip_parts_json TEXT"))
+                        logger.info("SQLite: added subscription_plans.bundle_zip_parts_json (dev migration)")
+                    if "description_variations_json" not in sp_cols:
+                        conn.execute(text("ALTER TABLE subscription_plans ADD COLUMN description_variations_json TEXT"))
+                        logger.info("SQLite: added subscription_plans.description_variations_json (dev migration)")
+                    if "plan_tag_ids_json" not in sp_cols:
+                        conn.execute(text("ALTER TABLE subscription_plans ADD COLUMN plan_tag_ids_json TEXT"))
+                        logger.info("SQLite: added subscription_plans.plan_tag_ids_json (dev migration)")
             if "scheduled_text_posts" in inspector.get_table_names():
                 st_cols = {c["name"] for c in inspector.get_columns("scheduled_text_posts")}
                 with engine.begin() as conn:
@@ -101,6 +116,22 @@ def on_startup():
                     if "message_thread_id" not in st_cols:
                         conn.execute(text("ALTER TABLE scheduled_text_posts ADD COLUMN message_thread_id INTEGER"))
                         logger.info("SQLite: added scheduled_text_posts.message_thread_id (forum topic, dev migration)")
+                    if "attachment_urls_json" not in st_cols:
+                        conn.execute(text("ALTER TABLE scheduled_text_posts ADD COLUMN attachment_urls_json TEXT"))
+                        logger.info("SQLite: added scheduled_text_posts.attachment_urls_json (dev migration)")
+                    if "album_variants_json" not in st_cols:
+                        conn.execute(text("ALTER TABLE scheduled_text_posts ADD COLUMN album_variants_json TEXT"))
+                        logger.info("SQLite: added scheduled_text_posts.album_variants_json (dev migration)")
+                    if "album_order_mode" not in st_cols:
+                        conn.execute(
+                            text("ALTER TABLE scheduled_text_posts ADD COLUMN album_order_mode VARCHAR(16)")
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.album_order_mode (dev migration)")
+                    if "album_carousel_index" not in st_cols:
+                        conn.execute(
+                            text("ALTER TABLE scheduled_text_posts ADD COLUMN album_carousel_index INTEGER")
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.album_carousel_index (dev migration)")
             if "subscriptions" in inspector.get_table_names():
                 sub_cols = {c["name"] for c in inspector.get_columns("subscriptions")}
                 if "telegram_payment_charge_id" not in sub_cols:
@@ -124,6 +155,56 @@ def on_startup():
             "Postgres (or non-SQLite): tables are not auto-created here. "
             "If API returns UndefinedTable, run: cd backend && python -m alembic upgrade head"
         )
+        # Same as Alembic 026: scheduled promo URLs (dashboard) — many deployments skip alembic upgrade.
+        try:
+            inspector = inspect(engine)
+            if "scheduled_text_posts" in inspector.get_table_names():
+                st_cols = {c["name"] for c in inspector.get_columns("scheduled_text_posts")}
+                if "attachment_urls_json" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN attachment_urls_json TEXT"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.attachment_urls_json (startup migration)"
+                    )
+                if "album_variants_json" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN album_variants_json TEXT"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.album_variants_json (startup migration)"
+                    )
+                if "album_order_mode" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN album_order_mode VARCHAR(16)"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.album_order_mode (startup migration)"
+                    )
+                if "album_carousel_index" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN album_carousel_index INTEGER"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.album_carousel_index (startup migration)"
+                    )
+        except Exception:
+            logger.exception(
+                "PostgreSQL: could not add scheduled_text_posts columns — run: "
+                "cd backend && alembic upgrade head"
+            )
 
     logger.info(
         "TBCC API ready: main_py=%s external_payment_orders_impl=%s",
@@ -150,6 +231,8 @@ app.include_router(bots.router, prefix="/bots", tags=["bots"])
 app.include_router(channels.router, prefix="/channels", tags=["channels"])
 app.include_router(forum.router, prefix="/forum", tags=["forum"])
 app.include_router(media.router, prefix="/media", tags=["media"])
+app.include_router(tags.router, prefix="/tags", tags=["tags"])
+app.include_router(llm_shop.router, prefix="/llm", tags=["llm"])
 app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
 app.include_router(import_.router, prefix="/import", tags=["import"])
 app.include_router(pools.router, prefix="/pools", tags=["pools"])
@@ -158,6 +241,7 @@ app.include_router(subscriptions.router, prefix="/subscriptions", tags=["subscri
 app.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
 app.include_router(growth_settings.router, prefix="/growth-settings", tags=["growth-settings"])
 app.include_router(external_payment_orders.router, prefix="/external-payment-orders", tags=["external-payment-orders"])
+app.include_router(webhooks_payment.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(subscription_plans.router, prefix="/subscription-plans", tags=["subscription-plans"])
 app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 app.include_router(scheduled_posts.router, prefix="/scheduled-posts", tags=["scheduled-posts"])

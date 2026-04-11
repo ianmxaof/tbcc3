@@ -8,7 +8,7 @@ from app.schemas.common import orm_to_dict
 from app.models.subscription import Subscription
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.subscription_metrics import active_subscription_subscriber_count
-from app.services.bundle_storage import bundle_zip_path
+from app.services.bundle_parts import bundle_parts_for_api
 
 router = APIRouter()
 
@@ -36,8 +36,15 @@ def _build_subscription_api_result(
         if ch and ch.invite_link:
             result["invite_link"] = ch.invite_link
     if is_bundle:
-        result["bundle_zip_available"] = bool(plan.bundle_zip_original_name) and bundle_zip_path(plan.id).is_file()
+        parts = bundle_parts_for_api(plan)
+        n = len(parts)
+        result["bundle_zip_available"] = n > 0
+        result["bundle_zip_parts"] = parts
+        result["bundle_zip_part_count"] = n
+        result["bundle_zip1_available"] = n >= 1
+        result["bundle_zip2_available"] = n >= 2
         result["bundle_zip_original_name"] = plan.bundle_zip_original_name
+        result["bundle_zip2_original_name"] = plan.bundle_zip2_original_name
     prog = _get_milestone_progress(db)
     if prog:
         result["milestone_progress"] = prog["message"]

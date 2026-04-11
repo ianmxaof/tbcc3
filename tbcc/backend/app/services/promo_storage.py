@@ -21,4 +21,22 @@ def ensure_promo_dir() -> Path:
     return root
 
 
+def promo_path_from_public_url(url: str) -> Path | None:
+    """
+    Resolve a dashboard/API URL like https://host/static/promo/<file> or /static/promo/<file>
+    to a local file under promo_root(). Used when sending scheduled posts from uploaded promo images.
+    """
+    u = (url or "").strip()
+    if not u or "/static/promo/" not in u:
+        return None
+    tail = u.split("/static/promo/", 1)[-1]
+    tail = tail.split("?")[0].split("#")[0]
+    if not tail or ".." in tail or "/" in tail:
+        return None
+    p = ensure_promo_dir() / tail
+    if p.is_file():
+        return p
+    return None
+
+
 MAX_PROMO_IMAGE_BYTES = 8 * 1024 * 1024  # 8 MiB

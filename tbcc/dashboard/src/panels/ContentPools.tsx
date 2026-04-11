@@ -57,8 +57,11 @@ export function ContentPools() {
   });
 
   const updateChannel = useMutation({
-    mutationFn: ({ id, invite_link }: { id: number; invite_link: string }) =>
-      api.channels.update(id, { invite_link }),
+    mutationFn: (args: { id: number; invite_link?: string; webhook_url?: string }) =>
+      api.channels.update(args.id, {
+        ...(args.invite_link !== undefined ? { invite_link: args.invite_link } : {}),
+        ...(args.webhook_url !== undefined ? { webhook_url: args.webhook_url } : {}),
+      }),
     onSuccess: () => refetchChannels(),
   });
 
@@ -210,6 +213,7 @@ export function ContentPools() {
                 <th className="pb-2 pr-4">Name</th>
                 <th className="pb-2 pr-4">Identifier</th>
                 <th className="pb-2 pr-4">Invite link</th>
+                <th className="pb-2 pr-4 min-w-[200px]">Outbound webhook</th>
               </tr>
             </thead>
             <tbody>
@@ -244,6 +248,22 @@ export function ContentPools() {
                         }
                       }}
                       className="w-full max-w-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-xs"
+                    />
+                  </td>
+                  <td className="py-2 pr-4">
+                    <input
+                      key={`wh-${c.id}-${String(c.webhook_url || "")}`}
+                      type="url"
+                      placeholder="https://… (Discord/Zapier)"
+                      defaultValue={String(c.webhook_url || "")}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (String(c.webhook_url || "") !== v) {
+                          updateChannel.mutate({ id: Number(c.id), webhook_url: v });
+                        }
+                      }}
+                      className="w-full max-w-md bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-xs"
+                      title="POST JSON when a scheduled post is sent or a pool album posts to this channel"
                     />
                   </td>
                 </tr>

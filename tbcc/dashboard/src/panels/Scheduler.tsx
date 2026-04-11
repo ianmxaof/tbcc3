@@ -1,10 +1,22 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ScheduledPostsList } from "../components/ScheduledPostsList";
+import { SchedulerWeek } from "../components/SchedulerWeek";
+import { SchedulePromoSlots } from "../components/SchedulePromoSlots";
+import { ApprovedMediaPickerStrip } from "../components/ApprovedMediaPickerStrip";
+import { formatUtcForDashboard, formatUtcWithLocalHint } from "../utils/formatUtc";
 
 const INTERVAL_OPTIONS = [15, 30, 60, 120, 360];
+
+type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
+
+function padAlbumVariants(v: AlbumVariant[], n: number): AlbumVariant[] {
+  const out = [...v];
+  while (out.length < n) out.push({ attachment_urls: [], media_ids: [] });
+  return out.slice(0, n);
+}
 
 export function Scheduler() {
   const queryClient = useQueryClient();
@@ -15,7 +27,6 @@ export function Scheduler() {
   const [scheduledAt, setScheduledAt] = useState("");
   const [isRecurring, setIsRecurring] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(30);
-  const [selectedMediaIds, setSelectedMediaIds] = useState<number[]>([]);
   const [poolId, setPoolId] = useState<number>(0);
   const [scheduleAlbumSize, setScheduleAlbumSize] = useState(5);
   const [schedulePoolRandomize, setSchedulePoolRandomize] = useState(false);
@@ -23,6 +34,11 @@ export function Scheduler() {
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   /** null = post to main chat; number = Telegram forum topic id (message_thread_id) */
   const [messageThreadId, setMessageThreadId] = useState<number | null>(null);
+  /** One album per caption variation */
+  const [scheduleAlbumVariants, setScheduleAlbumVariants] = useState<AlbumVariant[]>([
+    { attachment_urls: [], media_ids: [] },
+  ]);
+  const [scheduleAlbumOrderMode, setScheduleAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
 
   const { data: pools = [] } = useQuery({
     queryKey: ["pools"],
@@ -46,8 +62,16 @@ export function Scheduler() {
         ? api.media.list({ status: "approved", pool_id: poolId })
         : api.media.list("approved"),
   });
+  const { data: scheduledPostsForWeek = [] } = useQuery({
+    queryKey: ["scheduledPosts"],
+    queryFn: () => api.scheduledPosts.list(),
+  });
+  useEffect(() => {
+    setScheduleAlbumVariants((prev) => padAlbumVariants(prev, captionVariations.length));
+  }, [captionVariations.length]);
+
   const uploadToPool = useMutation({
-    mutationFn: async ({ files, pid }: { files: FileList; pid: number }) => {
+    mutationFn: async ({ files, pid }: { files: File[]; pid: number }) => {
       const out: string[] = [];
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
@@ -71,12 +95,19 @@ export function Scheduler() {
       const raw = scheduledAt || new Date().toISOString().slice(0, 16);
       const scheduledAtIso = raw.length <= 16 ? `${raw}:00` : raw;
       const trimmed = captionVariations.map((s) => s.trim()).filter(Boolean);
+      const capCount = Math.max(trimmed.length, 1);
+      const av = padAlbumVariants(scheduleAlbumVariants, capCount).map((v) => ({
+        attachment_urls: v.attachment_urls.map((s) => s.trim()).filter(Boolean),
+        media_ids: v.media_ids,
+      }));
       const base: Parameters<typeof api.scheduledPosts.create>[0] = {
         name: name || undefined,
         channel_id: channelId,
         ...(messageThreadId != null ? { message_thread_id: messageThreadId } : {}),
         content: trimmed[0] || "",
-        media_ids: selectedMediaIds.length > 0 ? selectedMediaIds : undefined,
+        media_ids: [],
+        album_variants: av,
+        album_order_mode: scheduleAlbumOrderMode,
         pool_id: poolId || undefined,
         buttons: buttons.some((b) => b.text.trim() && b.url.trim()) ? buttons.filter((b) => b.text.trim() && b.url.trim()) : undefined,
         scheduled_at: isRecurring ? undefined : scheduledAtIso,
@@ -101,19 +132,25 @@ export function Scheduler() {
       setMessageThreadId(null);
       setCaptionVariations([""]);
       setScheduledAt("");
-      setSelectedMediaIds([]);
       setPoolId(0);
       setScheduleAlbumSize(5);
       setSchedulePoolRandomize(false);
       setButtons([]);
+      setScheduleAlbumVariants([{ attachment_urls: [], media_ids: [] }]);
+      setScheduleAlbumOrderMode("static");
     },
   });
 
-  const toggleMedia = (id: number) => {
-    setSelectedMediaIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
+  function toggleScheduleVariantMedia(variantIdx: number, id: number) {
+    setScheduleAlbumVariants((prev) => {
+      const next = [...prev];
+      while (next.length <= variantIdx) next.push({ attachment_urls: [], media_ids: [] });
+      const cur = next[variantIdx];
+      const mids = cur.media_ids.includes(id) ? cur.media_ids.filter((x) => x !== id) : [...cur.media_ids, id];
+      next[variantIdx] = { ...cur, media_ids: mids };
+      return next;
+    });
+  }
 
   const addButton = () => setButtons((prev) => [...prev, { text: "", url: "" }]);
   const updateButton = (i: number, field: "text" | "url", val: string) => {
@@ -137,7 +174,13 @@ export function Scheduler() {
       </p>
 
       <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-2xl">
-        <h2 className="text-lg font-medium mb-3">Pool intervals</h2>
+        <h2 className="text-lg font-medium mb-2">Pool intervals</h2>
+        <p className="text-slate-400 text-sm mb-3">
+          These schedules control automatic <strong>album</strong> posting from each pool&apos;s approved media to that
+          pool&apos;s <strong>linked channel</strong>. They are separate from <strong>Scheduled posts</strong> below
+          (text/caption jobs, including rotating captions). Times in this table are stored as{" "}
+          <strong>UTC</strong> — Telegram often shows your local time.
+        </p>
         {chartData.length > 0 ? (
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
@@ -165,7 +208,7 @@ export function Scheduler() {
             <tr>
               <th className="text-left p-3">Pool</th>
               <th className="text-left p-3">Interval (min)</th>
-              <th className="text-left p-3">Last posted</th>
+              <th className="text-left p-3">Last pool run (UTC)</th>
             </tr>
           </thead>
           <tbody>
@@ -173,8 +216,11 @@ export function Scheduler() {
               <tr key={String(p.id)} className="border-t border-slate-600 hover:bg-slate-800/50">
                 <td className="p-3">{String(p.name)}</td>
                 <td className="p-3">{String(p.interval_minutes)}</td>
-                <td className="p-3 text-slate-400 text-sm">
-                  {p.last_posted ? String(p.last_posted).slice(0, 19) : "Never"}
+                <td
+                  className="p-3 text-slate-400 text-sm"
+                  title={p.last_posted ? formatUtcWithLocalHint(String(p.last_posted)) : undefined}
+                >
+                  {p.last_posted ? formatUtcForDashboard(String(p.last_posted)) : "Never"}
                 </td>
               </tr>
             ))}
@@ -182,11 +228,25 @@ export function Scheduler() {
         </table>
       </div>
 
+      <SchedulerWeek
+        posts={
+          scheduledPostsForWeek as Array<{
+            id: number;
+            name?: string | null;
+            scheduled_at?: string | null;
+            interval_minutes?: number | null;
+            channel_name?: string | null;
+          }>
+        }
+      />
+
       <h2 className="text-xl font-semibold mb-3">Scheduled Posts</h2>
       <p className="text-slate-400 mb-4">
         Create text posts with optional media and inline buttons. One-time or recurring intervals.
         For recurring, &quot;Post now&quot; starts the cycle from the current time. Add a second caption
         box to <strong>rotate captions</strong> in order each run (e.g. every hour: caption A, then B, then A…).
+        Recurring jobs show <strong>last sent (UTC)</strong> in the Schedule column — use that to compare with Telegram
+        message times (hover for your local time).
       </p>
 
       <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-4xl">
@@ -376,15 +436,29 @@ export function Scheduler() {
             </div>
           </div>
           <div>
+            <label className="block text-slate-400 text-xs mb-1">Album order (promo + picked media)</label>
+            <select
+              value={scheduleAlbumOrderMode}
+              onChange={(e) =>
+                setScheduleAlbumOrderMode(e.target.value as "static" | "shuffle" | "carousel")
+              }
+              className="w-full mb-3 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+            >
+              <option value="static">Static order</option>
+              <option value="shuffle">Shuffle each time</option>
+              <option value="carousel">Carousel (rotate order each post)</option>
+            </select>
+            <p className="text-slate-500 text-xs mb-3">
+              One album block per caption. Shuffle / carousel apply to that caption&apos;s combined promo + library picks.
+            </p>
             <p className="text-slate-400 text-sm mb-2">
-              Media (optional) — thumbnails are from <strong>approved</strong> items. Choosing a pool filters the grid
-              to that pool and sets the pool auto-pick for this schedule.
+              Media pool (optional) — choosing a pool filters thumbnails. Empty caption albums fall back to the pool batch.
             </p>
             <select
               value={poolId}
               onChange={(e) => {
                 setPoolId(Number(e.target.value));
-                setSelectedMediaIds([]);
+                setScheduleAlbumVariants((prev) => prev.map((v) => ({ ...v, media_ids: [] })));
               }}
               className="w-full mb-2 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
             >
@@ -424,7 +498,7 @@ export function Scheduler() {
               </div>
             )}
             <label className="flex flex-wrap items-center gap-2 text-slate-400 text-xs mb-2 cursor-pointer">
-              <span>Upload local files into pool:</span>
+              <span>Import into pool (Telegram Saved Messages — needs API session):</span>
               <input
                 type="file"
                 accept="image/*,video/*"
@@ -432,10 +506,11 @@ export function Scheduler() {
                 disabled={!poolId || uploadToPool.isPending}
                 onChange={(e) => {
                   const pid = poolId;
-                  const fl = e.target.files;
-                  e.target.value = "";
-                  if (!pid || !fl?.length) return;
-                  uploadToPool.mutate({ files: fl, pid });
+                  const input = e.target as HTMLInputElement;
+                  const snapshot = input.files?.length ? Array.from(input.files) : [];
+                  input.value = "";
+                  if (!pid || !snapshot.length) return;
+                  uploadToPool.mutate({ files: snapshot, pid });
                 }}
                 className="text-slate-300 max-w-full"
               />
@@ -447,42 +522,42 @@ export function Scheduler() {
             )}
             {!poolId && (
               <p className="text-amber-400/90 text-xs mb-2">
-                Select a pool above to enable uploads (files are imported into that pool as pending — approve in Media
-                Library).
+                Select a pool above to enable this import (pending in Media Library until approved).
               </p>
             )}
-            <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto">
-              {(media as Array<Record<string, unknown>>).map((m) => {
-                const id = Number(m.id);
-                const sel = selectedMediaIds.includes(id);
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => toggleMedia(id)}
-                    className={`relative w-16 h-16 rounded border-2 overflow-hidden flex items-center justify-center text-xs ${
-                      sel ? "border-cyan-500 bg-cyan-900/30" : "border-slate-600 bg-slate-700 hover:border-slate-500"
-                    }`}
-                    title={`${m.media_type || "media"} #${id}`}
-                  >
-                    <img
-                      src={api.media.thumbnailUrl(id)}
-                      alt=""
-                      className="absolute inset-0 w-full h-full object-cover"
-                      onError={(ev) => {
-                        (ev.target as HTMLImageElement).style.display = "none";
-                      }}
-                    />
-                    <span className="relative z-[1] drop-shadow-md opacity-90">
-                      {m.media_type === "photo" ? "🖼" : m.media_type === "video" ? "🎬" : "📎"}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            {captionVariations.map((_, vi) => (
+              <div key={vi} className="mb-3 border border-slate-600/80 rounded-lg p-2 bg-slate-900/30">
+                <p className="text-slate-300 text-xs font-medium mb-2">
+                  {captionVariations.length > 1 ? `Album for caption ${vi + 1}` : "Promotional album"}
+                </p>
+                <SchedulePromoSlots
+                  urls={scheduleAlbumVariants[vi]?.attachment_urls ?? []}
+                  setUrls={(fn) => {
+                    setScheduleAlbumVariants((prev) => {
+                      const next = [...prev];
+                      while (next.length <= vi) next.push({ attachment_urls: [], media_ids: [] });
+                      const cur = next[vi];
+                      const urls =
+                        typeof fn === "function" ? fn(cur.attachment_urls) : (fn as string[]);
+                      next[vi] = { ...cur, attachment_urls: urls };
+                      return next;
+                    });
+                  }}
+                  idPrefix={`scheduler-create-v${vi}`}
+                />
+                <div className="mt-2 min-w-0">
+                  <ApprovedMediaPickerStrip
+                    rows={media as Array<Record<string, unknown>>}
+                    selectedIds={scheduleAlbumVariants[vi]?.media_ids ?? []}
+                    onToggle={(id) => toggleScheduleVariantMedia(vi, id)}
+                    rowKeyPrefix={`scheduler-create-v${vi}`}
+                  />
+                </div>
+              </div>
+            ))}
             <p className="text-slate-500 text-xs mt-1">
-              {selectedMediaIds.length} selected. If <strong>pool</strong> is set, scheduled posts use the next batch
-              from that pool unless you clear the pool (0) and rely on selected IDs only.
+              {scheduleAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} media pick(s). If{" "}
+              <strong>pool</strong> is set and a caption has no picks, that run uses the pool batch.
             </p>
           </div>
         </div>
@@ -491,7 +566,11 @@ export function Scheduler() {
           disabled={
             createScheduledPost.isPending ||
             !channelId ||
-            (!captionVariations.some((s) => s.trim()) && selectedMediaIds.length === 0 && !poolId)
+            (!captionVariations.some((s) => s.trim()) &&
+              !poolId &&
+              !scheduleAlbumVariants.some(
+                (v) => v.media_ids.length > 0 || v.attachment_urls.some((s) => s.trim())
+              ))
           }
           className="mt-4 px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-500 disabled:opacity-50"
         >

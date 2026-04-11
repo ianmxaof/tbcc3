@@ -2,58 +2,110 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>TBCC Importer</title>
+  <title>TBCC</title>
+  <link rel="stylesheet" href="styles/tokens.css" />
   <style>
-    body { width: 280px; padding: 12px; font-family: system-ui, sans-serif; }
+    body {
+      width: 300px;
+      padding: 14px;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      background: var(--tbcc-bg-base);
+      color: var(--tbcc-text-primary);
+      margin: 0;
+    }
     body.tbcc-in-panel {
       width: 100%;
       max-width: none;
       min-height: 100%;
       box-sizing: border-box;
-      background: #1e1e2e;
-      color: #cdd6f4;
     }
-    body.tbcc-in-panel h3 { color: #f5c2e7; }
-    body.tbcc-in-panel label,
-    body.tbcc-in-panel p { color: #a6adc8; }
-    body.tbcc-in-panel select {
-      background: #313244;
-      color: #cdd6f4;
-      border: 1px solid #45475a;
+    h1 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      color: var(--tbcc-text-heading);
+      font-weight: 600;
+    }
+    label { display: block; margin-bottom: 6px; color: var(--tbcc-text-secondary); font-size: 12px; }
+    select {
+      width: 100%;
+      min-height: 36px;
+      padding: 6px 8px;
+      margin-bottom: 12px;
       border-radius: 6px;
+      border: 1px solid var(--tbcc-bg-elevated);
+      background: var(--tbcc-bg-surface);
+      color: var(--tbcc-text-primary);
+      font-size: 13px;
     }
-    body.tbcc-in-panel .ms { border-top-color: #45475a; }
-    h3 { margin: 0 0 8px; font-size: 14px; }
-    select { width: 100%; padding: 6px; margin-bottom: 8px; }
-    p { margin: 0; font-size: 12px; color: #666; }
-    .ms { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b; }
-    .ms button { margin-top: 6px; padding: 6px 10px; cursor: pointer; background: #1e1e2e; color: #f5c2e7; border: none; border-radius: 4px; font-size: 11px; width: 100%; }
-    .ms button:hover { filter: brightness(1.1); }
-    .ms button.capture { background: #166534; color: #dcfce7; }
-    .ms button.capture:hover { filter: brightness(1.08); }
-    .ms #captureStatus { margin-top: 6px; font-size: 11px; color: #15803d; min-height: 1.2em; }
-    .ms #captureStatus.err { color: #b91c1c; }
+    .lite-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: var(--tbcc-text-secondary);
+      cursor: pointer;
+    }
+    .lite-row input { margin: 0; }
+    .btn {
+      width: 100%;
+      min-height: 38px;
+      margin-bottom: 8px;
+      padding: 0 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--tbcc-accent);
+      color: #1e1e2e;
+    }
+    .btn-primary:hover { background: var(--tbcc-accent-hover); }
+    .btn-secondary {
+      background: var(--tbcc-bg-elevated);
+      color: var(--tbcc-text-primary);
+    }
+    .btn-secondary:hover { background: #585b70; }
+    .btn-green {
+      background: #166534;
+      color: #dcfce7;
+    }
+    .btn-green:hover { filter: brightness(1.06); }
+    #captureStatus { margin-top: 6px; font-size: 11px; color: var(--tbcc-success); min-height: 1.2em; }
+    #captureStatus.err { color: var(--tbcc-error); }
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--tbcc-text-muted);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #6c7086; flex-shrink: 0; }
+    .dot.ok { background: var(--tbcc-success); }
+    .dot.bad { background: var(--tbcc-error); }
   </style>
 </head>
 <body>
-  <h3>TBCC Importer</h3>
-  <label>Content pool:</label>
+  <h1>TBCC</h1>
+  <label for="poolId">Content pool</label>
   <select id="poolId">
-    <option value="">Loading...</option>
+    <option value="">Loading…</option>
   </select>
-  <p>Right-click image/video/link → "Send to TBCC (pool queue)" or "Send to Saved Messages only".</p>
-  <p style="margin-top:8px"><button id="openGallery" type="button" style="padding:6px 10px;cursor:pointer;background:#0d9488;color:#fff;border:none;border-radius:4px;font-size:12px">Open gallery (bulk capture)</button></p>
-  <p style="margin-top:4px;font-size:11px;color:#64748b">Capture images from protected sites (e.g. OnlyFans, FetLife) in the side panel.</p>
-  <div class="ms">
-    <strong style="color:#334155">Shortcuts</strong>
-    <button type="button" class="capture" id="btnCaptureReverse">Capture tab → copy &amp; open reverse search</button>
-    <p id="captureStatus"></p>
-    <p id="modelSearchSummary" style="margin:6px 0 0;font-size:11px">Username: selection → <strong>TBCC — Look up username</strong> (per source or all). Configure sources in Extension options.</p>
-    <p id="reverseImageSummary" style="margin:4px 0 0;font-size:11px">Image: Reverse image search (fan-out).</p>
-    <button type="button" id="openExtensionOptions">Extension options…</button>
-    <button type="button" id="btnDashboardPanel" style="margin-top:8px;width:100%;padding:6px 10px;cursor:pointer;background:#313244;color:#89b4fa;border:1px solid #45475a;border-radius:4px;font-size:11px">Open TBCC dashboard (new tab)</button>
-    <button type="button" id="btnLaunchFull" style="margin-top:8px;width:100%;padding:6px 10px;cursor:pointer;background:#313244;color:#a6e3a1;border:1px solid #45475a;border-radius:4px;font-size:11px">Launch full stack (start.ps1 -Full)</button>
-    <p style="margin:4px 0 0;font-size:10px;color:#64748b">Uses local daemon :8765 or API; see Extension options → Local stack.</p>
+  <label class="lite-row">
+    <input type="checkbox" id="tbccLiteMode" />
+    TBCC Lite (generic capture, smaller batches)
+  </label>
+  <button type="button" id="openGallery" class="btn btn-primary">Open gallery</button>
+  <button type="button" class="btn btn-green" id="btnCaptureReverse">Reverse search (capture tab)</button>
+  <p id="captureStatus"></p>
+  <button type="button" id="openExtensionOptions" class="btn btn-secondary">Extension options</button>
+  <div class="status-row">
+    <span id="backendDot" class="dot" title="Backend"></span>
+    <span id="backendStatus">Checking backend…</span>
   </div>
   <script src="launch-full-stack.js"></script>
   <script src="popup.js"></script>

@@ -1,0 +1,23 @@
+/* TBCC design tokens — Catppuccin Mocha */
+:root {
+  --tbcc-bg-base: #1e1e2e;
+  --tbcc-bg-card: #181825;
+  --tbcc-bg-surface: #313244;
+  --tbcc-bg-elevated: #45475a;
+  --tbcc-text-heading: #f5c2e7;
+  --tbcc-text-section: #bac2de;
+  --tbcc-text-primary: #cdd6f4;
+  --tbcc-text-secondary: #a6adc8;
+  --tbcc-text-muted: #6c7086;
+  --tbcc-accent: #89b4fa;
+  --tbcc-accent-hover: #b4befe;
+  --tbcc-success: #a6e3a1;
+  --tbcc-error: #f38ba8;
+  --tbcc-warning: #fab387;
+  --tbcc-radius: 8px;
+  --tbcc-radius-sm: 6px;
+  --tbcc-font-body: 13px;
+  --tbcc-font-caption: 11px;
+  --tbcc-font-heading: 14px;
+  --tbcc-min-touch: 36px;
+}

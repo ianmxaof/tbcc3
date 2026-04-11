@@ -7,10 +7,10 @@
 (function () {
   const DASHBOARD_TAB_URL = "http://127.0.0.1:5173/";
 
+  const btnBackToGalleryPanel = document.getElementById("btnBackToGalleryPanel");
+  const linkPanelMain = document.getElementById("linkPanelMain");
   const linkGalleryView = document.getElementById("linkGalleryView");
   const linkPopupTools = document.getElementById("linkPopupTools");
-  const linkExtensionOptions = document.getElementById("linkExtensionOptions");
-  const linkDashboard = document.getElementById("linkDashboard");
 
   let panelView = "main";
 
@@ -23,11 +23,13 @@
   })();
 
   function updateFooterActive() {
-    [linkGalleryView, linkPopupTools, linkExtensionOptions].forEach((a) => {
+    [linkPanelMain, linkGalleryView, linkPopupTools].forEach((a) => {
       if (!a) return;
       const v = a.getAttribute("data-panel");
       a.classList.toggle("active", v === panelView);
     });
+    if (linkPanelMain) linkPanelMain.classList.toggle("nav-exit", panelView !== "main");
+    if (btnBackToGalleryPanel) btnBackToGalleryPanel.hidden = panelView === "main";
   }
 
   function ensureIframe(iframeId, url) {
@@ -42,6 +44,9 @@
       next = "main";
     }
     panelView = next;
+    try {
+      chrome.storage.local.set({ tbccGalleryPanelView: panelView });
+    } catch (_) {}
     ["main", "collected", "tools", "options"].forEach((v) => {
       const el = document.getElementById("view-" + v);
       if (el) el.hidden = v !== panelView;
@@ -73,6 +78,15 @@
     }
   });
 
+  linkPanelMain &&
+    linkPanelMain.addEventListener("click", (e) => {
+      e.preventDefault();
+      setPanelView("main");
+    });
+  btnBackToGalleryPanel &&
+    btnBackToGalleryPanel.addEventListener("click", () => {
+      setPanelView("main");
+    });
   linkGalleryView &&
     linkGalleryView.addEventListener("click", (e) => {
       e.preventDefault();
@@ -83,25 +97,7 @@
       e.preventDefault();
       setPanelView("tools");
     });
-  linkExtensionOptions &&
-    linkExtensionOptions.addEventListener("click", (e) => {
-      e.preventDefault();
-      setPanelView("options");
-    });
-  linkDashboard &&
-    linkDashboard.addEventListener("click", (e) => {
-      e.preventDefault();
-      chrome.tabs.create({ url: DASHBOARD_TAB_URL });
-    });
-
-  const linkLaunchFull = document.getElementById("linkLaunchFull");
-  linkLaunchFull &&
-    linkLaunchFull.addEventListener("click", (e) => {
-      e.preventDefault();
-      if (typeof window.tbccLaunchFullStack === "function") {
-        window.tbccLaunchFullStack();
-      }
-    });
-
   updateFooterActive();
+
+  /* Always open the sidebar on the main gallery so media scan + grid are visible; sub-views are one click away. */
 })();

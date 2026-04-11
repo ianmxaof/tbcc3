@@ -10,13 +10,21 @@ Pipeline: catalog → send_invoice (XTR) → pre_checkout validation → success
 Run: python -m bots.payment_bot (from tbcc/backend with PYTHONPATH=backend)
 
 Requires: BOT_TOKEN in tbcc/.env; TBCC_API_URL if API is not http://localhost:8000
+
+Optional env (slow VPN / strict firewall / corporate proxy):
+  TELEGRAM_HTTP_TIMEOUT — seconds for connect/read/write/pool (default 30; was PTB default 5).
+  TELEGRAM_BOOTSTRAP_RETRIES — retries during startup if Telegram is slow (default 5; 0 = fail fast).
+  TELEGRAM_PROXY — proxy URL for Bot API (or set HTTPS_PROXY / HTTP_PROXY; see httpx docs).
+If you still see ConnectTimeout, confirm outbound HTTPS to api.telegram.org is allowed (firewall/VPN/DNS).
 """
 import html
 import io
 import logging
 import os
+import random
 import sys
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 # Allow `from app.utils...` when running `python -m bots.payment_bot` from tbcc/backend
 _backend_root = Path(__file__).resolve().parent.parent
@@ -35,10 +43,20 @@ if _env.exists():
 import httpx
 from bots.growth_config_client import referral_cfg
 from bots.payment_pipeline import validate_pre_checkout
+from app.services.bundle_storage import bundle_zip2_path, bundle_zip_nth_path, bundle_zip_path
+from app.services.llm_shop_suggest import hashtag_line_from_slugs
 from app.utils.promo_url_normalize import normalize_promo_image_url
 from app.utils.telegram_promo_url import is_public_https_for_telegram
 from bots.shop_promo import send_shop_promo
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, LabeledPrice, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    InputMediaPhoto,
+    LabeledPrice,
+    Update,
+)
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -59,6 +77,114 @@ logger = logging.getLogger(__name__)
 API_BASE = os.getenv("TBCC_API_URL", "http://localhost:8000")
 
 
+def _telegram_http_timeout_seconds() -> float:
+    """PTB defaults to 5s connect — too short on some networks; clamp to a sane range."""
+    raw = os.getenv("TELEGRAM_HTTP_TIMEOUT", "30").strip()
+    try:
+        return max(5.0, min(120.0, float(raw)))
+    except ValueError:
+        return 30.0
+
+
+def _telegram_bootstrap_retries() -> int:
+    raw = os.getenv("TELEGRAM_BOOTSTRAP_RETRIES", "5").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 5
+
+
+def _coerce_promo_fetch_url(raw: str) -> str:
+    """
+    Promo URLs saved as http://127.0.0.1:8000/static/promo/... fail when the bot runs in Docker
+    or another host. Prefer TBCC_API_URL's host for HTTP downloads from this process.
+    """
+    try:
+        u = urlparse(raw)
+        if u.scheme not in ("http", "https") or not u.path:
+            return raw
+        if u.hostname not in ("127.0.0.1", "localhost"):
+            return raw
+        api = urlparse(API_BASE.rstrip("/") + "/")
+        if not api.scheme or not api.netloc:
+            return raw
+        return urlunparse((api.scheme, api.netloc, u.path, "", u.query or "", u.fragment or ""))
+    except Exception:
+        return raw
+
+
+def _pick_display_description(plan: dict) -> str:
+    """Random line from primary description + description_variations (dashboard)."""
+    base = str(plan.get("description") or "").strip()
+    extras: list[str] = []
+    raw = plan.get("description_variations")
+    if isinstance(raw, list):
+        for x in raw:
+            s = str(x or "").strip()
+            if s:
+                extras.append(s)
+    pool: list[str] = []
+    if base:
+        pool.append(base)
+    for x in extras:
+        if x not in pool:
+            pool.append(x)
+    if not pool:
+        return ""
+    return random.choice(pool)
+
+
+def _plan_promo_urls(p: dict) -> list[str]:
+    """Up to 5 HTTPS promo URLs for album + invoice (invoice uses first only)."""
+    raw = p.get("promo_image_urls")
+    if isinstance(raw, list):
+        out: list[str] = []
+        for x in raw:
+            u = normalize_promo_image_url(str(x or ""))
+            if u:
+                out.append(u)
+            if len(out) >= 5:
+                break
+        return out
+    single = str(p.get("promo_image_url") or "").strip()
+    if single:
+        u = normalize_promo_image_url(single)
+        return [u] if u else []
+    return []
+
+
+async def _maybe_send_promo_album_before_invoice(msg, plan: dict) -> bool:
+    """
+    If a product has 2+ promo URLs, send a Telegram media group first.
+    Returns True when an album was sent — caller should omit invoice photo_url to avoid duplicating the first image.
+    """
+    urls = _plan_promo_urls(plan)[:10]
+    if len(urls) <= 1:
+        return False
+    resolved: list[InputFile | str] = []
+    for u in urls:
+        ph = await _resolve_bundle_promo_photo(u)
+        if ph is not None:
+            resolved.append(ph)
+    if len(resolved) <= 1:
+        return False
+    name = html.escape(str(plan.get("name") or "Product"))
+    stars = int(plan.get("price_stars") or 0)
+    cap = f"<b>{name}</b>\n{stars} ⭐"
+    media: list[InputMediaPhoto] = []
+    for i, ph in enumerate(resolved):
+        if i == 0:
+            media.append(InputMediaPhoto(media=ph, caption=cap, parse_mode="HTML"))
+        else:
+            media.append(InputMediaPhoto(media=ph))
+    try:
+        await msg.reply_media_group(media=media)
+        return True
+    except Exception as e:
+        logger.warning("promo album before invoice failed plan_id=%s: %s", plan.get("id"), e)
+        return False
+
+
 async def _resolve_bundle_promo_photo(promo: str) -> InputFile | str | None:
     """
     Telegram's servers fetch photo URLs themselves — they cannot reach localhost/private URLs.
@@ -76,9 +202,10 @@ async def _resolve_bundle_promo_photo(promo: str) -> InputFile | str | None:
         return None
     if is_public_https_for_telegram(raw):
         return raw
+    fetch_url = _coerce_promo_fetch_url(raw)
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(raw, timeout=30.0, follow_redirects=True)
+            r = await client.get(fetch_url, timeout=30.0, follow_redirects=True)
             r.raise_for_status()
             data = r.content
             if len(data) < 32:
@@ -92,16 +219,8 @@ async def _resolve_bundle_promo_photo(promo: str) -> InputFile | str | None:
                 ext = ".webp"
             return InputFile(io.BytesIO(data), filename=f"promo{ext}")
     except Exception as e:
-        logger.warning("bundle promo download failed (%s): %s", raw[:96], e)
+        logger.warning("bundle promo download failed (%s): %s", fetch_url[:96], e)
         return None
-
-
-def _bundle_zip_path(plan_id: int) -> Path:
-    """Same layout as backend bundle_storage (tbcc/uploads/bundles/{id}.zip)."""
-    env = (os.getenv("TBCC_BUNDLE_DIR") or "").strip()
-    if env:
-        return Path(env).expanduser().resolve() / f"{plan_id}.zip"
-    return Path(__file__).resolve().parent.parent.parent / "uploads" / "bundles" / f"{plan_id}.zip"
 
 
 def _plan_ok_for_stars_checkout(p: dict) -> bool:
@@ -636,10 +755,19 @@ def _bundle_caption_html(p: dict) -> str:
     """Caption for pack card (Telegram limit 1024)."""
     name = str(p.get("name") or "Pack")
     stars = int(p.get("price_stars") or 0)
-    desc = str(p.get("description") or "").strip()
+    desc = _pick_display_description(p)
     lines = [f"<b>{html.escape(name)}</b>", f"{stars} ⭐"]
     if desc:
         lines.append(html.escape(desc[:900]))
+    tags = p.get("tags")
+    slugs: list[str] = []
+    if isinstance(tags, list):
+        for t in tags:
+            if isinstance(t, dict) and t.get("slug"):
+                slugs.append(str(t["slug"]))
+    ht = hashtag_line_from_slugs(slugs) if slugs else ""
+    if ht:
+        lines.append(html.escape(ht[:200]))
     cap = "\n".join(lines)
     if len(cap) > 1024:
         cap = cap[:1021] + "…"
@@ -673,7 +801,7 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
     """
     pid = p.get("id")
     stars = int(p.get("price_stars") or 0)
-    promo = str(p.get("promo_image_url") or "").strip()
+    promo_urls = _plan_promo_urls(p)[:10]
     cap = _bundle_caption_html(p)
     kb_stars = InlineKeyboardMarkup(
         [[InlineKeyboardButton(_truncate_btn(f"Buy — {stars} ⭐"), callback_data=f"pack_{pid}")]]
@@ -689,13 +817,41 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
         ]
     )
     try:
-        photo = await _resolve_bundle_promo_photo(promo)
-        if photo is not None:
+        resolved: list[InputFile | str] = []
+        for u in promo_urls:
+            ph = await _resolve_bundle_promo_photo(u)
+            if ph is not None:
+                resolved.append(ph)
+
+        if not resolved and promo_urls:
+            logger.warning(
+                "bundle promo: plan_id=%s had %s promo URL(s) but none could be resolved "
+                "(set TBCC_PROMO_PUBLIC_BASE_URL to https://… so Telegram can fetch, or run the bot where "
+                "TBCC_API_URL can reach /static/promo/…)",
+                pid,
+                len(promo_urls),
+            )
+
+        if not resolved:
+            await msg.reply_text(text=cap, parse_mode="HTML", reply_markup=kb_stars)
+        elif len(resolved) == 1:
+            photo = resolved[0]
             await msg.reply_photo(
                 photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb_stars
             )
         else:
-            await msg.reply_text(text=cap, parse_mode="HTML", reply_markup=kb_stars)
+            media: list[InputMediaPhoto] = []
+            for i, ph in enumerate(resolved):
+                if i == 0:
+                    media.append(InputMediaPhoto(media=ph, caption=cap, parse_mode="HTML"))
+                else:
+                    media.append(InputMediaPhoto(media=ph))
+            await msg.reply_media_group(media=media)
+            await msg.reply_text(
+                f"⬇️ <b>{html.escape(str(p.get('name') or 'Pack'))}</b> — Stars checkout",
+                parse_mode="HTML",
+                reply_markup=kb_stars,
+            )
     except Exception as e:
         logger.warning("bundle detail send failed plan_id=%s: %s", pid, e)
         try:
@@ -846,8 +1002,19 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
     instr = result.get("instructions_html") or ""
     ref = (result.get("order") or {}).get("reference_code", "?")
     header = f"<b>Order</b> <code>{html.escape(str(ref))}</code>\n\n"
+    pay_url = result.get("crypto_pay_url")
+    pay_extra = ""
+    if pay_url:
+        eu = html.escape(str(pay_url), quote=True)
+        pay_extra += (
+            "\n\n🔗 <a href=\"" + eu + "\">Pay with crypto (automatic)</a>\n"
+            "<i>Access unlocks when payment confirms — no admin step.</i>"
+        )
+    details = result.get("crypto_pay_details")
+    if details:
+        pay_extra += "\n\n" + str(details)
     try:
-        await msg.reply_text(header + instr, parse_mode="HTML")
+        await msg.reply_text(header + instr + pay_extra, parse_mode="HTML")
     except BadRequest as e:
         logger.warning("external order message failed: %s", e)
         await msg.reply_text(f"Order {ref} created. Check API logs if instructions did not show.")
@@ -891,7 +1058,7 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("This product has no price set.")
         return
 
-    desc = (plan.get("description") or "").strip()
+    desc = _pick_display_description(plan)
     if not desc:
         if ptype == "bundle":
             desc = "Digital pack — images & videos"
@@ -904,8 +1071,13 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         else f"bundle_{plan_id}_{query.from_user.id}"
     )
 
+    album_sent = False
+    if query.message:
+        album_sent = await _maybe_send_promo_album_before_invoice(query.message, plan)
+
     # Telegram fetches photo_url from its servers — localhost / http / private IPs never work.
-    promo = str(plan.get("promo_image_url") or "").strip()
+    promo_urls = _plan_promo_urls(plan)
+    promo = "" if album_sent else (promo_urls[0] if promo_urls else "")
     invoice_kw: dict = {
         "chat_id": query.message.chat_id,
         "title": plan.get("name", "Product")[:128],
@@ -1069,17 +1241,55 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
             await update.message.reply_text(text, parse_mode="Markdown")
             if sub.get("bundle_zip_available"):
-                zp = _bundle_zip_path(plan_id)
-                if zp.is_file():
-                    fn = (sub.get("bundle_zip_original_name") or f"pack_{plan_id}.zip")[:250]
-                    try:
-                        await update.message.reply_document(
-                            document=InputFile(zp),
-                            filename=fn,
-                            caption="📦 Your digital pack (zip)",
-                        )
-                    except Exception as e:
-                        logger.warning("Could not send bundle zip: %s", e)
+                cap_single = "📦 Your digital pack (zip)"
+                parts = sub.get("bundle_zip_parts")
+                if isinstance(parts, list) and parts:
+                    total = len(parts)
+                    for i, fn in enumerate(parts):
+                        if not isinstance(fn, str) or not fn.strip():
+                            continue
+                        zp = bundle_zip_nth_path(plan_id, i)
+                        if not zp.is_file():
+                            continue
+                        disp = fn.strip()[:250]
+                        cap = f"📦 Part {i + 1} of {total}" if total > 1 else cap_single
+                        try:
+                            await update.message.reply_document(
+                                document=InputFile(zp),
+                                filename=disp,
+                                caption=cap,
+                            )
+                        except Exception as e:
+                            logger.warning("Could not send bundle zip part %s: %s", i, e)
+                else:
+                    zp = bundle_zip_path(plan_id)
+                    z2p = bundle_zip2_path(plan_id)
+                    both_parts = (
+                        zp.is_file()
+                        and z2p.is_file()
+                        and (sub.get("bundle_zip_original_name") or "").strip()
+                        and (sub.get("bundle_zip2_original_name") or "").strip()
+                    )
+                    if zp.is_file() and (sub.get("bundle_zip_original_name") or "").strip():
+                        fn = (sub.get("bundle_zip_original_name") or f"pack_{plan_id}.zip")[:250]
+                        try:
+                            await update.message.reply_document(
+                                document=InputFile(zp),
+                                filename=fn,
+                                caption="📦 Your digital pack (part 1 of 2)" if both_parts else cap_single,
+                            )
+                        except Exception as e:
+                            logger.warning("Could not send bundle zip: %s", e)
+                    if z2p.is_file() and (sub.get("bundle_zip2_original_name") or "").strip():
+                        fn2 = (sub.get("bundle_zip2_original_name") or f"pack_{plan_id}_2.zip")[:250]
+                        try:
+                            await update.message.reply_document(
+                                document=InputFile(z2p),
+                                filename=fn2,
+                                caption="📦 Your digital pack (part 2 of 2)" if both_parts else cap_single,
+                            )
+                        except Exception as e:
+                            logger.warning("Could not send bundle zip part 2: %s", e)
             return
 
         link = sub.get("invite_link")
@@ -1196,7 +1406,30 @@ def main() -> None:
     shop_cmd = filters.TEXT & filters.Regex(r"(?i)^/shop(@\w+)?(\s|$)")
     shop_channel = filters.UpdateType.CHANNEL_POST & filters.TEXT & filters.Regex(r"(?i)^/shop(@\w+)?(\s|$)")
 
-    app = Application.builder().token(token).post_init(_post_init).build()
+    t = _telegram_http_timeout_seconds()
+    br = _telegram_bootstrap_retries()
+    b = (
+        Application.builder()
+        .token(token)
+        .post_init(_post_init)
+        .connect_timeout(t)
+        .read_timeout(t)
+        .write_timeout(t)
+        .pool_timeout(t)
+        .get_updates_connect_timeout(t)
+        .get_updates_read_timeout(t)
+        .get_updates_write_timeout(t)
+        .get_updates_pool_timeout(t)
+    )
+    proxy = os.getenv("TELEGRAM_PROXY", "").strip()
+    if proxy:
+        b = b.proxy(proxy)
+    app = b.build()
+    logger.info(
+        "Telegram HTTP timeouts: %.1fs (set TELEGRAM_HTTP_TIMEOUT); bootstrap_retries=%s (TELEGRAM_BOOTSTRAP_RETRIES)",
+        t,
+        br,
+    )
     app.add_handler(MessageHandler(help_cmd, cmd_help))
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(shop_cmd, cmd_shop))
@@ -1242,7 +1475,7 @@ def main() -> None:
     )
 
     print("Payment bot running. Commands: /start, /help, /shop, /subscribe, /packs, /referral, /status")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 
 
 if __name__ == "__main__":

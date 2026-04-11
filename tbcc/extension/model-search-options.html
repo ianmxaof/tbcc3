@@ -4,137 +4,35 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TBCC — Extension options</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      padding: 20px 24px 40px;
-      max-width: 720px;
-      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-      font-size: 14px;
-      background: #1e1e2e;
-      color: #cdd6f4;
-      line-height: 1.45;
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 18px;
-      font-weight: 600;
-      color: #f5c2e7;
-    }
-    .sub {
-      margin: 0 0 20px;
-      font-size: 12px;
-      color: #6c7086;
-    }
-    h2 {
-      margin: 22px 0 10px;
-      font-size: 13px;
-      font-weight: 600;
-      color: #bac2de;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-    fieldset {
-      border: 1px solid #45475a;
-      border-radius: 8px;
-      padding: 12px 14px;
-      margin: 0 0 12px;
-      background: #181825;
-    }
-    legend {
-      padding: 0 6px;
-      font-size: 12px;
-      color: #a6adc8;
-    }
-    label.row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 0;
-      cursor: pointer;
-      font-size: 13px;
-    }
-    label.row input {
-      margin: 0;
-    }
-    .cat {
-      font-size: 11px;
-      color: #6c7086;
-      margin-left: auto;
-      text-transform: lowercase;
-    }
-    .modes label {
-      display: block;
-      padding: 8px 0;
-      cursor: pointer;
-    }
-    .modes input {
-      margin-right: 8px;
-    }
-    .modes .desc {
-      display: block;
-      margin-left: 22px;
-      font-size: 11px;
-      color: #6c7086;
-    }
-    .footer {
-      margin-top: 20px;
-      font-size: 12px;
-      color: #6c7086;
-    }
-    .footer code {
-      background: #313244;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 11px;
-    }
-    #status {
-      margin-top: 12px;
-      font-size: 12px;
-      color: #a6e3a1;
-      min-height: 1.2em;
-    }
-    .err {
-      color: #f38ba8;
-    }
-    nav.top {
-      padding: 8px 0 4px;
-      font-size: 12px;
-      margin-bottom: 4px;
-    }
-    nav.top a {
-      color: #89b4fa;
-      text-decoration: none;
-    }
-    nav.top a:hover {
-      text-decoration: underline;
-    }
-    nav.top span.sep {
-      color: #45475a;
-      margin: 0 6px;
-    }
-    section.split {
-      margin-top: 40px;
-      padding-top: 28px;
-      border-top: 1px solid #45475a;
-    }
-    html.tbcc-options-embed body {
-      max-width: none;
-      padding: 12px 14px 28px;
-    }
-    html.tbcc-options-embed section.split {
-      margin-top: 28px;
-      padding-top: 20px;
-    }
-  </style>
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/components.css" />
 </head>
-<body>
+<body class="tbcc-options-page">
   <nav class="top">
-    <a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
+    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
   </nav>
 
-  <section id="local-stack">
+  <section id="capture-settings" class="card">
+    <h1>Capture (side panel gallery)</h1>
+    <p class="sub" style="margin:0 0 12px">These apply when you refresh or scan a tab in the gallery. Same settings as the old gallery settings modal.</p>
+    <label class="row2">Format
+      <select id="captureSettingFormat">
+        <option value="original">Original</option>
+        <option value="jpeg">Convert to JPG</option>
+      </select>
+    </label>
+    <label class="row2"><input type="checkbox" id="captureSettingAutoRefresh" /> Auto-scan when the side panel opens or becomes visible</label>
+    <label class="row2"><input type="checkbox" id="captureSettingHardRefresh" /> Full refresh (↻ / <strong>R</strong>): reload pools, channels, forum topics, and embedded panels (Collected / Tools / this Options page), then rescan the tab — same as closing and reopening the side panel</label>
+    <label class="row2"><input type="checkbox" id="captureSettingResourceTiming" /> More resource-timing images (non–OnlyFans)</label>
+    <label class="row2">Lazy-load delay before scan (ms, 0–3000)
+      <input type="number" id="captureSettingLazyDelay" min="0" max="3000" value="0" style="width:72px" />
+    </label>
+    <p style="margin:12px 0 6px;font-size:12px;color:var(--tbcc-text-muted)">Bottom watermarks: use <strong>Crop bottom</strong> in the gallery overflow menu before sending.</p>
+    <button type="button" id="captureSettingClearCache" class="tbcc-btn-secondary">Clear gallery cache</button>
+    <p id="tbccApiStatus" style="margin:14px 0 0;font-size:12px;color:var(--tbcc-text-muted)">Checking API…</p>
+  </section>
+
+  <section id="local-stack" class="card">
     <h1>Local stack</h1>
     <p class="sub">
       The extension can run <code>tbcc/start.ps1 -Full</code> from the side panel or Quick tools: either the small daemon on <code>http://127.0.0.1:8765</code> (cold start) or <code>POST /internal/launch-full-stack</code> when the API is already running.
@@ -152,72 +50,68 @@
         <input
           type="password"
           id="tbccInternalApiKey"
+          class="tbcc-input"
           autocomplete="off"
           placeholder="(optional)"
-          style="flex:1;min-width:200px;padding:6px 8px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:13px"
         />
       </label>
     </fieldset>
   </section>
-  <h1 id="model">Model search</h1>
-  <p class="sub">
-    Select a <strong>username</strong> on any page → right‑click → <strong>TBCC — Look up username</strong> → choose one source or <strong>Search all enabled sites</strong>.
-    Built‑in sites ship with the extension; add your own below (URL must include <code>{username}</code>).
-  </p>
 
-  <h2>Open results as</h2>
-  <fieldset class="modes">
-    <legend>Layout</legend>
-    <label>
-      <input type="radio" name="openMode" value="dashboard" />
-      Single dashboard tab (condensed grid)
-      <span class="desc">One tab with embedded panels; some sites may block iframes — use Open on each panel.</span>
-    </label>
-    <label>
-      <input type="radio" name="openMode" value="foreground" />
-      New tabs (first tab focused)
-      <span class="desc">Opens one tab per source; first tab is active.</span>
-    </label>
-    <label>
-      <input type="radio" name="openMode" value="background" />
-      Background tabs
-      <span class="desc">Opens all sources in new tabs without switching away from the current page.</span>
-    </label>
-  </fieldset>
-
-  <h2>Add a source</h2>
-  <fieldset>
-    <legend>Custom search URL</legend>
-    <p class="sub" style="margin:0 0 10px">
-      Paste the URL from the address bar <strong>after</strong> you run a manual search on that site (so you get the real query format). Put <code>{username}</code> where the search term goes — often
-      <code>?q={username}</code> or <code>&amp;query={username}</code>, not a guessed path like <code>/artists/name</code> (many sites 404 on those).
+  <section id="model" class="card tbcc-options-section">
+    <h1>Model search</h1>
+    <p class="sub">
+      Select a <strong>username</strong> on any page → right‑click → <strong>TBCC — Look up username</strong> → choose one source or <strong>Search all enabled sites</strong>.
+      Built‑in sites ship with the extension; add your own below (URL must include <code>{username}</code>).
     </p>
-    <label class="row" style="flex-wrap:wrap">
-      <span style="min-width:120px">Display name</span>
-      <input type="text" id="customSiteName" placeholder="e.g. Model searcher" style="flex:1;min-width:200px;padding:6px 8px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:13px" />
-    </label>
-    <label class="row" style="flex-wrap:wrap;margin-top:8px">
-      <span style="min-width:120px">Search URL</span>
-      <input type="text" id="customSiteUrl" placeholder="https://…?q={username}" style="flex:1;min-width:240px;padding:6px 8px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:13px" />
-    </label>
-    <label class="row" style="flex-wrap:wrap;margin-top:8px">
-      <span style="min-width:120px">Category</span>
-      <input type="text" id="customSiteCat" placeholder="custom (optional)" style="flex:1;min-width:160px;padding:6px 8px;background:#313244;color:#cdd6f4;border:1px solid #45475a;border-radius:4px;font-size:13px" />
-    </label>
-    <button type="button" id="btnAddCustomSite" style="margin-top:10px;padding:8px 14px;border:none;border-radius:6px;background:#89b4fa;color:#1e1e2e;cursor:pointer;font-size:13px">
-      Add source
-    </button>
-  </fieldset>
 
-  <h2>Sources</h2>
-  <p class="sub" style="margin:0 0 10px">Toggle sources on or off. Only enabled sources appear in the context menu.</p>
-  <div id="siteFields"></div>
-  <p id="status"></p>
-  <p class="footer">
-    Built‑in list: <code>extension/model-search-sites.json</code>. Custom sources are stored in this browser. Reload the extension after editing the JSON file.
-  </p>
+    <h2>Open results as</h2>
+    <fieldset class="modes">
+      <legend>Layout</legend>
+      <label>
+        <input type="radio" name="openMode" value="foreground" />
+        New tabs (first tab focused)
+        <span class="desc">Opens one tab per source; first tab is active.</span>
+      </label>
+      <label>
+        <input type="radio" name="openMode" value="background" />
+        Background tabs
+        <span class="desc">Opens all sources in new tabs without switching away from the current page.</span>
+      </label>
+    </fieldset>
 
-  <section class="split" id="reverse">
+    <h2>Add a source</h2>
+    <fieldset>
+      <legend>Custom search URL</legend>
+      <p class="sub" style="margin:0 0 10px">
+        Paste the URL from the address bar <strong>after</strong> you run a manual search on that site (so you get the real query format). Put <code>{username}</code> where the search term goes — often
+        <code>?q={username}</code> or <code>&amp;query={username}</code>, not a guessed path like <code>/artists/name</code> (many sites 404 on those).
+      </p>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:120px">Display name</span>
+        <input type="text" id="customSiteName" class="tbcc-input" placeholder="e.g. Model searcher" style="min-width:200px" />
+      </label>
+      <label class="row" style="flex-wrap:wrap;margin-top:8px">
+        <span style="min-width:120px">Search URL</span>
+        <input type="text" id="customSiteUrl" class="tbcc-input" placeholder="https://…?q={username}" style="min-width:240px" />
+      </label>
+      <label class="row" style="flex-wrap:wrap;margin-top:8px">
+        <span style="min-width:120px">Category</span>
+        <input type="text" id="customSiteCat" class="tbcc-input" placeholder="custom (optional)" style="min-width:160px" />
+      </label>
+      <button type="button" id="btnAddCustomSite" class="tbcc-btn-primary">Add source</button>
+    </fieldset>
+
+    <h2>Sources</h2>
+    <p class="sub" style="margin:0 0 10px">Toggle sources on or off. Only enabled sources appear in the context menu.</p>
+    <div id="siteFields"></div>
+    <p id="status"></p>
+    <p class="footer">
+      Built‑in list: <code>extension/model-search-sites.json</code>. Custom sources are stored in this browser. Reload the extension after editing the JSON file.
+    </p>
+  </section>
+
+  <section id="reverse" class="card tbcc-options-section tbcc-options-split">
     <h1>Reverse image search</h1>
     <p class="sub">
       Right-click an <strong>image</strong> → <strong>Reverse image search (fan-out)</strong>. Engines take a
@@ -227,11 +121,6 @@
     <h2>Open results as</h2>
     <fieldset class="modes">
       <legend>Layout</legend>
-      <label>
-        <input type="radio" name="openModeReverse" value="dashboard" />
-        Single dashboard tab (grid)
-        <span class="desc">One tab with panels; many engines block iframes — use Open ↗.</span>
-      </label>
       <label>
         <input type="radio" name="openModeReverse" value="foreground" />
         New tabs (first focused)
@@ -251,6 +140,7 @@
     </p>
   </section>
 
+  <script src="gallery-capture-options.js"></script>
   <script src="model-search-shared.js"></script>
   <script src="model-search-options.js"></script>
 </body>

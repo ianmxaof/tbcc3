@@ -146,14 +146,24 @@ async def send_shop_promo(update: Any, context: Any) -> None:
 
     if not sub_img_url:
         for p in subs:
-            u = (p.get("promo_image_url") or "").strip()
+            urls = p.get("promo_image_urls")
+            u = ""
+            if isinstance(urls, list) and urls:
+                u = str(urls[0] or "").strip()
+            if not u:
+                u = (p.get("promo_image_url") or "").strip()
             if u:
                 sub_img_url = u
                 break
 
     if not pack_img_url:
         for p in bundles:
-            u = (p.get("promo_image_url") or "").strip()
+            urls = p.get("promo_image_urls")
+            u = ""
+            if isinstance(urls, list) and urls:
+                u = str(urls[0] or "").strip()
+            if not u:
+                u = (p.get("promo_image_url") or "").strip()
             if u:
                 pack_img_url = u
                 break
