@@ -22,6 +22,12 @@ class ScheduledTextPost(Base):
     # Per-job overrides when pool_id is set (if NULL, use ContentPool.album_size / randomize_queue)
     album_size = Column(Integer, nullable=True)
     pool_randomize = Column(Boolean, nullable=True)
+    # If True, ignore explicit media/promos and always pull this job's batch from pool_id.
+    pool_only_mode = Column(Boolean, nullable=False, default=False)
+    # Telegram send: no notification sound / fewer push interruptions for subscribers.
+    send_silent = Column(Boolean, nullable=False, default=False)
+    # After a successful send, pin the channel post (first album message). Requires pin rights.
+    pin_after_send = Column(Boolean, nullable=False, default=False)
     # JSON list of caption strings; when 2+ entries, rotate in order each time the job posts
     content_variations = Column(Text, nullable=True)
     caption_rotation_index = Column(Integer, nullable=True)  # advances after each send; NULL starts at variation 0

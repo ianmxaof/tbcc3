@@ -1,16 +1,27 @@
 import logging
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database.session import get_db
 from app.schemas.common import orm_to_dict
 from app.models.channel import Channel
+from app.models.content_pool import ContentPool
+from app.models.scheduled_text_post import ScheduledTextPost
+from app.models.subscription_plan import SubscriptionPlan
+from app.services.pool_cleanup import cascade_delete_pool
 from app.services.telegram_admin import get_telegram_client
 from telethon import functions
 
 logger = logging.getLogger(__name__)
+
+
+class ChannelPinBody(BaseModel):
+    """Pin or unpin a message in the channel/supergroup (Telegram message id from that chat)."""
+
+    message_id: int
+    unpin: bool = False
 
 router = APIRouter()
 
@@ -74,6 +85,39 @@ async def list_channel_forum_topics(channel_id: int, db: Session = Depends(get_d
     return {"topics": topics, "error": None}
 
 
+@router.post("/{channel_id}/pin-message")
+async def pin_channel_message(channel_id: int, body: ChannelPinBody, db: Session = Depends(get_db)):
+    """
+    Pin a post by numeric Telegram message id (visible in message links or client “Copy link”).
+    Requires the admin session to have pin rights in that chat. Use unpin=true to remove that pin.
+    """
+    ch = db.query(Channel).filter(Channel.id == channel_id).first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    try:
+        client = await get_telegram_client()
+    except Exception as e:
+        logger.warning("pin-message: no telegram client: %s", e)
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    try:
+        entity = await client.get_input_entity(ch.identifier)
+        if body.unpin:
+            await client(
+                functions.messages.UpdatePinnedMessageRequest(
+                    peer=entity,
+                    id=body.message_id,
+                    unpin=True,
+                    silent=True,
+                )
+            )
+        else:
+            await client.pin_message(entity, body.message_id, notify=False)
+    except Exception as e:
+        logger.info("pin-message failed channel_id=%s: %s", channel_id, e)
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "error": None}
+
+
 @router.get("/{channel_id}")
 def get_channel(channel_id: int, db: Session = Depends(get_db)):
     ch = db.query(Channel).filter(Channel.id == channel_id).first()
@@ -108,3 +152,25 @@ def update_channel(channel_id: int, data: dict = Body(...), db: Session = Depend
     db.commit()
     db.refresh(ch)
     return orm_to_dict(ch)
+
+
+@router.delete("/{channel_id}")
+def delete_channel(channel_id: int, db: Session = Depends(get_db)):
+    ch = db.query(Channel).filter(Channel.id == channel_id).first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    pool_rows = db.query(ContentPool).filter(ContentPool.channel_id == channel_id).all()
+    removed_pool_ids: list[int] = []
+    for p in pool_rows:
+        pid = int(p.id)
+        if cascade_delete_pool(db, pid):
+            removed_pool_ids.append(pid)
+    db.query(ScheduledTextPost).filter(ScheduledTextPost.channel_id == channel_id).delete(
+        synchronize_session=False
+    )
+    db.query(SubscriptionPlan).filter(SubscriptionPlan.channel_id == channel_id).update(
+        {SubscriptionPlan.channel_id: None}, synchronize_session=False
+    )
+    db.delete(ch)
+    db.commit()
+    return {"deleted": channel_id, "pools_removed": removed_pool_ids}

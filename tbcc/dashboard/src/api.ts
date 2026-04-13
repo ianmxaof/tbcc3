@@ -1,7 +1,16 @@
-const API_BASE = "/api";
+/**
+ * Default `/api` is rewritten by Vite to the TBCC backend (see vite.config.ts).
+ * For static hosting without a proxy, set e.g. `VITE_API_BASE=http://127.0.0.1:8000` at build time.
+ */
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
 
 /** Avoid infinite “Loading…” if the backend or DB never responds (default fetch has no timeout). */
 const FETCH_TIMEOUT_MS = 30_000;
+/** Bulk writes can wait behind SQLite + many parallel thumbnail reads — allow longer per chunk. */
+const BULK_PATCH_TIMEOUT_MS = 300_000;
+const BULK_MEDIA_CHUNK_SIZE = 15;
+/** Yield between chunks so thumbnail / other API traffic can finish and release SQLite locks. */
+const BULK_CHUNK_GAP_MS = 200;
 
 function timeoutSignal(ms: number): AbortSignal {
   if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
@@ -11,6 +20,8 @@ function timeoutSignal(ms: number): AbortSignal {
   setTimeout(() => c.abort(), ms);
   return c.signal;
 }
+
+type ApiFetchOptions = RequestInit & { timeoutMs?: number };
 
 /** FastAPI returns `{ "detail": "..." }` or validation arrays — avoid raw JSON in UI. */
 function parseFastApiErrorBody(text: string): string {
@@ -33,20 +44,22 @@ function parseFastApiErrorBody(text: string): string {
   return raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
 }
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+async function fetchApi<T>(path: string, options?: ApiFetchOptions): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const { timeoutMs: _omit, ...fetchInit } = options ?? {};
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
-      ...options,
-      signal: options?.signal ?? timeoutSignal(FETCH_TIMEOUT_MS),
-      headers: { "Content-Type": "application/json", ...options?.headers },
+      ...fetchInit,
+      signal: fetchInit.signal ?? timeoutSignal(timeoutMs),
+      headers: { "Content-Type": "application/json", ...fetchInit.headers },
     });
   } catch (e) {
     const msg =
       e instanceof DOMException && e.name === "AbortError"
-        ? `Request timed out after ${FETCH_TIMEOUT_MS / 1000}s. Is the API up (port 8000) and the database reachable?`
+        ? `Request timed out after ${timeoutMs / 1000}s. Is the API up (port 8000) and the database reachable? If you bulk-approved many items, try again (requests are now sent in smaller batches).`
         : e instanceof TypeError && e.message === "Failed to fetch"
-          ? "Cannot reach backend. Is it running on http://localhost:8000?"
+          ? "Cannot reach backend. Use `npm run dev` (Vite proxies /api → port 8000), or set VITE_API_BASE to your API URL when serving a static build."
           : String(e);
     throw new Error(msg);
   }
@@ -54,8 +67,18 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+/** Many TBCC endpoints return HTTP 200 with `{ "error": "..." }` — treat as failure for mutations. */
+function throwIfBodyError<T extends object>(data: T): T {
+  if (data && typeof data === "object" && "error" in data && (data as { error?: unknown }).error) {
+    throw new Error(String((data as { error: unknown }).error));
+  }
+  return data;
+}
+
 export const api = {
   health: () => fetchApi<{ status: string }>("/health"),
+  healthDb: () =>
+    fetchApi<{ status?: string; database?: string; error?: string; detail?: string }>("/health/db"),
   media: {
     list: (
       statusOrOpts?: string | { status?: string; pool_id?: number; tag?: string; tag_slug?: string }
@@ -69,35 +92,87 @@ export const api = {
       const q = params.toString();
       return fetchApi<Array<Record<string, unknown>>>(q ? `/media?${q}` : "/media");
     },
-    get: (mediaId: number) => fetchApi<Record<string, unknown>>(`/media/${mediaId}`),
-    updateStatus: (mediaId: number, status: string) =>
-      fetchApi<Record<string, unknown>>(`/media/${mediaId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status }),
-      }),
-    patch: (mediaId: number, body: { status?: string; tags?: string; pool_id?: number; source_channel?: string | null }) =>
-      fetchApi<Record<string, unknown>>(`/media/${mediaId}`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      }),
-    updateStatusBulk: (ids: number[], status: string) =>
-      fetchApi<{ updated: number }>(`/media/bulk`, {
-        method: "PATCH",
-        body: JSON.stringify({ ids, status }),
-      }),
-    bulkMovePool: (ids: number[], poolId: number) =>
-      fetchApi<{ updated: number; error?: string; skipped_duplicate_in_target_pool?: number }>(
-        `/media/bulk/move-pool`,
-        {
+    get: async (mediaId: number) =>
+      throwIfBodyError(await fetchApi<Record<string, unknown>>(`/media/${mediaId}`)),
+    updateStatus: async (mediaId: number, status: string) =>
+      throwIfBodyError(
+        await fetchApi<Record<string, unknown>>(`/media/${mediaId}`, {
           method: "PATCH",
-          body: JSON.stringify({ ids, pool_id: poolId }),
-        }
+          body: JSON.stringify({ status }),
+        })
       ),
-    bulkSetTags: (ids: number[], tags: string) =>
-      fetchApi<{ updated: number; error?: string }>(`/media/bulk/tags`, {
-        method: "PATCH",
-        body: JSON.stringify({ ids, tags }),
-      }),
+    patch: async (mediaId: number, body: { status?: string; tags?: string; pool_id?: number; source_channel?: string | null }) =>
+      throwIfBodyError(
+        await fetchApi<Record<string, unknown>>(`/media/${mediaId}`, {
+          method: "PATCH",
+          body: JSON.stringify(body),
+        })
+      ),
+    /** Remove media row from TBCC (Telegram copy in Saved Messages is unchanged). */
+    delete: (mediaId: number) => fetchApi<{ deleted: number }>(`/media/${mediaId}`, { method: "DELETE" }),
+    updateStatusBulk: async (ids: number[], status: string) => {
+      if (ids.length === 0) return { updated: 0 };
+      let total = 0;
+      for (let i = 0; i < ids.length; i += BULK_MEDIA_CHUNK_SIZE) {
+        if (i > 0) {
+          await new Promise((r) => setTimeout(r, BULK_CHUNK_GAP_MS));
+        }
+        const slice = ids.slice(i, i + BULK_MEDIA_CHUNK_SIZE);
+        const r = await fetchApi<{ updated: number; error?: string }>(`/media/bulk`, {
+          method: "PATCH",
+          body: JSON.stringify({ ids: slice, status }),
+          timeoutMs: BULK_PATCH_TIMEOUT_MS,
+        });
+        if (r.error) throw new Error(r.error);
+        total += r.updated;
+      }
+      if (total === 0) {
+        throw new Error("No media rows were updated (invalid ids or status, or database error).");
+      }
+      return { updated: total };
+    },
+    bulkMovePool: async (ids: number[], poolId: number) => {
+      if (ids.length === 0) return { updated: 0, skipped_duplicate_in_target_pool: 0 };
+      let updated = 0;
+      let skipped = 0;
+      for (let i = 0; i < ids.length; i += BULK_MEDIA_CHUNK_SIZE) {
+        if (i > 0) {
+          await new Promise((r) => setTimeout(r, BULK_CHUNK_GAP_MS));
+        }
+        const slice = ids.slice(i, i + BULK_MEDIA_CHUNK_SIZE);
+        const r = await fetchApi<{
+          updated: number;
+          error?: string;
+          skipped_duplicate_in_target_pool?: number;
+        }>(`/media/bulk/move-pool`, {
+          method: "PATCH",
+          body: JSON.stringify({ ids: slice, pool_id: poolId }),
+          timeoutMs: BULK_PATCH_TIMEOUT_MS,
+        });
+        if (r.error) throw new Error(r.error);
+        updated += r.updated;
+        skipped += r.skipped_duplicate_in_target_pool ?? 0;
+      }
+      return { updated, skipped_duplicate_in_target_pool: skipped };
+    },
+    bulkSetTags: async (ids: number[], tags: string) => {
+      if (ids.length === 0) return { updated: 0 };
+      let total = 0;
+      for (let i = 0; i < ids.length; i += BULK_MEDIA_CHUNK_SIZE) {
+        if (i > 0) {
+          await new Promise((r) => setTimeout(r, BULK_CHUNK_GAP_MS));
+        }
+        const slice = ids.slice(i, i + BULK_MEDIA_CHUNK_SIZE);
+        const r = await fetchApi<{ updated: number; error?: string }>(`/media/bulk/tags`, {
+          method: "PATCH",
+          body: JSON.stringify({ ids: slice, tags }),
+          timeoutMs: BULK_PATCH_TIMEOUT_MS,
+        });
+        if (r.error) throw new Error(r.error);
+        total += r.updated;
+      }
+      return { updated: total };
+    },
     thumbnailUrl: (id: number) => `${API_BASE}/media/${id}/thumbnail`,
     /** Full bytes (Telegram download or URL proxy) — use in lightbox / video src. */
     fileUrl: (id: number) => `${API_BASE}/media/${id}/file`,
@@ -122,6 +197,7 @@ export const api = {
       channel_id: number;
       album_size?: number;
       interval_minutes?: number;
+      auto_post_enabled?: boolean;
       randomize_queue?: boolean;
     }) => fetchApi<Record<string, unknown>>("/pools", { method: "POST", body: JSON.stringify(body) }),
     update: (
@@ -131,10 +207,13 @@ export const api = {
         channel_id: number;
         album_size: number;
         interval_minutes: number;
+        auto_post_enabled: boolean;
         randomize_queue: boolean;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/pools/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deletePool: (id: number) =>
+      fetchApi<{ deleted: number }>(`/pools/${id}`, { method: "DELETE" }),
   },
   forum: {
     postAlbum: (body: {
@@ -237,10 +316,20 @@ export const api = {
       id: number,
       body: Partial<{ name: string; identifier: string; invite_link: string | null; webhook_url: string | null }>
     ) => fetchApi<Record<string, unknown>>(`/channels/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deleteChannel: (id: number) =>
+      fetchApi<{ deleted: number; pools_removed: number[] }>(`/channels/${id}`, { method: "DELETE" }),
     /** Forum-enabled supergroups only — topic `id` is message_thread_id for scheduled posts */
     forumTopics: (channelId: number) =>
       fetchApi<{ topics: Array<{ id: number; title: string }>; error?: string | null }>(
         `/channels/${channelId}/forum-topics`
+      ),
+    /** Pin or unpin by Telegram message id in that channel (admin session needs pin rights). */
+    pinMessage: async (channelId: number, body: { message_id: number; unpin?: boolean }) =>
+      throwIfBodyError(
+        await fetchApi<{ ok?: boolean; error?: string | null }>(`/channels/${channelId}/pin-message`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        })
       ),
   },
   bots: { list: () => fetchApi<Array<Record<string, unknown>>>("/bots") },
@@ -448,6 +537,7 @@ export const api = {
       buttons?: Array<{ text: string; url: string }>;
       album_size?: number;
       pool_randomize?: boolean;
+      pool_only_mode?: boolean;
       /** 2+ strings: captions rotate each run (e.g. hourly A, B, A, …) */
       content_variations?: string[];
       /** Dashboard promo images (/static/promo/…) — same upload as Bot Shop; not Media Library */
@@ -455,6 +545,8 @@ export const api = {
       /** Per-caption albums: { attachment_urls?: string[]; media_ids?: number[] }[] */
       album_variants?: Array<{ attachment_urls?: string[]; media_ids?: number[] }>;
       album_order_mode?: "static" | "shuffle" | "carousel";
+      send_silent?: boolean;
+      pin_after_send?: boolean;
     }) =>
       fetchApi<Record<string, unknown>>("/scheduled-posts", { method: "POST", body: JSON.stringify(body) }),
     update: (
@@ -472,10 +564,13 @@ export const api = {
         buttons?: Array<{ text: string; url: string }>;
         album_size?: number | null;
         pool_randomize?: boolean | null;
+        pool_only_mode?: boolean | null;
         content_variations?: string[] | null;
         attachment_urls?: string[] | null;
         album_variants?: Array<{ attachment_urls?: string[]; media_ids?: number[] }> | null;
         album_order_mode?: "static" | "shuffle" | "carousel" | null;
+        send_silent?: boolean | null;
+        pin_after_send?: boolean | null;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/scheduled-posts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

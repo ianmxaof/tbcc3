@@ -47,6 +47,14 @@ def on_startup():
                             )
                         )
                     logger.info("SQLite: added content_pools.randomize_queue (dev migration)")
+                if "auto_post_enabled" not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN auto_post_enabled BOOLEAN NOT NULL DEFAULT 1"
+                            )
+                        )
+                    logger.info("SQLite: added content_pools.auto_post_enabled (dev migration)")
             if "subscription_plans" in inspector.get_table_names():
                 sp_cols = {c["name"] for c in inspector.get_columns("subscription_plans")}
                 with engine.begin() as conn:
@@ -132,6 +140,27 @@ def on_startup():
                             text("ALTER TABLE scheduled_text_posts ADD COLUMN album_carousel_index INTEGER")
                         )
                         logger.info("SQLite: added scheduled_text_posts.album_carousel_index (dev migration)")
+                    if "pool_only_mode" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN pool_only_mode BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.pool_only_mode (dev migration)")
+                    if "send_silent" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN send_silent BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.send_silent (dev migration)")
+                    if "pin_after_send" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN pin_after_send BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.pin_after_send (dev migration)")
             if "subscriptions" in inspector.get_table_names():
                 sub_cols = {c["name"] for c in inspector.get_columns("subscriptions")}
                 if "telegram_payment_charge_id" not in sub_cols:
@@ -155,11 +184,41 @@ def on_startup():
             "Postgres (or non-SQLite): tables are not auto-created here. "
             "If API returns UndefinedTable, run: cd backend && python -m alembic upgrade head"
         )
+        # Keep Postgres dev/prod resilient when model columns are added before alembic is applied.
+        try:
+            inspector = inspect(engine)
+            if "content_pools" in inspector.get_table_names():
+                cp_cols = {c["name"] for c in inspector.get_columns("content_pools")}
+                if "auto_post_enabled" not in cp_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN auto_post_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added content_pools.auto_post_enabled (startup migration)"
+                    )
+        except Exception:
+            logger.exception(
+                "PostgreSQL: could not add content_pools.auto_post_enabled — run: "
+                "cd backend && alembic upgrade head"
+            )
         # Same as Alembic 026: scheduled promo URLs (dashboard) — many deployments skip alembic upgrade.
         try:
             inspector = inspect(engine)
             if "scheduled_text_posts" in inspector.get_table_names():
                 st_cols = {c["name"] for c in inspector.get_columns("scheduled_text_posts")}
+                if "pool_only_mode" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN pool_only_mode BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.pool_only_mode (startup migration)"
+                    )
                 if "attachment_urls_json" not in st_cols:
                     with engine.begin() as conn:
                         conn.execute(
@@ -199,6 +258,26 @@ def on_startup():
                         )
                     logger.info(
                         "PostgreSQL: added scheduled_text_posts.album_carousel_index (startup migration)"
+                    )
+                if "send_silent" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN send_silent BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.send_silent (startup migration)"
+                    )
+                if "pin_after_send" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN pin_after_send BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.pin_after_send (startup migration)"
                     )
         except Exception:
             logger.exception(
@@ -272,6 +351,25 @@ def health():
         },
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
+
+
+@app.get("/health/db")
+def health_db():
+    """Quick DB connectivity check for dashboard / ops (does not require auth)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "database": "reachable"}
+    except Exception as e:
+        logger.exception("health_db check failed")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "database": "unreachable",
+                "detail": str(e),
+            },
+        )
 
 
 # Public promo images for /shop (Telegram send_photo URL must reach this from the internet in production)

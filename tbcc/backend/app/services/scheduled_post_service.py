@@ -64,6 +64,8 @@ def _resolve_variant_sources(post: ScheduledTextPost, slot: int) -> tuple[list[i
             structured = False
 
     variants = post.get_album_variants()
+    if bool(getattr(post, "pool_only_mode", False)) and post.pool_id:
+        return [], [], True
     if not variants:
         mids = post.get_media_ids()
         promo = post._urls_from_attachment_urls_json_column()
@@ -126,7 +128,9 @@ def _load_pool_media_items(
     else:
         randomize = bool(pool and getattr(pool, "randomize_queue", False))
     q = db.query(Media).filter(Media.pool_id == post.pool_id, Media.status == "approved")
-    if randomize and album_order_mode == "static":
+    # Randomize means random *selection* from the full approved pool.
+    # Album order mode (static/shuffle/carousel) is applied later to the selected batch.
+    if randomize:
         rows = q.all()
         random.shuffle(rows)
         return rows[:album_size]
@@ -212,13 +216,49 @@ def _build_reply_markup(buttons_data: list):
             if isinstance(btn, dict):
                 text = str(btn.get("text", "")).strip()
                 url = str(btn.get("url", "")).strip()
-                if text and url and url.startswith(("http://", "https://")):
+                if text and url and url.startswith(("http://", "https://", "tg://")):
                     btns.append(KeyboardButtonUrl(text=text, url=url))
         if btns:
             rows.append(KeyboardButtonRow(buttons=btns))
     if not rows:
         return None
     return ReplyInlineMarkup(rows=rows)
+
+
+def _send_options(post: ScheduledTextPost) -> dict:
+    if bool(getattr(post, "send_silent", False)):
+        return {"silent": True}
+    return {}
+
+
+def _primary_message_from_send(result):
+    if result is None:
+        return None
+    if isinstance(result, list):
+        return result[0] if result else None
+    return result
+
+
+async def _maybe_pin_after_send(
+    client: TelegramClient,
+    channel_identifier: str,
+    post: ScheduledTextPost,
+    sent_result,
+) -> None:
+    if not bool(getattr(post, "pin_after_send", False)):
+        return
+    msg = _primary_message_from_send(sent_result)
+    if msg is None:
+        logger.warning("pin_after_send: no message returned from Telegram for scheduled post id=%s", post.id)
+        return
+    try:
+        await client.pin_message(channel_identifier, msg, notify=False)
+    except Exception as e:
+        logger.warning(
+            "pin_after_send failed for scheduled post id=%s: %s",
+            getattr(post, "id", None),
+            e,
+        )
 
 
 def resolve_scheduled_caption(post: ScheduledTextPost) -> str:
@@ -246,11 +286,14 @@ async def send_scheduled_post(
     album_order_mode = _effective_album_order_mode(post)
     caption = resolve_scheduled_caption(post)
     reply_markup = _build_reply_markup(post.get_buttons())
+    silent_kw = _send_options(post)
     # Supergroups with topics: same as Bot API message_thread_id (extension gallery uses this too).
     reply_to = post.message_thread_id if getattr(post, "message_thread_id", None) else None
 
     mids, promo_urls, use_pool = _resolve_variant_sources(post, slot)
     media_items = _gather_media_items_for_send(post, db, mids, use_pool, album_order_mode)
+
+    sent_result = None
 
     if media_items:
         by_type = defaultdict(list)
@@ -304,37 +347,42 @@ async def send_scheduled_post(
                 f = send_medias[0]
                 f.seek(0)
                 uploaded = await client.upload_file(f)
-                await client.send_file(
+                sent_result = await client.send_file(
                     channel_identifier,
                     uploaded,
                     caption=caption or None,
                     buttons=reply_markup,
                     reply_to=reply_to,
                     force_document=False,
+                    **silent_kw,
                 )
             elif len(send_medias) == 1:
-                await client.send_file(
+                sent_result = await client.send_file(
                     channel_identifier,
                     send_medias[0],
                     caption=caption or None,
                     buttons=reply_markup,
                     reply_to=reply_to,
                     force_document=False,
+                    **silent_kw,
                 )
             else:
-                await client.send_file(
+                sent_result = await client.send_file(
                     channel_identifier,
                     send_medias,
                     caption=caption or None,
+                    buttons=reply_markup,
                     force_document=False,
                     reply_to=reply_to,
+                    **silent_kw,
                 )
         else:
-            await client.send_message(
+            sent_result = await client.send_message(
                 channel_identifier,
                 caption or "(no content)",
                 buttons=reply_markup,
                 reply_to=reply_to,
+                **silent_kw,
             )
     else:
         promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, post)
@@ -344,29 +392,34 @@ async def send_scheduled_post(
                 f = send_bufs[0]
                 f.seek(0)
                 uploaded = await client.upload_file(f)
-                await client.send_file(
+                sent_result = await client.send_file(
                     channel_identifier,
                     uploaded,
                     caption=caption or None,
                     buttons=reply_markup,
                     reply_to=reply_to,
                     force_document=False,
+                    **silent_kw,
                 )
             else:
                 for b in send_bufs:
                     b.seek(0)
-                await client.send_file(
+                sent_result = await client.send_file(
                     channel_identifier,
                     send_bufs,
                     caption=caption or None,
                     buttons=reply_markup,
                     force_document=False,
                     reply_to=reply_to,
+                    **silent_kw,
                 )
         else:
-            await client.send_message(
+            sent_result = await client.send_message(
                 channel_identifier,
                 caption or "(no content)",
                 buttons=reply_markup,
                 reply_to=reply_to,
+                **silent_kw,
             )
+
+    await _maybe_pin_after_send(client, channel_identifier, post, sent_result)

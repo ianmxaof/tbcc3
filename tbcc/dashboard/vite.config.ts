@@ -11,6 +11,9 @@ function tbccApiProxy(env: Record<string, string>) {
   return {
     target: "http://127.0.0.1:8000",
     changeOrigin: true,
+    /** Default proxy timeouts are too low when SQLite is busy (bulk approve vs many thumbnails). */
+    timeout: 600_000,
+    proxyTimeout: 600_000,
     rewrite: (p: string) => p.replace(/^\/api/, ""),
     configure: (proxy: { on: (ev: string, fn: (...args: unknown[]) => void) => void }) => {
       proxy.on("proxyReq", (proxyReq: { setHeader: (k: string, v: string) => void }) => {

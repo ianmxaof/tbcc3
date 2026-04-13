@@ -12,6 +12,7 @@ type Props = {
 
 export function MediaGalleryModal({ items, openIndex, onClose, onIndexChange }: Props) {
   const [zoom, setZoom] = useState(1);
+  const [mediaLoadError, setMediaLoadError] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const fsWrapRef = useRef<HTMLDivElement>(null);
 
@@ -47,10 +48,12 @@ export function MediaGalleryModal({ items, openIndex, onClose, onIndexChange }: 
     return () => el.removeEventListener("wheel", wheel);
   }, [openIndex, items.length, onIndexChange]);
 
-  if (openIndex == null || items.length === 0) return null;
-
-  const current = items[openIndex];
-  if (!current) return null;
+  const current = openIndex != null && items.length > 0 ? items[openIndex] : null;
+  const currentId = current ? current.id : null;
+  useEffect(() => {
+    setMediaLoadError(null);
+  }, [currentId]);
+  if (!current || openIndex == null || items.length === 0) return null;
 
   const fileUrl = api.media.fileUrl(current.id);
   const mt = String(current.media_type || "").toLowerCase();
@@ -115,15 +118,29 @@ export function MediaGalleryModal({ items, openIndex, onClose, onIndexChange }: 
           }}
         >
           {isVideo ? (
-            <video src={fileUrl} controls className="max-w-[min(100vw,96rem)] max-h-[85vh] rounded shadow-lg" playsInline />
+            <video
+              key={`video-${current.id}`}
+              src={fileUrl}
+              controls
+              className="max-w-[min(100vw,96rem)] max-h-[85vh] rounded shadow-lg"
+              playsInline
+              onError={() => setMediaLoadError("Video failed to load from API")}
+            />
           ) : (
             <img
+              key={`img-${current.id}`}
               src={fileUrl}
               alt=""
               className="max-w-[min(100vw,96rem)] max-h-[85vh] object-contain rounded shadow-lg select-none"
               draggable={false}
+              onError={() => setMediaLoadError("Image failed to load from API")}
             />
           )}
+          {mediaLoadError ? (
+            <div className="mt-3 text-xs text-red-300 bg-red-950/40 border border-red-800 rounded px-3 py-2">
+              {mediaLoadError}. Open <a className="underline" href={fileUrl} target="_blank" rel="noreferrer">raw file</a>.
+            </div>
+          ) : null}
         </div>
       </div>
       <p className="text-center text-slate-500 text-xs py-2 shrink-0 bg-slate-900/80">

@@ -68,6 +68,25 @@ function datetimeLocalToIso(local: string): string {
   return d.toISOString();
 }
 
+function parseButtonsFromPost(p: Record<string, unknown>): Array<{ text: string; url: string }> {
+  const b = p.buttons;
+  const fromArr = (arr: unknown[]) =>
+    arr
+      .filter((x): x is Record<string, unknown> => typeof x === "object" && x != null)
+      .map((o) => ({ text: String(o.text ?? "").trim(), url: String(o.url ?? "").trim() }))
+      .filter((x) => x.text && x.url);
+  if (Array.isArray(b)) return fromArr(b);
+  if (typeof b === "string" && b.trim()) {
+    try {
+      const j = JSON.parse(b) as unknown;
+      if (Array.isArray(j)) return fromArr(j);
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
 type Props = {
   /** Only show recurring (interval) jobs — e.g. on Subscriptions tab */
   compactRecurringOnly?: boolean;
@@ -86,6 +105,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const [editScheduledAt, setEditScheduledAt] = useState("");
   const [editAlbumSize, setEditAlbumSize] = useState(5);
   const [editRandomize, setEditRandomize] = useState(false);
+  const [editPoolOnlyMode, setEditPoolOnlyMode] = useState(true);
   const [editMessageThreadId, setEditMessageThreadId] = useState<number | null>(null);
   /** Pool for media picker + uploads (0 = any pool / no pool auto-pick) */
   const [editPoolId, setEditPoolId] = useState(0);
@@ -95,6 +115,10 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     { attachment_urls: [], media_ids: [] },
   ]);
   const [editAlbumOrderMode, setEditAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
+  const [editButtons, setEditButtons] = useState<Array<{ text: string; url: string }>>([]);
+  const [editSendSilent, setEditSendSilent] = useState(false);
+  const [editPinAfterSend, setEditPinAfterSend] = useState(false);
+  const [triggerNotice, setTriggerNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   const { data: pools = [] } = useQuery({
     queryKey: ["pools"],
@@ -147,7 +171,16 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
 
   const triggerScheduledPost = useMutation({
     mutationFn: (id: number) => api.scheduledPosts.trigger(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      setTriggerNotice({
+        kind: "ok",
+        text: `Post #${id} queued — Celery will send shortly. Watch Telegram (and server logs if it fails).`,
+      });
+    },
+    onError: (e: Error, id) => {
+      setTriggerNotice({ kind: "err", text: `Post #${id}: ${e.message}` });
+    },
   });
 
   const uploadToPoolEdit = useMutation({
@@ -186,6 +219,12 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     setEditAlbumVariants((prev) => padAlbumVariants(prev, editVariations.length));
   }, [editOpen, editVariations.length]);
 
+  useEffect(() => {
+    if (!triggerNotice) return;
+    const t = setTimeout(() => setTriggerNotice(null), 8000);
+    return () => clearTimeout(t);
+  }, [triggerNotice]);
+
   function openEditor(p: Record<string, unknown>) {
     setEditing(p);
     setEditName(String(p.name || ""));
@@ -203,6 +242,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     const poolDefaultAlbum = Number(pool?.album_size ?? 5);
     setEditAlbumSize(p.album_size != null ? Number(p.album_size) : poolDefaultAlbum);
     setEditRandomize(p.pool_randomize != null ? Boolean(p.pool_randomize) : !!pool?.randomize_queue);
+    setEditPoolOnlyMode(p.pool_only_mode != null ? Boolean(p.pool_only_mode) : true);
     setEditMessageThreadId(
       p.message_thread_id != null && p.message_thread_id !== undefined ? Number(p.message_thread_id) : null
     );
@@ -211,6 +251,9 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     const { variants: avFromApi, order: ordFromApi } = parseAlbumVariantsFromPost(p);
     setEditAlbumVariants(padAlbumVariants(avFromApi, cap));
     setEditAlbumOrderMode(ordFromApi);
+    setEditButtons(parseButtonsFromPost(p));
+    setEditSendSilent(Boolean(p.send_silent));
+    setEditPinAfterSend(Boolean(p.pin_after_send));
     setEditUploadMsg(null);
     setEditOpen(true);
   }
@@ -234,6 +277,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       media_ids: [],
       album_variants: av,
       album_order_mode: editAlbumOrderMode,
+      pool_only_mode: editPoolId > 0 ? editPoolOnlyMode : false,
     };
     if (trimmed.length >= 2) {
       body.content_variations = trimmed;
@@ -253,6 +297,11 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       body.album_size = null;
       body.pool_randomize = null;
     }
+    body.buttons = editButtons.some((b) => b.text.trim() && b.url.trim())
+      ? editButtons.filter((b) => b.text.trim() && b.url.trim())
+      : [];
+    body.send_silent = editSendSilent;
+    body.pin_after_send = editPinAfterSend;
     await updateScheduled.mutateAsync({ id, body });
     setEditOpen(false);
     setEditing(null);
@@ -387,6 +436,61 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     </label>
                   )
                 )}
+                <div>
+                  <span className="text-slate-400 text-sm block mb-1">Inline buttons (https or tg://)</span>
+                  {editButtons.map((b, i) => (
+                    <div key={i} className="flex gap-2 mb-2">
+                      <input
+                        placeholder="Label"
+                        value={b.text}
+                        onChange={(e) =>
+                          setEditButtons((prev) => prev.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))
+                        }
+                        className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-sm"
+                      />
+                      <input
+                        placeholder="URL"
+                        value={b.url}
+                        onChange={(e) =>
+                          setEditButtons((prev) => prev.map((x, j) => (j === i ? { ...x, url: e.target.value } : x)))
+                        }
+                        className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setEditButtons((prev) => prev.filter((_, j) => j !== i))}
+                        className="px-2 py-1 text-red-400 hover:bg-red-900/30 rounded"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setEditButtons((prev) => [...prev, { text: "", url: "" }])}
+                    className="text-sm text-cyan-400 hover:text-cyan-300"
+                  >
+                    + Add button
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2 pt-1 border-t border-slate-600/50">
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editSendSilent}
+                      onChange={(e) => setEditSendSilent(e.target.checked)}
+                    />
+                    Silent send
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editPinAfterSend}
+                      onChange={(e) => setEditPinAfterSend(e.target.checked)}
+                    />
+                    Pin after send
+                  </label>
+                </div>
               </div>
               <div className="space-y-2 min-w-0">
                 <label className="block text-slate-400 text-xs mb-1">Album order (promo + picked media)</label>
@@ -450,6 +554,14 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                           onChange={(e) => setEditRandomize(e.target.checked)}
                         />
                         Randomize pool picks
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={editPoolOnlyMode}
+                          onChange={(e) => setEditPoolOnlyMode(e.target.checked)}
+                        />
+                        Pool-only mode (ignore picked media/promos)
                       </label>
                     </div>
                   </div>
@@ -526,7 +638,10 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                 ))}
                 <p className="text-slate-500 text-xs mt-1">
                   {editAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} media pick(s) across caption(s). If{" "}
-                  <strong>pool</strong> is set and a caption has no picks, that run uses the pool batch.
+                  <strong>pool</strong> is set
+                  {editPoolId > 0 && editPoolOnlyMode
+                    ? ", pool-only mode is ON and this job always uses pool batch."
+                    : " and a caption has no picks, that run uses the pool batch."}
                 </p>
               </div>
             </div>
@@ -551,6 +666,16 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {triggerNotice && (
+        <div
+          className={`mb-3 px-3 py-2 rounded text-sm ${
+            triggerNotice.kind === "ok" ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"
+          }`}
+        >
+          {triggerNotice.text}
         </div>
       )}
 
@@ -585,6 +710,12 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
               const attUrls = Array.isArray(p.attachment_urls)
                 ? (p.attachment_urls as string[]).filter((x) => String(x).trim())
                 : [];
+              const btnCount = parseButtonsFromPost(p).length;
+              const flags = [
+                p.send_silent ? "silent" : null,
+                p.pin_after_send ? "pin after" : null,
+                btnCount ? `${btnCount} btn` : null,
+              ].filter(Boolean);
               return (
                 <tr
                   key={String(p.id)}
@@ -634,6 +765,9 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     {attUrls.length > 0 ? (
                       <span className="text-slate-500 text-xs ml-1">({attUrls.length} promo)</span>
                     ) : null}
+                    {flags.length > 0 ? (
+                      <span className="block text-slate-500 text-xs mt-1">{flags.join(" · ")}</span>
+                    ) : null}
                   </td>
                   <td className="p-3">
                     {recurring ? (
@@ -671,7 +805,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={8} className="p-4 text-slate-500 text-center">
+                <td colSpan={7} className="p-4 text-slate-500 text-center">
                   {compactRecurringOnly ? "No recurring posting jobs." : "No scheduled posts."}
                 </td>
               </tr>

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -6,6 +6,7 @@ from app.database.session import get_db
 from app.schemas.common import orm_to_dict
 from app.models.content_pool import ContentPool
 from app.models.media import Media
+from app.services.pool_cleanup import cascade_delete_pool
 
 router = APIRouter()
 
@@ -15,6 +16,7 @@ class PoolCreate(BaseModel):
     channel_id: int
     album_size: int = 5
     interval_minutes: int = 60
+    auto_post_enabled: bool = True
     randomize_queue: bool = False
 
 
@@ -23,13 +25,12 @@ class PoolUpdate(BaseModel):
     channel_id: int | None = None
     album_size: int | None = None
     interval_minutes: int | None = None
+    auto_post_enabled: bool | None = None
     randomize_queue: bool | None = None
 
 
 @router.get("/")
 def list_pools(db: Session = Depends(get_db)):
-    from app.models.media import Media
-
     pools = db.query(ContentPool).all()
     result = []
     for p in pools:
@@ -55,6 +56,7 @@ def create_pool(body: PoolCreate, db: Session = Depends(get_db)):
         channel_id=body.channel_id,
         album_size=body.album_size,
         interval_minutes=body.interval_minutes,
+        auto_post_enabled=body.auto_post_enabled,
         randomize_queue=body.randomize_queue,
     )
     db.add(pool)
@@ -78,6 +80,8 @@ def update_pool(pool_id: int, body: PoolUpdate, db: Session = Depends(get_db)):
         p.album_size = body.album_size
     if body.interval_minutes is not None:
         p.interval_minutes = body.interval_minutes
+    if body.auto_post_enabled is not None:
+        p.auto_post_enabled = body.auto_post_enabled
     if body.randomize_queue is not None:
         p.randomize_queue = body.randomize_queue
     db.commit()
@@ -85,3 +89,11 @@ def update_pool(pool_id: int, body: PoolUpdate, db: Session = Depends(get_db)):
     d = orm_to_dict(p)
     d["approved_count"] = db.query(Media).filter(Media.pool_id == p.id, Media.status == "approved").count()
     return d
+
+
+@router.delete("/{pool_id}")
+def delete_pool(pool_id: int, db: Session = Depends(get_db)):
+    if not cascade_delete_pool(db, pool_id):
+        raise HTTPException(status_code=404, detail="Pool not found")
+    db.commit()
+    return {"deleted": pool_id}

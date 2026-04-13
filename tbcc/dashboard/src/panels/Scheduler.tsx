@@ -30,6 +30,7 @@ export function Scheduler() {
   const [poolId, setPoolId] = useState<number>(0);
   const [scheduleAlbumSize, setScheduleAlbumSize] = useState(5);
   const [schedulePoolRandomize, setSchedulePoolRandomize] = useState(false);
+  const [schedulePoolOnlyMode, setSchedulePoolOnlyMode] = useState(true);
   const [buttons, setButtons] = useState<Array<{ text: string; url: string }>>([]);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   /** null = post to main chat; number = Telegram forum topic id (message_thread_id) */
@@ -39,6 +40,12 @@ export function Scheduler() {
     { attachment_urls: [], media_ids: [] },
   ]);
   const [scheduleAlbumOrderMode, setScheduleAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
+  const [scheduleSendSilent, setScheduleSendSilent] = useState(false);
+  const [schedulePinAfterSend, setSchedulePinAfterSend] = useState(false);
+  const [pinToolChannelId, setPinToolChannelId] = useState(0);
+  const [pinToolMessageId, setPinToolMessageId] = useState("");
+  const [pinToolUnpin, setPinToolUnpin] = useState(false);
+  const [pinToolMsg, setPinToolMsg] = useState<string | null>(null);
 
   const { data: pools = [] } = useQuery({
     queryKey: ["pools"],
@@ -116,8 +123,11 @@ export function Scheduler() {
           ? {
               album_size: Math.min(10, Math.max(1, scheduleAlbumSize)),
               pool_randomize: schedulePoolRandomize,
+              pool_only_mode: schedulePoolOnlyMode,
             }
           : {}),
+        send_silent: scheduleSendSilent,
+        pin_after_send: schedulePinAfterSend,
       };
       if (trimmed.length >= 2) {
         base.content_variations = trimmed;
@@ -135,10 +145,28 @@ export function Scheduler() {
       setPoolId(0);
       setScheduleAlbumSize(5);
       setSchedulePoolRandomize(false);
+      setSchedulePoolOnlyMode(true);
       setButtons([]);
       setScheduleAlbumVariants([{ attachment_urls: [], media_ids: [] }]);
       setScheduleAlbumOrderMode("static");
+      setScheduleSendSilent(false);
+      setSchedulePinAfterSend(false);
     },
+  });
+
+  const pinToolMutation = useMutation({
+    mutationFn: async () => {
+      const mid = parseInt(pinToolMessageId.trim(), 10);
+      if (!pinToolChannelId || !Number.isFinite(mid) || mid <= 0) {
+        throw new Error("Select a channel and enter a valid Telegram message id.");
+      }
+      return api.channels.pinMessage(pinToolChannelId, { message_id: mid, unpin: pinToolUnpin });
+    },
+    onSuccess: () => {
+      setPinToolMsg(pinToolUnpin ? "Unpin request sent." : "Pin request sent.");
+      setTimeout(() => setPinToolMsg(null), 6000);
+    },
+    onError: (e: Error) => setPinToolMsg(e.message),
   });
 
   function toggleScheduleVariantMedia(variantIdx: number, id: number) {
@@ -168,7 +196,7 @@ export function Scheduler() {
     <div>
       <h1 className="text-2xl font-semibold mb-4">Scheduler</h1>
       <p className="text-slate-400 mb-6">
-        Pool posting runs every 5 minutes. Scheduled posts support one-time or recurring intervals.
+        Scheduled posts run by one-time time or recurring intervals.
         For <strong>forum supergroups</strong>, pick a <strong>topic</strong> so content goes to that subtopic (same as
         extension &quot;Forum topic&quot;).
       </p>
@@ -176,10 +204,9 @@ export function Scheduler() {
       <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-2xl">
         <h2 className="text-lg font-medium mb-2">Pool intervals</h2>
         <p className="text-slate-400 text-sm mb-3">
-          These schedules control automatic <strong>album</strong> posting from each pool&apos;s approved media to that
-          pool&apos;s <strong>linked channel</strong>. They are separate from <strong>Scheduled posts</strong> below
-          (text/caption jobs, including rotating captions). Times in this table are stored as{" "}
-          <strong>UTC</strong> — Telegram often shows your local time.
+          Each pool stores <strong>interval</strong> and album settings (see table). Autonomous pool posting is{" "}
+          <strong>off</strong> — use <strong>Scheduled posts</strong> below to publish. Times here are{" "}
+          <strong>UTC</strong>.
         </p>
         {chartData.length > 0 ? (
           <ResponsiveContainer width="100%" height={200}>
@@ -207,6 +234,7 @@ export function Scheduler() {
           <thead className="bg-slate-700">
             <tr>
               <th className="text-left p-3">Pool</th>
+              <th className="text-left p-3">Queued</th>
               <th className="text-left p-3">Interval (min)</th>
               <th className="text-left p-3">Last pool run (UTC)</th>
             </tr>
@@ -215,6 +243,11 @@ export function Scheduler() {
             {pools.map((p: Record<string, unknown>) => (
               <tr key={String(p.id)} className="border-t border-slate-600 hover:bg-slate-800/50">
                 <td className="p-3">{String(p.name)}</td>
+                <td className="p-3">
+                  <span className={Number(p.approved_count ?? 0) > 0 ? "text-cyan-300" : "text-slate-500"}>
+                    {String(p.approved_count ?? 0)}/{String(p.album_size ?? 5)}
+                  </span>
+                </td>
                 <td className="p-3">{String(p.interval_minutes)}</td>
                 <td
                   className="p-3 text-slate-400 text-sm"
@@ -242,7 +275,8 @@ export function Scheduler() {
 
       <h2 className="text-xl font-semibold mb-3">Scheduled Posts</h2>
       <p className="text-slate-400 mb-4">
-        Create text posts with optional media and inline buttons. One-time or recurring intervals.
+        Create text posts with optional media and inline URL buttons (including <code className="text-slate-300">tg://</code>{" "}
+        deep links). Albums now attach the same keyboard as single media. One-time or recurring intervals.
         For recurring, &quot;Post now&quot; starts the cycle from the current time. Add a second caption
         box to <strong>rotate captions</strong> in order each run (e.g. every hour: caption A, then B, then A…).
         Recurring jobs show <strong>last sent (UTC)</strong> in the Schedule column — use that to compare with Telegram
@@ -403,6 +437,10 @@ export function Scheduler() {
             </div>
             <div>
               <span className="text-slate-400 text-sm block mb-1">Inline buttons (text + URL)</span>
+              <p className="text-slate-500 text-xs mb-2">
+                Use <code className="text-slate-400">https://</code> or <code className="text-slate-400">tg://</code>{" "}
+                (e.g. link to your bot). Buttons apply to the whole album (caption sits on the first item).
+              </p>
               {buttons.map((b, i) => (
                 <div key={i} className="flex gap-2 mb-2">
                   <input
@@ -412,7 +450,7 @@ export function Scheduler() {
                     className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-sm"
                   />
                   <input
-                    placeholder="https://..."
+                    placeholder="https://… or tg://…"
                     value={b.url}
                     onChange={(e) => updateButton(i, "url", e.target.value)}
                     className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-sm"
@@ -433,6 +471,24 @@ export function Scheduler() {
               >
                 + Add button
               </button>
+              <div className="flex flex-col gap-2 pt-2 border-t border-slate-600/60 mt-2">
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={scheduleSendSilent}
+                    onChange={(e) => setScheduleSendSilent(e.target.checked)}
+                  />
+                  Silent send (no notification sound for subscribers)
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={schedulePinAfterSend}
+                    onChange={(e) => setSchedulePinAfterSend(e.target.checked)}
+                  />
+                  Pin this post after send (needs pin rights; pins first album message)
+                </label>
+              </div>
             </div>
           </div>
           <div>
@@ -493,6 +549,14 @@ export function Scheduler() {
                       onChange={(e) => setSchedulePoolRandomize(e.target.checked)}
                     />
                     Randomize pool picks
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={schedulePoolOnlyMode}
+                      onChange={(e) => setSchedulePoolOnlyMode(e.target.checked)}
+                    />
+                    Pool-only mode (ignore picked media/promos)
                   </label>
                 </div>
               </div>
@@ -556,8 +620,10 @@ export function Scheduler() {
               </div>
             ))}
             <p className="text-slate-500 text-xs mt-1">
-              {scheduleAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} media pick(s). If{" "}
-              <strong>pool</strong> is set and a caption has no picks, that run uses the pool batch.
+              {scheduleAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} media pick(s).{" "}
+              {poolId > 0 && schedulePoolOnlyMode
+                ? "Pool-only mode is ON: scheduler ignores picked media/promos and always uses pool batch."
+                : "If pool is set and a caption has no picks, that run uses the pool batch."}
             </p>
           </div>
         </div>
@@ -576,6 +642,60 @@ export function Scheduler() {
         >
           {createScheduledPost.isPending ? "Creating..." : "Schedule"}
         </button>
+      </div>
+
+      <div className="bg-slate-800 rounded-lg p-4 mb-8 max-w-2xl border border-slate-600/80">
+        <h3 className="text-lg font-medium mb-2">Pin a message in a channel</h3>
+        <p className="text-slate-400 text-sm mb-3">
+          Paste the numeric <strong>message id</strong> from the target chat (forward the post to{" "}
+          <code className="text-slate-300">@userinfobot</code>, or use a message link — the id is often in the URL).
+          Your admin Telegram session must be allowed to pin in that channel.
+        </p>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div className="flex-1 min-w-[10rem]">
+            <span className="text-slate-400 text-xs block mb-1">Channel</span>
+            <select
+              value={pinToolChannelId}
+              onChange={(e) => setPinToolChannelId(Number(e.target.value))}
+              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+            >
+              <option value={0}>Select channel</option>
+              {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name || c.identifier || `#${c.id}`}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="w-32">
+            <span className="text-slate-400 text-xs block mb-1">Message id</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={pinToolMessageId}
+              onChange={(e) => setPinToolMessageId(e.target.value)}
+              placeholder="e.g. 48291"
+              className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-2 text-slate-200 text-sm"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-300 pb-2">
+            <input type="checkbox" checked={pinToolUnpin} onChange={(e) => setPinToolUnpin(e.target.checked)} />
+            Unpin
+          </label>
+          <button
+            type="button"
+            onClick={() => pinToolMutation.mutate()}
+            disabled={pinToolMutation.isPending}
+            className="px-4 py-2 bg-slate-600 text-white rounded hover:bg-slate-500 disabled:opacity-50 text-sm"
+          >
+            {pinToolMutation.isPending ? "…" : pinToolUnpin ? "Unpin" : "Pin"}
+          </button>
+        </div>
+        {pinToolMsg && (
+          <p className={`text-sm mt-3 ${pinToolMsg.includes("Error") || pinToolMsg.includes("Select") ? "text-amber-300" : "text-emerald-300"}`}>
+            {pinToolMsg}
+          </p>
+        )}
       </div>
 
       <h2 className="text-xl font-semibold mb-2">Scheduled posts</h2>

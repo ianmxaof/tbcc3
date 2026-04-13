@@ -82,16 +82,31 @@ async def post_pool_albums(
             t = "document"
         by_type[t].append(m)
 
-    for media_type, items in by_type.items():
-        bucket = list(items)
+    # One invocation should publish at most one album.
+    # This keeps "Post now" as a single send and lets interval scheduling pace delivery.
+    selected_album = None
+    for media_type in sorted(by_type.keys()):
+        bucket = list(by_type[media_type])
         if randomize:
             random.shuffle(bucket)
         albums = chunk_into_full_albums(bucket, album_size)
-        for album in albums:
-            await post_album(client, channel_identifier, album)
-            for m in album:
-                m.status = "posted"
-            db.commit()
+        if albums:
+            selected_album = albums[0]
+            break
+
+    if not selected_album:
+        logger.info(
+            "No full album available for pool %s (album_size=%s approved=%s)",
+            pool_id,
+            album_size,
+            len(approved),
+        )
+        return
+
+    await post_album(client, channel_identifier, selected_album)
+    for m in selected_album:
+        m.status = "posted"
+    db.commit()
 
 
 def _media_type_bucket(m: Media) -> str:

@@ -29,6 +29,7 @@ export function ContentPools() {
   const [channelId, setChannelId] = useState<number>(0);
   const [albumSize, setAlbumSize] = useState(5);
   const [intervalMinutes, setIntervalMinutes] = useState(60);
+  const [autoPostEnabled, setAutoPostEnabled] = useState(true);
   const [randomizeQueue, setRandomizeQueue] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editId, setEditId] = useState(0);
@@ -36,10 +37,12 @@ export function ContentPools() {
   const [editChannelId, setEditChannelId] = useState(0);
   const [editAlbumSize, setEditAlbumSize] = useState(5);
   const [editInterval, setEditInterval] = useState(60);
+  const [editAutoPostEnabled, setEditAutoPostEnabled] = useState(true);
   const [editRandomize, setEditRandomize] = useState(false);
   const [channelName, setChannelName] = useState("");
   const [channelIdentifier, setChannelIdentifier] = useState("");
   const [channelInviteLink, setChannelInviteLink] = useState("");
+  const [postFeedback, setPostFeedback] = useState<{ poolId: number; msg: string } | null>(null);
 
   const createChannel = useMutation({
     mutationFn: () =>
@@ -65,6 +68,24 @@ export function ContentPools() {
     onSuccess: () => refetchChannels(),
   });
 
+  const deleteChannel = useMutation({
+    mutationFn: (id: number) => api.channels.deleteChannel(id),
+    onSuccess: (_, id) => {
+      void refetchChannels();
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["sources"] });
+      queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      queryClient.invalidateQueries({ queryKey: ["subscriptionPlans"] });
+      if (channelId === id) setChannelId(0);
+      if (editOpen && editChannelId === id) setEditOpen(false);
+    },
+    onError: (err: Error) => {
+      setPostFeedback({ poolId: -1, msg: `Error: ${err.message}` });
+      setTimeout(() => setPostFeedback(null), 5000);
+    },
+  });
+
   const createPool = useMutation({
     mutationFn: () =>
       api.pools.create({
@@ -72,12 +93,14 @@ export function ContentPools() {
         channel_id: channelId || 1,
         album_size: albumSize,
         interval_minutes: intervalMinutes,
+        auto_post_enabled: autoPostEnabled,
         randomize_queue: randomizeQueue,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pools"] });
       setName("");
       setChannelId(0);
+      setAutoPostEnabled(true);
       setRandomizeQueue(false);
     },
   });
@@ -89,11 +112,27 @@ export function ContentPools() {
         channel_id: editChannelId || undefined,
         album_size: editAlbumSize,
         interval_minutes: editInterval,
+        auto_post_enabled: editAutoPostEnabled,
         randomize_queue: editRandomize,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pools"] });
       setEditOpen(false);
+    },
+  });
+
+  const deletePool = useMutation({
+    mutationFn: (id: number) => api.pools.deletePool(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["sources"] });
+      queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      if (editOpen && editId === id) setEditOpen(false);
+    },
+    onError: (err: Error) => {
+      setPostFeedback({ poolId: -1, msg: `Error: ${err.message}` });
+      setTimeout(() => setPostFeedback(null), 5000);
     },
   });
 
@@ -103,30 +142,10 @@ export function ContentPools() {
     setEditChannelId(Number(p.channel_id || 0));
     setEditAlbumSize(Number(p.album_size ?? 5));
     setEditInterval(Number(p.interval_minutes ?? 60));
+    setEditAutoPostEnabled(p.auto_post_enabled !== false);
     setEditRandomize(!!p.randomize_queue);
     setEditOpen(true);
   }
-
-  const [postFeedback, setPostFeedback] = useState<{ poolId: number; msg: string } | null>(null);
-  const triggerPost = useMutation({
-    mutationFn: (poolId: number) => api.jobs.triggerPost(poolId),
-    onSuccess: (_, poolId) => {
-      queryClient.invalidateQueries({ queryKey: ["pools"] });
-      queryClient.invalidateQueries({ queryKey: ["media"] });
-      const pool = (pools as Array<Record<string, unknown>>).find((p) => Number(p.id) === poolId);
-      const approved = Number(pool?.approved_count ?? 0);
-      const msg =
-        approved > 0
-          ? `Post queued (${approved} item${approved === 1 ? "" : "s"}). The worker will process it shortly.`
-          : "Task queued but 0 approved items in this pool. Approve media in the Media Library first.";
-      setPostFeedback({ poolId, msg });
-      setTimeout(() => setPostFeedback(null), 5000);
-    },
-    onError: (err: Error) => {
-      setPostFeedback({ poolId: -1, msg: `Error: ${err.message}` });
-      setTimeout(() => setPostFeedback(null), 5000);
-    },
-  });
 
   return (
     <div>
@@ -214,19 +233,20 @@ export function ContentPools() {
                 <th className="pb-2 pr-4">Identifier</th>
                 <th className="pb-2 pr-4">Invite link</th>
                 <th className="pb-2 pr-4 min-w-[200px]">Outbound webhook</th>
+                <th className="pb-2 pr-4 w-[1%] whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody>
               {channelsPending && !channels.length ? (
                 <tr>
-                  <td colSpan={3} className="py-3 text-slate-500">
+                  <td colSpan={5} className="py-3 text-slate-500">
                     Loading channels…
                   </td>
                 </tr>
               ) : null}
               {!channelsPending && !channelsError && !(channels as Array<unknown>).length ? (
                 <tr>
-                  <td colSpan={3} className="py-3 text-slate-500">
+                  <td colSpan={5} className="py-3 text-slate-500">
                     No channels yet — add one above (name + @username or channel id).
                   </td>
                 </tr>
@@ -265,6 +285,28 @@ export function ContentPools() {
                       className="w-full max-w-md bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-xs"
                       title="POST JSON when a scheduled post is sent or a pool album posts to this channel"
                     />
+                  </td>
+                  <td className="py-2 pr-4 align-top">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const label = String(c.name || c.identifier || c.id);
+                        if (
+                          !confirm(
+                            `Delete channel "${label}"? All pools that post to this channel will be removed (including their media). Scheduled text jobs for this channel will be deleted. Shop plans linked to this channel will be unlinked.`
+                          )
+                        ) {
+                          return;
+                        }
+                        deleteChannel.mutate(Number(c.id));
+                      }}
+                      disabled={
+                        deleteChannel.isPending || deletePool.isPending || createChannel.isPending
+                      }
+                      className="px-2 py-1 bg-red-900/70 text-red-100 rounded text-xs hover:bg-red-800/80 whitespace-nowrap"
+                    >
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -313,6 +355,14 @@ export function ContentPools() {
                 onChange={(e) => setIntervalMinutes(Number(e.target.value))}
                 className="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
               />
+            </label>
+            <label className="flex items-center gap-2 text-slate-300 text-sm">
+              <input
+                type="checkbox"
+                checked={autoPostEnabled}
+                onChange={(e) => setAutoPostEnabled(e.target.checked)}
+              />
+              Auto-post by pool interval
             </label>
             <label className="flex items-center gap-2 text-slate-300 text-sm">
               <input
@@ -383,10 +433,18 @@ export function ContentPools() {
               <label className="flex items-center gap-2 text-slate-300 text-sm">
                 <input
                   type="checkbox"
+                  checked={editAutoPostEnabled}
+                  onChange={(e) => setEditAutoPostEnabled(e.target.checked)}
+                />
+                Auto-post by pool interval
+              </label>
+              <label className="flex items-center gap-2 text-slate-300 text-sm">
+                <input
+                  type="checkbox"
                   checked={editRandomize}
                   onChange={(e) => setEditRandomize(e.target.checked)}
                 />
-                Randomize which approved items go into each album (cron / Post now)
+                Randomize which approved items scheduler picks for each album
               </label>
             </div>
             {updatePool.isError && (
@@ -467,6 +525,15 @@ export function ContentPools() {
                 <td className="p-3">{String(p.album_size)}</td>
                 <td className="p-3">
                   {String(p.interval_minutes)}
+                  {p.auto_post_enabled === false ? (
+                    <span className="ml-2 text-xs text-rose-400" title="Pool interval auto-post disabled">
+                      paused
+                    </span>
+                  ) : (
+                    <span className="ml-2 text-xs text-emerald-400" title="Pool interval auto-post enabled">
+                      auto
+                    </span>
+                  )}
                   {p.randomize_queue ? (
                     <span className="ml-2 text-xs text-amber-400" title="Randomize enabled">
                       shuf
@@ -477,16 +544,27 @@ export function ContentPools() {
                   {p.last_posted ? String(p.last_posted).slice(0, 19) : "—"}
                 </td>
                 <td className="p-3">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      triggerPost.mutate(Number(p.id));
-                    }}
-                    disabled={triggerPost.isPending}
-                    className="px-2 py-1 bg-slate-600 text-slate-200 rounded text-sm hover:bg-slate-500"
-                  >
-                    Post now
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const label = String(p.name || p.id);
+                        if (
+                          !confirm(
+                            `Delete pool "${label}"? All media in this pool will be removed. Sources and scheduler jobs that used this pool will no longer be tied to it.`
+                          )
+                        ) {
+                          return;
+                        }
+                        deletePool.mutate(Number(p.id));
+                      }}
+                      disabled={deletePool.isPending}
+                      className="px-2 py-1 bg-red-900/70 text-red-100 rounded text-sm hover:bg-red-800/80"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

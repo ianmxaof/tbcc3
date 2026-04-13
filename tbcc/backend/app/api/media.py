@@ -1,13 +1,15 @@
 import io
 import logging
+from typing import NamedTuple
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 from telethon.errors.rpcerrorlist import FileReferenceExpiredError
 
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
 from app.schemas.common import orm_to_dict
 from app.services.media_sniff import sniff_media_kind
 from app.services.tbcc_media_url import looks_like_tbcc_internal_media_url
@@ -15,6 +17,55 @@ from app.services.tbcc_media_url import looks_like_tbcc_internal_media_url
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class MediaFetchContext(NamedTuple):
+    """ORM-free snapshot for downloads — keeps DB sessions from spanning slow I/O."""
+
+    id: int
+    source_channel: str | None
+    telegram_message_id: int | None
+    media_type: str | None
+
+
+def _coerce_single_message(messages):
+    """Telethon returns Message for scalar ids, list for multi-id requests."""
+    if messages is None:
+        return None
+    if isinstance(messages, (list, tuple)):
+        return messages[0] if messages else None
+    return messages
+
+
+def _image_bytes_to_thumbnail_jpeg(data: bytes, max_edge: int = 320) -> bytes | None:
+    """Downscale image-like bytes to JPEG for dashboard grids (lighter + more reliable than full-size <img>)."""
+    try:
+        from PIL import Image, ImageOps
+
+        im = Image.open(io.BytesIO(data))
+        im.seek(0)
+        im = ImageOps.exif_transpose(im)
+        if im.mode in ("RGBA", "P"):
+            im = im.convert("RGB")
+        elif im.mode == "L":
+            im = im.convert("RGB")
+        elif im.mode != "RGB":
+            try:
+                im = im.convert("RGB")
+            except Exception:
+                return None
+        w, h = im.size
+        if w < 1 or h < 1:
+            return None
+        if max(w, h) > max_edge:
+            ratio = max_edge / float(max(w, h))
+            im = im.resize((max(1, int(w * ratio)), max(1, int(h * ratio))), Image.Resampling.LANCZOS)
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=82, optimize=True)
+        return out.getvalue()
+    except Exception:
+        logger.debug("thumbnail JPEG resize skipped", exc_info=True)
+        return None
 
 _MIME_FROM_EXT = {
     "jpg": "image/jpeg",
@@ -29,13 +80,9 @@ _MIME_FROM_EXT = {
 }
 
 
-async def _fetch_media_bytes_and_type(media) -> tuple[bytes, str]:
+async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, str]:
     """HTTP(S) proxy or download from Telegram Saved Messages (indexed by telegram_message_id)."""
-    from app.models.media import Media
-
-    if not isinstance(media, Media):
-        raise HTTPException(status_code=404, detail="Not found")
-    url = str(media.source_channel or "").strip()
+    url = str(ctx.source_channel or "").strip()
     # Never HTTP-fetch our own /media/{id}/thumbnail URLs (loopback + Vite proxy → 502).
     if url.startswith(("http://", "https://")) and looks_like_tbcc_internal_media_url(url):
         url = ""
@@ -58,7 +105,7 @@ async def _fetch_media_bytes_and_type(media) -> tuple[bytes, str]:
     async def _download_from_saved(client, msg_id: int):
         """Download bytes from Saved Messages; BytesIO is more reliable than passing `bytes` type."""
         messages = await client.get_messages("me", ids=msg_id)
-        msg = messages[0] if messages else None
+        msg = _coerce_single_message(messages)
         if not msg or not msg.media:
             raise HTTPException(status_code=404, detail="Media not found in Telegram")
         buf = io.BytesIO()
@@ -67,7 +114,7 @@ async def _fetch_media_bytes_and_type(media) -> tuple[bytes, str]:
         if not out:
             # File reference may be stale — refetch message once (Telegram invalidates refs periodically).
             messages = await client.get_messages("me", ids=msg.id)
-            msg = messages[0] if messages else None
+            msg = _coerce_single_message(messages)
             if not msg or not msg.media:
                 raise HTTPException(status_code=404, detail="Media not found in Telegram after refresh")
             buf = io.BytesIO()
@@ -75,14 +122,21 @@ async def _fetch_media_bytes_and_type(media) -> tuple[bytes, str]:
             out = buf.getvalue()
         return out
 
+    if ctx.telegram_message_id is None:
+        raise HTTPException(status_code=404, detail="No Telegram message id for this media")
+
     try:
         client = await get_telegram_client()
         try:
-            data = await _download_from_saved(client, media.telegram_message_id)
+            data = await _download_from_saved(client, ctx.telegram_message_id)
         except FileReferenceExpiredError:
-            logger.warning("File reference expired for media id=%s msg=%s; refetching", media.id, media.telegram_message_id)
-            messages = await client.get_messages("me", ids=media.telegram_message_id)
-            msg = messages[0] if messages else None
+            logger.warning(
+                "File reference expired for media id=%s msg=%s; refetching",
+                ctx.id,
+                ctx.telegram_message_id,
+            )
+            messages = await client.get_messages("me", ids=ctx.telegram_message_id)
+            msg = _coerce_single_message(messages)
             if not msg or not msg.media:
                 raise HTTPException(status_code=404, detail="Media not found in Telegram") from None
             buf = io.BytesIO()
@@ -93,7 +147,7 @@ async def _fetch_media_bytes_and_type(media) -> tuple[bytes, str]:
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e) or "Telegram not configured") from e
     except Exception as e:
-        logger.exception("Telegram download failed for media id=%s", getattr(media, "id", "?"))
+        logger.exception("Telegram download failed for media id=%s", ctx.id)
         raise HTTPException(status_code=502, detail="Telegram download failed: " + str(e)) from e
 
     if not data:
@@ -147,14 +201,31 @@ def get_media(media_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{media_id}/thumbnail")
-async def get_media_thumbnail(media_id: int, db: Session = Depends(get_db)):
+async def get_media_thumbnail(media_id: int):
     """Grid / preview: proxy URL or download from Telegram Saved Messages."""
     from app.models.media import Media
 
-    media = db.query(Media).filter(Media.id == media_id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Not found")
-    data, mime = await _fetch_media_bytes_and_type(media)
+    db = SessionLocal()
+    try:
+        media = db.query(Media).filter(Media.id == media_id).first()
+        if not media:
+            raise HTTPException(status_code=404, detail="Not found")
+        ctx = MediaFetchContext(
+            id=int(media.id),
+            source_channel=media.source_channel,
+            telegram_message_id=media.telegram_message_id,
+            media_type=media.media_type,
+        )
+    finally:
+        db.close()
+
+    data, mime = await _fetch_media_bytes_and_type(ctx)
+    mt = (ctx.media_type or "").lower()
+    if mt != "video":
+        jpeg = _image_bytes_to_thumbnail_jpeg(data)
+        if jpeg:
+            data = jpeg
+            mime = "image/jpeg"
     return StreamingResponse(
         iter([data]),
         media_type=mime,
@@ -163,14 +234,25 @@ async def get_media_thumbnail(media_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{media_id}/file")
-async def get_media_file(media_id: int, db: Session = Depends(get_db)):
+async def get_media_file(media_id: int):
     """Full-resolution bytes (same source as thumbnail; used by dashboard lightbox)."""
     from app.models.media import Media
 
-    media = db.query(Media).filter(Media.id == media_id).first()
-    if not media:
-        raise HTTPException(status_code=404, detail="Not found")
-    data, mime = await _fetch_media_bytes_and_type(media)
+    db = SessionLocal()
+    try:
+        media = db.query(Media).filter(Media.id == media_id).first()
+        if not media:
+            raise HTTPException(status_code=404, detail="Not found")
+        ctx = MediaFetchContext(
+            id=int(media.id),
+            source_channel=media.source_channel,
+            telegram_message_id=media.telegram_message_id,
+            media_type=media.media_type,
+        )
+    finally:
+        db.close()
+
+    data, mime = await _fetch_media_bytes_and_type(ctx)
     return StreamingResponse(
         iter([data]),
         media_type=mime,
@@ -187,9 +269,14 @@ def update_media_status_bulk(data: dict = Body(...), db: Session = Depends(get_d
     status = data.get("status")
     if status not in ("pending", "approved", "rejected", "posted") or not ids:
         return {"updated": 0, "error": "Invalid ids or status"}
-    count = db.query(Media).filter(Media.id.in_(ids)).update({Media.status: status})
+    try:
+        id_ints = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        return {"updated": 0, "error": "Invalid ids or status"}
+    stmt = update(Media).where(Media.id.in_(id_ints)).values(status=status)
+    result = db.execute(stmt)
     db.commit()
-    return {"updated": count}
+    return {"updated": int(result.rowcount or 0)}
 
 
 @router.patch("/{media_id}")
@@ -245,6 +332,19 @@ def update_media_status(media_id: int, data: dict, db: Session = Depends(get_db)
     db.commit()
     db.refresh(media)
     return orm_to_dict(media)
+
+
+@router.delete("/{media_id}")
+def delete_media(media_id: int, db: Session = Depends(get_db)):
+    """Remove a media row from TBCC (does not delete the Telegram Saved Messages message)."""
+    from app.models.media import Media
+
+    media = db.query(Media).filter(Media.id == media_id).first()
+    if not media:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(media)
+    db.commit()
+    return {"deleted": media_id}
 
 
 @router.patch("/bulk/move-pool")

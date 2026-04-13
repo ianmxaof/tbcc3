@@ -130,8 +130,7 @@ const btnToggleFoldVariants = document.getElementById("btnToggleFoldVariants");
 const btnSelectAll = document.getElementById("btnSelectAll");
 const btnDeselect = document.getElementById("btnDeselect");
 const tagChipRow = document.getElementById("tagChipRow");
-const tagPickInput = document.getElementById("tagPickInput");
-const tbccTagDatalist = document.getElementById("tbccTagDatalist");
+const tagCatalogSelect = document.getElementById("tagCatalogSelect");
 const btnTagSuggest = document.getElementById("btnTagSuggest");
 const btnTagsCatalogReload = document.getElementById("btnTagsCatalogReload");
 const tagNewName = document.getElementById("tagNewName");
@@ -388,7 +387,7 @@ function removeGallerySendTag(name) {
 function clearGallerySendTags() {
   gallerySendTags = [];
   persistGallerySendTags();
-  if (tagPickInput) tagPickInput.value = "";
+  if (tagCatalogSelect) tagCatalogSelect.value = "";
   if (tagNewName) tagNewName.value = "";
   if (tagNewCategory) tagNewCategory.value = "";
 }
@@ -402,12 +401,24 @@ async function loadTagCatalog() {
     const r = await fetch(`${API_BASE}/tags`);
     if (!r.ok) throw new Error(await r.text());
     tagCatalog = await r.json();
-    if (tbccTagDatalist) {
-      tbccTagDatalist.innerHTML = "";
+    if (tagCatalogSelect) {
+      const prev = tagCatalogSelect.value;
+      tagCatalogSelect.innerHTML = "";
+      const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = "Pick from catalog…";
+      tagCatalogSelect.appendChild(ph);
       for (const t of tagCatalog) {
+        const label =
+          (t.name != null && String(t.name).trim()) || (t.slug != null && String(t.slug).trim()) || "";
+        if (!label) continue;
         const o = document.createElement("option");
-        o.value = t.name;
-        tbccTagDatalist.appendChild(o);
+        o.value = label;
+        o.textContent = label;
+        tagCatalogSelect.appendChild(o);
+      }
+      if (prev && [...tagCatalogSelect.options].some((opt) => opt.value === prev)) {
+        tagCatalogSelect.value = prev;
       }
     }
   } catch (e) {
@@ -443,8 +454,9 @@ async function createTagOnServer() {
   }
 }
 
-function addPickedCatalogTag() {
-  const v = tagPickInput && tagPickInput.value.trim();
+function onCatalogTagSelected() {
+  if (!tagCatalogSelect) return;
+  const v = tagCatalogSelect.value.trim();
   if (!v) return;
   const low = v.toLowerCase();
   const row = tagCatalog.find((t) => {
@@ -452,8 +464,8 @@ function addPickedCatalogTag() {
     const s = (t.slug && String(t.slug).toLowerCase()) || "";
     return n === low || (s && s === low);
   });
-  addGallerySendTag(row ? row.name : v);
-  tagPickInput.value = "";
+  addGallerySendTag(row ? (row.name && String(row.name).trim()) || row.slug || v : v);
+  tagCatalogSelect.value = "";
 }
 
 async function suggestTagsFromPage() {
@@ -2125,16 +2137,9 @@ btnDeselect &&
     updateCountAndSend();
   });
 
-tagPickInput &&
-  tagPickInput.addEventListener("change", () => {
-    addPickedCatalogTag();
-  });
-tagPickInput &&
-  tagPickInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addPickedCatalogTag();
-    }
+tagCatalogSelect &&
+  tagCatalogSelect.addEventListener("change", () => {
+    onCatalogTagSelected();
   });
 btnTagSuggest && btnTagSuggest.addEventListener("click", () => void suggestTagsFromPage());
 btnTagsCatalogReload && btnTagsCatalogReload.addEventListener("click", () => void loadTagCatalog());

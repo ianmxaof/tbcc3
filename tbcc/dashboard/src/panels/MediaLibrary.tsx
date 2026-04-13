@@ -2,17 +2,20 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MediaGalleryModal, canPreviewInGallery } from "../components/MediaGalleryModal";
-import { MediaMetadataModal } from "../components/MediaMetadataModal";
+import { canPreviewInGallery } from "../components/MediaGalleryModal";
+import { MediaMasterSuiteModal } from "../components/MediaMasterSuiteModal";
+import { MediaThumbnailCell } from "../components/MediaThumbnailCell";
 import { MediaLlmSuggestModal } from "../components/MediaLlmSuggestModal";
+import { ContentPools } from "./ContentPools";
 
 export function MediaLibrary() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>("pending");
   const [tagFilter, setTagFilter] = useState("");
   const [tagSlugFilter, setTagSlugFilter] = useState("");
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
-  const [metadataMediaId, setMetadataMediaId] = useState<number | null>(null);
+  const [suiteIndex, setSuiteIndex] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [gridCols, setGridCols] = useState<3 | 5 | 8>(5);
   const [llmSuggestMediaId, setLlmSuggestMediaId] = useState<number | null>(null);
   const [bulkPoolId, setBulkPoolId] = useState<number>(0);
   const [bulkTagsText, setBulkTagsText] = useState("");
@@ -136,18 +139,27 @@ export function MediaLibrary() {
     onError: (e: Error) => setUploadMsg(e.message),
   });
 
+  const [statusMutationErr, setStatusMutationErr] = useState<string | null>(null);
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
       api.media.updateStatus(id, status),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["media"] }),
+    onMutate: () => setStatusMutationErr(null),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      setStatusMutationErr(null);
+    },
+    onError: (e: Error) => setStatusMutationErr(e.message),
   });
   const updateStatusBulk = useMutation({
     mutationFn: ({ ids, status }: { ids: number[]; status: string }) =>
       api.media.updateStatusBulk(ids, status),
+    onMutate: () => setStatusMutationErr(null),
     onSuccess: (_, { ids }) => {
       queryClient.invalidateQueries({ queryKey: ["media"] });
       setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+      setStatusMutationErr(null);
     },
+    onError: (e: Error) => setStatusMutationErr(e.message),
   });
   const bulkMovePool = useMutation({
     mutationFn: ({ ids, poolId }: { ids: number[]; poolId: number }) => api.media.bulkMovePool(ids, poolId),
@@ -193,9 +205,9 @@ export function MediaLibrary() {
     [media]
   );
 
-  const openViewerForId = (id: number) => {
+  const openSuiteForId = (id: number) => {
     const idx = previewable.findIndex((m) => Number(m.id) === id);
-    if (idx >= 0) setViewerIndex(idx);
+    if (idx >= 0) setSuiteIndex(idx);
   };
 
   if (isError)
@@ -213,13 +225,24 @@ export function MediaLibrary() {
 
   return (
     <div>
-      <MediaGalleryModal
+      <MediaMasterSuiteModal
         items={previewable.map((m) => ({ id: Number(m.id), media_type: String(m.media_type || "") }))}
-        openIndex={viewerIndex}
-        onClose={() => setViewerIndex(null)}
-        onIndexChange={setViewerIndex}
+        openIndex={suiteIndex}
+        onClose={() => setSuiteIndex(null)}
+        onIndexChange={setSuiteIndex}
+        onRemoveFromPool={async (id) => {
+          const idx = suiteIndex;
+          const len = previewable.length;
+          await api.media.delete(id);
+          setSelectedIds((prev) => prev.filter((x) => x !== id));
+          await queryClient.invalidateQueries({ queryKey: ["media"] });
+          await queryClient.invalidateQueries({ queryKey: ["pools"] });
+          if (idx == null) return;
+          if (len <= 1) setSuiteIndex(null);
+          else if (idx === len - 1) setSuiteIndex(idx - 1);
+          else setSuiteIndex(idx);
+        }}
       />
-      <MediaMetadataModal mediaId={metadataMediaId} onClose={() => setMetadataMediaId(null)} />
       {llmSuggestMediaId != null && (
         <MediaLlmSuggestModal
           mediaId={llmSuggestMediaId}
@@ -230,141 +253,127 @@ export function MediaLibrary() {
           }}
         />
       )}
-      <h1 className="text-2xl font-semibold mb-2">Media Library</h1>
+      <h1 className="text-2xl font-semibold mb-2">Master media pool</h1>
       <p className="text-slate-500 text-xs mb-3 max-w-2xl">
-        New imports receive <strong>automatic tags</strong> (media type + source site when URL is known). Edit tags in bulk, open a row&apos;s{" "}
-        <strong>metadata</strong> with a <strong>double-click</strong> on the row (thumbnail click still opens the gallery viewer only), or use the{" "}
+        Central store for imported media. Click any <strong>row</strong> or <strong>grid tile</strong> (previewable items) to open the{" "}
+        <strong>gallery suite</strong> — full-size preview with <strong>tags</strong> (catalog + create new),{" "}
+        <strong>pool / channel routing</strong>, and metadata. Bulk tag tools below; manage tag definitions on the{" "}
         <Link to="/tags" className="text-cyan-400 hover:underline">
           Tags
         </Link>{" "}
-        page for the full list. With exactly <strong>one</strong> row selected, <strong>AI suggest (tags + caption)</strong> calls OpenAI using your tag catalog (
-        <code className="text-slate-400">TBCC_OPENAI_API_KEY</code>) — you review before saving tags or copying caption text.
+        page. With exactly <strong>one</strong> row selected, <strong>AI suggest</strong> uses{" "}
+        <code className="text-slate-400">TBCC_OPENAI_API_KEY</code>.
       </p>
-      <div className="bg-slate-800 border border-slate-600 rounded-lg p-4 mb-4 max-w-2xl">
-        <h2 className="text-sm font-medium text-slate-200 mb-1">Import from Saved Messages</h2>
-        <p className="text-slate-400 text-xs mb-3">
-          Adds photos/videos already sitting in your Telegram <strong>Saved Messages</strong> into a{" "}
-          <strong>pool</strong> as <strong>pending</strong> media (newest first; skips duplicates already in that pool).
-          Uses the same admin account session as other TBCC imports — not the payment bot.
-        </p>
-        <div className="flex flex-wrap gap-3 items-end">
-          <label className="block text-xs text-slate-400">
-            Pool
-            <select
-              className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
-              value={savedImportPool}
-              onChange={(e) => setSavedImportPool(Number(e.target.value))}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4 items-start">
+        <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h2 className="text-sm font-medium text-slate-200">Import from Saved Messages</h2>
+            <details className="text-xs text-slate-500 [&_summary]:cursor-pointer [&_summary]:select-none">
+              <summary>How it works</summary>
+              <p className="text-slate-400 mt-2 pl-0.5 leading-relaxed">
+                Adds photos/videos already in your Telegram <strong>Saved Messages</strong> into a <strong>pool</strong> as{" "}
+                <strong>pending</strong> media (newest first; skips duplicates already in that pool). Uses the same admin
+                account session as other TBCC imports — not the payment bot.
+              </p>
+            </details>
+          </div>
+          <div className="flex flex-wrap gap-2 sm:gap-3 items-end">
+            <label className="block text-xs text-slate-400">
+              Pool
+              <select
+                className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm min-w-[8rem]"
+                value={savedImportPool}
+                onChange={(e) => setSavedImportPool(Number(e.target.value))}
+              >
+                {(pools as Array<{ id: number; name?: string }>).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || `Pool ${p.id}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs text-slate-400">
+              Scan up to
+              <input
+                type="number"
+                min={1}
+                max={200}
+                title="Max messages to scan"
+                className="mt-1 block w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={savedImportLimit}
+                onChange={(e) => setSavedImportLimit(Math.min(200, Math.max(1, Number(e.target.value) || 50)))}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => importFromSaved.mutate()}
+              disabled={importFromSaved.isPending || !(pools as unknown[]).length}
+              className="px-3 py-2 rounded bg-amber-600/90 text-white text-sm font-medium hover:bg-amber-500 disabled:opacity-50 shrink-0"
             >
-              {(pools as Array<{ id: number; name?: string }>).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || `Pool ${p.id}`}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="block text-xs text-slate-400">
-            Scan up to (messages)
-            <input
-              type="number"
-              min={1}
-              max={200}
-              className="mt-1 block w-24 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
-              value={savedImportLimit}
-              onChange={(e) => setSavedImportLimit(Math.min(200, Math.max(1, Number(e.target.value) || 50)))}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => importFromSaved.mutate()}
-            disabled={importFromSaved.isPending || !(pools as unknown[]).length}
-            className="px-3 py-2 rounded bg-amber-600/90 text-white text-sm font-medium hover:bg-amber-500 disabled:opacity-50"
-          >
-            {importFromSaved.isPending ? "Importing…" : "Import from Saved"}
-          </button>
+              {importFromSaved.isPending ? "Importing…" : "Import from Saved"}
+            </button>
+          </div>
+          {importFromSaved.isError && (
+            <p className="text-red-400 text-xs mt-2">{(importFromSaved.error as Error)?.message}</p>
+          )}
+          {importFromSaved.isSuccess && importFromSaved.data && !importFromSaved.data.error && (
+            <p className="text-green-400 text-xs mt-2">
+              Indexed <strong>{String(importFromSaved.data.indexed ?? 0)}</strong> new item(s); skipped{" "}
+              {String(importFromSaved.data.skipped_duplicates_or_unsupported ?? 0)} (duplicate or unsupported); scanned{" "}
+              {String(importFromSaved.data.messages_scanned ?? 0)} message(s).
+            </p>
+          )}
+          {importFromSaved.isSuccess && importFromSaved.data?.error && (
+            <p className="text-red-400 text-xs mt-2">{String(importFromSaved.data.error)}</p>
+          )}
         </div>
-        {importFromSaved.isError && (
-          <p className="text-red-400 text-xs mt-2">{(importFromSaved.error as Error)?.message}</p>
-        )}
-        {importFromSaved.isSuccess && importFromSaved.data && !importFromSaved.data.error && (
-          <p className="text-green-400 text-xs mt-2">
-            Indexed <strong>{String(importFromSaved.data.indexed ?? 0)}</strong> new item(s); skipped{" "}
-            {String(importFromSaved.data.skipped_duplicates_or_unsupported ?? 0)} (duplicate or unsupported); scanned{" "}
-            {String(importFromSaved.data.messages_scanned ?? 0)} message(s).
-          </p>
-        )}
-        {importFromSaved.isSuccess && importFromSaved.data?.error && (
-          <p className="text-red-400 text-xs mt-2">{String(importFromSaved.data.error)}</p>
-        )}
-      </div>
 
-      <div className="bg-slate-800 border border-slate-600 rounded-lg p-4 mb-4 max-w-2xl">
-        <h2 className="text-sm font-medium text-slate-200 mb-1">Upload local files</h2>
-        <p className="text-slate-400 text-xs mb-3">
-          Send photos/videos from your computer through the same admin Telegram session as other imports. Choose a{" "}
-          <strong>pool</strong> for Media Library rows (except &quot;Saved Messages only&quot;). Choose a{" "}
-          <strong>Telegram destination</strong> the same way as the Scheduler: channel or forum topic, or Saved Messages
-          only.
-        </p>
-        <div className="flex flex-wrap gap-3 items-end mb-3">
-          <label className="block text-xs text-slate-400">
-            Pool
-            <select
-              className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm min-w-[140px]"
-              value={uploadPoolId}
-              onChange={(e) => setUploadPoolId(Number(e.target.value))}
-              disabled={uploadDestMode === "saved-only"}
-              title={uploadDestMode === "saved-only" ? "Not used when sending to Saved Messages only" : "Media is indexed into this pool"}
-            >
-              {(pools as Array<{ id: number; name?: string }>).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || `Pool ${p.id}`}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <fieldset className="mb-3 space-y-2 border border-slate-600 rounded-md p-3">
-          <legend className="text-xs text-slate-400 px-1">Telegram destination</legend>
-          <label className="flex items-start gap-2 text-sm text-slate-200 cursor-pointer">
-            <input
-              type="radio"
-              name="uploadDest"
-              checked={uploadDestMode === "pool-only"}
-              onChange={() => setUploadDestMode("pool-only")}
-              className="mt-0.5"
-            />
-            <span>
-              <strong>Import to pool only</strong> — files appear as <strong>pending</strong> in the table below (uploaded
-              via Saved Messages indexing, same as extension imports).
-            </span>
-          </label>
-          <label className="flex items-start gap-2 text-sm text-slate-200 cursor-pointer">
-            <input
-              type="radio"
-              name="uploadDest"
-              checked={uploadDestMode === "channel"}
-              onChange={() => setUploadDestMode("channel")}
-              className="mt-0.5"
-            />
-            <span>
-              <strong>Import to pool, then post to a channel or group</strong> — optional forum <strong>topic</strong> for
-              supergroups with topics (same as Scheduler).
-            </span>
-          </label>
-          <label className="flex items-start gap-2 text-sm text-slate-200 cursor-pointer">
-            <input
-              type="radio"
-              name="uploadDest"
-              checked={uploadDestMode === "saved-only"}
-              onChange={() => setUploadDestMode("saved-only")}
-              className="mt-0.5"
-            />
-            <span>
-              <strong>Saved Messages only</strong> — no rows in Media Library; files are sent to your Telegram Saved
-              Messages only (albums up to 10 items when you pick multiple files).
-            </span>
-          </label>
-        </fieldset>
+        <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h2 className="text-sm font-medium text-slate-200">Upload local files</h2>
+            <details className="text-xs text-slate-500 [&_summary]:cursor-pointer [&_summary]:select-none">
+              <summary>How it works</summary>
+              <p className="text-slate-400 mt-2 pl-0.5 leading-relaxed">
+                Send photos/videos from your computer through the same admin Telegram session as other imports. Choose a{" "}
+                <strong>pool</strong> for Media Library rows (except &quot;Saved Messages only&quot;). Destination options
+                match the Scheduler: channel or forum topic, or Saved Messages only.
+              </p>
+            </details>
+          </div>
+          <div className="flex flex-wrap gap-2 sm:gap-3 items-end mb-2">
+            <label className="block text-xs text-slate-400">
+              Pool
+              <select
+                className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm min-w-[8rem]"
+                value={uploadPoolId}
+                onChange={(e) => setUploadPoolId(Number(e.target.value))}
+                disabled={uploadDestMode === "saved-only"}
+                title={
+                  uploadDestMode === "saved-only"
+                    ? "Not used when sending to Saved Messages only"
+                    : "Media is indexed into this pool"
+                }
+              >
+                {(pools as Array<{ id: number; name?: string }>).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || `Pool ${p.id}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs text-slate-400 flex-1 min-w-[12rem]">
+              Telegram destination
+              <select
+                className="mt-1 block w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={uploadDestMode}
+                onChange={(e) => setUploadDestMode(e.target.value as "pool-only" | "channel" | "saved-only")}
+              >
+                <option value="pool-only">Pool only — pending in library</option>
+                <option value="channel">Pool + post to channel / topic</option>
+                <option value="saved-only">Saved Messages only (no library rows)</option>
+              </select>
+            </label>
+          </div>
         {uploadDestMode === "channel" && (
           <div className="flex flex-wrap gap-3 items-end mb-3">
             <label className="block text-xs text-slate-400">
@@ -423,7 +432,7 @@ export function MediaLibrary() {
         <label className="block text-xs text-slate-400 mb-3">
           Caption (optional)
           <textarea
-            className="mt-1 block w-full max-w-xl bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+            className="mt-1 block w-full max-w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
             rows={2}
             placeholder={
               uploadDestMode === "saved-only"
@@ -468,12 +477,26 @@ export function MediaLibrary() {
           )}
         </div>
         {uploadMsg && (
-          <pre className="mt-3 text-xs text-slate-300 whitespace-pre-wrap break-words max-w-xl bg-slate-900/80 rounded p-2 border border-slate-600">
+          <pre className="mt-3 text-xs text-slate-300 whitespace-pre-wrap break-words max-w-full bg-slate-900/80 rounded p-2 border border-slate-600">
             {uploadMsg}
           </pre>
         )}
+        </div>
       </div>
 
+      {statusMutationErr && (
+        <div className="mb-4 rounded-lg border border-red-700 bg-red-900/30 px-4 py-2 text-sm text-red-200">
+          <span className="font-medium">Approve / reject failed: </span>
+          {statusMutationErr}
+          <button
+            type="button"
+            onClick={() => setStatusMutationErr(null)}
+            className="ml-3 text-red-100 underline hover:no-underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       <div className="flex flex-wrap gap-2 mb-4 items-center">
         <button
           onClick={() => setStatusFilter(undefined)}
@@ -572,6 +595,35 @@ export function MediaLibrary() {
             title="Legacy substring match on combined tag string"
           />
         </label>
+        <span className="text-slate-500 text-xs hidden sm:inline">View</span>
+        <button
+          type="button"
+          onClick={() => setViewMode("list")}
+          className={`px-3 py-1 rounded text-sm ${viewMode === "list" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300"}`}
+        >
+          List
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode("grid")}
+          className={`px-3 py-1 rounded text-sm ${viewMode === "grid" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300"}`}
+        >
+          Gallery
+        </button>
+        {viewMode === "grid" && (
+          <label className="flex items-center gap-1 text-xs text-slate-400">
+            Grid
+            <select
+              value={gridCols}
+              onChange={(e) => setGridCols(Number(e.target.value) as 3 | 5 | 8)}
+              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200"
+            >
+              <option value={3}>3×3</option>
+              <option value={5}>5×5</option>
+              <option value={8}>8×8</option>
+            </select>
+          </label>
+        )}
         <button
           onClick={() => refetch()}
           disabled={isFetching}
@@ -644,7 +696,34 @@ export function MediaLibrary() {
           )}
         </div>
       )}
-      <div className="overflow-x-auto">
+      {viewMode === "grid" && (
+        <div
+          className="mb-4 grid gap-2"
+          style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
+        >
+          {previewable.length === 0 ? (
+            <p className="text-slate-500 text-sm col-span-full">No previewable items on this page (photos/videos/gif/document).</p>
+          ) : (
+            previewable.map((m) => (
+              <button
+                key={String(m.id)}
+                type="button"
+                onClick={() => openSuiteForId(Number(m.id))}
+                className="aspect-square rounded-lg overflow-hidden border border-slate-600 bg-slate-800 hover:border-cyan-500/60 focus:outline-none focus:ring-2 focus:ring-cyan-500 p-0"
+                title={`Open suite · ID ${m.id}`}
+              >
+                <MediaThumbnailCell
+                  mediaId={Number(m.id)}
+                  mediaType={String(m.media_type || "")}
+                  className="w-full h-full object-cover"
+                />
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      <div className={`overflow-x-auto ${viewMode === "grid" ? "hidden" : ""}`}>
         <table className="w-full border border-slate-600 rounded-lg overflow-hidden">
           <thead className="bg-slate-700">
             <tr>
@@ -678,13 +757,16 @@ export function MediaLibrary() {
             {media.map((m: Record<string, unknown>) => (
               <tr
                 key={String(m.id)}
-                className="border-t border-slate-600 hover:bg-slate-800/50 cursor-default"
-                onDoubleClick={(e) => {
+                className={`border-t border-slate-600 hover:bg-slate-800/50 ${
+                  canPreviewInGallery(m) ? "cursor-pointer" : "cursor-default"
+                }`}
+                onClick={(e) => {
                   const t = e.target as HTMLElement;
-                  if (t.closest("input, button")) return;
-                  setMetadataMediaId(Number(m.id));
+                  if (t.closest("input, button, textarea, a, label")) return;
+                  if (!canPreviewInGallery(m)) return;
+                  openSuiteForId(Number(m.id));
                 }}
-                title="Double-click row to edit metadata"
+                title={canPreviewInGallery(m) ? "Click row to open gallery suite (preview + tags + pool)" : ""}
               >
                 <td className="p-3">
                   <input
@@ -695,40 +777,18 @@ export function MediaLibrary() {
                     title="Select for bulk action"
                   />
                 </td>
-                <td className="p-3">
-                  <button
-                    type="button"
-                    className="w-14 h-14 rounded bg-slate-700 overflow-hidden flex items-center justify-center border border-transparent hover:border-cyan-500/60 focus:outline-none focus:ring-2 focus:ring-cyan-500 disabled:opacity-50"
-                    onClick={() => openViewerForId(Number(m.id))}
-                    onDoubleClick={(e) => e.stopPropagation()}
-                    disabled={!canPreviewInGallery(m)}
-                    title={canPreviewInGallery(m) ? "Open full size (gallery)" : "No preview"}
-                  >
+                <td className="p-3 w-[4.5rem]">
+                  <div className="w-14 h-14 rounded overflow-hidden flex items-center justify-center border border-slate-600">
                     {canPreviewInGallery(m) ? (
-                      (String(m.media_type || "").toLowerCase() === "video" ? (
-                        <video
-                          src={api.media.thumbnailUrl(Number(m.id))}
-                          className="w-full h-full object-cover pointer-events-none"
-                          muted
-                          playsInline
-                          preload="metadata"
-                        />
-                      ) : (
-                        <img
-                          src={api.media.thumbnailUrl(Number(m.id))}
-                          alt=""
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                          decoding="async"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = "none";
-                          }}
-                        />
-                      ))
+                      <MediaThumbnailCell
+                        mediaId={Number(m.id)}
+                        mediaType={String(m.media_type || "")}
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
                     ) : (
-                      <span className="text-slate-500 text-xs">{String(m.media_type || "—")}</span>
+                      <span className="text-slate-500 text-xs px-1">{String(m.media_type || "—")}</span>
                     )}
-                  </button>
+                  </div>
                 </td>
                 <td className="p-3">{String(m.id)}</td>
                 <td className="p-3">{String(m.media_type)}</td>
@@ -760,16 +820,24 @@ export function MediaLibrary() {
                 <td className="p-3 text-slate-400 text-sm">{String(m.created_at ?? "").slice(0, 19)}</td>
                 <td className="p-3">
                   {m.status === "pending" && (
-                    <div className="flex gap-1" onDoubleClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => updateStatus.mutate({ id: Number(m.id), status: "approved" })}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateStatus.mutate({ id: Number(m.id), status: "approved" });
+                        }}
                         disabled={updateStatus.isPending}
                         className="px-2 py-0.5 rounded text-sm bg-green-700 text-green-100 hover:bg-green-600 disabled:opacity-50"
                       >
                         Approve
                       </button>
                       <button
-                        onClick={() => updateStatus.mutate({ id: Number(m.id), status: "rejected" })}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          updateStatus.mutate({ id: Number(m.id), status: "rejected" });
+                        }}
                         disabled={updateStatus.isPending}
                         className="px-2 py-0.5 rounded text-sm bg-red-700 text-red-100 hover:bg-red-600 disabled:opacity-50"
                       >
@@ -784,6 +852,13 @@ export function MediaLibrary() {
         </table>
       </div>
       {media.length === 0 && <p className="text-slate-500 mt-4">No media found.</p>}
+      <div className="mt-8 pt-6 border-t border-slate-700">
+        <h2 className="text-xl font-semibold mb-3">Pools & channels</h2>
+        <p className="text-slate-400 text-sm mb-4">
+          Pool/channel management now lives here. Publishing from pools is disabled; use Scheduler for all autonomous posts.
+        </p>
+        <ContentPools />
+      </div>
     </div>
   );
 }

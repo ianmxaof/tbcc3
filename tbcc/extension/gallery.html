@@ -153,8 +153,9 @@
               <div id="tagChipRow" class="tag-chip-row" aria-label="Tags to apply"></div>
               <div class="tag-send-catalog">
                 <div class="tag-catalog-row tag-catalog-row--pick">
-                  <input type="text" id="tagPickInput" class="tag-input-pick" list="tbccTagDatalist" placeholder="Pick from catalog…" title="Choose a suggestion or press Enter" autocomplete="off" />
-                  <datalist id="tbccTagDatalist"></datalist>
+                  <select id="tagCatalogSelect" class="tag-catalog-select" title="Add a tag from your TBCC catalog" aria-label="Pick tag from catalog">
+                    <option value="">Pick from catalog…</option>
+                  </select>
                 </div>
                 <div class="tag-catalog-row tag-catalog-row--create">
                   <input type="text" id="tagNewName" placeholder="New tag" maxlength="128" />

@@ -1,6 +1,5 @@
-import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { MediaLibrary } from "./panels/MediaLibrary";
-import { ContentPools } from "./panels/ContentPools";
 import { Sources } from "./panels/Sources";
 import { Scheduler } from "./panels/Scheduler";
 import { Subscriptions } from "./panels/Subscriptions";
@@ -11,10 +10,9 @@ import { Analytics } from "./panels/Analytics";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const nav = [
-  { to: "/", label: "Media" },
+  { to: "/", label: "Media pool" },
   { to: "/analytics", label: "Analytics" },
   { to: "/tags", label: "Tags" },
-  { to: "/pools", label: "Pools" },
   { to: "/sources", label: "Sources" },
   { to: "/scheduler", label: "Scheduler" },
   { to: "/subscriptions", label: "Subscriptions" },
@@ -71,9 +69,7 @@ function App() {
             <Route
               path="/pools"
               element={
-                <ErrorBoundary name="Pools">
-                  <ContentPools />
-                </ErrorBoundary>
+                <Navigate to="/" replace />
               }
             />
             <Route
