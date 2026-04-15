@@ -349,41 +349,87 @@ def delete_media(media_id: int, db: Session = Depends(get_db)):
 
 @router.patch("/bulk/move-pool")
 def bulk_move_pool(data: dict = Body(...), db: Session = Depends(get_db)):
-    """Move media rows to another pool (skips rows that would violate per-pool dedup)."""
+    """
+    Move media rows to another pool (skips rows that would violate per-pool dedup).
+
+    Uses one pass over deduped ids + one UPDATE — avoids per-row queries and autoflush
+    ordering bugs that made large gallery moves look random.
+    """
     from app.models.media import Media
 
     ids = data.get("ids") or []
     pool_id = data.get("pool_id")
     if not ids or pool_id is None:
-        return {"updated": 0, "error": "Need ids and pool_id"}
+        return {"updated": 0, "skipped_duplicate_in_target_pool": 0, "error": "Need ids and pool_id"}
     try:
         pid = int(pool_id)
     except (TypeError, ValueError):
-        return {"updated": 0, "error": "Invalid pool_id"}
-    n = 0
-    skipped_dup = 0
+        return {"updated": 0, "skipped_duplicate_in_target_pool": 0, "error": "Invalid pool_id"}
+
+    id_list: list[int] = []
+    seen_ids: set[int] = set()
     for mid in ids:
         try:
             mid_int = int(mid)
         except (TypeError, ValueError):
             continue
-        m = db.query(Media).filter(Media.id == mid_int).first()
+        if mid_int in seen_ids:
+            continue
+        seen_ids.add(mid_int)
+        id_list.append(mid_int)
+
+    if not id_list:
+        return {"updated": 0, "skipped_duplicate_in_target_pool": 0, "error": None}
+
+    medias = {m.id: m for m in db.query(Media).filter(Media.id.in_(id_list)).all()}
+
+    # FIDs already present in the target pool from rows we are NOT moving (avoid self-conflict).
+    target_fid_rows = (
+        db.query(Media.file_unique_id)
+        .filter(
+            Media.pool_id == pid,
+            Media.id.notin_(id_list),
+            Media.file_unique_id.isnot(None),
+            Media.file_unique_id != "",
+        )
+        .all()
+    )
+    target_fids = {str(r[0]).strip() for r in target_fid_rows if r[0] and str(r[0]).strip()}
+
+    seen_batch_fids: set[str] = set()
+    skipped_dup = 0
+    to_move: list[int] = []
+
+    for mid_int in id_list:
+        m = medias.get(mid_int)
         if not m:
             continue
         fid = (m.file_unique_id or "").strip()
         if fid:
-            conflict = (
-                db.query(Media)
-                .filter(Media.pool_id == pid, Media.file_unique_id == fid, Media.id != mid_int)
-                .first()
-            )
-            if conflict:
+            if fid in target_fids or fid in seen_batch_fids:
                 skipped_dup += 1
                 continue
-        m.pool_id = pid
-        n += 1
-    db.commit()
-    return {"updated": n, "skipped_duplicate_in_target_pool": skipped_dup}
+            seen_batch_fids.add(fid)
+        to_move.append(mid_int)
+
+    if to_move:
+        stmt = update(Media).where(Media.id.in_(to_move)).values(pool_id=pid)
+        result = db.execute(stmt)
+        db.commit()
+        updated = int(result.rowcount or 0)
+    else:
+        updated = 0
+
+    if skipped_dup and len(id_list) >= 10:
+        logger.info(
+            "bulk_move_pool pool_id=%s requested=%s moved=%s skipped_dup=%s",
+            pid,
+            len(id_list),
+            updated,
+            skipped_dup,
+        )
+
+    return {"updated": updated, "skipped_duplicate_in_target_pool": skipped_dup, "error": None}
 
 
 @router.patch("/bulk/tags")

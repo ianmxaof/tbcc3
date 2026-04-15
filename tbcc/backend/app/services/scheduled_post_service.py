@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.models.media import Media
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.content_pool import ContentPool
+from app.models.channel import Channel
 from app.services.promo_storage import promo_path_from_public_url
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,13 @@ def _effective_album_order_mode(post: ScheduledTextPost) -> str:
     if m in ("shuffle", "carousel"):
         return m
     return "static"
+
+
+def _album_order_mode_for_send(post: ScheduledTextPost, reshuffle_album: bool) -> str:
+    """If reshuffle_album, randomize item order for this send only (overrides static/carousel)."""
+    if reshuffle_album:
+        return "shuffle"
+    return _effective_album_order_mode(post)
 
 
 def _apply_order_mode_to_sequence(items: list, mode: str, post: ScheduledTextPost) -> list:
@@ -275,24 +283,21 @@ def resolve_scheduled_caption(post: ScheduledTextPost) -> str:
     return post.content or ""
 
 
-async def send_scheduled_post(
+async def _execute_telegram_scheduled_send(
     client: TelegramClient,
     channel_identifier: str,
-    post: ScheduledTextPost,
-    db: Session,
-) -> None:
-    """Send a scheduled post (text, optional media, optional buttons)."""
-    slot = _peek_caption_slot_index(post)
-    album_order_mode = _effective_album_order_mode(post)
-    caption = resolve_scheduled_caption(post)
-    reply_markup = _build_reply_markup(post.get_buttons())
-    silent_kw = _send_options(post)
-    # Supergroups with topics: same as Bot API message_thread_id (extension gallery uses this too).
-    reply_to = post.message_thread_id if getattr(post, "message_thread_id", None) else None
-
-    mids, promo_urls, use_pool = _resolve_variant_sources(post, slot)
-    media_items = _gather_media_items_for_send(post, db, mids, use_pool, album_order_mode)
-
+    *,
+    caption: str,
+    media_items: list[Media],
+    promo_ordered: list[str],
+    reply_markup,
+    silent_kw: dict,
+    reply_to: int | None,
+):
+    """
+    Low-level Telegram send using pre-resolved caption, media list, and promo URLs.
+    promo_ordered is used only when media_items is empty.
+    """
     sent_result = None
 
     if media_items:
@@ -315,15 +320,12 @@ async def send_scheduled_post(
             if msg and msg.media:
                 raw_medias.append(msg.media)
         if raw_medias:
-            # Documents that are images display as "unnamed" - download and re-upload as photo when confirmed
             send_medias = []
             for i, raw in enumerate(raw_medias):
                 db_media = items[i]
-                # MessageMediaPhoto: use as-is
                 if not isinstance(raw, MessageMediaDocument):
                     send_medias.append(raw)
                     continue
-                # MessageMediaDocument: check if likely image, then verify with magic bytes
                 maybe_image = (
                     (db_media.media_type or "").lower() == "photo"
                     or _is_image_document(raw)
@@ -341,9 +343,7 @@ async def send_scheduled_post(
                         send_medias.append(raw)
                 else:
                     send_medias.append(raw)
-            # Single file: use InputMediaUploadedPhoto when re-uploaded BytesIO (guaranteed photo)
             if len(send_medias) == 1 and isinstance(send_medias[0], io.BytesIO):
-                # Explicit photo upload — use send_file so forum reply_to matches album_service / extension
                 f = send_medias[0]
                 f.seek(0)
                 uploaded = await client.upload_file(f)
@@ -351,6 +351,7 @@ async def send_scheduled_post(
                     channel_identifier,
                     uploaded,
                     caption=caption or None,
+                    parse_mode="html",
                     buttons=reply_markup,
                     reply_to=reply_to,
                     force_document=False,
@@ -361,6 +362,7 @@ async def send_scheduled_post(
                     channel_identifier,
                     send_medias[0],
                     caption=caption or None,
+                    parse_mode="html",
                     buttons=reply_markup,
                     reply_to=reply_to,
                     force_document=False,
@@ -371,21 +373,22 @@ async def send_scheduled_post(
                     channel_identifier,
                     send_medias,
                     caption=caption or None,
+                    parse_mode="html",
                     buttons=reply_markup,
-                    force_document=False,
                     reply_to=reply_to,
+                    force_document=False,
                     **silent_kw,
                 )
         else:
             sent_result = await client.send_message(
                 channel_identifier,
                 caption or "(no content)",
+                parse_mode="html",
                 buttons=reply_markup,
                 reply_to=reply_to,
                 **silent_kw,
             )
     else:
-        promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, post)
         send_bufs = _promo_buffers_from_urls(promo_ordered)
         if send_bufs:
             if len(send_bufs) == 1:
@@ -396,6 +399,7 @@ async def send_scheduled_post(
                     channel_identifier,
                     uploaded,
                     caption=caption or None,
+                    parse_mode="html",
                     buttons=reply_markup,
                     reply_to=reply_to,
                     force_document=False,
@@ -408,6 +412,7 @@ async def send_scheduled_post(
                     channel_identifier,
                     send_bufs,
                     caption=caption or None,
+                    parse_mode="html",
                     buttons=reply_markup,
                     force_document=False,
                     reply_to=reply_to,
@@ -417,9 +422,88 @@ async def send_scheduled_post(
             sent_result = await client.send_message(
                 channel_identifier,
                 caption or "(no content)",
+                parse_mode="html",
                 buttons=reply_markup,
                 reply_to=reply_to,
                 **silent_kw,
             )
 
+    return sent_result
+
+
+async def send_scheduled_post(
+    client: TelegramClient,
+    channel_identifier: str,
+    post: ScheduledTextPost,
+    db: Session,
+    *,
+    reshuffle_album: bool = False,
+) -> None:
+    """Send a scheduled post (text, optional media, optional buttons)."""
+    slot = _peek_caption_slot_index(post)
+    album_order_mode = _album_order_mode_for_send(post, reshuffle_album)
+    caption = resolve_scheduled_caption(post)
+    reply_markup = _build_reply_markup(post.get_buttons())
+    silent_kw = _send_options(post)
+    reply_to = post.message_thread_id if getattr(post, "message_thread_id", None) else None
+
+    mids, promo_urls, use_pool = _resolve_variant_sources(post, slot)
+    media_items = _gather_media_items_for_send(post, db, mids, use_pool, album_order_mode)
+    promo_ordered: list[str] = []
+    if not media_items:
+        promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, post)
+
+    sent_result = await _execute_telegram_scheduled_send(
+        client,
+        channel_identifier,
+        caption=caption,
+        media_items=media_items,
+        promo_ordered=promo_ordered,
+        reply_markup=reply_markup,
+        silent_kw=silent_kw,
+        reply_to=reply_to,
+    )
+
     await _maybe_pin_after_send(client, channel_identifier, post, sent_result)
+
+
+async def send_scheduled_campaign(
+    client: TelegramClient,
+    leader: ScheduledTextPost,
+    siblings: list[ScheduledTextPost],
+    db: Session,
+    *,
+    reshuffle_album: bool = False,
+) -> None:
+    """
+    Send the same prepared payload to every sibling channel (shared caption rotation, pool batch, promos).
+    siblings must include leader; all rows share one campaign_group_id.
+    """
+    slot = _peek_caption_slot_index(leader)
+    album_order_mode = _album_order_mode_for_send(leader, reshuffle_album)
+    caption = resolve_scheduled_caption(leader)
+    reply_markup = _build_reply_markup(leader.get_buttons())
+    mids, promo_urls, use_pool = _resolve_variant_sources(leader, slot)
+    media_items = _gather_media_items_for_send(leader, db, mids, use_pool, album_order_mode)
+    promo_ordered: list[str] = []
+    if not media_items:
+        promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, leader)
+
+    for p in sorted(siblings, key=lambda x: x.id):
+        channel = db.query(Channel).filter(Channel.id == p.channel_id).first()
+        if not channel:
+            logger.warning("Campaign skip: channel %s missing for scheduled post %s", p.channel_id, p.id)
+            continue
+        silent_kw = _send_options(p)
+        reply_to = p.message_thread_id if getattr(p, "message_thread_id", None) else None
+        sent_result = await _execute_telegram_scheduled_send(
+            client,
+            channel.identifier,
+            caption=caption,
+            media_items=media_items,
+            promo_ordered=promo_ordered,
+            reply_markup=reply_markup,
+            silent_kw=silent_kw,
+            reply_to=reply_to,
+        )
+        await _maybe_pin_after_send(client, channel.identifier, p, sent_result)

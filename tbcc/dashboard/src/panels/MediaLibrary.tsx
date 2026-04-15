@@ -7,6 +7,7 @@ import { MediaMasterSuiteModal } from "../components/MediaMasterSuiteModal";
 import { MediaThumbnailCell } from "../components/MediaThumbnailCell";
 import { MediaLlmSuggestModal } from "../components/MediaLlmSuggestModal";
 import { ContentPools } from "./ContentPools";
+import { InfoDisclosure } from "../components/InfoDisclosure";
 
 export function MediaLibrary() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>("pending");
@@ -140,6 +141,7 @@ export function MediaLibrary() {
   });
 
   const [statusMutationErr, setStatusMutationErr] = useState<string | null>(null);
+  const [bulkMoveFeedback, setBulkMoveFeedback] = useState<string | null>(null);
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
       api.media.updateStatus(id, status),
@@ -163,10 +165,23 @@ export function MediaLibrary() {
   });
   const bulkMovePool = useMutation({
     mutationFn: ({ ids, poolId }: { ids: number[]; poolId: number }) => api.media.bulkMovePool(ids, poolId),
-    onSuccess: () => {
+    onMutate: () => setBulkMoveFeedback(null),
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
       setSelectedIds([]);
+      const skipped = data.skipped_duplicate_in_target_pool ?? 0;
+      if (data.updated === 0 && skipped === 0) {
+        setBulkMoveFeedback("No rows moved (missing media ids?).");
+      } else if (skipped > 0) {
+        setBulkMoveFeedback(
+          `Moved ${data.updated}. Skipped ${skipped} — same Telegram file already in the target pool, or duplicate file repeated in your selection (first wins).`
+        );
+      } else {
+        setBulkMoveFeedback(`Moved ${data.updated} item(s) to the pool.`);
+      }
     },
+    onError: (e: Error) => setBulkMoveFeedback(`Move to pool failed: ${e.message}`),
   });
   const bulkSetTags = useMutation({
     mutationFn: ({ ids, tags }: { ids: number[]; tags: string }) => api.media.bulkSetTags(ids, tags),
@@ -174,6 +189,21 @@ export function MediaLibrary() {
       queryClient.invalidateQueries({ queryKey: ["media"] });
       queryClient.invalidateQueries({ queryKey: ["tags"] });
       setSelectedIds([]);
+    },
+  });
+
+  /** Same as Master suite “Remove from pool”: DELETE each row from TBCC only (Telegram copy untouched). */
+  const bulkRemoveFromPool = useMutation({
+    mutationFn: async (ids: number[]) => {
+      for (const id of ids) {
+        await api.media.delete(id);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
+      setSelectedIds([]);
+      setSuiteIndex(null);
     },
   });
 
@@ -200,10 +230,34 @@ export function MediaLibrary() {
   const selectAllCurrent = () => setSelectedIds((media as Array<Record<string, unknown>>).map((m) => Number(m.id)));
   const clearSelection = () => setSelectedIds([]);
 
+  /** Display index anchor for Shift+click range (same idea as extension gallery `lastSelectionAnchorIndex`). */
+  const gridSelectionAnchorRef = useRef(0);
+
   const previewable = useMemo(
     () => (media as Array<Record<string, unknown>>).filter((m) => canPreviewInGallery(m)),
     [media]
   );
+
+  const handleGalleryCellPointer = (id: number, displayIdx: number, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      e.preventDefault();
+      const a = Math.min(gridSelectionAnchorRef.current, displayIdx);
+      const b = Math.max(gridSelectionAnchorRef.current, displayIdx);
+      const rangeIds = previewable.slice(a, b + 1).map((m) => Number(m.id));
+      setSelectedIds(rangeIds);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+      return;
+    }
+    gridSelectionAnchorRef.current = displayIdx;
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const selectAllPreviewable = () =>
+    setSelectedIds(previewable.map((m) => Number(m.id)));
 
   const openSuiteForId = (id: number) => {
     const idx = previewable.findIndex((m) => Number(m.id) === id);
@@ -222,6 +276,8 @@ export function MediaLibrary() {
     );
 
   if (isLoading) return <div className="text-slate-400">Loading...</div>;
+
+  const galleryTransportDocked = viewMode === "grid" && selectedIds.length > 0;
 
   return (
     <div>
@@ -254,28 +310,30 @@ export function MediaLibrary() {
         />
       )}
       <h1 className="text-2xl font-semibold mb-2">Master media pool</h1>
-      <p className="text-slate-500 text-xs mb-3 max-w-2xl">
-        Central store for imported media. Click any <strong>row</strong> or <strong>grid tile</strong> (previewable items) to open the{" "}
-        <strong>gallery suite</strong> — full-size preview with <strong>tags</strong> (catalog + create new),{" "}
-        <strong>pool / channel routing</strong>, and metadata. Bulk tag tools below; manage tag definitions on the{" "}
-        <Link to="/tags" className="text-cyan-400 hover:underline">
-          Tags
-        </Link>{" "}
-        page. With exactly <strong>one</strong> row selected, <strong>AI suggest</strong> uses{" "}
-        <code className="text-slate-400">TBCC_OPENAI_API_KEY</code>.
-      </p>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4 items-start">
+      <div className="mb-3 flex justify-end">
+        <InfoDisclosure>
+          Central store for imported media. <strong>List</strong>: click a row to open the <strong>gallery suite</strong> (full-size
+          preview, tags, pool routing). <strong>Gallery</strong> grid: click tile to toggle selection; <strong>Ctrl/Cmd+click</strong>{" "}
+          toggles one; <strong>Shift+click</strong> selects a range; <strong>double-click</strong> opens suite.
+          <br />
+          Tag registry:{" "}
+          <Link to="/tags" className="text-cyan-400 hover:underline">
+            /tags
+          </Link>
+          . With exactly one selection, <strong>AI suggest</strong> uses <code className="text-slate-400">TBCC_OPENAI_API_KEY</code>.
+        </InfoDisclosure>
+      </div>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-4 items-stretch">
         <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h2 className="text-sm font-medium text-slate-200">Import from Saved Messages</h2>
-            <details className="text-xs text-slate-500 [&_summary]:cursor-pointer [&_summary]:select-none">
-              <summary>How it works</summary>
-              <p className="text-slate-400 mt-2 pl-0.5 leading-relaxed">
+            <InfoDisclosure>
+              <p>
                 Adds photos/videos already in your Telegram <strong>Saved Messages</strong> into a <strong>pool</strong> as{" "}
                 <strong>pending</strong> media (newest first; skips duplicates already in that pool). Uses the same admin
                 account session as other TBCC imports — not the payment bot.
               </p>
-            </details>
+            </InfoDisclosure>
           </div>
           <div className="flex flex-wrap gap-2 sm:gap-3 items-end">
             <label className="block text-xs text-slate-400">
@@ -331,14 +389,13 @@ export function MediaLibrary() {
         <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h2 className="text-sm font-medium text-slate-200">Upload local files</h2>
-            <details className="text-xs text-slate-500 [&_summary]:cursor-pointer [&_summary]:select-none">
-              <summary>How it works</summary>
-              <p className="text-slate-400 mt-2 pl-0.5 leading-relaxed">
+            <InfoDisclosure>
+              <p>
                 Send photos/videos from your computer through the same admin Telegram session as other imports. Choose a{" "}
                 <strong>pool</strong> for Media Library rows (except &quot;Saved Messages only&quot;). Destination options
                 match the Scheduler: channel or forum topic, or Saved Messages only.
               </p>
-            </details>
+            </InfoDisclosure>
           </div>
           <div className="flex flex-wrap gap-2 sm:gap-3 items-end mb-2">
             <label className="block text-xs text-slate-400">
@@ -611,18 +668,39 @@ export function MediaLibrary() {
           Gallery
         </button>
         {viewMode === "grid" && (
-          <label className="flex items-center gap-1 text-xs text-slate-400">
-            Grid
-            <select
-              value={gridCols}
-              onChange={(e) => setGridCols(Number(e.target.value) as 3 | 5 | 8)}
-              className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200"
-            >
-              <option value={3}>3×3</option>
-              <option value={5}>5×5</option>
-              <option value={8}>8×8</option>
-            </select>
-          </label>
+          <>
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              Grid
+              <select
+                value={gridCols}
+                onChange={(e) => setGridCols(Number(e.target.value) as 3 | 5 | 8)}
+                className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-200"
+              >
+                <option value={3}>3×3</option>
+                <option value={5}>5×5</option>
+                <option value={8}>8×8</option>
+              </select>
+            </label>
+            {previewable.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={selectAllPreviewable}
+                  className="px-3 py-1 rounded bg-slate-600 text-slate-200 text-sm hover:bg-slate-500"
+                >
+                  Select all in gallery
+                </button>
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  disabled={selectedIds.length === 0}
+                  className="px-3 py-1 rounded bg-slate-600 text-slate-200 text-sm hover:bg-slate-500 disabled:opacity-50"
+                >
+                  Clear selection
+                </button>
+              </>
+            )}
+          </>
         )}
         <button
           onClick={() => refetch()}
@@ -633,8 +711,21 @@ export function MediaLibrary() {
         </button>
       </div>
       {selectedIds.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-4 items-end p-3 rounded-lg bg-slate-800/80 border border-slate-600">
-          <span className="text-slate-300 text-sm">{selectedIds.length} selected — bulk:</span>
+        <div
+          role="toolbar"
+          aria-label={galleryTransportDocked ? "Gallery bulk actions (docked)" : "Bulk media actions"}
+          className={`flex flex-wrap gap-2 items-end gap-y-2 ${
+            galleryTransportDocked
+              ? "fixed bottom-0 left-0 right-0 z-50 border-t border-slate-600 bg-slate-900/95 backdrop-blur-md px-4 py-3 shadow-[0_-12px_40px_rgba(0,0,0,0.5)] max-h-[min(50vh,22rem)] overflow-y-auto pb-[max(0.75rem,env(safe-area-inset-bottom,0px))]"
+              : "mb-4 p-3 rounded-lg bg-slate-800/80 border border-slate-600"
+          }`}
+        >
+          <span className="text-slate-300 text-sm shrink-0">
+            {galleryTransportDocked && (
+              <span className="text-cyan-400/90 font-medium mr-2">Gallery</span>
+            )}
+            {selectedIds.length} selected — bulk:
+          </span>
           <select
             value={bulkPoolId || ""}
             onChange={(e) => setBulkPoolId(Number(e.target.value))}
@@ -650,10 +741,14 @@ export function MediaLibrary() {
           <button
             type="button"
             disabled={!bulkPoolId || bulkMovePool.isPending}
-            onClick={() => bulkPoolId && bulkMovePool.mutate({ ids: selectedIds, poolId: bulkPoolId })}
+            onClick={() => {
+              if (!bulkPoolId) return;
+              const ids = [...new Set(selectedIds)];
+              bulkMovePool.mutate({ ids, poolId: bulkPoolId });
+            }}
             className="px-3 py-1 rounded bg-cyan-800 text-cyan-100 text-sm hover:bg-cyan-700 disabled:opacity-50"
           >
-            Move to pool
+            {bulkMovePool.isPending ? "Moving…" : "Move to pool"}
           </button>
           <input
             type="text"
@@ -679,6 +774,24 @@ export function MediaLibrary() {
           >
             Re-apply auto rules
           </button>
+          <button
+            type="button"
+            disabled={bulkRemoveFromPool.isPending}
+            onClick={() => {
+              if (
+                !window.confirm(
+                  `Remove ${selectedIds.length} item(s) from TBCC / pools? This does not delete the file(s) in Telegram Saved Messages.`
+                )
+              ) {
+                return;
+              }
+              bulkRemoveFromPool.mutate([...selectedIds]);
+            }}
+            className="px-3 py-1 rounded bg-amber-900/90 text-amber-100 text-sm hover:bg-amber-800 disabled:opacity-50"
+            title="Deletes TBCC media rows only (same as Master suite Remove from pool)"
+          >
+            {bulkRemoveFromPool.isPending ? "Removing…" : "Remove from pool"}
+          </button>
           {selectedIds.length === 1 && (
             <button
               type="button"
@@ -689,37 +802,109 @@ export function MediaLibrary() {
               AI suggest (tags + caption)
             </button>
           )}
-          {(bulkMovePool.data?.skipped_duplicate_in_target_pool ?? 0) > 0 && (
-            <span className="text-amber-400 text-xs">
-              Skipped {String(bulkMovePool.data?.skipped_duplicate_in_target_pool)} (already in target pool)
+          {bulkMoveFeedback && (
+            <span className="text-slate-200 text-xs basis-full max-w-prose">
+              {bulkMoveFeedback}
+              <button
+                type="button"
+                className="ml-2 text-cyan-400 hover:underline"
+                onClick={() => setBulkMoveFeedback(null)}
+              >
+                Dismiss
+              </button>
+            </span>
+          )}
+          {bulkRemoveFromPool.isError && (
+            <span className="text-red-400 text-xs w-full basis-full">
+              {bulkRemoveFromPool.error instanceof Error
+                ? bulkRemoveFromPool.error.message
+                : String(bulkRemoveFromPool.error)}
             </span>
           )}
         </div>
       )}
       {viewMode === "grid" && (
-        <div
-          className="mb-4 grid gap-2"
-          style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
-        >
-          {previewable.length === 0 ? (
-            <p className="text-slate-500 text-sm col-span-full">No previewable items on this page (photos/videos/gif/document).</p>
-          ) : (
-            previewable.map((m) => (
-              <button
-                key={String(m.id)}
-                type="button"
-                onClick={() => openSuiteForId(Number(m.id))}
-                className="aspect-square rounded-lg overflow-hidden border border-slate-600 bg-slate-800 hover:border-cyan-500/60 focus:outline-none focus:ring-2 focus:ring-cyan-500 p-0"
-                title={`Open suite · ID ${m.id}`}
-              >
-                <MediaThumbnailCell
-                  mediaId={Number(m.id)}
-                  mediaType={String(m.media_type || "")}
-                  className="w-full h-full object-cover"
-                />
-              </button>
-            ))
+        <div className={`mb-4 ${galleryTransportDocked ? "pb-40 sm:pb-36" : ""}`}>
+          {previewable.length > 0 && (
+            <p className="text-slate-500 text-xs mb-2">
+              Hover for pool · click / checkbox = toggle · Ctrl/Cmd+click = toggle one · Shift+click = range · double-click = open suite
+            </p>
           )}
+          <div
+            className="grid gap-2"
+            style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
+          >
+            {previewable.length === 0 ? (
+              <p className="text-slate-500 text-sm col-span-full">
+                No previewable items on this page (photos/videos/gif/document).
+              </p>
+            ) : (
+              previewable.map((m, displayIdx) => {
+                const id = Number(m.id);
+                const poolLabel = poolMap[String(m.pool_id ?? "")] ?? String(m.pool_id ?? "—");
+                const statusLabel = String(m.status ?? "—");
+                const tagsHint = m.tags ? String(m.tags) : "";
+                const selected = selectedIds.includes(id);
+                return (
+                  <div
+                    key={String(m.id)}
+                    className={`relative aspect-square rounded-lg overflow-hidden border bg-slate-800 group outline-none focus-within:ring-2 focus-within:ring-cyan-500 ${
+                      selected ? "border-cyan-500 ring-1 ring-cyan-500/50" : "border-slate-600 hover:border-cyan-500/60"
+                    }`}
+                    title={`#${id} · ${poolLabel} · ${statusLabel}${tagsHint ? ` · ${tagsHint}` : ""}`}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      openSuiteForId(id);
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      readOnly
+                      className="absolute top-1 left-1 z-20 h-4 w-4 cursor-pointer rounded border-slate-500 bg-slate-900/90 text-cyan-600 shadow"
+                      title="Toggle selection (Ctrl/Cmd and Shift supported)"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleGalleryCellPointer(id, displayIdx, e);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="absolute inset-0 z-10 p-0 border-0 cursor-pointer bg-transparent"
+                      aria-label={`Media ${id}, ${poolLabel}. Toggle selection; double-click for suite.`}
+                      onClick={(e) => handleGalleryCellPointer(id, displayIdx, e)}
+                    >
+                      <MediaThumbnailCell
+                        mediaId={id}
+                        mediaType={String(m.media_type || "")}
+                        className="w-full h-full object-cover pointer-events-none"
+                      />
+                    </button>
+                    <div
+                      className="pointer-events-none absolute bottom-0 left-0 right-0 z-[15] bg-slate-950/85 px-1 py-0.5 text-[10px] leading-tight text-slate-200 opacity-0 transition-opacity group-hover:opacity-100"
+                      aria-hidden="true"
+                    >
+                      <span className="font-medium text-cyan-200/95">{poolLabel}</span>
+                      <span className="text-slate-500"> · </span>
+                      <span>{statusLabel}</span>
+                      {tagsHint ? (
+                        <>
+                          <span className="text-slate-500"> · </span>
+                          <span className="text-slate-400 truncate block">{tagsHint}</span>
+                        </>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
       )}
 
@@ -853,10 +1038,13 @@ export function MediaLibrary() {
       </div>
       {media.length === 0 && <p className="text-slate-500 mt-4">No media found.</p>}
       <div className="mt-8 pt-6 border-t border-slate-700">
-        <h2 className="text-xl font-semibold mb-3">Pools & channels</h2>
-        <p className="text-slate-400 text-sm mb-4">
-          Pool/channel management now lives here. Publishing from pools is disabled; use Scheduler for all autonomous posts.
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 className="text-xl font-semibold">Pools & channels</h2>
+          <InfoDisclosure>
+            Pool/channel management lives here. Autonomous pool posting is disabled; use Scheduler for all planned
+            publishing.
+          </InfoDisclosure>
+        </div>
         <ContentPools />
       </div>
     </div>

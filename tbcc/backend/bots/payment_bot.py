@@ -76,6 +76,9 @@ logger = logging.getLogger(__name__)
 
 API_BASE = os.getenv("TBCC_API_URL", "http://localhost:8000")
 
+# Set from GET /health in _post_init — used in welcome copy.
+_health_crypto_auto_checkout: bool = False
+
 
 def _telegram_http_timeout_seconds() -> float:
     """PTB defaults to 5s connect — too short on some networks; clamp to a sane range."""
@@ -495,10 +498,17 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 
 def welcome_html() -> str:
     """Welcome + command list (HTML — Telegram Markdown is fragile with /commands, &, nested bold)."""
-    pay_line = (
-        "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app, live now) · <b>crypto</b> &amp; <b>card (fiat)</b> — "
-        "same products; Stars checkout is active today, additional rails rolling out alongside.\n\n"
-    )
+    if _health_crypto_auto_checkout:
+        pay_line = (
+            "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app) and <b>crypto</b> — tap <b>Wallet / crypto</b> on a plan for "
+            "an automatic checkout link; access unlocks when payment confirms (no admin step).\n\n"
+        )
+    else:
+        pay_line = (
+            "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app, live now). <b>Crypto:</b> tap <b>Wallet / crypto</b> — "
+            "you may get an automatic pay link if the server has NOWPayments + a public <code>https://</code> API URL; "
+            "otherwise use the order reference / pending orders flow.\n\n"
+        )
     mode = referral_cfg()["mode"]
     if mode == "community":
         return (
@@ -1318,6 +1328,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def _post_init(app: Application) -> None:
     """Log bot identity; register command menu + short description (visible before user sends /start)."""
+    global _health_crypto_auto_checkout
     me = await app.bot.get_me()
     logger.info("Payment bot online: @%s id=%s — /shop uses MessageHandler + promo flow", me.username, me.id)
     try:
@@ -1325,6 +1336,15 @@ async def _post_init(app: Application) -> None:
             r = await client.get(f"{API_BASE.rstrip('/')}/health", timeout=10.0)
             if r.is_success:
                 data = r.json()
+                _health_crypto_auto_checkout = bool(data.get("crypto_auto_checkout"))
+                if _health_crypto_auto_checkout:
+                    logger.info("API reports crypto_auto_checkout=true (NOWPayments + HTTPS IPN path ready)")
+                else:
+                    logger.warning(
+                        "API reports crypto_auto_checkout=false — set TBCC_NOWPAYMENTS_API_KEY, "
+                        "TBCC_NOWPAYMENTS_IPN_SECRET, and TBCC_PUBLIC_API_BASE_URL (public https, no localhost) "
+                        "for automatic crypto checkout + fulfillment"
+                    )
                 impl = data.get("external_payment_orders_impl")
                 if impl != "uuid-epo-v2":
                     impl2 = None
@@ -1370,9 +1390,12 @@ async def _post_init(app: Application) -> None:
     except Exception as e:
         logger.warning("set_my_commands failed: %s", e)
     try:
-        await app.bot.set_my_short_description(
-            "AOF — community & premium. Stars live; crypto & card rolling out. /start or /help."
+        short_desc = (
+            "AOF — premium: Stars in-app; crypto auto-checkout when the API is configured. /start"
+            if _health_crypto_auto_checkout
+            else "AOF — premium: Stars in-app; crypto via Wallet/crypto (auto if NOWPayments on API). /start"
         )
+        await app.bot.set_my_short_description(short_desc)
     except Exception as e:
         logger.warning("set_my_short_description failed: %s", e)
     # Long profile text (“What can this bot do?”) — max 512 chars for set_my_description
@@ -1384,7 +1407,8 @@ async def _post_init(app: Application) -> None:
         "• /packs — Digital packs\n"
         "• /referral — Your unique code + invite link & rewards\n"
         "• /status — Purchases & subscription\n\n"
-        "Referral: share your link; top referrers get perks. Subscribe: Stars now; same products on crypto/fiat next."
+        "Referral: share your link; top referrers get perks. All tiers are managed in the dashboard shop; "
+        "crypto can unlock automatically when NOWPayments is configured on the API."
     )
     if len(long_desc) > 512:
         long_desc = long_desc[:509] + "..."

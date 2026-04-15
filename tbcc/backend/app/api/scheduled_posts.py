@@ -1,6 +1,7 @@
 import json
+import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -82,11 +83,92 @@ def scheduled_post_to_api_dict(post: ScheduledTextPost) -> dict:
     return d
 
 
+def _patch_scheduled_post_core(
+    post: ScheduledTextPost,
+    body: ScheduledPostUpdate,
+    fs: set,
+    *,
+    allow_channel_id: bool = True,
+) -> None:
+    if body.name is not None:
+        post.name = body.name
+    if allow_channel_id and body.channel_id is not None:
+        post.channel_id = body.channel_id
+    if "message_thread_id" in fs:
+        post.message_thread_id = body.message_thread_id
+
+    if "content_variations" in fs:
+        nv = _normalize_variations(body.content_variations)
+        if len(nv) >= 2:
+            post.content_variations = json.dumps(nv)
+            post.content = nv[0]
+            post.caption_rotation_index = None
+        elif len(nv) == 1:
+            post.content_variations = None
+            post.content = nv[0]
+            post.caption_rotation_index = None
+        else:
+            post.content_variations = None
+            post.caption_rotation_index = None
+
+    if body.content is not None:
+        if "content_variations" not in fs:
+            post.content = body.content
+        else:
+            nv2 = _normalize_variations(body.content_variations)
+            if len(nv2) < 2:
+                post.content = body.content
+
+    # Schedule mode: allow explicit null to clear one-time vs recurring (see model_fields_set).
+    if "scheduled_at" in fs:
+        post.scheduled_at = body.scheduled_at
+    if "interval_minutes" in fs:
+        post.interval_minutes = body.interval_minutes
+    # Keep modes mutually exclusive when switching.
+    if "interval_minutes" in fs and body.interval_minutes is not None:
+        post.scheduled_at = None
+    if "scheduled_at" in fs and body.scheduled_at is not None:
+        post.interval_minutes = None
+    if hasattr(body, "media_ids") and body.media_ids is not None:
+        post.media_ids = json.dumps(body.media_ids)
+    if hasattr(body, "pool_id"):
+        post.pool_id = body.pool_id
+    if hasattr(body, "buttons") and body.buttons is not None:
+        post.buttons = json.dumps(body.buttons)
+    if "album_size" in fs:
+        v = body.album_size
+        post.album_size = min(10, max(1, int(v))) if v is not None else None
+    if "pool_randomize" in fs:
+        post.pool_randomize = body.pool_randomize
+    if "pool_only_mode" in fs:
+        post.pool_only_mode = bool(body.pool_only_mode) if post.pool_id else False
+    if "album_variants" in fs:
+        av = _normalize_album_variants(body.album_variants)
+        post.album_variants_json = json.dumps(av) if av else None
+        if av:
+            post.attachment_urls_json = None
+    elif "attachment_urls" in fs:
+        au = _normalize_attachment_urls(body.attachment_urls)
+        post.attachment_urls_json = json.dumps(au) if au else None
+    if "album_order_mode" in fs:
+        m = (body.album_order_mode or "").strip().lower()
+        if m not in ("static", "shuffle", "carousel", ""):
+            raise HTTPException(400, "album_order_mode must be static, shuffle, or carousel")
+        post.album_order_mode = m if m else None
+    if "send_silent" in fs:
+        post.send_silent = bool(body.send_silent)
+    if "pin_after_send" in fs:
+        post.pin_after_send = bool(body.pin_after_send)
+
+
 class ScheduledPostCreate(BaseModel):
     name: str | None = None
-    channel_id: int
-    """Telegram forum topic id (message_thread_id). Omit or null = main chat / broadcast."""
-    message_thread_id: int | None = None
+    channel_id: int | None = None
+    channel_ids: list[int] | None = Field(
+        default=None,
+        description="Multiple channels: creates one scheduled row per id with the same payload; ignores channel_id.",
+    )
+    message_thread_id: int | None = None  # forum topic; applied to every row in a multi-channel create
     content: str = ""
     scheduled_at: datetime | None = Field(default=None, description="Required for one-time; omit for recurring")
     interval_minutes: int | None = Field(default=None, description="Required for recurring")
@@ -127,6 +209,18 @@ class ScheduledPostUpdate(BaseModel):
     album_order_mode: str | None = None
     send_silent: bool | None = None
     pin_after_send: bool | None = None
+
+
+def _resolve_create_channel_ids(body: ScheduledPostCreate) -> list[int]:
+    raw = body.channel_ids
+    if raw:
+        out = sorted({int(x) for x in raw if x is not None})
+        if not out:
+            raise HTTPException(400, "channel_ids must contain at least one channel id")
+        return out
+    if body.channel_id is not None:
+        return [int(body.channel_id)]
+    raise HTTPException(400, "channel_id or channel_ids required")
 
 
 @router.get("/")
@@ -172,35 +266,133 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
         raise HTTPException(400, "album_order_mode must be static, shuffle, or carousel")
     order_mode = mode if mode else None
     try:
-        post = ScheduledTextPost(
-            name=body.name,
-            channel_id=body.channel_id,
-            message_thread_id=body.message_thread_id,
-            content=content_val,
-            scheduled_at=body.scheduled_at,
-            interval_minutes=body.interval_minutes,
-            media_ids=json.dumps(body.media_ids) if body.media_ids else None,
-            pool_id=body.pool_id if body.pool_id else None,
-            buttons=json.dumps(body.buttons) if body.buttons else None,
-            album_size=asize,
-            pool_randomize=body.pool_randomize,
-            pool_only_mode=bool(body.pool_only_mode) if body.pool_id else False,
-            content_variations=variations_json,
-            caption_rotation_index=None,
-            attachment_urls_json=None if av_norm else (json.dumps(att_urls) if att_urls else None),
-            album_variants_json=json.dumps(av_norm) if av_norm else None,
-            album_order_mode=order_mode,
-            album_carousel_index=None,
-            send_silent=bool(body.send_silent),
-            pin_after_send=bool(body.pin_after_send),
-        )
-        db.add(post)
+        ch_ids = _resolve_create_channel_ids(body)
+        for cid in ch_ids:
+            c = db.query(Channel).filter(Channel.id == cid).first()
+            if not c:
+                raise HTTPException(400, f"Channel id {cid} not found")
+        campaign_group_id = str(uuid.uuid4()) if len(ch_ids) > 1 else None
+        created: list[ScheduledTextPost] = []
+        for cid in ch_ids:
+            post = ScheduledTextPost(
+                name=body.name,
+                channel_id=cid,
+                campaign_group_id=campaign_group_id,
+                message_thread_id=body.message_thread_id,
+                content=content_val,
+                scheduled_at=body.scheduled_at,
+                interval_minutes=body.interval_minutes,
+                media_ids=json.dumps(body.media_ids) if body.media_ids else None,
+                pool_id=body.pool_id if body.pool_id else None,
+                buttons=json.dumps(body.buttons) if body.buttons else None,
+                album_size=asize,
+                pool_randomize=body.pool_randomize,
+                pool_only_mode=bool(body.pool_only_mode) if body.pool_id else False,
+                content_variations=variations_json,
+                caption_rotation_index=None,
+                attachment_urls_json=None if av_norm else (json.dumps(att_urls) if att_urls else None),
+                album_variants_json=json.dumps(av_norm) if av_norm else None,
+                album_order_mode=order_mode,
+                album_carousel_index=None,
+                send_silent=bool(body.send_silent),
+                pin_after_send=bool(body.pin_after_send),
+            )
+            db.add(post)
+            created.append(post)
         db.commit()
-        db.refresh(post)
-        return scheduled_post_to_api_dict(post)
+        result_posts = []
+        for p in created:
+            db.refresh(p)
+            d = scheduled_post_to_api_dict(p)
+            ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
+            d["channel_name"] = ch.name or ch.identifier if ch else None
+            result_posts.append(d)
+        return {"posts": result_posts, "campaign_group_id": campaign_group_id}
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"{type(e).__name__}: {str(e)}")
+
+
+@router.patch("/campaign/{campaign_group_id}")
+def update_scheduled_campaign(campaign_group_id: str, body: ScheduledPostUpdate, db: Session = Depends(get_db)):
+    rows = (
+        db.query(ScheduledTextPost)
+        .filter(ScheduledTextPost.campaign_group_id == campaign_group_id)
+        .order_by(ScheduledTextPost.id)
+        .all()
+    )
+    if not rows:
+        return {"error": "Campaign not found"}
+    for p in rows:
+        if p.interval_minutes is None and p.sent_at:
+            return {"error": "Cannot edit campaign: already sent"}
+    fs = getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", None) or set()
+    for p in rows:
+        _patch_scheduled_post_core(p, body, fs, allow_channel_id=False)
+    db.commit()
+    result_posts = []
+    for p in rows:
+        db.refresh(p)
+        d = scheduled_post_to_api_dict(p)
+        ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
+        d["channel_name"] = ch.name or ch.identifier if ch else None
+        result_posts.append(d)
+    return {"posts": result_posts, "campaign_group_id": campaign_group_id}
+
+
+@router.delete("/campaign/{campaign_group_id}")
+def delete_scheduled_campaign(campaign_group_id: str, db: Session = Depends(get_db)):
+    n = (
+        db.query(ScheduledTextPost)
+        .filter(ScheduledTextPost.campaign_group_id == campaign_group_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    if not n:
+        return {"error": "Campaign not found"}
+    return {"deleted": n, "campaign_group_id": campaign_group_id}
+
+
+@router.post("/campaign/{campaign_group_id}/trigger")
+def trigger_scheduled_campaign(
+    campaign_group_id: str,
+    db: Session = Depends(get_db),
+    reshuffle: bool = Query(
+        False,
+        description="Randomize album/promo order for this send only; allows reposting one-time jobs that already ran.",
+    ),
+):
+    rows = (
+        db.query(ScheduledTextPost)
+        .filter(ScheduledTextPost.campaign_group_id == campaign_group_id)
+        .order_by(ScheduledTextPost.id)
+        .all()
+    )
+    if not rows:
+        return {"error": "Campaign not found"}
+    leader = rows[0]
+    is_recurring = leader.interval_minutes is not None
+    if not is_recurring and leader.sent_at and not reshuffle:
+        return {"error": "Post already sent"}
+    for p in rows:
+        ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
+        if not ch:
+            return {"error": "Channel not found"}
+    if is_recurring:
+        now = datetime.utcnow()
+        for p in rows:
+            p.last_posted_at = now
+        db.commit()
+    post_scheduled_text.delay(leader.id, reshuffle_album=reshuffle)
+    return {
+        "status": "scheduled",
+        "post_id": leader.id,
+        "campaign_group_id": campaign_group_id,
+        "reshuffle": reshuffle,
+    }
 
 
 @router.patch("/{post_id}")
@@ -211,73 +403,35 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
     if post.interval_minutes is None and post.sent_at:
         return {"error": "Cannot edit already sent post"}
     fs = getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", None) or set()
-
-    if body.name is not None:
-        post.name = body.name
-    if body.channel_id is not None:
-        post.channel_id = body.channel_id
-    if "message_thread_id" in fs:
-        post.message_thread_id = body.message_thread_id
-
-    if "content_variations" in fs:
-        nv = _normalize_variations(body.content_variations)
-        if len(nv) >= 2:
-            post.content_variations = json.dumps(nv)
-            post.content = nv[0]
-            post.caption_rotation_index = None
-        elif len(nv) == 1:
-            post.content_variations = None
-            post.content = nv[0]
-            post.caption_rotation_index = None
-        else:
-            post.content_variations = None
-            post.caption_rotation_index = None
-
-    if body.content is not None:
-        if "content_variations" not in fs:
-            post.content = body.content
-        else:
-            nv2 = _normalize_variations(body.content_variations)
-            if len(nv2) < 2:
-                post.content = body.content
-
-    if body.scheduled_at is not None:
-        post.scheduled_at = body.scheduled_at
-    if hasattr(body, "interval_minutes") and body.interval_minutes is not None:
-        post.interval_minutes = body.interval_minutes
-    if hasattr(body, "media_ids") and body.media_ids is not None:
-        post.media_ids = json.dumps(body.media_ids)
-    if hasattr(body, "pool_id"):
-        post.pool_id = body.pool_id
-    if hasattr(body, "buttons") and body.buttons is not None:
-        post.buttons = json.dumps(body.buttons)
-    if "album_size" in fs:
-        v = body.album_size
-        post.album_size = min(10, max(1, int(v))) if v is not None else None
-    if "pool_randomize" in fs:
-        post.pool_randomize = body.pool_randomize
-    if "pool_only_mode" in fs:
-        post.pool_only_mode = bool(body.pool_only_mode) if post.pool_id else False
-    if "album_variants" in fs:
-        av = _normalize_album_variants(body.album_variants)
-        post.album_variants_json = json.dumps(av) if av else None
-        if av:
-            post.attachment_urls_json = None
-    elif "attachment_urls" in fs:
-        au = _normalize_attachment_urls(body.attachment_urls)
-        post.attachment_urls_json = json.dumps(au) if au else None
-    if "album_order_mode" in fs:
-        m = (body.album_order_mode or "").strip().lower()
-        if m not in ("static", "shuffle", "carousel", ""):
-            raise HTTPException(400, "album_order_mode must be static, shuffle, or carousel")
-        post.album_order_mode = m if m else None
-    if "send_silent" in fs:
-        post.send_silent = bool(body.send_silent)
-    if "pin_after_send" in fs:
-        post.pin_after_send = bool(body.pin_after_send)
+    cg = getattr(post, "campaign_group_id", None)
+    if cg:
+        rows = (
+            db.query(ScheduledTextPost)
+            .filter(ScheduledTextPost.campaign_group_id == cg)
+            .order_by(ScheduledTextPost.id)
+            .all()
+        )
+        for p in rows:
+            if p.interval_minutes is None and p.sent_at:
+                return {"error": "Cannot edit campaign: already sent"}
+        for p in rows:
+            _patch_scheduled_post_core(p, body, fs, allow_channel_id=False)
+        db.commit()
+        result_posts = []
+        for p in rows:
+            db.refresh(p)
+            d = scheduled_post_to_api_dict(p)
+            ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
+            d["channel_name"] = ch.name or ch.identifier if ch else None
+            result_posts.append(d)
+        return {"posts": result_posts, "campaign_group_id": cg}
+    _patch_scheduled_post_core(post, body, fs, allow_channel_id=True)
     db.commit()
     db.refresh(post)
-    return scheduled_post_to_api_dict(post)
+    d = scheduled_post_to_api_dict(post)
+    ch = db.query(Channel).filter(Channel.id == post.channel_id).first()
+    d["channel_name"] = ch.name or ch.identifier if ch else None
+    return d
 
 
 @router.delete("/{post_id}")
@@ -285,24 +439,52 @@ def delete_scheduled_post(post_id: int, db: Session = Depends(get_db)):
     post = db.query(ScheduledTextPost).filter(ScheduledTextPost.id == post_id).first()
     if not post:
         return {"error": "Not found"}
+    cg = getattr(post, "campaign_group_id", None)
+    if cg:
+        db.query(ScheduledTextPost).filter(ScheduledTextPost.campaign_group_id == cg).delete(
+            synchronize_session=False
+        )
+        db.commit()
+        return {"deleted_campaign": cg}
     db.delete(post)
     db.commit()
     return {"deleted": post_id}
 
 
 @router.post("/{post_id}/trigger")
-def trigger_scheduled_post(post_id: int, db: Session = Depends(get_db)):
+def trigger_scheduled_post(
+    post_id: int,
+    db: Session = Depends(get_db),
+    reshuffle: bool = Query(
+        False,
+        description="Randomize album/promo order for this send only; allows reposting one-time jobs that already ran.",
+    ),
+):
     post = db.query(ScheduledTextPost).filter(ScheduledTextPost.id == post_id).first()
     if not post:
         return {"error": "Not found"}
     is_recurring = post.interval_minutes is not None
-    if not is_recurring and post.sent_at:
+    if not is_recurring and post.sent_at and not reshuffle:
         return {"error": "Post already sent"}
-    channel = db.query(Channel).filter(Channel.id == post.channel_id).first()
-    if not channel:
-        return {"error": "Channel not found"}
+    cg = getattr(post, "campaign_group_id", None)
+    rows = [post]
+    leader_id = post_id
+    if cg:
+        rows = (
+            db.query(ScheduledTextPost)
+            .filter(ScheduledTextPost.campaign_group_id == cg)
+            .order_by(ScheduledTextPost.id)
+            .all()
+        )
+        leader_id = rows[0].id
+    for p in rows:
+        ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
+        if not ch:
+            return {"error": "Channel not found"}
     if is_recurring:
-        post.last_posted_at = datetime.utcnow()
+        now = datetime.utcnow()
+        for p in rows:
+            p.last_posted_at = now
         db.commit()
-    post_scheduled_text.delay(post_id)
-    return {"status": "scheduled", "post_id": post_id}
+    post_scheduled_text.delay(leader_id, reshuffle_album=reshuffle)
+    return {"status": "scheduled", "post_id": leader_id, "campaign_group_id": cg, "reshuffle": reshuffle}

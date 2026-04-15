@@ -2,6 +2,14 @@
 
 Unified system for scraping, storing media in Telegram Saved Messages, approval queue, and posting to channels.
 
+## Recent updates (high level)
+
+- **Scheduler:** Telegram HTML captions (`<b>`, `<i>`, `<u>`, spoiler, etc.) with toolbar helpers; clearer **next post** times (local + Pacific) for recurring jobs; explicit **No pool** option for text-only / link posts between album drops.
+- **Scheduled posts:** Multi-channel **campaigns** (shared cron, caption rotation, pool batch). **Repost shuffled** queues another send with **randomized album/promo order for that run only** (does not edit saved order mode); also allows **one-time** jobs that already ran to post again. API: `POST /scheduled-posts/{id}/trigger?reshuffle=true`.
+- **Poster worker:** Uses a dedicated Telethon session file (`admin_poster` by default; override with `TBCC_POSTER_TELEGRAM_SESSION`) to reduce SQLite session lock contention with other processes; retries with backoff for transient Telegram/DB errors.
+- **Media Library:** More reliable **bulk move pool** (single optimized update path), larger bulk chunks for status/move, SQLite `busy_timeout` tuning; long help text folded into **How it works** disclosures; improved layout with Analytics/Subscriptions.
+- **Migrations:** Run `alembic upgrade head` after pull (e.g. campaign group columns on scheduled posts — see `030_scheduled_post_campaign_group.py`).
+
 ## What's included (all phases)
 
 - **Backend**: FastAPI, SQLAlchemy models (Media, Source, ContentPool, Bot, Subscription, Channel), DB session, API (bots, channels, media, pools, sources, subscriptions, jobs, import). CORS enabled for dashboard.
@@ -9,7 +17,7 @@ Unified system for scraping, storing media in Telegram Saved Messages, approval 
 - **Workers**: Celery scrape + poster + scheduler_worker + subscription cleanup; beat schedule every 5 min for scheduler, every 6 h for expiry.
 - **Bots** (in `backend/bots/`): scraper_bot, admin_bot, subscription_bot. Run with `PYTHONPATH=backend` from repo root or from `backend/`.
 - **Browser extension**: Toolbar icon opens the **gallery side panel** (click again to toggle closed in Chrome). **Capture** only runs on **http(s)** pages — if the focused tab is `chrome://` / `brave://` / etc., the extension picks another injectable tab in the same window when possible (otherwise refresh after focusing a normal site). The **top bar** links (**Gallery view (collected)**, **Quick tools**, **Extension options**, **Dashboard**, **Launch full stack**) open inside the **same side panel** (iframes); click the **same link again** to return to the main capture/send UI so you can watch imports update while browsing. **Dashboard** embeds `http://127.0.0.1:5173` (run `npm run dev` in `tbcc/dashboard`). `vite.config.ts` sets `frame-ancestors` on the **dev** and **preview** servers so the app can load in the sidebar iframe; for a **production** static host, set the same header (or equivalent) on nginx/Caddy so framing is not blocked. Right-click image/video/link → "Send to TBCC"; calls `POST /import/url`. **Multi-site search**: select a username → **Multi-site search (username)** — dashboard or tabs; config in `extension/model-search-sites.json`. **Reverse image search**: right-click an **image** → **Reverse image search (fan-out)** — opens Google / TinEye / Yandex / Bing / SauceNAO (or your list in `extension/reverse-image-sites.json`) in one **dashboard** tab or multiple tabs; requires a **public http(s) image URL** (blob/data URLs are not supported). **Screenshot → reverse search**: popup **Capture tab → copy & open reverse search** (copies the visible tab to clipboard and opens upload/search tabs), or right-click the page → **Capture tab → screenshot for reverse search** (opens a helper tab with preview + Copy). Tab list: `extension/screenshot-upload-pages.json`. Options: **Extension options** (model search + reverse image). Side panel gallery (**Open gallery** in popup): **Download** (separate files) or **ZIP** (one `.zip` for digital bundle uploads).
-- **Dashboard**: React + Vite + Tailwind + TanStack Query + Recharts. Panels: Media Library, Content Pools, Sources, Scheduler, Subscriptions, Bot Monitor. Proxy `/api` → backend.
+- **Dashboard**: React + Vite + Tailwind + TanStack Query + Recharts. Top nav is grouped (e.g. **Media**, **Scheduler**, **Commerce**, **Sources**, **Analytics**, **System**); **Tags** and legacy routes still work via URL. Panels: Media Library (imports, gallery, bulk actions), Content Pools (under Media), Sources, Scheduler (calendar week, scheduled table, pin tool), Commerce (subscriptions), Analytics, System (bots, shop, referrals). Proxy `/api` → backend (`vite.config.ts`).
 - **TBCC Lite vs Pro (product matrix):** **Lite** is toggled in the **extension popup** (“TBCC Lite”). In Lite mode: **generic DOM capture only** (site adapters like Motherless/Coomer/detail-page resolve are skipped), **HLS/DASH manifest URLs** from `webRequest` are not merged into the gallery, **batch sends are capped** (20 items per “Send to TBCC” / Saved Messages batch). **Pro** (default when Lite is off): full adapter pipeline, manifest discovery for `POST /import/hls-url`, and unlimited batch size — align with your subscription or self-hosted policy. Backend **HLS import** (`POST /import/hls-url`) requires **ffmpeg** on the API host; set **`TBCC_DISABLE_HLS_IMPORT=1`** to disable that route entirely. HLS is for **your own streams or permitted content** — not for circumventing DRM or third-party ToS (e.g. large commercial VOD platforms); keep off by default for public listings.
 - **Outbound webhooks:** Each **channel** in **Dashboard → Content Pools** can have an **HTTPS webhook URL**. After a **scheduled post** is sent or **pool interval posting** finishes an album batch, the API **POSTs** a small JSON payload (`event`: `scheduled_post_sent` or `pool_album_posted`, plus ids) — useful for Discord, Zapier, or custom automation.
 - **Media tags & dedup:** `GET /media?tag=…` filters by substring on `tags`; bulk **move pool** and **set tags** are available from the Media Library. **`file_unique_id`** is the per-pool deduplication key (see migrations) — the dashboard shows a short prefix so you can spot duplicates across imports.
@@ -72,9 +80,20 @@ Lead with **saving media you can access in the browser** and **optional self-hos
 - **Promo / invoice images missing in Telegram:** Telegram loads image URLs **from its own servers**, not your PC. Set **`TBCC_PROMO_PUBLIC_BASE_URL`** (preferred) or **`TBCC_PUBLIC_BASE_URL`** to your public **`https://`** API (e.g. ngrok), restart the backend, then **re-upload** promos — dashboard upload builds `{that host}/static/promo/...`. For **ImgBB**, use a **direct image** URL (`https://i.ibb.co/.../file.jpg`), **not** “Viewer links” (`https://ibb.co/...` — those are HTML pages). If Telegram rejects a photo, the bot retries the invoice **without** it so checkout still works. **Dashboard file upload** (`POST /subscription-plans/upload-promo-image`) **normalizes** images server-side (Pillow): EXIF orientation, max edge 4096px, output **JPEG** or **PNG** (if transparency fits under the size cap), so local uploads are stored in a Telegram-friendly form.
 - **Channels / media / pools “vanished” after Postgres:** Schema migrations (`alembic upgrade head`) only create **tables**, not **data**. If you used SQLite before (`DATABASE_URL=sqlite:///./tbcc.db`), your rows lived in `tbcc.db` (usually under `tbcc/backend/` where you ran uvicorn). Pointing `DATABASE_URL` at PostgreSQL gives you a **new empty database** — that’s expected. **Recovery:** if `tbcc.db` still exists, run from `tbcc/backend`: `python scripts/sqlite_to_postgres.py --dry-run` then without `--dry-run` (Postgres must already be migrated). If you **recreated the Docker Postgres volume** or never had a SQLite file, restore from a backup only — nothing in the repo can recreate lost rows.
 
+## Environment variables (extra)
+
+| Variable | Purpose |
+|----------|---------|
+| `TBCC_POSTER_TELEGRAM_SESSION` | Telethon session **name** for the Celery poster worker (default `admin_poster`). Separate from dashboard/import `admin` session to avoid concurrent SQLite locks on one file. |
+| `TBCC_POSTER_MAX_ATTEMPTS` | Poster task retries on transient errors (default `3`). |
+
 ## Repo layout
 
-- `backend/` — FastAPI app, models, API, services, workers, **bots/** (scraper, admin, subscription); **`scripts/sqlite_to_postgres.py`** — copy data from old SQLite `tbcc.db` into Postgres after switching `DATABASE_URL`
-- `extension/` — Chrome/Brave TBCC Importer
-- `dashboard/` — React + Vite dashboard
-- `infra/` — docker-compose.yml
+- `tbcc/backend/` — FastAPI app, models, API, services, workers, **bots/** (scraper, admin, subscription, payment); **`scripts/sqlite_to_postgres.py`** — copy data from old SQLite `tbcc.db` into Postgres after switching `DATABASE_URL`
+- `tbcc/extension/` — Chrome/Brave TBCC Importer
+- `tbcc/dashboard/` — React + Vite dashboard
+- `tbcc/infra/` — docker-compose.yml
+
+---
+
+**Repository root:** This repo may be cloned as `telegram_bot2`; all TBCC app code lives under **`tbcc/`**. See root **`README.md`** for the one-line pointer.

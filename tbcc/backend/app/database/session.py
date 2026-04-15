@@ -10,7 +10,7 @@ connect_args = {}
 if DATABASE_URL.startswith("sqlite"):
     connect_args["check_same_thread"] = False
     # Wait longer for the write lock when the dashboard loads many thumbnails while approving in bulk.
-    connect_args["timeout"] = 60
+    connect_args["timeout"] = 120
 
 # SQLite is effectively single-file; QueuePool + long async handlers (Telegram downloads)
 # exhausts pool_size+overflow. NullPool opens a connection per request and returns it immediately.
@@ -27,7 +27,7 @@ if DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=60000")
+        cursor.execute("PRAGMA busy_timeout=120000")
         cursor.close()
 
 

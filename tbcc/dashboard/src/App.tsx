@@ -4,20 +4,17 @@ import { Sources } from "./panels/Sources";
 import { Scheduler } from "./panels/Scheduler";
 import { Subscriptions } from "./panels/Subscriptions";
 import { BotsPanel } from "./panels/BotsPanel";
-import { Growth } from "./panels/Growth";
 import { TagsPanel } from "./panels/TagsPanel";
 import { Analytics } from "./panels/Analytics";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const nav = [
-  { to: "/", label: "Media pool" },
-  { to: "/analytics", label: "Analytics" },
-  { to: "/tags", label: "Tags" },
-  { to: "/sources", label: "Sources" },
+  { to: "/", label: "Media" },
   { to: "/scheduler", label: "Scheduler" },
-  { to: "/subscriptions", label: "Subscriptions" },
-  { to: "/growth", label: "Growth" },
-  { to: "/bots", label: "Bots" },
+  { to: "/subscriptions", label: "Commerce" },
+  { to: "/sources", label: "Sources" },
+  { to: "/analytics", label: "Analytics" },
+  { to: "/bots", label: "System" },
 ];
 
 function App() {
@@ -99,9 +96,7 @@ function App() {
             <Route
               path="/growth"
               element={
-                <ErrorBoundary name="Growth">
-                  <Growth />
-                </ErrorBoundary>
+                <Navigate to="/bots" replace />
               }
             />
             <Route

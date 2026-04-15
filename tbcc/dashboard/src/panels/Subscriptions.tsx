@@ -3,8 +3,8 @@ import { api } from "../api";
 import { useState } from "react";
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { Link } from "react-router-dom";
-import { ScheduledPostsList } from "../components/ScheduledPostsList";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
+import { InfoDisclosure } from "../components/InfoDisclosure";
 
 export function Subscriptions() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>(undefined);
@@ -46,51 +46,72 @@ export function Subscriptions() {
         />
       )}
 
-      {analyticsData && (
-        <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-md flex flex-wrap gap-4">
-          <div>
-            <span className="text-slate-400 text-sm">Total</span>
-            <p className="text-xl font-medium">{analyticsData.total_subscriptions}</p>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-6 items-stretch">
+        {analyticsData && (
+          <div className="bg-slate-800 rounded-lg p-4 border border-slate-700 xl:col-span-1">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <span className="text-slate-400 text-sm">Total</span>
+                <p className="text-xl font-medium">{analyticsData.total_subscriptions}</p>
+              </div>
+              <div>
+                <span className="text-slate-400 text-sm">Active</span>
+                <p className="text-xl font-medium text-green-400">{analyticsData.active}</p>
+              </div>
+              <div>
+                <span className="text-slate-400 text-sm">Revenue</span>
+                <p className="text-xl font-medium text-cyan-400">{analyticsData.revenue_stars} ⭐</p>
+              </div>
+            </div>
           </div>
-          <div>
-            <span className="text-slate-400 text-sm">Active</span>
-            <p className="text-xl font-medium text-green-400">{analyticsData.active}</p>
+        )}
+
+        {pieData.length > 0 && (
+          <div className="bg-slate-800 rounded-lg p-4 border border-slate-700 xl:col-span-1">
+            <h2 className="text-lg font-medium mb-3">By status</h2>
+            <ResponsiveContainer width="100%" height={200}>
+              <PieChart>
+                <Pie
+                  data={pieData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={70}
+                  label={({ name, value }) => `${name}: ${value}`}
+                >
+                  {pieData.map((_, i) => (
+                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #475569" }}
+                />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
           </div>
-          <div>
-            <span className="text-slate-400 text-sm">Revenue (Stars)</span>
-            <p className="text-xl font-medium text-cyan-400">{analyticsData.revenue_stars} ⭐</p>
+        )}
+
+        <div className="bg-slate-800 rounded-lg p-4 border border-slate-700 xl:col-span-1">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="text-lg font-medium">Shop &amp; products</h2>
+            <InfoDisclosure title="Navigation help">
+              Create/edit products under{" "}
+              <Link to="/bots" className="text-cyan-400 hover:underline font-medium">
+                Bots → Shop products
+              </Link>
+              . Referrals and growth settings:{" "}
+              <Link to="/bots" className="text-cyan-400 hover:underline font-medium">
+                System → Referrals & growth
+              </Link>
+              .
+            </InfoDisclosure>
           </div>
+          <p className="text-slate-400 text-sm">
+            The payment bot reads catalog changes on each <code className="text-slate-300">/subscribe</code>; no redeploy needed.
+          </p>
         </div>
-      )}
-
-      <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-lg border border-slate-700">
-        <h2 className="text-lg font-medium mb-2">Shop &amp; subscription products</h2>
-        <p className="text-slate-400 text-sm mb-3">
-          Create and edit products (AOF access, Stars pricing, captions) under{" "}
-          <Link to="/bots" className="text-cyan-400 hover:underline font-medium">
-            Bots → Shop products
-          </Link>
-          . The payment bot loads the catalog from the API on each <code className="text-slate-300">/subscribe</code> — no
-          redeploy needed. Referrals, landing bulletin, and milestone chat targets:{" "}
-          <Link to="/growth" className="text-cyan-400 hover:underline font-medium">
-            Growth
-          </Link>
-          .
-        </p>
-      </div>
-
-      <div className="mb-8">
-        <h2 className="text-lg font-medium mb-2">Active posting (cron)</h2>
-        <p className="text-slate-400 text-sm mb-4">
-          Recurring channel posts (interval-based jobs). Click a row to edit caption, how often it runs, and — when a
-          content pool is linked — album size and random vs queue order (same fields as the Pools tab). Full scheduler
-          UI (including one-time posts) is on the{" "}
-          <Link to="/scheduler" className="text-cyan-400 hover:underline">
-            Scheduler
-          </Link>{" "}
-          tab.
-        </p>
-        <ScheduledPostsList compactRecurringOnly />
       </div>
 
       <div className="flex gap-2 mb-4">
@@ -110,32 +131,6 @@ export function Subscriptions() {
           </button>
         ))}
       </div>
-      {pieData.length > 0 && (
-        <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-sm">
-          <h2 className="text-lg font-medium mb-3">By status</h2>
-          <ResponsiveContainer width="100%" height={200}>
-            <PieChart>
-              <Pie
-                data={pieData}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius={70}
-                label={({ name, value }) => `${name}: ${value}`}
-              >
-                {pieData.map((_, i) => (
-                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #475569" }}
-              />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      )}
       <div className="overflow-x-auto">
         <table className="w-full border border-slate-600 rounded-lg overflow-hidden">
           <thead className="bg-slate-700">

@@ -9,6 +9,8 @@ class ScheduledTextPost(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=True)
+    # When set, this row is part of a multi-channel campaign; scheduler fires the lowest-id row only.
+    campaign_group_id = Column(String(36), nullable=True)
     channel_id = Column(Integer, nullable=False)
     # Telegram forum topic id (same as Bot API message_thread_id); NULL = post to main chat / non-forum channel
     message_thread_id = Column(Integer, nullable=True)

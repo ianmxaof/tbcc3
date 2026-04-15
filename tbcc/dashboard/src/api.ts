@@ -9,8 +9,18 @@ const FETCH_TIMEOUT_MS = 30_000;
 /** Bulk writes can wait behind SQLite + many parallel thumbnail reads — allow longer per chunk. */
 const BULK_PATCH_TIMEOUT_MS = 300_000;
 const BULK_MEDIA_CHUNK_SIZE = 15;
+/** Status-only PATCH /media/bulk is a single fast UPDATE — large chunks reduce SQLite lock churn vs thumbnails. */
+const BULK_STATUS_CHUNK_SIZE = 200;
+/** Move-pool does heavier server-side work but one optimized UPDATE per chunk — larger chunks than 15 for reliability. */
+const BULK_MOVE_POOL_CHUNK_SIZE = 120;
 /** Yield between chunks so thumbnail / other API traffic can finish and release SQLite locks. */
 const BULK_CHUNK_GAP_MS = 200;
+
+function isTimedOutFetchError(e: unknown): boolean {
+  if (e instanceof DOMException && (e.name === "AbortError" || e.name === "TimeoutError")) return true;
+  if (e instanceof Error && e.name === "TimeoutError") return true;
+  return false;
+}
 
 function timeoutSignal(ms: number): AbortSignal {
   if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
@@ -55,12 +65,11 @@ async function fetchApi<T>(path: string, options?: ApiFetchOptions): Promise<T> 
       headers: { "Content-Type": "application/json", ...fetchInit.headers },
     });
   } catch (e) {
-    const msg =
-      e instanceof DOMException && e.name === "AbortError"
-        ? `Request timed out after ${timeoutMs / 1000}s. Is the API up (port 8000) and the database reachable? If you bulk-approved many items, try again (requests are now sent in smaller batches).`
-        : e instanceof TypeError && e.message === "Failed to fetch"
-          ? "Cannot reach backend. Use `npm run dev` (Vite proxies /api → port 8000), or set VITE_API_BASE to your API URL when serving a static build."
-          : String(e);
+    const msg = isTimedOutFetchError(e)
+      ? `Request timed out after ${timeoutMs / 1000}s. Is the API up (port 8000) and the database reachable? If you bulk-approved many items, try again once thumbnails finish loading, or approve in smaller groups.`
+      : e instanceof TypeError && e.message === "Failed to fetch"
+        ? "Cannot reach backend. Use `npm run dev` (Vite proxies /api → port 8000), or set VITE_API_BASE to your API URL when serving a static build."
+        : String(e);
     throw new Error(msg);
   }
   if (!res.ok) throw new Error(parseFastApiErrorBody(await res.text()));
@@ -113,11 +122,11 @@ export const api = {
     updateStatusBulk: async (ids: number[], status: string) => {
       if (ids.length === 0) return { updated: 0 };
       let total = 0;
-      for (let i = 0; i < ids.length; i += BULK_MEDIA_CHUNK_SIZE) {
+      for (let i = 0; i < ids.length; i += BULK_STATUS_CHUNK_SIZE) {
         if (i > 0) {
           await new Promise((r) => setTimeout(r, BULK_CHUNK_GAP_MS));
         }
-        const slice = ids.slice(i, i + BULK_MEDIA_CHUNK_SIZE);
+        const slice = ids.slice(i, i + BULK_STATUS_CHUNK_SIZE);
         const r = await fetchApi<{ updated: number; error?: string }>(`/media/bulk`, {
           method: "PATCH",
           body: JSON.stringify({ ids: slice, status }),
@@ -132,17 +141,18 @@ export const api = {
       return { updated: total };
     },
     bulkMovePool: async (ids: number[], poolId: number) => {
-      if (ids.length === 0) return { updated: 0, skipped_duplicate_in_target_pool: 0 };
+      const unique = [...new Set(ids.map((n) => Number(n)).filter((n) => Number.isFinite(n)))];
+      if (unique.length === 0) return { updated: 0, skipped_duplicate_in_target_pool: 0 };
       let updated = 0;
       let skipped = 0;
-      for (let i = 0; i < ids.length; i += BULK_MEDIA_CHUNK_SIZE) {
+      for (let i = 0; i < unique.length; i += BULK_MOVE_POOL_CHUNK_SIZE) {
         if (i > 0) {
           await new Promise((r) => setTimeout(r, BULK_CHUNK_GAP_MS));
         }
-        const slice = ids.slice(i, i + BULK_MEDIA_CHUNK_SIZE);
+        const slice = unique.slice(i, i + BULK_MOVE_POOL_CHUNK_SIZE);
         const r = await fetchApi<{
           updated: number;
-          error?: string;
+          error?: string | null;
           skipped_duplicate_in_target_pool?: number;
         }>(`/media/bulk/move-pool`, {
           method: "PATCH",
@@ -522,11 +532,13 @@ export const api = {
     triggerPost: (poolId: number) =>
       fetchApi<{ status: string }>(`/jobs/post/${poolId}`, { method: "POST" }),
   },
-  scheduledPosts: {
+   scheduledPosts: {
     list: () => fetchApi<Array<Record<string, unknown>>>("/scheduled-posts"),
     create: (body: {
       name?: string;
-      channel_id: number;
+      channel_id?: number;
+      /** Multi-channel campaign: one scheduler row per id (same caption/pool/interval). */
+      channel_ids?: number[];
       /** Telegram forum topic id; omit for main chat */
       message_thread_id?: number | null;
       content: string;
@@ -548,7 +560,10 @@ export const api = {
       send_silent?: boolean;
       pin_after_send?: boolean;
     }) =>
-      fetchApi<Record<string, unknown>>("/scheduled-posts", { method: "POST", body: JSON.stringify(body) }),
+      fetchApi<{ posts: Array<Record<string, unknown>>; campaign_group_id: string | null }>(
+        "/scheduled-posts",
+        { method: "POST", body: JSON.stringify(body) }
+      ),
     update: (
       id: number,
       body: Partial<{
@@ -557,8 +572,8 @@ export const api = {
         /** Omit to leave unchanged; `null` = main chat */
         message_thread_id?: number | null;
         content: string;
-        scheduled_at?: string;
-        interval_minutes?: number;
+        scheduled_at?: string | null;
+        interval_minutes?: number | null;
         media_ids?: number[];
         pool_id?: number | null;
         buttons?: Array<{ text: string; url: string }>;
@@ -574,7 +589,20 @@ export const api = {
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/scheduled-posts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-    delete: (id: number) => fetchApi<{ deleted: number }>(`/scheduled-posts/${id}`, { method: "DELETE" }),
-    trigger: (id: number) => fetchApi<{ status: string }>(`/scheduled-posts/${id}/trigger`, { method: "POST" }),
+    delete: (id: number) =>
+      fetchApi<{ deleted?: number; deleted_campaign?: string }>(`/scheduled-posts/${id}`, { method: "DELETE" }),
+    trigger: async (id: number, options?: { reshuffle?: boolean }) =>
+      throwIfBodyError(
+        await fetchApi<{
+          status: string;
+          post_id?: number;
+          campaign_group_id?: string | null;
+          reshuffle?: boolean;
+          error?: string;
+        }>(
+          `/scheduled-posts/${id}/trigger${options?.reshuffle ? "?reshuffle=true" : ""}`,
+          { method: "POST" }
+        )
+      ),
   },
 };

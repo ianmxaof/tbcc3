@@ -16,6 +16,7 @@ from app.api import analytics, bots, channels, forum, media, jobs, import_, pool
 from app.database.session import engine
 from app.models.base import Base
 from app.services.promo_storage import ensure_promo_dir
+from app.services.nowpayments_client import crypto_auto_checkout_ready
 
 _EXTERNAL_PAY_IMPL = getattr(
     external_payment_orders, "EXTERNAL_PAYMENT_ORDERS_IMPL", "unknown"
@@ -161,6 +162,13 @@ def on_startup():
                             )
                         )
                         logger.info("SQLite: added scheduled_text_posts.pin_after_send (dev migration)")
+                    if "campaign_group_id" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN campaign_group_id VARCHAR(36)"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.campaign_group_id (dev migration)")
             if "subscriptions" in inspector.get_table_names():
                 sub_cols = {c["name"] for c in inspector.get_columns("subscriptions")}
                 if "telegram_payment_charge_id" not in sub_cols:
@@ -279,6 +287,16 @@ def on_startup():
                     logger.info(
                         "PostgreSQL: added scheduled_text_posts.pin_after_send (startup migration)"
                     )
+                if "campaign_group_id" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN campaign_group_id VARCHAR(36)"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.campaign_group_id (startup migration)"
+                    )
         except Exception:
             logger.exception(
                 "PostgreSQL: could not add scheduled_text_posts columns — run: "
@@ -338,6 +356,7 @@ def root():
         # Proof of which files this process loaded (if missing, you are not on current main.py).
         "main_py": __file__,
         "external_payment_orders_impl": _EXTERNAL_PAY_IMPL,
+        "crypto_auto_checkout": crypto_auto_checkout_ready(),
     }
 
 
@@ -348,6 +367,7 @@ def health():
         content={
             "status": "ok",
             "external_payment_orders_impl": _EXTERNAL_PAY_IMPL,
+            "crypto_auto_checkout": crypto_auto_checkout_ready(),
         },
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )

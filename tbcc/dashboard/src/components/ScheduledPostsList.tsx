@@ -1,9 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { SchedulePromoSlots } from "./SchedulePromoSlots";
 import { ApprovedMediaPickerStrip } from "./ApprovedMediaPickerStrip";
-import { formatUtcForDashboard, formatUtcWithLocalHint } from "../utils/formatUtc";
+import {
+  formatLocalForDashboard,
+  formatPtForDashboard,
+  formatUtcForDashboard,
+  formatUtcWithLocalHint,
+} from "../utils/formatUtc";
+import { CaptionSnippetInsertSelect, CaptionSnippetLibraryManageButton } from "./CaptionSnippetLibrary";
+import { CaptionTelegramHtmlField } from "./CaptionTelegramHtmlField";
 
 type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
 
@@ -54,6 +61,21 @@ function parseScheduledMediaIds(p: Record<string, unknown>): number[] {
   return [];
 }
 
+/** Pool, promo URLs, or picked media — something that can be reshuffled / reposted as an album. */
+function scheduledPostHasAlbumOrPool(p: Record<string, unknown>): boolean {
+  const pid = p.pool_id != null ? Number(p.pool_id) : 0;
+  if (Number.isFinite(pid) && pid > 0) return true;
+  const { variants } = parseAlbumVariantsFromPost(p);
+  for (const v of variants) {
+    if (v.media_ids.length > 0) return true;
+    if (v.attachment_urls.some((u) => String(u).trim())) return true;
+  }
+  if (parseScheduledMediaIds(p).length > 0) return true;
+  const att = p.attachment_urls;
+  if (Array.isArray(att) && att.some((x) => String(x ?? "").trim())) return true;
+  return false;
+}
+
 function isoToDatetimeLocal(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(String(iso));
@@ -67,6 +89,22 @@ function datetimeLocalToIso(local: string): string {
   const d = new Date(local.length <= 16 ? `${local}:00` : local);
   return d.toISOString();
 }
+
+function nextRecurringRunIso(lastPostedAt: unknown, intervalMinutes: unknown): string | null {
+  if (!lastPostedAt) return null;
+  const mins = Number(intervalMinutes);
+  if (!Number.isFinite(mins) || mins <= 0) return null;
+  const raw = String(lastPostedAt).trim();
+  const base = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)
+    ? new Date(raw)
+    : new Date(raw.includes("T") ? `${raw}Z` : `${raw.replace(" ", "T")}Z`);
+  if (Number.isNaN(base.getTime())) return null;
+  const next = new Date(base.getTime() + mins * 60_000);
+  return next.toISOString();
+}
+
+/** Match Scheduler.tsx interval presets for edit modal */
+const EDIT_INTERVAL_OPTIONS = [15, 30, 60, 120, 180, 240, 360, 720];
 
 function parseButtonsFromPost(p: Record<string, unknown>): Array<{ text: string; url: string }> {
   const b = p.buttons;
@@ -103,6 +141,8 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const [editChannelId, setEditChannelId] = useState(0);
   const [editInterval, setEditInterval] = useState(30);
   const [editScheduledAt, setEditScheduledAt] = useState("");
+  /** Editable schedule mode (independent of original row until save) */
+  const [editScheduleRecurring, setEditScheduleRecurring] = useState(false);
   const [editAlbumSize, setEditAlbumSize] = useState(5);
   const [editRandomize, setEditRandomize] = useState(false);
   const [editPoolOnlyMode, setEditPoolOnlyMode] = useState(true);
@@ -115,9 +155,12 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     { attachment_urls: [], media_ids: [] },
   ]);
   const [editAlbumOrderMode, setEditAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
+  /** Set when editing a grouped multi-channel row */
+  const [editCampaignHint, setEditCampaignHint] = useState<string | null>(null);
   const [editButtons, setEditButtons] = useState<Array<{ text: string; url: string }>>([]);
   const [editSendSilent, setEditSendSilent] = useState(false);
   const [editPinAfterSend, setEditPinAfterSend] = useState(false);
+  const [editScheduleError, setEditScheduleError] = useState<string | null>(null);
   const [triggerNotice, setTriggerNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   const { data: pools = [] } = useQuery({
@@ -170,15 +213,20 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   });
 
   const triggerScheduledPost = useMutation({
-    mutationFn: (id: number) => api.scheduledPosts.trigger(id),
-    onSuccess: (_data, id) => {
+    mutationFn: ({ id, reshuffle }: { id: number; reshuffle?: boolean }) =>
+      api.scheduledPosts.trigger(id, { reshuffle: !!reshuffle }),
+    onSuccess: (data, { id }) => {
       queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      const cg = data?.campaign_group_id;
+      const rs = data?.reshuffle;
       setTriggerNotice({
         kind: "ok",
-        text: `Post #${id} queued — Celery will send shortly. Watch Telegram (and server logs if it fails).`,
+        text: cg
+          ? `Campaign queued (leader #${data.post_id ?? id})${rs ? " — album order reshuffled for this send" : ""} — Celery will send to all channels shortly.`
+          : `Post #${id} queued${rs ? " — album order reshuffled for this send" : ""} — Celery will send shortly. Watch Telegram (and server logs if it fails).`,
       });
     },
-    onError: (e: Error, id) => {
+    onError: (e: Error, { id }) => {
       setTriggerNotice({ kind: "err", text: `Post #${id}: ${e.message}` });
     },
   });
@@ -226,53 +274,71 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   }, [triggerNotice]);
 
   function openEditor(p: Record<string, unknown>) {
-    setEditing(p);
-    setEditName(String(p.name || ""));
-    const cv = p.content_variations;
+    const cg = p.campaign_group_id as string | undefined;
+    const cohort =
+      cg && typeof cg === "string"
+        ? [...(scheduledPosts as Array<Record<string, unknown>>)]
+            .filter((x) => x.campaign_group_id === cg)
+            .sort((a, b) => Number(a.id) - Number(b.id))
+        : [p];
+    const leader = cohort[0] ?? p;
+    setEditing(leader);
+    setEditCampaignHint(
+      cg && cohort.length > 1
+        ? `Campaign (${cohort.length} channels): ${cohort.map((x) => String(x.channel_name || x.channel_id)).join(", ")}`
+        : null
+    );
+    setEditName(String(leader.name || ""));
+    const cv = leader.content_variations;
     if (Array.isArray(cv) && cv.length >= 2) {
       setEditVariations(cv.map((x) => String(x ?? "")));
     } else {
-      setEditVariations([String(p.content ?? "")]);
+      setEditVariations([String(leader.content ?? "")]);
     }
-    setEditChannelId(Number(p.channel_id || 0));
-    setEditInterval(Number(p.interval_minutes || 30));
-    setEditScheduledAt(isoToDatetimeLocal(p.scheduled_at as string | undefined));
-    const pid = p.pool_id != null ? Number(p.pool_id) : 0;
+    setEditChannelId(Number(leader.channel_id || 0));
+    setEditInterval(Number(leader.interval_minutes || 240));
+    setEditScheduledAt(isoToDatetimeLocal(leader.scheduled_at as string | undefined));
+    setEditScheduleRecurring(!!leader.interval_minutes);
+    const pid = leader.pool_id != null ? Number(leader.pool_id) : 0;
     const pool = pid ? (poolMap[String(pid)] as Record<string, unknown> | undefined) : undefined;
     const poolDefaultAlbum = Number(pool?.album_size ?? 5);
-    setEditAlbumSize(p.album_size != null ? Number(p.album_size) : poolDefaultAlbum);
-    setEditRandomize(p.pool_randomize != null ? Boolean(p.pool_randomize) : !!pool?.randomize_queue);
-    setEditPoolOnlyMode(p.pool_only_mode != null ? Boolean(p.pool_only_mode) : true);
+    setEditAlbumSize(leader.album_size != null ? Number(leader.album_size) : poolDefaultAlbum);
+    setEditRandomize(leader.pool_randomize != null ? Boolean(leader.pool_randomize) : !!pool?.randomize_queue);
+    setEditPoolOnlyMode(leader.pool_only_mode != null ? Boolean(leader.pool_only_mode) : true);
     setEditMessageThreadId(
-      p.message_thread_id != null && p.message_thread_id !== undefined ? Number(p.message_thread_id) : null
+      leader.message_thread_id != null && leader.message_thread_id !== undefined
+        ? Number(leader.message_thread_id)
+        : null
     );
     setEditPoolId(Number.isFinite(pid) && pid > 0 ? pid : 0);
     const cap = Array.isArray(cv) && cv.length >= 2 ? cv.length : 1;
-    const { variants: avFromApi, order: ordFromApi } = parseAlbumVariantsFromPost(p);
+    const { variants: avFromApi, order: ordFromApi } = parseAlbumVariantsFromPost(leader);
     setEditAlbumVariants(padAlbumVariants(avFromApi, cap));
     setEditAlbumOrderMode(ordFromApi);
-    setEditButtons(parseButtonsFromPost(p));
-    setEditSendSilent(Boolean(p.send_silent));
-    setEditPinAfterSend(Boolean(p.pin_after_send));
+    setEditButtons(parseButtonsFromPost(leader));
+    setEditSendSilent(Boolean(leader.send_silent));
+    setEditPinAfterSend(Boolean(leader.pin_after_send));
     setEditUploadMsg(null);
+    setEditScheduleError(null);
     setEditOpen(true);
   }
 
   async function saveEditor() {
     if (!editing) return;
+    setEditScheduleError(null);
     const id = Number(editing.id);
-    const recurring = !!editing.interval_minutes;
     const trimmed = editVariations.map((s) => s.trim()).filter(Boolean);
     const capCount = Math.max(trimmed.length, 1);
     const av = padAlbumVariants(editAlbumVariants, capCount).map((v) => ({
       attachment_urls: v.attachment_urls.map((s) => s.trim()).filter(Boolean),
       media_ids: v.media_ids,
     }));
+    const isCampaignEdit = Boolean(editing.campaign_group_id);
     const body: Parameters<typeof api.scheduledPosts.update>[1] = {
       name: editName.trim() || undefined,
       content: trimmed[0] || "",
       channel_id: editChannelId || undefined,
-      message_thread_id: editMessageThreadId,
+      ...(isCampaignEdit ? {} : { message_thread_id: editMessageThreadId }),
       pool_id: editPoolId > 0 ? editPoolId : null,
       media_ids: [],
       album_variants: av,
@@ -285,10 +351,20 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     } else {
       body.content_variations = [];
     }
-    if (recurring) {
-      body.interval_minutes = Math.max(1, editInterval);
-    } else if (!editing.sent_at && editScheduledAt) {
-      body.scheduled_at = datetimeLocalToIso(editScheduledAt);
+    const oneTimeAlreadySent = !editing.interval_minutes && !!editing.sent_at;
+    if (!oneTimeAlreadySent) {
+      if (editScheduleRecurring) {
+        body.interval_minutes = Math.max(1, editInterval);
+        body.scheduled_at = null;
+      } else {
+        body.interval_minutes = null;
+        if (editScheduledAt.trim()) {
+          body.scheduled_at = datetimeLocalToIso(editScheduledAt);
+        } else {
+          setEditScheduleError("Set a date and time for one-time schedule, or enable recurring.");
+          return;
+        }
+      }
     }
     if (editPoolId > 0) {
       body.album_size = Math.min(10, Math.max(1, editAlbumSize));
@@ -305,11 +381,48 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     await updateScheduled.mutateAsync({ id, body });
     setEditOpen(false);
     setEditing(null);
+    setEditCampaignHint(null);
   }
 
-  const rows = compactRecurringOnly
-    ? (scheduledPosts as Array<Record<string, unknown>>).filter((p) => !!p.interval_minutes)
-    : (scheduledPosts as Array<Record<string, unknown>>);
+  type DisplayRow =
+    | { kind: "campaign"; campaign_group_id: string; posts: Array<Record<string, unknown>> }
+    | { kind: "single"; post: Record<string, unknown> };
+
+  const displayRows: DisplayRow[] = useMemo(() => {
+    const flat = compactRecurringOnly
+      ? (scheduledPosts as Array<Record<string, unknown>>).filter((p) => !!p.interval_minutes)
+      : (scheduledPosts as Array<Record<string, unknown>>);
+    const byCg = new Map<string, Array<Record<string, unknown>>>();
+    const singles: Array<Record<string, unknown>> = [];
+    for (const p of flat) {
+      const cg = p.campaign_group_id as string | null | undefined;
+      if (cg && typeof cg === "string") {
+        const arr = byCg.get(cg) ?? [];
+        arr.push(p);
+        byCg.set(cg, arr);
+      } else {
+        singles.push(p);
+      }
+    }
+    const out: DisplayRow[] = [];
+    for (const [cg, posts] of byCg.entries()) {
+      const sorted = [...posts].sort((a, b) => Number(a.id) - Number(b.id));
+      if (sorted.length > 1) {
+        out.push({ kind: "campaign", campaign_group_id: cg, posts: sorted });
+      } else if (sorted.length === 1) {
+        out.push({ kind: "single", post: sorted[0] });
+      }
+    }
+    for (const p of singles) {
+      out.push({ kind: "single", post: p });
+    }
+    out.sort((a, b) => {
+      const idA = a.kind === "campaign" ? Number(a.posts[0]?.id) : Number(a.post.id);
+      const idB = b.kind === "campaign" ? Number(b.posts[0]?.id) : Number(b.post.id);
+      return idA - idB;
+    });
+    return out;
+  }, [scheduledPosts, compactRecurringOnly]);
 
   return (
     <>
@@ -318,16 +431,27 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
           role="dialog"
           aria-labelledby="scheduled-edit-title"
-          onClick={(e) => e.target === e.currentTarget && setEditOpen(false)}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setEditOpen(false);
+              setEditCampaignHint(null);
+            }
+          }}
         >
           <div className="bg-slate-800 border border-slate-600 rounded-lg p-6 max-w-4xl w-full shadow-xl max-h-[90vh] overflow-y-auto">
             <h2 id="scheduled-edit-title" className="text-lg font-medium mb-3">
-              Edit scheduled post
+              Schedule editor
             </h2>
+            {editCampaignHint && (
+              <p className="text-amber-200/90 text-sm mb-2 border border-amber-700/50 rounded px-2 py-1.5 bg-amber-950/30">
+                {editCampaignHint}. Saving updates every channel in this campaign (same schedule, caption, and pool
+                options).
+              </p>
+            )}
             <p className="text-slate-500 text-xs mb-3">
-              {editing.interval_minutes
-                ? "Recurring job — interval is how often this post runs. With 2+ caption boxes filled, captions rotate in order each run (e.g. hourly: A, B, A…). Album size / randomize apply to the linked pool’s media queue."
-                : "One-time schedule — set date/time below."}
+              {editScheduleRecurring
+                ? "Recurring — runs every N minutes. Use Trigger / Post now on the row to start the first cycle if last sent is empty. With 2+ captions, they rotate each run."
+                : "One-time — posts once at the date/time below (if not already sent)."}
             </p>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-4">
               <div className="space-y-3 min-w-0">
@@ -338,70 +462,85 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
                   placeholder="Name (optional)"
                 />
-                <select
-                  value={editChannelId}
-                  onChange={(e) => {
-                    setEditChannelId(Number(e.target.value));
-                    setEditMessageThreadId(null);
-                  }}
-                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
-                >
-                  <option value={0}>Select channel</option>
-                  {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name || c.identifier || `#${c.id}`}
-                    </option>
-                  ))}
-                </select>
-                {editChannelId > 0 && (
-                  <div>
-                    <span className="text-slate-400 text-xs block mb-1">Forum topic (optional)</span>
+                {editCampaignHint ? (
+                  <p className="text-slate-400 text-sm">
+                    Channels are fixed for this campaign. To change targets, delete the campaign and create a new one.
+                  </p>
+                ) : (
+                  <>
                     <select
-                      value={editMessageThreadId === null ? "" : String(editMessageThreadId)}
+                      value={editChannelId}
                       onChange={(e) => {
-                        const v = e.target.value;
-                        setEditMessageThreadId(v === "" ? null : Number(v));
+                        setEditChannelId(Number(e.target.value));
+                        setEditMessageThreadId(null);
                       }}
-                      className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                      className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
                     >
-                      <option value="">Main chat (no topic)</option>
-                      {editForumTopics.map((t) => (
-                        <option key={t.id} value={String(t.id)}>
-                          {t.title}
+                      <option value={0}>Select channel</option>
+                      {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name || c.identifier || `#${c.id}`}
                         </option>
                       ))}
                     </select>
-                    {editForumTopicsHint && (
-                      <p className="text-amber-400/90 text-xs mt-1">{editForumTopicsHint}</p>
+                    {editChannelId > 0 && (
+                      <div>
+                        <span className="text-slate-400 text-xs block mb-1">Forum topic (optional)</span>
+                        <select
+                          value={editMessageThreadId === null ? "" : String(editMessageThreadId)}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setEditMessageThreadId(v === "" ? null : Number(v));
+                          }}
+                          className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                        >
+                          <option value="">Main chat (no topic)</option>
+                          {editForumTopics.map((t) => (
+                            <option key={t.id} value={String(t.id)}>
+                              {t.title}
+                            </option>
+                          ))}
+                        </select>
+                        {editForumTopicsHint && (
+                          <p className="text-amber-400/90 text-xs mt-1">{editForumTopicsHint}</p>
+                        )}
+                      </div>
                     )}
-                  </div>
+                  </>
                 )}
-                <span className="block text-slate-400 text-sm">
-                  Caption{editVariations.length > 1 ? "s (rotate in order)" : " / text"}
-                </span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="block text-slate-400 text-sm">
+                    Caption{editVariations.length > 1 ? "s (rotate in order)" : " / text"}
+                  </span>
+                  <CaptionSnippetLibraryManageButton />
+                </div>
                 <div className="space-y-2">
                   {editVariations.map((line, i) => (
-                    <div key={i} className="flex gap-2 items-start">
-                      <textarea
-                        value={line}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          setEditVariations((prev) => prev.map((p, j) => (j === i ? v : p)));
-                        }}
-                        rows={i === 0 ? 5 : 4}
-                        className="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
-                        placeholder={i === 0 ? "Text content (caption)" : `Caption variation ${i + 1}`}
-                      />
-                      {editVariations.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => setEditVariations((prev) => prev.filter((_, j) => j !== i))}
-                          className="mt-1 px-2 py-1 text-red-400 hover:bg-red-900/30 rounded shrink-0"
-                        >
-                          ✕
-                        </button>
-                      )}
-                    </div>
+                    <CaptionTelegramHtmlField
+                      key={i}
+                      value={line}
+                      onChange={(v) => setEditVariations((prev) => prev.map((p, j) => (j === i ? v : p)))}
+                      placeholder={i === 0 ? "Text content (caption)" : `Caption variation ${i + 1}`}
+                      rows={i === 0 ? 5 : 4}
+                      extraActions={
+                        <>
+                        <CaptionSnippetInsertSelect
+                          onInsert={(t) =>
+                            setEditVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
+                          }
+                        />
+                        {editVariations.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setEditVariations((prev) => prev.filter((_, j) => j !== i))}
+                            className="px-2 py-1 text-red-400 hover:bg-red-900/30 rounded"
+                          >
+                            ✕
+                          </button>
+                        )}
+                        </>
+                      }
+                    />
                   ))}
                   <button
                     type="button"
@@ -411,30 +550,66 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     + Add caption variation
                   </button>
                 </div>
-                {editing.interval_minutes ? (
-                  <label className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-slate-400">Post every</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={editInterval}
-                      onChange={(e) => setEditInterval(Math.max(1, Number(e.target.value) || 1))}
-                      className="w-24 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
-                    />
-                    <span className="text-slate-500">minutes</span>
-                  </label>
+                {!editing.interval_minutes && editing.sent_at ? (
+                  <p className="text-slate-500 text-sm border border-slate-600 rounded px-3 py-2 bg-slate-900/40">
+                    This one-time post was already sent — schedule cannot be changed.
+                  </p>
                 ) : (
-                  !editing.sent_at && (
-                    <label className="block text-sm">
-                      <span className="text-slate-400 block mb-1">Scheduled at</span>
+                  <div className="space-y-2 border border-slate-600/80 rounded-lg p-3 bg-slate-900/30">
+                    <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
                       <input
-                        type="datetime-local"
-                        value={editScheduledAt}
-                        onChange={(e) => setEditScheduledAt(e.target.value)}
-                        className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                        type="checkbox"
+                        checked={editScheduleRecurring}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          setEditScheduleRecurring(on);
+                          setEditScheduleError(null);
+                          if (!on && !editScheduledAt.trim()) {
+                            setEditScheduledAt(isoToDatetimeLocal(new Date().toISOString()));
+                          }
+                        }}
                       />
+                      Recurring (post at interval)
                     </label>
-                  )
+                    {editScheduleRecurring ? (
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <span className="text-slate-400">Every</span>
+                        <select
+                          value={editInterval}
+                          onChange={(e) => setEditInterval(Number(e.target.value))}
+                          className="bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200"
+                        >
+                          {!EDIT_INTERVAL_OPTIONS.includes(editInterval) && editInterval > 0 ? (
+                            <option value={editInterval}>
+                              {editInterval} min (current)
+                            </option>
+                          ) : null}
+                          {EDIT_INTERVAL_OPTIONS.map((m) => (
+                            <option key={m} value={m}>
+                              {m} min
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-slate-500 text-xs">Saves as interval job; clears one-time date.</span>
+                      </div>
+                    ) : (
+                      <label className="block text-sm">
+                        <span className="text-slate-400 block mb-1">Scheduled at (one-time)</span>
+                        <input
+                          type="datetime-local"
+                          value={editScheduledAt}
+                          onChange={(e) => {
+                            setEditScheduledAt(e.target.value);
+                            setEditScheduleError(null);
+                          }}
+                          className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                        />
+                      </label>
+                    )}
+                    {editScheduleError && (
+                      <p className="text-amber-300 text-xs">{editScheduleError}</p>
+                    )}
+                  </div>
                 )}
                 <div>
                   <span className="text-slate-400 text-sm block mb-1">Inline buttons (https or tg://)</span>
@@ -521,13 +696,16 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   }}
                   className="w-full mb-2 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
                 >
-                  <option value={0}>All approved (any pool)</option>
+                  <option value={0}>No pool (text-only unless media is explicitly picked below)</option>
                   {(pools as Array<{ id: number; name?: string }>).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name || `Pool ${p.id}`} (media + optional auto-pick)
                     </option>
                   ))}
                 </select>
+                <p className="text-slate-500 text-xs mb-2">
+                  Choose <strong>No pool</strong> for text-only recurring posts (links/buttons still work).
+                </p>
                 {editPoolId > 0 && (
                   <div className="border border-slate-600 rounded p-3 mb-2 space-y-2 bg-slate-900/40">
                     <p className="text-slate-400 text-xs">
@@ -651,7 +829,10 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setEditOpen(false)}
+                onClick={() => {
+                  setEditOpen(false);
+                  setEditCampaignHint(null);
+                }}
                 className="px-3 py-2 rounded bg-slate-600 text-slate-200 hover:bg-slate-500"
               >
                 Cancel
@@ -693,9 +874,20 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((p: Record<string, unknown>) => {
+            {displayRows.map((row) => {
+              const p =
+                row.kind === "campaign"
+                  ? row.posts[0]
+                  : row.post;
+              const channelCell =
+                row.kind === "campaign"
+                  ? row.posts.map((x) => String(x.channel_name || x.channel_id)).join(", ")
+                  : String(p.channel_name || p.channel_id);
+              const rowKey =
+                row.kind === "campaign" ? `campaign-${row.campaign_group_id}` : String(p.id);
               const recurring = !!p.interval_minutes;
               const lastPost = p.last_posted_at;
+              const nextRecurringIso = nextRecurringRunIso(lastPost, p.interval_minutes);
               const cvRow = p.content_variations;
               const rotating = Array.isArray(cvRow) && cvRow.length >= 2;
               const textPreview = String(p.content || "").slice(0, 40);
@@ -718,13 +910,20 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
               ].filter(Boolean);
               return (
                 <tr
-                  key={String(p.id)}
+                  key={rowKey}
                   className="border-t border-slate-600 hover:bg-slate-800/50 cursor-pointer"
                   onClick={() => openEditor(p)}
                   title="Click row to edit schedule, caption, and pool album options"
                 >
-                  <td className="p-3">{String(p.name || "—")}</td>
-                  <td className="p-3">{String(p.channel_name || p.channel_id)}</td>
+                  <td className="p-3">
+                    {String(p.name || "—")}
+                    {row.kind === "campaign" ? (
+                      <span className="ml-2 text-xs text-cyan-400/90">({row.posts.length} ch)</span>
+                    ) : null}
+                  </td>
+                  <td className="p-3 max-w-[12rem] truncate" title={channelCell}>
+                    {channelCell}
+                  </td>
                   <td className="p-3 text-slate-400 text-sm">
                     {p.message_thread_id != null && p.message_thread_id !== undefined
                       ? `#${p.message_thread_id}`
@@ -746,10 +945,18 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     {recurring ? (
                       <>
                         <span className="block">Every {Number(p.interval_minutes)} min</span>
-                        {lastPost ? (
-                          <span className="block text-xs text-slate-500 mt-0.5">
-                            Last: {formatUtcForDashboard(String(lastPost))}
-                          </span>
+                        {nextRecurringIso ? (
+                          <>
+                            <span className="block text-xs mt-0.5 text-cyan-200 font-semibold">
+                              Next: {formatLocalForDashboard(nextRecurringIso)} (your time)
+                            </span>
+                            <span className="block text-xs text-cyan-300/90 mt-0.5">
+                              PT: {formatPtForDashboard(nextRecurringIso)}
+                            </span>
+                            <span className="block text-[11px] text-slate-500 mt-0.5">
+                              Last UTC: {formatUtcForDashboard(String(lastPost))}
+                            </span>
+                          </>
                         ) : (
                           <span className="block text-xs text-amber-500/90 mt-0.5">Use &quot;Post now&quot; once</span>
                         )}
@@ -782,16 +989,37 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                       <span className="text-amber-400 text-sm">Pending</span>
                     )}
                   </td>
-                  <td className="p-3 flex gap-2" onClick={(e) => e.stopPropagation()}>
+                  <td className="p-3 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
                     {(recurring || !p.sent_at) && (
                       <button
-                        onClick={() => triggerScheduledPost.mutate(Number(p.id))}
+                        type="button"
+                        onClick={() => triggerScheduledPost.mutate({ id: Number(p.id) })}
                         disabled={triggerScheduledPost.isPending}
                         className="px-2 py-1 bg-slate-600 text-slate-200 rounded text-sm hover:bg-slate-500"
+                        title={
+                          row.kind === "campaign"
+                            ? "Queues one Celery run for all channels in this campaign"
+                            : undefined
+                        }
                       >
                         Post now
                       </button>
                     )}
+                    {scheduledPostHasAlbumOrPool(p) && (
+                        <button
+                          type="button"
+                          onClick={() => triggerScheduledPost.mutate({ id: Number(p.id), reshuffle: true })}
+                          disabled={triggerScheduledPost.isPending}
+                          className="px-2 py-1 bg-violet-800/90 text-violet-100 rounded text-sm hover:bg-violet-700/90"
+                          title={
+                            row.kind === "campaign"
+                              ? "Queue send to all campaign channels with promo/media order randomized for this run only (new Telegram messages). For one-time jobs that already ran, this is how you repost."
+                              : "Randomize promo/media order for this send only and queue Celery (new Telegram message). One-time jobs that already ran can only be reposted this way."
+                          }
+                        >
+                          Repost shuffled
+                        </button>
+                      )}
                     <button
                       onClick={() => deleteScheduledPost.mutate(Number(p.id))}
                       disabled={deleteScheduledPost.isPending}
@@ -803,7 +1031,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                 </tr>
               );
             })}
-            {rows.length === 0 && (
+            {displayRows.length === 0 && (
               <tr>
                 <td colSpan={7} className="p-4 text-slate-500 text-center">
                   {compactRecurringOnly ? "No recurring posting jobs." : "No scheduled posts."}

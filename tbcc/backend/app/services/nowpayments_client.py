@@ -38,6 +38,18 @@ def can_use_nowpayments_ipn() -> bool:
     return True
 
 
+def crypto_auto_checkout_ready() -> bool:
+    """
+    True when wallet/crypto orders can get a NOWPayments URL and IPN can auto-fulfill
+    (no dashboard mark-paid). Requires public HTTPS API base + API key + IPN secret.
+    """
+    return bool(
+        nowpayments_configured()
+        and can_use_nowpayments_ipn()
+        and (os.getenv("TBCC_NOWPAYMENTS_IPN_SECRET") or "").strip()
+    )
+
+
 def stars_to_usd(price_stars: int) -> float:
     per = float(os.getenv("TBCC_STARS_USD_PER_STAR", "0.012"))
     return max(0.01, round(max(0, int(price_stars)) * per, 2))

@@ -413,6 +413,12 @@ export function BotShop() {
         <code className="text-amber-100/90">/subscribe</code> / Premium. <strong>Bundles</strong> = one-time digital packs — listed under{" "}
         <code className="text-amber-100/90">/packs</code> / Digital packs (upload the .zip after creating the product).
       </p>
+      <p className="text-slate-400 text-sm mb-6 border border-slate-600/60 rounded-lg px-3 py-2 bg-slate-900/40 leading-relaxed">
+        <strong className="text-slate-300">Multiple tiers (e.g. AOF Tier 1 / 2 / 3):</strong> add{" "}
+        <em>one product per tier</em> below — use the <strong>same channel / group</strong> if every tier unlocks the same
+        private chat, and set different <strong>name</strong>, <strong>duration</strong>, and <strong>Stars price</strong>{" "}
+        per tier. There is no separate “tier” field: each tier is its own row. Inactive products are hidden from the bot.
+      </p>
 
       <div className="bg-slate-800 rounded-lg p-4 mb-8 border border-slate-700">
         <h3 className="text-sm font-medium text-slate-300 mb-3">New product</h3>

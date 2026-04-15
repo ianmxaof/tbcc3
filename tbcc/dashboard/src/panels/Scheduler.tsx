@@ -7,8 +7,11 @@ import { SchedulerWeek } from "../components/SchedulerWeek";
 import { SchedulePromoSlots } from "../components/SchedulePromoSlots";
 import { ApprovedMediaPickerStrip } from "../components/ApprovedMediaPickerStrip";
 import { formatUtcForDashboard, formatUtcWithLocalHint } from "../utils/formatUtc";
+import { CaptionSnippetInsertSelect, CaptionSnippetLibraryManageButton } from "../components/CaptionSnippetLibrary";
+import { CaptionTelegramHtmlField } from "../components/CaptionTelegramHtmlField";
+import { InfoDisclosure } from "../components/InfoDisclosure";
 
-const INTERVAL_OPTIONS = [15, 30, 60, 120, 360];
+const INTERVAL_OPTIONS = [15, 30, 60, 120, 180, 240, 360, 720];
 
 type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
 
@@ -20,8 +23,10 @@ function padAlbumVariants(v: AlbumVariant[], n: number): AlbumVariant[] {
 
 export function Scheduler() {
   const queryClient = useQueryClient();
+  const [calendarScheduleModalOpen, setCalendarScheduleModalOpen] = useState(false);
   const [name, setName] = useState("");
-  const [channelId, setChannelId] = useState<number>(0);
+  /** Multi-select: same job posts to every checked channel (one shared recurring / one-time schedule). */
+  const [selectedChannelIds, setSelectedChannelIds] = useState<number[]>([]);
   /** One box = single caption; 2+ non-empty = rotate in order each time the job runs */
   const [captionVariations, setCaptionVariations] = useState<string[]>([""]);
   const [scheduledAt, setScheduledAt] = useState("");
@@ -55,10 +60,11 @@ export function Scheduler() {
     queryKey: ["channels"],
     queryFn: () => api.channels.list(),
   });
+  const forumTopicSourceId = selectedChannelIds.length === 1 ? selectedChannelIds[0] : 0;
   const { data: forumTopicsRes } = useQuery({
-    queryKey: ["forumTopics", channelId],
-    queryFn: () => api.channels.forumTopics(channelId),
-    enabled: channelId > 0,
+    queryKey: ["forumTopics", forumTopicSourceId],
+    queryFn: () => api.channels.forumTopics(forumTopicSourceId),
+    enabled: forumTopicSourceId > 0,
   });
   const forumTopics = forumTopicsRes?.topics ?? [];
   const forumTopicsHint = forumTopicsRes?.error;
@@ -107,9 +113,11 @@ export function Scheduler() {
         attachment_urls: v.attachment_urls.map((s) => s.trim()).filter(Boolean),
         media_ids: v.media_ids,
       }));
+      const chIds = [...new Set(selectedChannelIds.filter((x) => x > 0))].sort((a, b) => a - b);
+      if (chIds.length === 0) throw new Error("Select at least one channel");
       const base: Parameters<typeof api.scheduledPosts.create>[0] = {
         name: name || undefined,
-        channel_id: channelId,
+        channel_ids: chIds,
         ...(messageThreadId != null ? { message_thread_id: messageThreadId } : {}),
         content: trimmed[0] || "",
         media_ids: [],
@@ -138,7 +146,7 @@ export function Scheduler() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
       setName("");
-      setChannelId(0);
+      setSelectedChannelIds([]);
       setMessageThreadId(null);
       setCaptionVariations([""]);
       setScheduledAt("");
@@ -151,6 +159,7 @@ export function Scheduler() {
       setScheduleAlbumOrderMode("static");
       setScheduleSendSilent(false);
       setSchedulePinAfterSend(false);
+      setCalendarScheduleModalOpen(false);
     },
   });
 
@@ -192,99 +201,23 @@ export function Scheduler() {
     id: p.id,
   }));
 
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold mb-4">Scheduler</h1>
-      <p className="text-slate-400 mb-6">
-        Scheduled posts run by one-time time or recurring intervals.
-        For <strong>forum supergroups</strong>, pick a <strong>topic</strong> so content goes to that subtopic (same as
-        extension &quot;Forum topic&quot;).
-      </p>
+  const openScheduleForCalendarDay = (iso: string) => {
+    setScheduledAt(`${iso}T12:00`);
+    setIsRecurring(false);
+    setCalendarScheduleModalOpen(true);
+  };
 
-      <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-2xl">
-        <h2 className="text-lg font-medium mb-2">Pool intervals</h2>
-        <p className="text-slate-400 text-sm mb-3">
-          Each pool stores <strong>interval</strong> and album settings (see table). Autonomous pool posting is{" "}
-          <strong>off</strong> — use <strong>Scheduled posts</strong> below to publish. Times here are{" "}
-          <strong>UTC</strong>.
-        </p>
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-              <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
-              <YAxis stroke="#94a3b8" fontSize={12} />
-              <Tooltip
-                contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #475569" }}
-                labelStyle={{ color: "#e2e8f0" }}
-              />
-              <Bar dataKey="interval" radius={[4, 4, 0, 0]}>
-                {chartData.map((_, i) => (
-                  <Cell key={i} fill="#06b6d4" />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <p className="text-slate-500">No pools. Create pools in the Pools panel.</p>
-        )}
-      </div>
+  useEffect(() => {
+    if (!calendarScheduleModalOpen) return;
+    const k = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCalendarScheduleModalOpen(false);
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [calendarScheduleModalOpen]);
 
-      <div className="overflow-x-auto mb-8">
-        <table className="w-full border border-slate-600 rounded-lg overflow-hidden">
-          <thead className="bg-slate-700">
-            <tr>
-              <th className="text-left p-3">Pool</th>
-              <th className="text-left p-3">Queued</th>
-              <th className="text-left p-3">Interval (min)</th>
-              <th className="text-left p-3">Last pool run (UTC)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pools.map((p: Record<string, unknown>) => (
-              <tr key={String(p.id)} className="border-t border-slate-600 hover:bg-slate-800/50">
-                <td className="p-3">{String(p.name)}</td>
-                <td className="p-3">
-                  <span className={Number(p.approved_count ?? 0) > 0 ? "text-cyan-300" : "text-slate-500"}>
-                    {String(p.approved_count ?? 0)}/{String(p.album_size ?? 5)}
-                  </span>
-                </td>
-                <td className="p-3">{String(p.interval_minutes)}</td>
-                <td
-                  className="p-3 text-slate-400 text-sm"
-                  title={p.last_posted ? formatUtcWithLocalHint(String(p.last_posted)) : undefined}
-                >
-                  {p.last_posted ? formatUtcForDashboard(String(p.last_posted)) : "Never"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <SchedulerWeek
-        posts={
-          scheduledPostsForWeek as Array<{
-            id: number;
-            name?: string | null;
-            scheduled_at?: string | null;
-            interval_minutes?: number | null;
-            channel_name?: string | null;
-          }>
-        }
-      />
-
-      <h2 className="text-xl font-semibold mb-3">Scheduled Posts</h2>
-      <p className="text-slate-400 mb-4">
-        Create text posts with optional media and inline URL buttons (including <code className="text-slate-300">tg://</code>{" "}
-        deep links). Albums now attach the same keyboard as single media. One-time or recurring intervals.
-        For recurring, &quot;Post now&quot; starts the cycle from the current time. Add a second caption
-        box to <strong>rotate captions</strong> in order each run (e.g. every hour: caption A, then B, then A…).
-        Recurring jobs show <strong>last sent (UTC)</strong> in the Schedule column — use that to compare with Telegram
-        message times (hover for your local time).
-      </p>
-
-      <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-4xl">
-        <h3 className="text-lg font-medium mb-3">Add scheduled post</h3>
+  const renderAddScheduledPostForm = () => (
+    <>
         {createScheduledPost.isError && (
           <div className="mb-3 px-3 py-2 rounded bg-red-900/50 text-red-200 text-sm">
             {createScheduledPost.error?.message}
@@ -299,22 +232,57 @@ export function Scheduler() {
               onChange={(e) => setName(e.target.value)}
               className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
             />
-            <select
-              value={channelId}
-              onChange={(e) => {
-                setChannelId(Number(e.target.value));
-                setMessageThreadId(null);
-              }}
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
-            >
-              <option value={0}>Select channel</option>
-              {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || c.identifier || `#${c.id}`}
-                </option>
-              ))}
-            </select>
-            {channelId > 0 && (
+            <div className="border border-slate-600 rounded-lg p-2 bg-slate-900/40">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <span className="text-slate-400 text-sm">Channels (one post per channel)</span>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="text-xs text-cyan-400 hover:text-cyan-300"
+                    onClick={() =>
+                      setSelectedChannelIds(
+                        (channels as Array<{ id: number }>).map((c) => c.id).sort((a, b) => a - b)
+                      )
+                    }
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    className="text-xs text-slate-500 hover:text-slate-300"
+                    onClick={() => setSelectedChannelIds([])}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto">
+                {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
+                  <label key={c.id} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedChannelIds.includes(c.id)}
+                      onChange={() => {
+                        setSelectedChannelIds((prev) =>
+                          prev.includes(c.id)
+                            ? prev.filter((x) => x !== c.id)
+                            : [...prev, c.id].sort((a, b) => a - b)
+                        );
+                        setMessageThreadId(null);
+                      }}
+                    />
+                    {c.name || c.identifier || `#${c.id}`}
+                  </label>
+                ))}
+              </div>
+            </div>
+            {selectedChannelIds.length > 1 && (
+              <p className="text-slate-500 text-xs">
+                Forum topic picker is available when exactly one channel is selected; with multiple channels, leave topic
+                as main chat or pick a topic after narrowing to one channel.
+              </p>
+            )}
+            {forumTopicSourceId > 0 && (
               <div>
                 <span className="text-slate-400 text-xs block mb-1">
                   Forum topic (optional — supergroups with topics enabled)
@@ -376,32 +344,39 @@ export function Scheduler() {
               />
             )}
             <div className="space-y-2">
-              <span className="text-slate-400 text-sm">
-                Caption{captionVariations.length > 1 ? "s (rotate in order)" : ""}
-              </span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-slate-400 text-sm">
+                  Caption{captionVariations.length > 1 ? "s (rotate in order)" : ""}
+                </span>
+                <CaptionSnippetLibraryManageButton />
+              </div>
               {captionVariations.map((line, i) => (
-                <div key={i} className="flex gap-2 items-start">
-                  <textarea
-                    placeholder={i === 0 ? "Text content (caption)" : `Caption variation ${i + 1}`}
-                    value={line}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setCaptionVariations((prev) => prev.map((p, j) => (j === i ? v : p)));
-                    }}
-                    rows={i === 0 ? 4 : 3}
-                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
-                  />
-                  {captionVariations.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => setCaptionVariations((prev) => prev.filter((_, j) => j !== i))}
-                      className="mt-1 px-2 py-1 text-red-400 hover:bg-red-900/30 rounded shrink-0"
-                      title="Remove this caption"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
+                <CaptionTelegramHtmlField
+                  key={i}
+                  value={line}
+                  onChange={(v) => setCaptionVariations((prev) => prev.map((p, j) => (j === i ? v : p)))}
+                  placeholder={i === 0 ? "Text content (caption)" : `Caption variation ${i + 1}`}
+                  rows={i === 0 ? 4 : 3}
+                  extraActions={
+                    <>
+                    <CaptionSnippetInsertSelect
+                      onInsert={(t) =>
+                        setCaptionVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
+                      }
+                    />
+                    {captionVariations.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setCaptionVariations((prev) => prev.filter((_, j) => j !== i))}
+                        className="px-2 py-1 text-red-400 hover:bg-red-900/30 rounded"
+                        title="Remove this caption"
+                      >
+                        ✕
+                      </button>
+                    )}
+                    </>
+                  }
+                />
               ))}
               <button
                 type="button"
@@ -508,7 +483,8 @@ export function Scheduler() {
               One album block per caption. Shuffle / carousel apply to that caption&apos;s combined promo + library picks.
             </p>
             <p className="text-slate-400 text-sm mb-2">
-              Media pool (optional) — choosing a pool filters thumbnails. Empty caption albums fall back to the pool batch.
+              Media pool (optional) — choosing a pool filters thumbnails. Empty caption albums fall back to the pool
+              batch.
             </p>
             <select
               value={poolId}
@@ -518,13 +494,16 @@ export function Scheduler() {
               }}
               className="w-full mb-2 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
             >
-              <option value={0}>All approved (any pool)</option>
+              <option value={0}>No pool (text-only unless media is explicitly picked below)</option>
               {(pools as Array<{ id: number; name?: string }>).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name || `Pool ${p.id}`} (media + optional auto-pick)
                 </option>
               ))}
             </select>
+            <p className="text-slate-500 text-xs mb-2">
+              Choose <strong>No pool</strong> for clean text+links recurring posts between album drops.
+            </p>
             {poolId > 0 && (
               <div className="border border-slate-600 rounded p-3 mb-2 space-y-2 bg-slate-900/40">
                 <p className="text-slate-400 text-xs">
@@ -631,7 +610,7 @@ export function Scheduler() {
           onClick={() => createScheduledPost.mutate()}
           disabled={
             createScheduledPost.isPending ||
-            !channelId ||
+            selectedChannelIds.length === 0 ||
             (!captionVariations.some((s) => s.trim()) &&
               !poolId &&
               !scheduleAlbumVariants.some(
@@ -642,15 +621,163 @@ export function Scheduler() {
         >
           {createScheduledPost.isPending ? "Creating..." : "Schedule"}
         </button>
+    </>
+  );
+
+  return (
+    <div>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Scheduler</h1>
+          <p className="text-slate-400 text-sm mt-1">
+            One-time + recurring posting with captions, media, links, and campaign fan-out.
+          </p>
+        </div>
+        <InfoDisclosure>
+          For forum supergroups, choose a topic to post into that subtopic. Timing strategy: test 2-3 windows, compare
+          results, and stagger channels by 5-15 minutes to reduce notification overlap.
+        </InfoDisclosure>
       </div>
 
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-8 items-stretch">
+        <div className="bg-slate-800 rounded-lg p-4 xl:col-span-1">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="text-lg font-medium">Pool intervals</h2>
+            <InfoDisclosure>
+              Pool auto-posting is off. Use scheduled posts below to publish. Times are stored as UTC; tooltips show
+              local and PT hints.
+            </InfoDisclosure>
+          </div>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
+                <YAxis stroke="#94a3b8" fontSize={12} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #475569" }}
+                  labelStyle={{ color: "#e2e8f0" }}
+                />
+                <Bar dataKey="interval" radius={[4, 4, 0, 0]}>
+                  {chartData.map((_, i) => (
+                    <Cell key={i} fill="#06b6d4" />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-slate-500">No pools. Create pools in the Pools panel.</p>
+          )}
+        </div>
+        <div className="overflow-x-auto xl:col-span-2 border border-slate-600 rounded-lg">
+          <table className="w-full overflow-hidden">
+            <thead className="bg-slate-700">
+              <tr>
+                <th className="text-left p-3">Pool</th>
+                <th className="text-left p-3">Queued</th>
+                <th className="text-left p-3">Interval (min)</th>
+                <th className="text-left p-3">Last pool run (UTC)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pools.map((p: Record<string, unknown>) => (
+                <tr key={String(p.id)} className="border-t border-slate-600 hover:bg-slate-800/50">
+                  <td className="p-3">{String(p.name)}</td>
+                  <td className="p-3">
+                    <span className={Number(p.approved_count ?? 0) > 0 ? "text-cyan-300" : "text-slate-500"}>
+                      {String(p.approved_count ?? 0)}/{String(p.album_size ?? 5)}
+                    </span>
+                  </td>
+                  <td className="p-3">{String(p.interval_minutes)}</td>
+                  <td
+                    className="p-3 text-slate-400 text-sm"
+                    title={p.last_posted ? formatUtcWithLocalHint(String(p.last_posted)) : undefined}
+                  >
+                    {p.last_posted ? formatUtcForDashboard(String(p.last_posted)) : "Never"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <SchedulerWeek
+        posts={
+          scheduledPostsForWeek as Array<{
+            id: number;
+            name?: string | null;
+            scheduled_at?: string | null;
+            interval_minutes?: number | null;
+            channel_name?: string | null;
+            campaign_group_id?: string | null;
+          }>
+        }
+        onDayClick={openScheduleForCalendarDay}
+      />
+
+      <h2 className="text-xl font-semibold mb-3">Scheduled Posts</h2>
+      <div className="mb-4 flex justify-end">
+        <InfoDisclosure>
+          Captions support Telegram HTML tags; buttons support https:// and tg:// links. Recurring schedules begin with
+          <strong> Post now</strong> once if no last send exists. You can rotate captions and send one campaign to many
+          channels. Recurring rows show bright <strong>Next post</strong> in local time + PT.
+        </InfoDisclosure>
+      </div>
+
+      {!calendarScheduleModalOpen ? (
+        <div id="scheduler-add-post" className="bg-slate-800 rounded-lg p-4 mb-6 max-w-4xl">
+          <h3 className="text-lg font-medium mb-3">Add scheduled post</h3>
+          {renderAddScheduledPostForm()}
+        </div>
+      ) : null}
+
+      {calendarScheduleModalOpen ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-slate-950/85 px-3 py-6 sm:py-10"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="scheduler-calendar-modal-title"
+          onClick={() => setCalendarScheduleModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-4xl rounded-lg border border-slate-600 bg-slate-800 p-4 shadow-2xl mb-10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+              <h3 id="scheduler-calendar-modal-title" className="text-lg font-medium text-slate-100 pr-2">
+                Schedule from calendar
+                {scheduledAt?.length >= 10 ? (
+                  <span className="text-slate-400 font-normal text-sm block sm:inline sm:ml-2">
+                    ({scheduledAt.slice(0, 10)})
+                  </span>
+                ) : null}
+              </h3>
+              <button
+                type="button"
+                className="shrink-0 px-3 py-1 rounded bg-slate-700 text-slate-200 text-sm hover:bg-slate-600"
+                onClick={() => setCalendarScheduleModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+            <p className="text-slate-500 text-xs mb-3">
+              Same options as the <strong>Add scheduled post</strong> card (hidden while this is open). Set a one-time{" "}
+              <strong>date/time</strong> or enable <strong>recurring</strong> for interval-based runs. Click outside, Esc, or Close to
+              dismiss.
+            </p>
+            {renderAddScheduledPostForm()}
+          </div>
+        </div>
+      ) : null}
+
       <div className="bg-slate-800 rounded-lg p-4 mb-8 max-w-2xl border border-slate-600/80">
-        <h3 className="text-lg font-medium mb-2">Pin a message in a channel</h3>
-        <p className="text-slate-400 text-sm mb-3">
-          Paste the numeric <strong>message id</strong> from the target chat (forward the post to{" "}
-          <code className="text-slate-300">@userinfobot</code>, or use a message link — the id is often in the URL).
-          Your admin Telegram session must be allowed to pin in that channel.
-        </p>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <h3 className="text-lg font-medium">Pin a message in a channel</h3>
+          <InfoDisclosure>
+            Paste numeric message id from a message link or helper bot. Your admin Telegram session must have pin rights
+            in the channel.
+          </InfoDisclosure>
+        </div>
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex-1 min-w-[10rem]">
             <span className="text-slate-400 text-xs block mb-1">Channel</span>

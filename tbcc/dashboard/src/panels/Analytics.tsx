@@ -11,6 +11,7 @@ import {
 } from "recharts";
 import { api } from "../api";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
+import { InfoDisclosure } from "../components/InfoDisclosure";
 
 export function Analytics() {
   const rangeDays = 30;
@@ -34,13 +35,13 @@ export function Analytics() {
 
   return (
     <div className="max-w-5xl space-y-10">
-      <div>
+      <div className="flex items-start justify-between gap-3">
         <h1 className="text-xl font-semibold text-slate-100">Analytics</h1>
-        <p className="text-slate-400 text-sm mt-1 max-w-2xl">
-          Step 1: subscription totals and an append-only log of outbound Telegram posts (scheduled sends and pool
-          album posts). Step 2: AI tag/caption suggestions live under Media Library (human review before apply). Tie
-          captions to performance here in a later iteration. Engagement metrics can layer on later.
-        </p>
+        <InfoDisclosure className="shrink-0">
+          Step 1: subscription totals and an append-only outbound Telegram log (scheduled sends + pool albums). Step 2:
+          AI tag/caption suggestions remain under Media Library (human review before apply). Deeper engagement metrics
+          can layer in later.
+        </InfoDisclosure>
       </div>
 
       {subQ.isError && (
@@ -97,41 +98,44 @@ export function Analytics() {
             </div>
 
             {chartData.length > 0 ? (
-              <div className="h-64 w-full min-w-0 bg-slate-900/50 border border-slate-700 rounded-lg p-3">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 11 }} stroke="#475569" />
-                    <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 11 }} stroke="#475569" />
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}
-                      labelStyle={{ color: "#e2e8f0" }}
-                    />
-                    <Legend />
-                    <Bar dataKey="scheduled_post_sent" name="Scheduled" stackId="a" fill="#22d3ee" />
-                    <Bar dataKey="pool_album_posted" name="Pool album" stackId="a" fill="#a78bfa" />
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="grid grid-cols-1 xl:grid-cols-4 gap-4 items-stretch">
+                <div className="xl:col-span-3 h-72 w-full min-w-0 bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 11 }} stroke="#475569" />
+                      <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 11 }} stroke="#475569" />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}
+                        labelStyle={{ color: "#e2e8f0" }}
+                      />
+                      <Legend />
+                      <Bar dataKey="scheduled_post_sent" name="Scheduled" stackId="a" fill="#22d3ee" />
+                      <Bar dataKey="pool_album_posted" name="Pool album" stackId="a" fill="#a78bfa" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="xl:col-span-1 bg-slate-900/40 border border-slate-700 rounded-lg p-3">
+                  <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">By channel</h3>
+                  {summaryQ.data.by_channel.length > 0 ? (
+                    <ul className="text-sm text-slate-300 space-y-1 max-h-64 overflow-y-auto pr-1">
+                      {summaryQ.data.by_channel.map((c) => (
+                        <li key={c.channel_id}>
+                          <span className="text-slate-100">{c.channel_name}</span>
+                          <span className="text-slate-500"> — {c.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-slate-500 text-sm">No channel totals yet.</p>
+                  )}
+                </div>
               </div>
             ) : (
               <p className="text-slate-500 text-sm">
                 No outbound post events in this window yet. Events are recorded when Celery sends scheduled posts or
                 pool interval albums.
               </p>
-            )}
-
-            {summaryQ.data.by_channel.length > 0 && (
-              <div className="mt-6">
-                <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">By channel</h3>
-                <ul className="text-sm text-slate-300 space-y-1">
-                  {summaryQ.data.by_channel.map((c) => (
-                    <li key={c.channel_id}>
-                      <span className="text-slate-100">{c.channel_name}</span>
-                      <span className="text-slate-500"> — {c.count}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
             )}
           </>
         ) : null}
