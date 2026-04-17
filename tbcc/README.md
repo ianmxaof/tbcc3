@@ -2,13 +2,22 @@
 
 Unified system for scraping, storing media in Telegram Saved Messages, approval queue, and posting to channels.
 
+## LLM vision auto-tagging
+
+- **Rule tags** still run first on import (`media_tagging` type/source rules).
+- **Optional:** set `TBCC_AUTO_TAG_ON_IMPORT=1` and `TBCC_OPENAI_API_KEY` — each new **photo** queues a Celery job that sends a downscaled JPEG to **OpenAI vision** and writes `MediaTagLink` rows with `source=llm` (manual tags preserved). **Videos** and **documents** are skipped for now.
+- **Manual:** Media Library bulk bar → **Auto-tag (vision)** or `POST /media/{id}/auto-tag-llm` / `POST /media/bulk/auto-tag-llm` (requires Celery).
+- **Classification fields** on each `Media` row: `nsfw_tier` (`sfw` / `suggestive` / `explicit` / `unknown`) and optional `classification_json` (`facets`, `routing_hint`) — filled by the same vision call.
+- **Auto pool routing (AOF-style):** On each pool, set **Auto-route tag slugs** and/or **Auto-route NSFW tiers** (`sfw`, `suggestive`, `explicit`, `unknown`, comma-separated). If both are set, **both** must match. Enable `TBCC_AUTO_ROUTE_POOL=1` — after vision auto-tag **or** dashboard **Re-apply auto rules**, TBCC sets `pool_id` to the first matching pool (by **Route priority**, ascending) when allowed (same overwrite/dedup rules as before).
+- **Facet album suggest:** `GET /pools/{pool_id}/suggest-album?seed_media_id=&limit=10&status=approved` returns `media_ids` that cluster by overlapping `classification_json.facets` (greedy Jaccard, max 10). Dashboard: `api.pools.suggestAlbum(poolId, { seed_media_id, limit })`.
+
 ## Recent updates (high level)
 
 - **Scheduler:** Telegram HTML captions (`<b>`, `<i>`, `<u>`, spoiler, etc.) with toolbar helpers; clearer **next post** times (local + Pacific) for recurring jobs; explicit **No pool** option for text-only / link posts between album drops.
 - **Scheduled posts:** Multi-channel **campaigns** (shared cron, caption rotation, pool batch). **Repost shuffled** queues another send with **randomized album/promo order for that run only** (does not edit saved order mode); also allows **one-time** jobs that already ran to post again. API: `POST /scheduled-posts/{id}/trigger?reshuffle=true`.
-- **Poster worker:** Uses a dedicated Telethon session file (`admin_poster` by default; override with `TBCC_POSTER_TELEGRAM_SESSION`) to reduce SQLite session lock contention with other processes; retries with backoff for transient Telegram/DB errors.
+- **Poster worker:** Uses a dedicated Telethon session file (`admin_poster` by default; override with `TBCC_POSTER_TELEGRAM_SESSION`) to reduce SQLite session lock contention with other processes; retries with backoff for transient Telegram/DB errors. The `{name}.session` file must be **authorized before Celery runs** (copy `admin.session` to `admin_poster.session`, or run a one-time interactive Telethon login with that session name from `tbcc/backend`). Workers never call interactive `start()` — otherwise the worker will try to read a phone number from stdin and fail.
 - **Media Library:** More reliable **bulk move pool** (single optimized update path), larger bulk chunks for status/move, SQLite `busy_timeout` tuning; long help text folded into **How it works** disclosures; improved layout with Analytics/Subscriptions.
-- **Migrations:** Run `alembic upgrade head` after pull (e.g. campaign group columns on scheduled posts — see `030_scheduled_post_campaign_group.py`).
+- **Migrations:** Run `alembic upgrade head` after pull (e.g. `031_media_classification_pool_routing.py`, `032_pool_route_nsfw_tiers.py`).
 
 ## What's included (all phases)
 
@@ -54,7 +63,8 @@ Lead with **saving media you can access in the browser** and **optional self-hos
 - **Import via extension** works without Celery. **"Post now"** and scheduled posting require Redis + Celery.
 - **Docker Desktop** must be running for Redis. Then: `cd tbcc && .\start.ps1 -Full`, or manually:
 - Start Redis: `docker run -d -p 6379:6379 redis` or `cd tbcc/infra && docker compose up -d redis`.
-- Run Celery worker: `cd tbcc/backend && python -m celery -A app.workers.celery_app worker -l info`.
+- Run Celery worker (**must consume `post` and `celery` queues** — poster tasks go to `post`):  
+  `cd tbcc/backend && python -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,post,scrape,subscription`
 - Run Celery Beat (scheduler): `cd tbcc/backend && python -m celery -A app.workers.celery_app beat -l info`.
 
 ### Go-live: referrals + daily AOF landing bulletin
@@ -76,7 +86,7 @@ Lead with **saving media you can access in the browser** and **optional self-hos
 - **Port 8000 in use:** Another process is using it. Use `netstat -ano | findstr :8000` to find the PID; stop it or use a different port.
 - **Extension pools not syncing:** Ensure the backend is running at http://localhost:8000. The popup fetches pools on open; reopen the popup after creating pools in the dashboard.
 - **Redis/Docker "cannot find file specified":** Docker Desktop is not running. Start Docker Desktop, then run `.\start.ps1 -Full` or `docker run -d -p 6379:6379 redis` manually.
-- **"Post now" does nothing:** Redis + Celery worker must be running. The Telegram account (API_ID/API_HASH) is the "poster" — you are the poster. Ensure you are an admin of the target channel with post permissions.
+- **"Post now" / scheduled posts never fire:** Redis + **Celery Beat** + **Celery worker** must be running; the worker must consume **`post`** (and `celery` for `run_schedule`) — see command above. Poster account needs channel admin/post rights. Ensure **`admin_poster.session`** is authorized (worker log: `Telegram poster session is not logged in`). **Telegram auto-delete** (e.g. 1 day) can empty channel history so it looks “blank” even after sends.
 - **Promo / invoice images missing in Telegram:** Telegram loads image URLs **from its own servers**, not your PC. Set **`TBCC_PROMO_PUBLIC_BASE_URL`** (preferred) or **`TBCC_PUBLIC_BASE_URL`** to your public **`https://`** API (e.g. ngrok), restart the backend, then **re-upload** promos — dashboard upload builds `{that host}/static/promo/...`. For **ImgBB**, use a **direct image** URL (`https://i.ibb.co/.../file.jpg`), **not** “Viewer links” (`https://ibb.co/...` — those are HTML pages). If Telegram rejects a photo, the bot retries the invoice **without** it so checkout still works. **Dashboard file upload** (`POST /subscription-plans/upload-promo-image`) **normalizes** images server-side (Pillow): EXIF orientation, max edge 4096px, output **JPEG** or **PNG** (if transparency fits under the size cap), so local uploads are stored in a Telegram-friendly form.
 - **Channels / media / pools “vanished” after Postgres:** Schema migrations (`alembic upgrade head`) only create **tables**, not **data**. If you used SQLite before (`DATABASE_URL=sqlite:///./tbcc.db`), your rows lived in `tbcc.db` (usually under `tbcc/backend/` where you ran uvicorn). Pointing `DATABASE_URL` at PostgreSQL gives you a **new empty database** — that’s expected. **Recovery:** if `tbcc.db` still exists, run from `tbcc/backend`: `python scripts/sqlite_to_postgres.py --dry-run` then without `--dry-run` (Postgres must already be migrated). If you **recreated the Docker Postgres volume** or never had a SQLite file, restore from a backup only — nothing in the repo can recreate lost rows.
 

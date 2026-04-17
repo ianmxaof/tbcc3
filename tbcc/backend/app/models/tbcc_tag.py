@@ -24,7 +24,7 @@ class MediaTagLink(Base):
     media_id = Column(Integer, ForeignKey("media.id", ondelete="CASCADE"), nullable=False, index=True)
     tag_id = Column(Integer, ForeignKey("tbcc_tags.id", ondelete="CASCADE"), nullable=False, index=True)
     confidence = Column(Float, nullable=False, default=1.0)
-    # rule = pattern-based; model = future ML; manual = user/dashboard
+    # rule = pattern-based; llm = OpenAI vision auto-tag; manual = user/dashboard
     source = Column(String(16), nullable=False, default="rule")
     created_at = Column(DateTime, default=datetime.utcnow)
 

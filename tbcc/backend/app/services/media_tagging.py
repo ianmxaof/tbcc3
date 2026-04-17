@@ -252,11 +252,17 @@ def apply_auto_tags_for_new_media(db: Session, media_id: int) -> None:
 
 
 def reapply_rules_keep_manual(db: Session, media_id: int) -> dict:
-    """Re-run rules; keeps manual tag links. Rebuilds legacy string."""
+    """Re-run rules; keeps manual tag links. Rebuilds legacy string. Optionally auto-routes pool."""
     from app.models.media import Media
+    from app.services.media_pool_routing import auto_route_pool_enabled, try_assign_pool_from_tags
 
     m = db.query(Media).filter(Media.id == media_id).first()
     if not m:
         return {"ok": False, "error": "not_found"}
     slugs = apply_rule_tags(db, m)
-    return {"ok": True, "applied": slugs}
+    route_info: dict = {"applied": False, "reason": "disabled"}
+    if auto_route_pool_enabled():
+        route_info = try_assign_pool_from_tags(db, media_id)
+        if route_info.get("applied"):
+            db.commit()
+    return {"ok": True, "applied": slugs, "route": route_info}

@@ -19,6 +19,10 @@ class ScheduledTextPost(Base):
     sent_at = Column(DateTime, nullable=True)  # one-time: set when posted; interval: unused
     interval_minutes = Column(Integer, nullable=True)  # non-null = recurring
     last_posted_at = Column(DateTime, nullable=True)  # for recurring: last post time
+    # After TBCC_SCHED_POST_AUTO_PAUSE_STREAK consecutive send failures, beat stops enqueueing until cleared (dashboard / trigger).
+    send_failure_streak = Column(Integer, nullable=True)
+    posting_auto_paused_at = Column(DateTime, nullable=True)
+    posting_auto_pause_reason = Column(String(512), nullable=True)
     media_ids = Column(Text, nullable=True)  # JSON list of media table IDs
     pool_id = Column(Integer, nullable=True)  # optional: use pool's approved media
     # Per-job overrides when pool_id is set (if NULL, use ContentPool.album_size / randomize_queue)

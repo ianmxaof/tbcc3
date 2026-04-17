@@ -867,10 +867,10 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
               <th className="text-left p-3">Name</th>
               <th className="text-left p-3">Channel</th>
               <th className="text-left p-3">Content</th>
-              <th className="text-left p-3">Schedule / last sent</th>
+              <th className="text-left p-3 w-[11rem]">Schedule</th>
               <th className="text-left p-3">Pool</th>
               <th className="text-left p-3">Status</th>
-              <th className="text-left p-3">Actions</th>
+              <th className="text-left p-3 min-w-[9rem]">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -921,63 +921,93 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                       <span className="ml-2 text-xs text-cyan-400/90">({row.posts.length} ch)</span>
                     ) : null}
                   </td>
-                  <td className="p-3 max-w-[12rem] truncate" title={channelCell}>
-                    {channelCell}
+                  <td
+                    className="p-3 max-w-[12rem]"
+                    title={
+                      p.message_thread_id != null && p.message_thread_id !== undefined
+                        ? `${channelCell} · Topic #${p.message_thread_id}`
+                        : channelCell
+                    }
+                  >
+                    <div className="truncate text-slate-200">
+                      {channelCell}
+                      {p.message_thread_id != null && p.message_thread_id !== undefined ? (
+                        <span className="text-slate-500 font-normal"> · #{p.message_thread_id}</span>
+                      ) : null}
+                    </div>
                   </td>
-                  <td className="p-3 text-slate-400 text-sm">
-                    {p.message_thread_id != null && p.message_thread_id !== undefined
-                      ? `#${p.message_thread_id}`
-                      : "—"}
-                  </td>
-                  <td className="p-3 text-slate-400 text-sm max-w-xs truncate" title={rotating ? String(cvRow.join(" | ")).slice(0, 500) : String(p.content || "")}>
+                  <td
+                    className="p-3 text-slate-400 text-sm max-w-xs truncate"
+                    title={rotating ? String(cvRow.join(" | ")).slice(0, 500) : String(p.content || "")}
+                  >
                     {rotating ? preview : `${textPreview}${String(p.content || "").length > 40 ? "…" : ""}`}
                   </td>
                   <td
-                    className="p-3 text-slate-400 text-sm max-w-[14rem]"
-                    title={
-                      recurring && lastPost
-                        ? formatUtcWithLocalHint(String(lastPost))
-                        : !recurring && p.scheduled_at
-                          ? formatUtcWithLocalHint(String(p.scheduled_at))
-                          : undefined
-                    }
+                    className="p-3 text-slate-400 text-sm align-top max-w-[12rem]"
+                    onClick={(e) => e.stopPropagation()}
                   >
                     {recurring ? (
-                      <>
-                        <span className="block">Every {Number(p.interval_minutes)} min</span>
+                      <details className="group text-xs max-w-[11rem]">
+                        <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex flex-nowrap items-baseline gap-x-1 min-w-0 leading-tight">
+                          <span className="text-slate-300 font-medium shrink-0">
+                            Every {Number(p.interval_minutes)} min
+                          </span>
+                          {nextRecurringIso ? (
+                            <span
+                              className="text-cyan-200/90 truncate min-w-0"
+                              title={formatLocalForDashboard(nextRecurringIso)}
+                            >
+                              · Next {formatLocalForDashboard(nextRecurringIso)}
+                            </span>
+                          ) : (
+                            <span className="text-amber-500/90 shrink-0">· Post now to start</span>
+                          )}
+                        </summary>
                         {nextRecurringIso ? (
-                          <>
-                            <span className="block text-xs mt-0.5 text-cyan-200 font-semibold">
-                              Next: {formatLocalForDashboard(nextRecurringIso)} (your time)
-                            </span>
-                            <span className="block text-xs text-cyan-300/90 mt-0.5">
-                              PT: {formatPtForDashboard(nextRecurringIso)}
-                            </span>
-                            <span className="block text-[11px] text-slate-500 mt-0.5">
-                              Last UTC: {formatUtcForDashboard(String(lastPost))}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="block text-xs text-amber-500/90 mt-0.5">Use &quot;Post now&quot; once</span>
-                        )}
-                      </>
+                          <div className="mt-1.5 pl-2 border-l border-slate-600 space-y-0.5 text-[11px]">
+                            <div className="text-slate-300">
+                              Local: {formatLocalForDashboard(nextRecurringIso)}
+                            </div>
+                            <div className="text-cyan-300/85">PT: {formatPtForDashboard(nextRecurringIso)}</div>
+                            {lastPost ? (
+                              <div className="text-slate-500">Last UTC: {formatUtcForDashboard(String(lastPost))}</div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </details>
                     ) : p.scheduled_at ? (
-                      formatUtcForDashboard(String(p.scheduled_at))
+                      <span className="text-xs">{formatUtcForDashboard(String(p.scheduled_at))}</span>
                     ) : (
                       "—"
                     )}
                   </td>
-                  <td className="p-3 text-slate-400 text-sm">
-                    {poolName}
-                    {attUrls.length > 0 ? (
-                      <span className="text-slate-500 text-xs ml-1">({attUrls.length} promo)</span>
-                    ) : null}
-                    {flags.length > 0 ? (
-                      <span className="block text-slate-500 text-xs mt-1">{flags.join(" · ")}</span>
-                    ) : null}
+                  <td
+                    className="p-3 text-slate-400 text-sm max-w-[10rem]"
+                    title={[poolName, attUrls.length ? `${attUrls.length} promo` : "", flags.join(" · ")].filter(Boolean).join(" · ")}
+                  >
+                    <div className="truncate">
+                      {poolName}
+                      {attUrls.length > 0 ? (
+                        <span className="text-slate-500 text-xs"> · {attUrls.length} promo</span>
+                      ) : null}
+                      {flags.length > 0 ? (
+                        <span className="text-slate-500 text-xs"> · {flags.join(" · ")}</span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="p-3">
-                    {recurring ? (
+                    {p.posting_auto_paused_at ? (
+                      <span
+                        className="text-rose-400 text-sm"
+                        title={
+                          p.posting_auto_pause_reason
+                            ? String(p.posting_auto_pause_reason)
+                            : "Too many send failures in a row; beat will not enqueue until you fix the channel or clear pause (Post now / PATCH clear_auto_pause)."
+                        }
+                      >
+                        Auto-paused
+                      </span>
+                    ) : recurring ? (
                       lastPost ? (
                         <span className="text-emerald-400 text-sm">Running</span>
                       ) : (

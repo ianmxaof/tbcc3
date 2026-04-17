@@ -56,6 +56,39 @@ def on_startup():
                             )
                         )
                     logger.info("SQLite: added content_pools.auto_post_enabled (dev migration)")
+                if "route_match_tag_slugs" not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN route_match_tag_slugs VARCHAR(512)"
+                            )
+                        )
+                    logger.info("SQLite: added content_pools.route_match_tag_slugs (dev migration)")
+                if "route_priority" not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN route_priority INTEGER NOT NULL DEFAULT 100"
+                            )
+                        )
+                    logger.info("SQLite: added content_pools.route_priority (dev migration)")
+                if "route_nsfw_tiers" not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN route_nsfw_tiers VARCHAR(128)"
+                            )
+                        )
+                    logger.info("SQLite: added content_pools.route_nsfw_tiers (dev migration)")
+            if "media" in inspector.get_table_names():
+                mcols = {c["name"] for c in inspector.get_columns("media")}
+                with engine.begin() as conn:
+                    if "nsfw_tier" not in mcols:
+                        conn.execute(text("ALTER TABLE media ADD COLUMN nsfw_tier VARCHAR(16)"))
+                        logger.info("SQLite: added media.nsfw_tier (dev migration)")
+                    if "classification_json" not in mcols:
+                        conn.execute(text("ALTER TABLE media ADD COLUMN classification_json TEXT"))
+                        logger.info("SQLite: added media.classification_json (dev migration)")
             if "subscription_plans" in inspector.get_table_names():
                 sp_cols = {c["name"] for c in inspector.get_columns("subscription_plans")}
                 with engine.begin() as conn:
@@ -105,6 +138,13 @@ def on_startup():
                     if "plan_tag_ids_json" not in sp_cols:
                         conn.execute(text("ALTER TABLE subscription_plans ADD COLUMN plan_tag_ids_json TEXT"))
                         logger.info("SQLite: added subscription_plans.plan_tag_ids_json (dev migration)")
+                    if "bot_section" not in sp_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE subscription_plans ADD COLUMN bot_section VARCHAR(32) NOT NULL DEFAULT 'main'"
+                            )
+                        )
+                        logger.info("SQLite: added subscription_plans.bot_section (dev migration)")
             if "scheduled_text_posts" in inspector.get_table_names():
                 st_cols = {c["name"] for c in inspector.get_columns("scheduled_text_posts")}
                 with engine.begin() as conn:
@@ -169,6 +209,19 @@ def on_startup():
                             )
                         )
                         logger.info("SQLite: added scheduled_text_posts.campaign_group_id (dev migration)")
+                    if "send_failure_streak" not in st_cols:
+                        conn.execute(text("ALTER TABLE scheduled_text_posts ADD COLUMN send_failure_streak INTEGER"))
+                        logger.info("SQLite: added scheduled_text_posts.send_failure_streak (dev migration)")
+                    if "posting_auto_paused_at" not in st_cols:
+                        conn.execute(text("ALTER TABLE scheduled_text_posts ADD COLUMN posting_auto_paused_at DATETIME"))
+                        logger.info("SQLite: added scheduled_text_posts.posting_auto_paused_at (dev migration)")
+                    if "posting_auto_pause_reason" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN posting_auto_pause_reason VARCHAR(512)"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.posting_auto_pause_reason (dev migration)")
             if "subscriptions" in inspector.get_table_names():
                 sub_cols = {c["name"] for c in inspector.get_columns("subscriptions")}
                 if "telegram_payment_charge_id" not in sub_cols:
@@ -207,9 +260,75 @@ def on_startup():
                     logger.info(
                         "PostgreSQL: added content_pools.auto_post_enabled (startup migration)"
                     )
+                if "route_match_tag_slugs" not in cp_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN route_match_tag_slugs VARCHAR(512)"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added content_pools.route_match_tag_slugs (startup migration)"
+                    )
+                if "route_priority" not in cp_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN route_priority INTEGER NOT NULL DEFAULT 100"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added content_pools.route_priority (startup migration)"
+                    )
+                if "route_nsfw_tiers" not in cp_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE content_pools ADD COLUMN route_nsfw_tiers VARCHAR(128)"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added content_pools.route_nsfw_tiers (startup migration)"
+                    )
         except Exception:
             logger.exception(
-                "PostgreSQL: could not add content_pools.auto_post_enabled — run: "
+                "PostgreSQL: could not add content_pools columns — run: "
+                "cd backend && alembic upgrade head"
+            )
+        try:
+            inspector = inspect(engine)
+            if "media" in inspector.get_table_names():
+                m_cols = {c["name"] for c in inspector.get_columns("media")}
+                if "nsfw_tier" not in m_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE media ADD COLUMN nsfw_tier VARCHAR(16)"))
+                    logger.info("PostgreSQL: added media.nsfw_tier (startup migration)")
+                if "classification_json" not in m_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE media ADD COLUMN classification_json TEXT"))
+                    logger.info(
+                        "PostgreSQL: added media.classification_json (startup migration)"
+                    )
+        except Exception:
+            logger.exception(
+                "PostgreSQL: could not add media classification columns — run: "
+                "cd backend && alembic upgrade head"
+            )
+        try:
+            inspector = inspect(engine)
+            if "subscription_plans" in inspector.get_table_names():
+                sp_cols = {c["name"] for c in inspector.get_columns("subscription_plans")}
+                if "bot_section" not in sp_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE subscription_plans ADD COLUMN bot_section VARCHAR(32) NOT NULL DEFAULT 'main'"
+                            )
+                        )
+                    logger.info("PostgreSQL: added subscription_plans.bot_section (startup migration)")
+        except Exception:
+            logger.exception(
+                "PostgreSQL: could not add subscription_plans.bot_section — run: "
                 "cd backend && alembic upgrade head"
             )
         # Same as Alembic 026: scheduled promo URLs (dashboard) — many deployments skip alembic upgrade.
@@ -296,6 +415,34 @@ def on_startup():
                         )
                     logger.info(
                         "PostgreSQL: added scheduled_text_posts.campaign_group_id (startup migration)"
+                    )
+                if "send_failure_streak" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("ALTER TABLE scheduled_text_posts ADD COLUMN send_failure_streak INTEGER")
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.send_failure_streak (startup migration)"
+                    )
+                if "posting_auto_paused_at" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN posting_auto_paused_at TIMESTAMP"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.posting_auto_paused_at (startup migration)"
+                    )
+                if "posting_auto_pause_reason" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN posting_auto_pause_reason VARCHAR(512)"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.posting_auto_pause_reason (startup migration)"
                     )
         except Exception:
             logger.exception(

@@ -31,6 +31,9 @@ export function ContentPools() {
   const [intervalMinutes, setIntervalMinutes] = useState(60);
   const [autoPostEnabled, setAutoPostEnabled] = useState(true);
   const [randomizeQueue, setRandomizeQueue] = useState(false);
+  const [routeSlugs, setRouteSlugs] = useState("");
+  const [routeNsfwTiers, setRouteNsfwTiers] = useState("");
+  const [routePriority, setRoutePriority] = useState(100);
   const [editOpen, setEditOpen] = useState(false);
   const [editId, setEditId] = useState(0);
   const [editName, setEditName] = useState("");
@@ -39,6 +42,9 @@ export function ContentPools() {
   const [editInterval, setEditInterval] = useState(60);
   const [editAutoPostEnabled, setEditAutoPostEnabled] = useState(true);
   const [editRandomize, setEditRandomize] = useState(false);
+  const [editRouteSlugs, setEditRouteSlugs] = useState("");
+  const [editRouteNsfwTiers, setEditRouteNsfwTiers] = useState("");
+  const [editRoutePriority, setEditRoutePriority] = useState(100);
   const [channelName, setChannelName] = useState("");
   const [channelIdentifier, setChannelIdentifier] = useState("");
   const [channelInviteLink, setChannelInviteLink] = useState("");
@@ -95,6 +101,9 @@ export function ContentPools() {
         interval_minutes: intervalMinutes,
         auto_post_enabled: autoPostEnabled,
         randomize_queue: randomizeQueue,
+        route_match_tag_slugs: routeSlugs.trim() || undefined,
+        route_nsfw_tiers: routeNsfwTiers.trim() || undefined,
+        route_priority: routePriority,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pools"] });
@@ -102,6 +111,9 @@ export function ContentPools() {
       setChannelId(0);
       setAutoPostEnabled(true);
       setRandomizeQueue(false);
+      setRouteSlugs("");
+      setRouteNsfwTiers("");
+      setRoutePriority(100);
     },
   });
 
@@ -114,6 +126,9 @@ export function ContentPools() {
         interval_minutes: editInterval,
         auto_post_enabled: editAutoPostEnabled,
         randomize_queue: editRandomize,
+        route_match_tag_slugs: editRouteSlugs.trim() || null,
+        route_nsfw_tiers: editRouteNsfwTiers.trim() || null,
+        route_priority: editRoutePriority,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pools"] });
@@ -144,6 +159,9 @@ export function ContentPools() {
     setEditInterval(Number(p.interval_minutes ?? 60));
     setEditAutoPostEnabled(p.auto_post_enabled !== false);
     setEditRandomize(!!p.randomize_queue);
+    setEditRouteSlugs(String(p.route_match_tag_slugs || ""));
+    setEditRouteNsfwTiers(String(p.route_nsfw_tiers || ""));
+    setEditRoutePriority(Number(p.route_priority ?? 100));
     setEditOpen(true);
   }
 
@@ -373,6 +391,39 @@ export function ContentPools() {
               Randomize album picks
             </label>
           </div>
+          <label className="block text-xs text-slate-400">
+            Auto-route tag slugs (optional)
+            <input
+              type="text"
+              value={routeSlugs}
+              onChange={(e) => setRouteSlugs(e.target.value)}
+              placeholder="cosplay, outdoor — comma-separated tbcc_tags.slug"
+              className="mt-1 block w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm"
+              title="When TBCC_AUTO_ROUTE_POOL=1, vision auto-tag can assign this pool if any linked tag slug matches"
+            />
+          </label>
+          <label className="block text-xs text-slate-400">
+            Auto-route NSFW tiers (optional)
+            <input
+              type="text"
+              value={routeNsfwTiers}
+              onChange={(e) => setRouteNsfwTiers(e.target.value)}
+              placeholder="explicit, suggestive — comma-separated; AND with slugs if both set"
+              className="mt-1 block w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm"
+              title="sfw | suggestive | explicit | unknown"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-slate-400 text-xs">
+            Route priority (lower = tried first)
+            <input
+              type="number"
+              min={0}
+              max={9999}
+              value={routePriority}
+              onChange={(e) => setRoutePriority(Number(e.target.value))}
+              className="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
+            />
+          </label>
           <button
             onClick={() => createPool.mutate()}
             disabled={createPool.isPending || !channelId}
@@ -446,6 +497,39 @@ export function ContentPools() {
                 />
                 Randomize which approved items scheduler picks for each album
               </label>
+              <label className="block text-xs text-slate-400">
+                Auto-route tag slugs (optional)
+                <input
+                  type="text"
+                  value={editRouteSlugs}
+                  onChange={(e) => setEditRouteSlugs(e.target.value)}
+                  placeholder="cosplay, outdoor — comma-separated tbcc_tags.slug"
+                  className="mt-1 block w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm"
+                  title="TBCC_AUTO_ROUTE_POOL=1: assign pool when media has any of these tag slugs (after auto-tag)"
+                />
+              </label>
+              <label className="block text-xs text-slate-400">
+                Auto-route NSFW tiers (optional)
+                <input
+                  type="text"
+                  value={editRouteNsfwTiers}
+                  onChange={(e) => setEditRouteNsfwTiers(e.target.value)}
+                  placeholder="explicit, suggestive — sfw | suggestive | explicit | unknown"
+                  className="mt-1 block w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm"
+                  title="When set with slugs, BOTH must match. Tier alone can match without slugs."
+                />
+              </label>
+              <label className="flex items-center gap-2 text-slate-400 text-xs">
+                Route priority (lower = tried first)
+                <input
+                  type="number"
+                  min={0}
+                  max={9999}
+                  value={editRoutePriority}
+                  onChange={(e) => setEditRoutePriority(Number(e.target.value))}
+                  className="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
+                />
+              </label>
             </div>
             {updatePool.isError && (
               <p className="text-red-300 text-sm mb-2">{updatePool.error?.message}</p>
@@ -477,6 +561,7 @@ export function ContentPools() {
             <tr>
               <th className="text-left p-3">ID</th>
               <th className="text-left p-3">Name</th>
+              <th className="text-left p-3">Route</th>
               <th className="text-left p-3">Channel ID</th>
               <th className="text-left p-3">Queued</th>
               <th className="text-left p-3">Album size</th>
@@ -488,21 +573,21 @@ export function ContentPools() {
           <tbody>
             {poolsPending && !pools.length ? (
               <tr>
-                <td colSpan={8} className="p-4 text-slate-500">
+                <td colSpan={9} className="p-4 text-slate-500">
                   Loading pools…
                 </td>
               </tr>
             ) : null}
             {!poolsPending && poolsError && !pools.length ? (
               <tr>
-                <td colSpan={8} className="p-4 text-red-300/90">
+                <td colSpan={9} className="p-4 text-red-300/90">
                   Pools list unavailable — fix the error above or check the backend.
                 </td>
               </tr>
             ) : null}
             {!poolsPending && !poolsError && !pools.length ? (
               <tr>
-                <td colSpan={8} className="p-4 text-slate-500">
+                <td colSpan={9} className="p-4 text-slate-500">
                   No pools yet — create one in the form above (requires at least one channel).
                 </td>
               </tr>
@@ -516,6 +601,26 @@ export function ContentPools() {
               >
                 <td className="p-3">{String(p.id)}</td>
                 <td className="p-3">{String(p.name)}</td>
+                <td
+                  className="p-3 text-xs text-slate-400 max-w-[220px] align-top"
+                  title={[
+                    p.route_match_tag_slugs ? `tags: ${p.route_match_tag_slugs}` : "",
+                    p.route_nsfw_tiers ? `tiers: ${p.route_nsfw_tiers}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join("\n")}
+                >
+                  {p.route_match_tag_slugs ? (
+                    <div className="truncate">{String(p.route_match_tag_slugs)}</div>
+                  ) : null}
+                  {p.route_nsfw_tiers ? (
+                    <div className="text-amber-200/80 truncate">{String(p.route_nsfw_tiers)}</div>
+                  ) : null}
+                  {!p.route_match_tag_slugs && !p.route_nsfw_tiers ? "—" : null}
+                  {p.route_priority != null && Number(p.route_priority) !== 100 ? (
+                    <div className="text-slate-500">pri {String(p.route_priority)}</div>
+                  ) : null}
+                </td>
                 <td className="p-3">{String(p.channel_id)}</td>
                 <td className="p-3">
                   <span className={Number(p.approved_count ?? 0) > 0 ? "text-cyan-300" : "text-slate-500"}>

@@ -183,6 +183,17 @@ export const api = {
       }
       return { updated: total };
     },
+    /** Queue Celery: OpenAI vision tags against /tags catalog (photos; skips video in worker). */
+    queueAutoTagLlm: (mediaId: number) =>
+      fetchApi<{ queued: boolean; media_id: number; task_id?: string }>(
+        `/media/${mediaId}/auto-tag-llm`,
+        { method: "POST" }
+      ),
+    bulkQueueAutoTagLlm: (ids: number[]) =>
+      fetchApi<{ queued: number; task_ids?: string[]; error?: string }>(`/media/bulk/auto-tag-llm`, {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
     thumbnailUrl: (id: number) => `${API_BASE}/media/${id}/thumbnail`,
     /** Full bytes (Telegram download or URL proxy) — use in lightbox / video src. */
     fileUrl: (id: number) => `${API_BASE}/media/${id}/file`,
@@ -209,6 +220,9 @@ export const api = {
       interval_minutes?: number;
       auto_post_enabled?: boolean;
       randomize_queue?: boolean;
+      route_match_tag_slugs?: string | null;
+      route_nsfw_tiers?: string | null;
+      route_priority?: number;
     }) => fetchApi<Record<string, unknown>>("/pools", { method: "POST", body: JSON.stringify(body) }),
     update: (
       id: number,
@@ -219,11 +233,27 @@ export const api = {
         interval_minutes: number;
         auto_post_enabled: boolean;
         randomize_queue: boolean;
+        route_match_tag_slugs: string | null;
+        route_nsfw_tiers: string | null;
+        route_priority: number;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/pools/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     deletePool: (id: number) =>
       fetchApi<{ deleted: number }>(`/pools/${id}`, { method: "DELETE" }),
+    suggestAlbum: (
+      poolId: number,
+      opts?: { seed_media_id?: number; limit?: number; status?: string }
+    ) => {
+      const q = new URLSearchParams();
+      if (opts?.seed_media_id != null) q.set("seed_media_id", String(opts.seed_media_id));
+      if (opts?.limit != null) q.set("limit", String(opts.limit));
+      if (opts?.status) q.set("status", opts.status);
+      const qs = q.toString();
+      return fetchApi<{ pool_id: number; media_ids: number[]; seed_media_id?: number | null; error?: string }>(
+        `/pools/${poolId}/suggest-album${qs ? `?${qs}` : ""}`
+      );
+    },
   },
   forum: {
     postAlbum: (body: {
@@ -469,6 +499,7 @@ export const api = {
       description?: string;
       is_active?: boolean;
       product_type?: string;
+      bot_section?: string;
       /** @deprecated use promo_image_urls — kept for older callers */
       promo_image_url?: string;
       /** Up to 5 HTTPS URLs for Telegram promo album + invoice (first image on invoice). */
@@ -489,6 +520,7 @@ export const api = {
         description: string | null;
         is_active: boolean;
         product_type: string;
+        bot_section: string;
         promo_image_url: string | null;
         promo_image_urls: string[] | null;
         description_variations: string[] | null;
@@ -586,6 +618,8 @@ export const api = {
         album_order_mode?: "static" | "shuffle" | "carousel" | null;
         send_silent?: boolean | null;
         pin_after_send?: boolean | null;
+        /** Clear auto-pause after repeated send failures (same as Post now). */
+        clear_auto_pause?: boolean;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/scheduled-posts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

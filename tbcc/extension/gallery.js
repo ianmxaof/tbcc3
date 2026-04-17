@@ -30,6 +30,8 @@ const STORAGE_SELECTION = "tbccSelectionUrls";
 const STORAGE_UI_STATE = "tbcc_gallery_ui_state";
 /** Comma-free list of tag display names to merge onto media after pool Send */
 const STORAGE_SEND_TAGS = "tbccGallerySendTags";
+/** Per-URL manual crop, blur regions, text overlays (gallery session). */
+const STORAGE_IMAGE_EDITS = "tbcc_gallery_image_edits";
 /** TBCC Lite: max items per send batch (Pro = unlimited). */
 const TBCC_LITE_BATCH_CAP = 20;
 
@@ -48,6 +50,7 @@ let settings = {
   autoRefresh: true,
   cropBottomEnabled: false,
   cropBottomPercent: 8,
+  cropInsetMode: "all",
   /** Capture: include resource-timing images on non–OnlyFans pages (more URLs). */
   resourceTimingAllImages: false,
   /** Delay before running capture (ms) so lazy images can load; 0 = off. */
@@ -78,8 +81,6 @@ const selectionChip = document.getElementById("selectionChip");
 const btnGalleryHelp = document.getElementById("btnGalleryHelp");
 const btnOpenCaptureSettings = document.getElementById("btnOpenCaptureSettings");
 const galleryActionBar = document.getElementById("galleryActionBar");
-const btnOverflow = document.getElementById("btnOverflow");
-const overflowMenu = document.getElementById("overflowMenu");
 const actionBarSubtitle = document.getElementById("actionBarSubtitle");
 const btnTelegramSheetOpen = document.getElementById("btnTelegramSheetOpen");
 const btnTelegramSheetDone = document.getElementById("btnTelegramSheetDone");
@@ -123,6 +124,20 @@ const btnToggleOverlay = document.getElementById("btnToggleOverlay");
 const btnSelectAllOnPage = document.getElementById("btnSelectAllOnPage");
 const cropBottomEnabled = document.getElementById("cropBottomEnabled");
 const cropBottomPercent = document.getElementById("cropBottomPercent");
+const cropInsetMode = document.getElementById("cropInsetMode");
+const cropToolMode = document.getElementById("cropToolMode");
+const cropTextInput = document.getElementById("cropTextInput");
+const cropTextFont = document.getElementById("cropTextFont");
+const cropTextColor = document.getElementById("cropTextColor");
+const cropTextToolRow = document.getElementById("cropTextToolRow");
+const btnCropClearImage = document.getElementById("btnCropClearImage");
+const btnCropClearSelected = document.getElementById("btnCropClearSelected");
+const cropStudioThumbs = document.getElementById("cropStudioThumbs");
+const cropStudioEmptyHint = document.getElementById("cropStudioEmptyHint");
+const cropPreviewShell = document.getElementById("cropPreviewShell");
+const cropPreviewFrame = document.getElementById("cropPreviewFrame");
+const cropPreviewImg = document.getElementById("cropPreviewImg");
+const cropOverlayCanvas = document.getElementById("cropOverlayCanvas");
 const galleryScanStrip = document.getElementById("galleryScanStrip");
 const galleryScanFill = document.getElementById("galleryScanFill");
 const galleryScanLabel = document.getElementById("galleryScanLabel");
@@ -141,6 +156,10 @@ const btnTagsClear = document.getElementById("btnTagsClear");
 let tagCatalog = [];
 /** Ordered display names for tags applied on next pool Send */
 let gallerySendTags = [];
+/** url → { manualCrop?, blurs?, texts? } for export pipeline */
+let imageEdits = {};
+let cropStudioActiveUrl = null;
+let cropStudioDrag = null;
 
 /** Same caption box as Telegram post — also attached to each album sent to Saved Messages. */
 function getAlbumCaptionForSend() {
@@ -832,6 +851,12 @@ function showLoading(show) {
   if (loadingEl) loadingEl.classList.toggle("hidden", !show);
 }
 
+function syncPoolSelectTooltip() {
+  if (!poolSelect) return;
+  const opt = poolSelect.selectedOptions && poolSelect.selectedOptions[0];
+  poolSelect.title = opt ? "Pool: " + (opt.textContent || "") : "Pool";
+}
+
 async function loadPools() {
   try {
     const r = await fetch(API_BASE + "/pools");
@@ -846,6 +871,7 @@ async function loadPools() {
       });
       const { tbccPoolId } = await chrome.storage.local.get("tbccPoolId");
       if (tbccPoolId != null) poolSelect.value = String(tbccPoolId);
+      syncPoolSelectTooltip();
     }
   } catch (_) {}
 }
@@ -1523,6 +1549,7 @@ function renderGrid() {
       img.loading = "lazy";
       img.referrerPolicy = "no-referrer";
       img.src = item.url;
+      applyInsetPreviewStyle(img, item.url);
       img.onload = () => {
         if (img.naturalWidth && img.naturalHeight) {
           dimsEl.textContent = `${img.naturalWidth}×${img.naturalHeight}`;
@@ -1590,6 +1617,8 @@ function updateCountAndSend() {
   updateForumCheckboxLabel();
   updateActionBarVisibility();
   updateActionBarSubtitle();
+  syncCropOverflowLabel();
+  if (cropPopover && cropPopover.classList.contains("visible")) initCropStudioPanel();
   persistSelection();
 }
 
@@ -1603,8 +1632,233 @@ function filenameFromUrl(url) {
   }
 }
 
-function shouldApplyBottomCrop() {
+/** Trim pct% off left, right, top, and bottom (each edge), after any manual crop step. */
+function shouldApplyPercentInsetCrop() {
   return !!settings.cropBottomEnabled && Number(settings.cropBottomPercent) > 0;
+}
+
+function currentInsetPercent() {
+  return Math.max(0, Math.min(49, Number(settings.cropBottomPercent) || 0));
+}
+
+function currentInsetMode() {
+  const m = String(settings.cropInsetMode || "all").toLowerCase();
+  return m === "top" || m === "right" || m === "bottom" || m === "left" ? m : "all";
+}
+
+function currentInsetPercents() {
+  const p = currentInsetPercent();
+  const mode = currentInsetMode();
+  if (mode === "top") return { top: p, right: 0, bottom: 0, left: 0 };
+  if (mode === "right") return { top: 0, right: p, bottom: 0, left: 0 };
+  if (mode === "bottom") return { top: 0, right: 0, bottom: p, left: 0 };
+  if (mode === "left") return { top: 0, right: 0, bottom: 0, left: p };
+  return { top: p, right: p, bottom: p, left: p };
+}
+
+function applyInsetPreviewStyle(imgEl, url) {
+  if (!imgEl) return;
+  imgEl.style.removeProperty("clip-path");
+  imgEl.style.removeProperty("transform");
+  imgEl.style.removeProperty("transform-origin");
+  if (!shouldApplyImagePipelineForUrl(url)) return;
+  const inset = currentInsetPercents();
+  const active = inset.top + inset.right + inset.bottom + inset.left;
+  if (active <= 0) return;
+  const scaleX = 1 / Math.max(0.02, 1 - (inset.left + inset.right) / 100);
+  const scaleY = 1 / Math.max(0.02, 1 - (inset.top + inset.bottom) / 100);
+  imgEl.style.clipPath = `inset(${inset.top}% ${inset.right}% ${inset.bottom}% ${inset.left}%)`;
+  imgEl.style.transform = `scale(${scaleX.toFixed(4)}, ${scaleY.toFixed(4)})`;
+  imgEl.style.transformOrigin = "center center";
+}
+
+function editsHasWork(e) {
+  if (!e || typeof e !== "object") return false;
+  if (e.manualCrop && typeof e.manualCrop === "object") {
+    const m = e.manualCrop;
+    if (Number(m.w) > 0.01 && Number(m.h) > 0.01) return true;
+  }
+  if (Array.isArray(e.blurs) && e.blurs.length) return true;
+  if (Array.isArray(e.texts) && e.texts.length) return true;
+  return false;
+}
+
+function getImageEdits(url) {
+  if (!url) return null;
+  return imageEdits[url] || null;
+}
+
+function shouldApplyImagePipelineForUrl(url) {
+  return shouldApplyPercentInsetCrop() || editsHasWork(getImageEdits(url));
+}
+
+function globalImagePipelineActive() {
+  if (shouldApplyPercentInsetCrop()) return true;
+  for (const k of Object.keys(imageEdits)) {
+    if (editsHasWork(imageEdits[k])) return true;
+  }
+  return false;
+}
+
+function syncCropOverflowLabel() {
+  if (!btnCropOverflow) return;
+  const on = globalImagePipelineActive();
+  btnCropOverflow.textContent = "\u2702";
+  btnCropOverflow.classList.toggle("tbcc-tool-active", on);
+  btnCropOverflow.title = on ? "Crop and watermarks (edits active)" : "Crop and watermarks";
+}
+
+function normManualCrop(m) {
+  if (!m || typeof m !== "object") return null;
+  let x = Number(m.x),
+    y = Number(m.y),
+    w = Number(m.w),
+    h = Number(m.h);
+  if (![x, y, w, h].every((n) => Number.isFinite(n))) return null;
+  x = Math.max(0, Math.min(1, x));
+  y = Math.max(0, Math.min(1, y));
+  w = Math.max(0.02, Math.min(1, w));
+  h = Math.max(0.02, Math.min(1, h));
+  if (x + w > 1) w = 1 - x;
+  if (y + h > 1) h = 1 - y;
+  return { x, y, w, h };
+}
+
+function tbccBlurRect(ctx, cw, ch, bx, by, bw, bh) {
+  bx = Math.max(0, Math.floor(bx));
+  by = Math.max(0, Math.floor(by));
+  bw = Math.max(1, Math.floor(bw));
+  bh = Math.max(1, Math.floor(bh));
+  bw = Math.min(bw, cw - bx);
+  bh = Math.min(bh, ch - by);
+  const temp = document.createElement("canvas");
+  temp.width = bw;
+  temp.height = bh;
+  const tctx = temp.getContext("2d");
+  tctx.drawImage(ctx.canvas, bx, by, bw, bh, 0, 0, bw, bh);
+  const blurCanvas = document.createElement("canvas");
+  blurCanvas.width = bw;
+  blurCanvas.height = bh;
+  const bctx = blurCanvas.getContext("2d");
+  bctx.filter = "blur(14px)";
+  bctx.drawImage(temp, 0, 0);
+  ctx.drawImage(blurCanvas, bx, by);
+}
+
+/**
+ * Optional same inset % on all four edges, then manual crop / blur / text — send, saved batch, ZIP, download.
+ */
+async function applyImagePipeline(blob, url) {
+  const edits = getImageEdits(url);
+  const wantInset = shouldApplyPercentInsetCrop();
+  if (!wantInset && !editsHasWork(edits)) return blob;
+
+  try {
+    const bmp = await createImageBitmap(blob);
+    try {
+      const w0 = bmp.width;
+      const h0 = bmp.height;
+      const mc = edits ? normManualCrop(edits.manualCrop) : null;
+      let sx = 0,
+        sy = 0,
+        sw = w0,
+        sh = h0;
+      if (mc) {
+        sx = Math.floor(mc.x * w0);
+        sy = Math.floor(mc.y * h0);
+        sw = Math.max(1, Math.floor(mc.w * w0));
+        sh = Math.max(1, Math.floor(mc.h * h0));
+        sx = Math.min(sx, w0 - 1);
+        sy = Math.min(sy, h0 - 1);
+        sw = Math.min(sw, w0 - sx);
+        sh = Math.min(sh, h0 - sy);
+      }
+
+      const c1 = document.createElement("canvas");
+      c1.width = sw;
+      c1.height = sh;
+      const ctx1 = c1.getContext("2d");
+      ctx1.drawImage(bmp, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      let offX = 0,
+        offY = 0,
+        keepW = sw,
+        keepH = sh;
+      if (wantInset) {
+        const inset = currentInsetPercents();
+        const offL = Math.floor((sw * inset.left) / 100);
+        const offR = Math.floor((sw * inset.right) / 100);
+        const offT = Math.floor((sh * inset.top) / 100);
+        const offB = Math.floor((sh * inset.bottom) / 100);
+        offX = offL;
+        offY = offT;
+        keepW = Math.max(1, sw - offL - offR);
+        keepH = Math.max(1, sh - offT - offB);
+      }
+
+      const c2 = document.createElement("canvas");
+      c2.width = keepW;
+      c2.height = keepH;
+      const ctx2 = c2.getContext("2d");
+      ctx2.drawImage(c1, offX, offY, keepW, keepH, 0, 0, keepW, keepH);
+
+      const mapOriginalNormRectToOutput = (nx, ny, nw, nh) => {
+        let ox1 = nx * w0,
+          oy1 = ny * h0,
+          ox2 = (nx + nw) * w0,
+          oy2 = (ny + nh) * h0;
+        ox1 = Math.max(ox1, sx);
+        oy1 = Math.max(oy1, sy);
+        ox2 = Math.min(ox2, sx + sw);
+        oy2 = Math.min(oy2, sy + sh);
+        if (ox2 <= ox1 || oy2 <= oy1) return null;
+        let c1x1 = ox1 - sx,
+          c1y1 = oy1 - sy,
+          c1x2 = ox2 - sx,
+          c1y2 = oy2 - sy;
+        c1x1 = Math.max(c1x1, offX);
+        c1y1 = Math.max(c1y1, offY);
+        c1x2 = Math.min(c1x2, offX + keepW);
+        c1y2 = Math.min(c1y2, offY + keepH);
+        if (c1x2 <= c1x1 || c1y2 <= c1y1) return null;
+        return { x: c1x1 - offX, y: c1y1 - offY, w: c1x2 - c1x1, h: c1y2 - c1y1 };
+      };
+
+      const blurs = edits && Array.isArray(edits.blurs) ? edits.blurs : [];
+      for (const br of blurs) {
+        const r = mapOriginalNormRectToOutput(Number(br.x), Number(br.y), Number(br.w), Number(br.h));
+        if (!r || r.w < 2 || r.h < 2) continue;
+        tbccBlurRect(ctx2, keepW, keepH, r.x, r.y, r.w, r.h);
+      }
+
+      const texts = edits && Array.isArray(edits.texts) ? edits.texts : [];
+      for (const t of texts) {
+        const tx = Number(t.x),
+          ty = Number(t.y);
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) continue;
+        const px = tx * w0 - sx - offX;
+        const py = ty * h0 - sy - offY;
+        if (px < -8 || py < -8 || px > keepW + 8 || py > keepH + 8) continue;
+        const fontPx = Math.max(8, Math.min(160, Number(t.fontPx) || 18));
+        ctx2.font = `bold ${fontPx}px sans-serif`;
+        ctx2.fillStyle = String(t.color || "#ffffff");
+        ctx2.shadowColor = "rgba(0,0,0,0.85)";
+        ctx2.shadowBlur = 4;
+        ctx2.shadowOffsetX = 1;
+        ctx2.shadowOffsetY = 1;
+        const txt = String(t.text || "").slice(0, 200);
+        ctx2.fillText(txt, px, py);
+        ctx2.shadowBlur = 0;
+      }
+
+      const out = await new Promise((res) => c2.toBlob((b) => res(b), "image/jpeg", 0.92));
+      return out || blob;
+    } finally {
+      bmp.close();
+    }
+  } catch (_) {
+    return blob;
+  }
 }
 
 function isImageItem(it) {
@@ -1666,12 +1920,33 @@ async function getBlobAndNameForZipItem(it, idx) {
   if (it.file) {
     const raw = (it.name || "file").replace(/[^\w.\-]+/g, "_");
     const safe = raw || "file";
-    return { filename: pad + "_" + safe, blob: it.file };
+    let blob = it.file;
+    if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+      try {
+        blob = await applyImagePipeline(
+          new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" }),
+          it.url
+        );
+      } catch (_) {}
+    }
+    const nameOut =
+      isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)
+        ? /\.(jpe?g)$/i.test(safe)
+          ? safe
+          : (safe.replace(/\.[^.]+$/, "") || "file") + ".jpg"
+        : safe;
+    return { filename: pad + "_" + nameOut, blob };
   }
   if (it.url && it.url.startsWith("blob:")) {
     const r = await fetch(it.url);
-    const blob = await r.blob();
-    return { filename: pad + "_media", blob };
+    let blob = await r.blob();
+    if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+      try {
+        blob = await applyImagePipeline(blob, it.url);
+      } catch (_) {}
+    }
+    const ext = isImageItem(it) && shouldApplyImagePipelineForUrl(it.url) ? ".jpg" : "";
+    return { filename: pad + "_media" + ext, blob };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
     if (
@@ -1684,8 +1959,17 @@ async function getBlobAndNameForZipItem(it, idx) {
       );
     }
     const url = normalizeTbccMediaUrlForImport(it.url);
-    const blob = await fetchUrlBytesToBlob(url);
+    let blob = await fetchUrlBytesToBlob(url);
     if (!blob) throw new Error("Could not fetch: " + String(it.url).slice(0, 96));
+    if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+      try {
+        blob = await applyImagePipeline(blob, it.url);
+      } catch (_) {}
+      return {
+        filename: (pad + "_" + filenameForCropUrl(it.url)).replace(/[^\w.\-]+/g, "_"),
+        blob,
+      };
+    }
     const base = filenameFromUrl(it.url);
     const ext = it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
     const hasExt = /\.\w{2,5}$/i.test(base);
@@ -1695,52 +1979,207 @@ async function getBlobAndNameForZipItem(it, idx) {
   throw new Error("Unsupported item for ZIP");
 }
 
-async function cropBottomStripFromBlob(blob) {
-  if (!shouldApplyBottomCrop()) return blob;
-  const pct = Math.min(50, Math.max(0, Number(settings.cropBottomPercent) || 0));
-  if (pct <= 0) return blob;
-  const frac = pct / 100;
-  try {
-    const bmp = await createImageBitmap(blob);
-    try {
-      const w = bmp.width;
-      const h = bmp.height;
-      const keepH = Math.max(1, Math.floor(h * (1 - frac)));
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = keepH;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(bmp, 0, 0, w, keepH, 0, 0, w, keepH);
-      const out = await new Promise((res) => canvas.toBlob((b) => res(b), "image/jpeg", 0.92));
-      return out || blob;
-    } finally {
-      bmp.close();
-    }
-  } catch (_) {
-    return blob;
-  }
-}
-
 function syncCropUiFromSettings() {
   if (cropBottomEnabled) cropBottomEnabled.checked = !!settings.cropBottomEnabled;
   if (cropBottomPercent) {
-    const v = Math.max(0, Math.min(50, Number(settings.cropBottomPercent) || 8));
+    const v = Math.max(0, Math.min(49, Number(settings.cropBottomPercent) || 8));
     cropBottomPercent.value = String(v);
   }
+  if (cropInsetMode) cropInsetMode.value = currentInsetMode();
 }
 
 function persistCropSettings() {
   settings.cropBottomEnabled = !!(cropBottomEnabled && cropBottomEnabled.checked);
   let v = cropBottomPercent ? parseInt(cropBottomPercent.value, 10) : 8;
   if (isNaN(v)) v = 8;
-  settings.cropBottomPercent = Math.max(0, Math.min(50, v));
+  settings.cropBottomPercent = Math.max(0, Math.min(49, v));
+  if (cropInsetMode) settings.cropInsetMode = cropInsetMode.value || "all";
+  settings.cropInsetMode = currentInsetMode();
   if (cropBottomPercent) cropBottomPercent.value = String(settings.cropBottomPercent);
   chrome.storage.local.set({ [STORAGE_SETTINGS]: settings });
+  syncCropOverflowLabel();
+  if (cropStudioActiveUrl && cropPreviewImg) {
+    applyInsetPreviewStyle(cropPreviewImg, cropStudioActiveUrl);
+  }
+  renderGrid();
+}
+
+function persistImageEdits() {
+  chrome.storage.local.set({ [STORAGE_IMAGE_EDITS]: imageEdits });
+  syncCropOverflowLabel();
+}
+
+function ensureImageEdit(url) {
+  if (!url) return null;
+  if (!imageEdits[url]) imageEdits[url] = { blurs: [], texts: [] };
+  if (!Array.isArray(imageEdits[url].blurs)) imageEdits[url].blurs = [];
+  if (!Array.isArray(imageEdits[url].texts)) imageEdits[url].texts = [];
+  return imageEdits[url];
+}
+
+function getCropStudioItems() {
+  return getFilteredList().filter((i) => selectedUrls.has(i.url) && isImageItem(i));
+}
+
+function layoutCropOverlayCanvas() {
+  if (!cropPreviewImg || !cropOverlayCanvas || !cropPreviewFrame) return;
+  const w = cropPreviewImg.clientWidth;
+  const h = cropPreviewImg.clientHeight;
+  if (w < 2 || h < 2) return;
+  cropOverlayCanvas.style.width = w + "px";
+  cropOverlayCanvas.style.height = h + "px";
+  cropOverlayCanvas.width = Math.round(w);
+  cropOverlayCanvas.height = Math.round(h);
+}
+
+function drawCropStudioOverlay() {
+  if (!cropOverlayCanvas) return;
+  const ctx = cropOverlayCanvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, cropOverlayCanvas.width, cropOverlayCanvas.height);
+  const W = cropOverlayCanvas.width;
+  const H = cropOverlayCanvas.height;
+  if (W < 2 || H < 2) return;
+  const ed = cropStudioActiveUrl ? getImageEdits(cropStudioActiveUrl) : null;
+  if (ed && ed.manualCrop) {
+    const m = ed.manualCrop;
+    ctx.strokeStyle = "#89b4fa";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(m.x * W, m.y * H, m.w * W, m.h * H);
+    ctx.setLineDash([]);
+  }
+  if (ed && ed.blurs) {
+    ctx.strokeStyle = "#fab387";
+    ctx.lineWidth = 2;
+    for (const b of ed.blurs) {
+      ctx.strokeRect(b.x * W, b.y * H, b.w * W, b.h * H);
+    }
+  }
+  if (ed && ed.texts) {
+    ctx.fillStyle = "rgba(205, 214, 244, 0.9)";
+    ctx.font = "12px sans-serif";
+    let i = 0;
+    for (const t of ed.texts) {
+      const tx = t.x * W;
+      const ty = t.y * H;
+      ctx.fillText(String(t.text || "").slice(0, 24) + (String(t.text || "").length > 24 ? "…" : ""), tx, ty);
+      i++;
+    }
+  }
+  if (cropStudioDrag && cropStudioDrag.cur) {
+    const { x0, y0, x1, y1 } = cropStudioDrag.cur;
+    const xa = Math.min(x0, x1);
+    const ya = Math.min(y0, y1);
+    const xb = Math.max(x0, x1);
+    const yb = Math.max(y0, y1);
+    ctx.strokeStyle = "#cba6f7";
+    ctx.setLineDash([4, 4]);
+    ctx.strokeRect(xa, ya, xb - xa, yb - ya);
+    ctx.setLineDash([]);
+  }
+}
+
+function refreshCropStudioThumbs() {
+  if (!cropStudioThumbs) return;
+  cropStudioThumbs.innerHTML = "";
+  const items = getCropStudioItems();
+  if (cropStudioEmptyHint) cropStudioEmptyHint.hidden = items.length > 0;
+  if (!items.length) {
+    cropStudioActiveUrl = null;
+    if (cropPreviewImg) cropPreviewImg.removeAttribute("src");
+    drawCropStudioOverlay();
+    return;
+  }
+  if (!cropStudioActiveUrl || !items.some((i) => i.url === cropStudioActiveUrl)) {
+    cropStudioActiveUrl = items[0].url;
+  }
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "crop-studio-thumb" + (it.url === cropStudioActiveUrl ? " active" : "");
+    b.title = (it.name || it.url || "").slice(0, 80);
+    const im = document.createElement("img");
+    im.alt = "";
+    im.src = it.url;
+    applyInsetPreviewStyle(im, it.url);
+    b.appendChild(im);
+    if (editsHasWork(getImageEdits(it.url))) {
+      const dot = document.createElement("span");
+      dot.className = "crop-studio-thumb-badge";
+      b.appendChild(dot);
+    }
+    b.addEventListener("click", () => {
+      cropStudioActiveUrl = it.url;
+      refreshCropStudioThumbs();
+      loadCropStudioPreview(it.url);
+    });
+    cropStudioThumbs.appendChild(b);
+  }
+  loadCropStudioPreview(cropStudioActiveUrl);
+}
+
+function loadCropStudioPreview(url) {
+  if (!cropPreviewImg || !url) return;
+  cropPreviewImg.onload = () => {
+    applyInsetPreviewStyle(cropPreviewImg, url);
+    layoutCropOverlayCanvas();
+    drawCropStudioOverlay();
+  };
+  cropPreviewImg.src = url;
+  applyInsetPreviewStyle(cropPreviewImg, url);
+}
+
+function cropCanvasPointer(ev) {
+  if (!cropOverlayCanvas) return { x: 0, y: 0 };
+  const rect = cropOverlayCanvas.getBoundingClientRect();
+  const rw = rect.width || 1;
+  const rh = rect.height || 1;
+  return {
+    x: ((ev.clientX - rect.left) * cropOverlayCanvas.width) / rw,
+    y: ((ev.clientY - rect.top) * cropOverlayCanvas.height) / rh,
+  };
+}
+
+function commitCropStudioRect(tool, x0, y0, x1, y1) {
+  if (!cropStudioActiveUrl || !cropOverlayCanvas) return;
+  const W = cropOverlayCanvas.width;
+  const H = cropOverlayCanvas.height;
+  const xa = Math.max(0, Math.min(W, Math.min(x0, x1)));
+  const ya = Math.max(0, Math.min(H, Math.min(y0, y1)));
+  const xb = Math.max(0, Math.min(W, Math.max(x0, x1)));
+  const yb = Math.max(0, Math.min(H, Math.max(y0, y1)));
+  let nw = (xb - xa) / W;
+  let nh = (yb - ya) / H;
+  let nx = xa / W;
+  let ny = ya / H;
+  if (nw < 0.01 || nh < 0.01) return;
+  const ed = ensureImageEdit(cropStudioActiveUrl);
+  if (tool === "crop") {
+    ed.manualCrop = { x: nx, y: ny, w: nw, h: nh };
+  } else if (tool === "blur") {
+    ed.blurs.push({ x: nx, y: ny, w: nw, h: nh });
+  }
+  persistImageEdits();
+  drawCropStudioOverlay();
+  refreshCropStudioThumbs();
+}
+
+function initCropStudioPanel() {
+  refreshCropStudioThumbs();
+  if (cropTextToolRow && cropToolMode) {
+    cropTextToolRow.style.display = cropToolMode.value === "text" ? "flex" : "none";
+  }
+  syncCropOverflowLabel();
 }
 
 function syncFoldToggleLabel() {
   if (!btnToggleFoldVariants) return;
-  btnToggleFoldVariants.textContent = settings.foldVideoVariants ? "Fold video variants ✓" : "Fold video variants";
+  btnToggleFoldVariants.textContent = "⧉";
+  btnToggleFoldVariants.classList.toggle("tbcc-tool-active", !!settings.foldVideoVariants);
+  btnToggleFoldVariants.title = settings.foldVideoVariants
+    ? "Fold duplicate video resolutions (on)"
+    : "Fold duplicate video resolutions (off)";
 }
 
 function saveGalleryUiState() {
@@ -1845,6 +2284,7 @@ function setCropPopoverOpen(open) {
   if (!cropPopover) return;
   cropPopover.classList.toggle("visible", !!open);
   cropPopover.setAttribute("aria-hidden", open ? "false" : "true");
+  if (open) initCropStudioPanel();
 }
 
 function updateActionBarSubtitle() {
@@ -1991,8 +2431,18 @@ async function downloadSelected() {
     const idx = String(i + 1).padStart(2, "0");
     try {
       if (it.file) {
-        const blobUrl = URL.createObjectURL(it.file);
-        const name = (it.name || "file").replace(/[^\w.\-]+/g, "_");
+        let dlBlob = it.file;
+        let name = (it.name || "file").replace(/[^\w.\-]+/g, "_");
+        if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+          try {
+            dlBlob = await applyImagePipeline(
+              new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" }),
+              it.url
+            );
+            name = /\.(jpe?g)$/i.test(name) ? name : (name.replace(/\.[^.]+$/, "") || "file") + ".jpg";
+          } catch (_) {}
+        }
+        const blobUrl = URL.createObjectURL(dlBlob);
         await new Promise((resolve) => {
           chrome.downloads.download({ url: blobUrl, filename: "tbcc/" + name, saveAs: false }, () => {
             URL.revokeObjectURL(blobUrl);
@@ -2009,20 +2459,48 @@ async function downloadSelected() {
             "That URL is a page (HTML), not a video file. The extension needs a direct .mp4 (or similar) link — or use JDownloader / your backend to resolve the stream."
           );
         }
-        const base = filenameFromUrl(it.url);
-        const ext = it.mediaType === "video" || (it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
-        const hasExt = /\.\w{2,5}$/i.test(base);
-        const filename = "tbcc/" + idx + "_" + (hasExt ? base : base + ext);
-        await new Promise((resolve, reject) => {
-          chrome.downloads.download({ url: it.url, filename, saveAs: false }, () => {
-            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-            else resolve();
+        if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+          const raw = await fetchUrlBytesToBlob(it.url);
+          if (!raw || !raw.size) throw new Error("Could not fetch image for processing");
+          const out = await applyImagePipeline(raw, it.url);
+          const filename = "tbcc/" + idx + "_" + filenameForCropUrl(it.url);
+          const blobUrl = URL.createObjectURL(out);
+          await new Promise((resolve, reject) => {
+            chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
+              URL.revokeObjectURL(blobUrl);
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve();
+            });
           });
-        });
+        } else {
+          const base = filenameFromUrl(it.url);
+          const ext = it.mediaType === "video" || (it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
+          const hasExt = /\.\w{2,5}$/i.test(base);
+          const filename = "tbcc/" + idx + "_" + (hasExt ? base : base + ext);
+          await new Promise((resolve, reject) => {
+            chrome.downloads.download({ url: it.url, filename, saveAs: false }, () => {
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve();
+            });
+          });
+        }
       } else if (it.url && it.url.startsWith("blob:")) {
-        await new Promise((resolve) => {
-          chrome.downloads.download({ url: it.url, filename: "tbcc/" + idx + "_media", saveAs: false }, resolve);
-        });
+        if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+          const r = await fetch(it.url);
+          let b = await r.blob();
+          b = await applyImagePipeline(b, it.url);
+          const blobUrl = URL.createObjectURL(b);
+          await new Promise((resolve) => {
+            chrome.downloads.download({ url: blobUrl, filename: "tbcc/" + idx + "_media.jpg", saveAs: false }, () => {
+              URL.revokeObjectURL(blobUrl);
+              resolve();
+            });
+          });
+        } else {
+          await new Promise((resolve) => {
+            chrome.downloads.download({ url: it.url, filename: "tbcc/" + idx + "_media", saveAs: false }, resolve);
+          });
+        }
       }
       n++;
     } catch (e) {
@@ -2056,7 +2534,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (nv && typeof nv === "object") {
       settings = { ...settings, ...nv };
       syncCropUiFromSettings();
+      syncCropOverflowLabel();
     }
+  }
+  if (changes[STORAGE_IMAGE_EDITS]) {
+    const nv = changes[STORAGE_IMAGE_EDITS].newValue;
+    if (nv && typeof nv === "object" && !Array.isArray(nv)) imageEdits = nv;
+    else imageEdits = {};
+    syncCropOverflowLabel();
   }
   if (changes[STORAGE_SELECTION]) {
     const newVal = changes[STORAGE_SELECTION].newValue || [];
@@ -2151,7 +2636,11 @@ fileInput && fileInput.addEventListener("change", () => {
   fileInput.value = "";
 });
 
-poolSelect && poolSelect.addEventListener("change", () => { if (poolSelect.value) chrome.storage.local.set({ tbccPoolId: parseInt(poolSelect.value, 10) }); });
+poolSelect &&
+  poolSelect.addEventListener("change", () => {
+    syncPoolSelectTooltip();
+    if (poolSelect.value) chrome.storage.local.set({ tbccPoolId: parseInt(poolSelect.value, 10) });
+  });
 
 forumPostEnabled &&
   forumPostEnabled.addEventListener("change", async () => {
@@ -2327,12 +2816,12 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
         for (const it of chunk) {
           let fileToSend = it.file;
           let name = it.name || "media";
-          if (shouldApplyBottomCrop() && isImageItem(it)) {
+          if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
             try {
               const raw = new Blob([await it.file.arrayBuffer()], {
                 type: it.file.type || "application/octet-stream",
               });
-              const cropped = await cropBottomStripFromBlob(raw);
+              const cropped = await applyImagePipeline(raw, it.url);
               fileToSend = cropped;
               name = /\.(jpe?g)$/i.test(name) ? name : (name.replace(/\.[^.]+$/, "") || "media") + ".jpg";
             } catch (_) {}
@@ -2359,9 +2848,10 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
       }
     } else if (g.kind === "plain") {
       /** Backend rejects >100 URLs per JSON body; each chunk still becomes Telegram albums (≤10) server-side. */
-      if (!shouldApplyBottomCrop()) {
-        for (let start = 0; start < g.items.length; start += SAVED_URL_BATCH_MAX) {
-          const slice = g.items.slice(start, start + SAVED_URL_BATCH_MAX);
+      for (let start = 0; start < g.items.length; start += SAVED_URL_BATCH_MAX) {
+        const slice = g.items.slice(start, start + SAVED_URL_BATCH_MAX);
+        const sliceNeedsBytes = slice.some((it) => isImageItem(it) && shouldApplyImagePipelineForUrl(it.url));
+        if (!sliceNeedsBytes) {
           const urls = slice.map((it) => normalizeTbccMediaUrlForImport(it.url));
           try {
             const payload = { urls, pool_id: poolId, saved_only: true };
@@ -2386,10 +2876,7 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
             appendErr(e.message);
             slice.forEach(() => bump());
           }
-        }
-      } else {
-        for (let start = 0; start < g.items.length; start += SAVED_URL_BATCH_MAX) {
-          const slice = g.items.slice(start, start + SAVED_URL_BATCH_MAX);
+        } else {
           let pendingCrops = [];
           const flushCrops = async () => {
             if (!pendingCrops.length) return;
@@ -2415,11 +2902,28 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
             pendingCrops = [];
           };
           for (const it of slice) {
+            if (isImageItem(it) && !shouldApplyImagePipelineForUrl(it.url)) {
+              await flushCrops();
+              try {
+                const data = await importSavedUrlJson([it.url], poolId);
+                if (data.status === "saved_only" && !data.error) {
+                  await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
+                  bump();
+                } else {
+                  appendErr(data.error || "Saved URL import failed");
+                  bump();
+                }
+              } catch (e) {
+                appendErr(e.message);
+                bump();
+              }
+              continue;
+            }
             if (isImageItem(it)) {
               try {
                 const raw = await fetchUrlBytesToBlob(it.url);
                 if (raw && raw.size > 0) {
-                  const cropped = await cropBottomStripFromBlob(raw);
+                  const cropped = await applyImagePipeline(raw, it.url);
                   pendingCrops.push({
                     blob: cropped,
                     name: filenameForCropUrl(it.url),
@@ -2480,7 +2984,7 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
         }
       }
     } else if (g.kind === "session") {
-      if (!shouldApplyBottomCrop()) {
+      if (!g.items.some((it) => isImageItem(it) && shouldApplyImagePipelineForUrl(it.url))) {
         const urls = g.items.map((it) => it.url);
         try {
           const data = await importViaExtensionBytesSavedBatch(urls);
@@ -2524,7 +3028,7 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
             for (const it of chunk) {
               const raw = await fetchUrlBytesToBlob(it.url);
               if (!raw || !raw.size) throw new Error("fetch bytes");
-              const cropped = await cropBottomStripFromBlob(raw);
+              const cropped = await applyImagePipeline(raw, it.url);
               form.append("files", cropped, filenameForCropUrl(it.url));
             }
             appendCaptionToSavedForm(form);
@@ -2594,9 +3098,9 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
             const it = chunk[j];
             const u8 = new Uint8Array(arr);
             let blob = new Blob([u8], { type: "application/octet-stream" });
-            if (shouldApplyBottomCrop() && isImageItem(it)) {
+            if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
               try {
-                blob = await cropBottomStripFromBlob(blob);
+                blob = await applyImagePipeline(blob, it.url);
               } catch (_) {}
             }
             form.append("files", blob, `media_${j}.jpg`);
@@ -2777,10 +3281,10 @@ async function runSendBatch(savedOnly) {
   for (const it of withFile) {
     let uploadBlob = it.file;
     let uploadName = it.name || "media";
-    if (shouldApplyBottomCrop() && isImageItem(it)) {
+    if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
       try {
         const raw = new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" });
-        const cropped = await cropBottomStripFromBlob(raw);
+        const cropped = await applyImagePipeline(raw, it.url);
         uploadBlob = cropped;
         uploadName = /\.(jpe?g)$/i.test(uploadName) ? uploadName : (uploadName.replace(/\.[^.]+$/, "") || "media") + ".jpg";
       } catch (_) {}
@@ -2812,11 +3316,11 @@ async function runSendBatch(savedOnly) {
   const httpPage = fromPage.filter((i) => i.url && /^https?:\/\//i.test(i.url));
   const needBytesByTab = {};
   for (const it of httpPage) {
-    if (shouldApplyBottomCrop() && isImageItem(it)) {
+    if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
       try {
         const raw = await fetchUrlBytesToBlob(it.url);
         if (raw && raw.size > 0) {
-          const cropped = await cropBottomStripFromBlob(raw);
+          const cropped = await applyImagePipeline(raw, it.url);
           const data = await postImportBytes(
             cropped,
             filenameForCropUrl(it.url),
@@ -2899,11 +3403,11 @@ async function runSendBatch(savedOnly) {
     const forTab = [];
     for (const url of urls) {
       const it = urlToItem.get(url);
-      if (shouldApplyBottomCrop() && it && isImageItem(it)) {
+      if (shouldApplyImagePipelineForUrl(url) && it && isImageItem(it)) {
         try {
           const raw = await fetchUrlBytesToBlob(url);
           if (raw && raw.size > 0) {
-            const cropped = await cropBottomStripFromBlob(raw);
+            const cropped = await applyImagePipeline(raw, url);
             const data = await postImportBytes(
               cropped,
               filenameForCropUrl(url),
@@ -3108,26 +3612,85 @@ telegramSheetBackdrop &&
   telegramSheetBackdrop.addEventListener("click", () => {
     setTelegramSheetOpen(false);
   });
-const overflowWrapEl = document.querySelector(".overflow-wrap");
-overflowWrapEl &&
-  overflowWrapEl.addEventListener("click", (e) => {
-    e.stopPropagation();
-  });
-btnOverflow &&
-  btnOverflow.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (overflowMenu) overflowMenu.classList.toggle("visible");
-  });
-document.addEventListener("click", () => {
-  if (overflowMenu) overflowMenu.classList.remove("visible");
-});
 btnCropOverflow &&
   btnCropOverflow.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (overflowMenu) overflowMenu.classList.remove("visible");
     syncCropUiFromSettings();
     setCropPopoverOpen(true);
   });
+cropToolMode &&
+  cropToolMode.addEventListener("change", () => {
+    if (cropTextToolRow) cropTextToolRow.style.display = cropToolMode.value === "text" ? "flex" : "none";
+  });
+btnCropClearImage &&
+  btnCropClearImage.addEventListener("click", () => {
+    if (!cropStudioActiveUrl) return;
+    delete imageEdits[cropStudioActiveUrl];
+    persistImageEdits();
+    refreshCropStudioThumbs();
+    drawCropStudioOverlay();
+  });
+btnCropClearSelected &&
+  btnCropClearSelected.addEventListener("click", () => {
+    for (const it of getCropStudioItems()) {
+      delete imageEdits[it.url];
+    }
+    persistImageEdits();
+    refreshCropStudioThumbs();
+    drawCropStudioOverlay();
+  });
+if (cropOverlayCanvas) {
+  cropOverlayCanvas.addEventListener("pointerdown", (e) => {
+    if (!cropStudioActiveUrl || !cropToolMode) return;
+    const tool = cropToolMode.value;
+    const { x, y } = cropCanvasPointer(e);
+    if (tool === "text") {
+      const txt = cropTextInput && cropTextInput.value.trim();
+      if (!txt) return;
+      const W = cropOverlayCanvas.width;
+      const H = cropOverlayCanvas.height;
+      const ed = ensureImageEdit(cropStudioActiveUrl);
+      const fontPx = cropTextFont ? parseInt(cropTextFont.value, 10) || 20 : 20;
+      const color = cropTextColor && cropTextColor.value ? cropTextColor.value : "#ffffff";
+      ed.texts.push({ x: x / W, y: y / H, text: txt, fontPx, color });
+      persistImageEdits();
+      drawCropStudioOverlay();
+      refreshCropStudioThumbs();
+      return;
+    }
+    cropStudioDrag = { tool, startX: x, startY: y, cur: { x0: x, y0: y, x1: x, y1: y } };
+    cropOverlayCanvas.setPointerCapture(e.pointerId);
+  });
+  cropOverlayCanvas.addEventListener("pointermove", (e) => {
+    if (!cropStudioDrag) return;
+    const { x, y } = cropCanvasPointer(e);
+    cropStudioDrag.cur = { x0: cropStudioDrag.startX, y0: cropStudioDrag.startY, x1: x, y1: y };
+    drawCropStudioOverlay();
+  });
+  cropOverlayCanvas.addEventListener("pointerup", (e) => {
+    if (!cropStudioDrag) return;
+    const { tool, startX, startY, cur } = cropStudioDrag;
+    cropStudioDrag = null;
+    try {
+      cropOverlayCanvas.releasePointerCapture(e.pointerId);
+    } catch (_) {}
+    if (cur && (tool === "crop" || tool === "blur")) {
+      commitCropStudioRect(tool, startX, startY, cur.x1, cur.y1);
+    }
+    drawCropStudioOverlay();
+  });
+  cropOverlayCanvas.addEventListener("pointercancel", () => {
+    cropStudioDrag = null;
+    drawCropStudioOverlay();
+  });
+}
+if (cropPreviewImg && typeof ResizeObserver !== "undefined") {
+  const ro = new ResizeObserver(() => {
+    layoutCropOverlayCanvas();
+    drawCropStudioOverlay();
+  });
+  ro.observe(cropPreviewImg);
+}
 btnCropDone &&
   btnCropDone.addEventListener("click", () => {
     persistCropSettings();
@@ -3140,13 +3703,11 @@ cropPopover &&
 btnAddFilesOverflow &&
   btnAddFilesOverflow.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (overflowMenu) overflowMenu.classList.remove("visible");
     if (fileInput) fileInput.click();
   });
 btnToggleFoldVariants &&
   btnToggleFoldVariants.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (overflowMenu) overflowMenu.classList.remove("visible");
     settings.foldVideoVariants = !settings.foldVideoVariants;
     chrome.storage.local.set({ [STORAGE_SETTINGS]: settings });
     syncFoldToggleLabel();
@@ -3154,6 +3715,8 @@ btnToggleFoldVariants &&
   });
 cropBottomEnabled && cropBottomEnabled.addEventListener("change", () => persistCropSettings());
 cropBottomPercent && cropBottomPercent.addEventListener("change", () => persistCropSettings());
+cropBottomPercent && cropBottomPercent.addEventListener("input", () => persistCropSettings());
+cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSettings());
 
 (async function init() {
   const initStarted = Date.now();
@@ -3162,13 +3725,19 @@ cropBottomPercent && cropBottomPercent.addEventListener("change", () => persistC
     settings = { ...settings, ...s };
     if (settings.cropBottomPercent != null && typeof settings.cropBottomPercent !== "number") {
       const n = parseInt(String(settings.cropBottomPercent), 10);
-      settings.cropBottomPercent = isNaN(n) ? 8 : Math.max(0, Math.min(50, n));
+      settings.cropBottomPercent = isNaN(n) ? 8 : Math.max(0, Math.min(49, n));
     }
     if (typeof settings.cropBottomEnabled !== "boolean") settings.cropBottomEnabled = !!settings.cropBottomEnabled;
+    settings.cropInsetMode = currentInsetMode();
     if (typeof settings.foldVideoVariants !== "boolean") settings.foldVideoVariants = true;
   }
   syncCropUiFromSettings();
   syncFoldToggleLabel();
+  const rawImgEd = await new Promise((r) =>
+    chrome.storage.local.get(STORAGE_IMAGE_EDITS, (o) => r(o[STORAGE_IMAGE_EDITS]))
+  );
+  if (rawImgEd && typeof rawImgEd === "object" && !Array.isArray(rawImgEd)) imageEdits = rawImgEd;
+  syncCropOverflowLabel();
   const uiStored = await new Promise((r) => chrome.storage.local.get(STORAGE_UI_STATE, (o) => r(o[STORAGE_UI_STATE])));
   applyGalleryUiState(uiStored);
   const tagSt = await new Promise((r) => chrome.storage.local.get(STORAGE_SEND_TAGS, (o) => r(o)));
@@ -3236,7 +3805,6 @@ cropBottomPercent && cropBottomPercent.addEventListener("change", () => persistC
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) addLocalFiles(e.dataTransfer.files);
     });
   }
-  overflowMenu && overflowMenu.addEventListener("click", (e) => e.stopPropagation());
   document.querySelector("#filterOverlay .filter-panel")?.addEventListener("click", (e) => e.stopPropagation());
   document.querySelector("#cropPopover .filter-panel")?.addEventListener("click", (e) => e.stopPropagation());
 
@@ -3301,3 +3869,4 @@ cropBottomPercent && cropBottomPercent.addEventListener("change", () => persistC
     visTimer = setTimeout(() => doRefresh(), 300);
   });
 })();
+

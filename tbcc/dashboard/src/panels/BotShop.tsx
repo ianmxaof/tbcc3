@@ -145,6 +145,7 @@ export function BotShop() {
   const [durationDays, setDurationDays] = useState(30);
   const [channelId, setChannelId] = useState<number | "">("");
   const [productType, setProductType] = useState<"subscription" | "bundle">("subscription");
+  const [botSection, setBotSection] = useState<"main" | "loot" | "packs">("main");
   const [isActive, setIsActive] = useState(true);
   const [promoImageUrls, setPromoImageUrls] = useState<string[]>([]);
   /** Set when dashboard upload returns telegram_hint from API */
@@ -168,6 +169,7 @@ export function BotShop() {
   const [editDurationDays, setEditDurationDays] = useState(30);
   const [editChannelId, setEditChannelId] = useState<number | "">("");
   const [editProductType, setEditProductType] = useState<"subscription" | "bundle">("subscription");
+  const [editBotSection, setEditBotSection] = useState<"main" | "loot" | "packs">("main");
   const [editIsActive, setEditIsActive] = useState(true);
   const [editPromoImageUrls, setEditPromoImageUrls] = useState<string[]>([]);
   const [editPromoHintAfterUpload, setEditPromoHintAfterUpload] = useState<string | null>(null);
@@ -188,6 +190,7 @@ export function BotShop() {
         duration_days: durationDays,
         channel_id: channelId === "" ? undefined : channelId,
         product_type: productType,
+        bot_section: botSection,
         is_active: isActive,
         promo_image_urls:
           promoImageUrls.map((s) => s.trim()).filter(Boolean).length > 0
@@ -207,6 +210,7 @@ export function BotShop() {
       setDurationDays(30);
       setChannelId("");
       setProductType("subscription");
+      setBotSection("main");
       setIsActive(true);
       setPromoImageUrls([]);
       setPromoHintAfterUpload(null);
@@ -331,6 +335,8 @@ export function BotShop() {
     setEditDurationDays(Number(p.duration_days ?? 30));
     setEditChannelId(p.channel_id != null ? Number(p.channel_id) : "");
     setEditProductType(((p.product_type as string) || "subscription") === "bundle" ? "bundle" : "subscription");
+    const sec = String(p.bot_section || "main").toLowerCase();
+    setEditBotSection(sec === "loot" || sec === "packs" ? (sec as "loot" | "packs") : "main");
     setEditIsActive(p.is_active !== false);
     setEditPromoImageUrls(promoUrlsFromPlan(p));
     setEditPromoHintAfterUpload(null);
@@ -359,6 +365,7 @@ export function BotShop() {
         duration_days: editDurationDays,
         channel_id: editChannelId === "" ? null : editChannelId,
         product_type: editProductType,
+        bot_section: editBotSection,
         is_active: editIsActive,
         promo_image_urls: editPromoImageUrls.map((s) => s.trim()).filter(Boolean).slice(0, MAX_PROMO_IMAGES),
         tag_ids: editTagIds,
@@ -639,6 +646,18 @@ export function BotShop() {
               <option value="bundle">Bundle (digital pack — bot checkout TBD)</option>
             </select>
           </label>
+          <label className="block">
+            <span className="text-slate-400 text-xs">Payment bot section</span>
+            <select
+              value={botSection}
+              onChange={(e) => setBotSection(e.target.value as "main" | "loot" | "packs")}
+              className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+            >
+              <option value="main">Main (/subscribe)</option>
+              <option value="loot">Loot Room (/loot)</option>
+              <option value="packs">Packs-focused section</option>
+            </select>
+          </label>
           <label className="flex items-center gap-2 mt-6 sm:mt-8">
             <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
             <span className="text-slate-300 text-sm">Active (show in bot)</span>
@@ -664,8 +683,8 @@ export function BotShop() {
         )}
         {justCreatedOk && (
           <p className="mt-4 text-sm text-emerald-200/90 bg-emerald-950/40 border border-emerald-800/50 rounded-lg px-3 py-2">
-            Product added — it should appear in the table below. Subscriptions show in the bot under{" "}
-            <strong>/subscribe</strong> (not under /packs).
+            Product added — it should appear in the table below. In the payment bot, visibility is controlled by{" "}
+            <strong>Product type</strong> + <strong>Payment bot section</strong> (for example /subscribe vs /loot).
           </p>
         )}
         <div className="flex flex-wrap items-center gap-2 mt-4">
@@ -922,6 +941,18 @@ export function BotShop() {
                   <option value="bundle">Bundle (digital pack)</option>
                 </select>
               </label>
+              <label className="block">
+                <span className="text-slate-400 text-xs">Payment bot section</span>
+                <select
+                  value={editBotSection}
+                  onChange={(e) => setEditBotSection(e.target.value as "main" | "loot" | "packs")}
+                  className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                >
+                  <option value="main">Main (/subscribe)</option>
+                  <option value="loot">Loot Room (/loot)</option>
+                  <option value="packs">Packs-focused section</option>
+                </select>
+              </label>
               <label className="flex items-center gap-2 mt-6 sm:mt-8">
                 <input type="checkbox" checked={editIsActive} onChange={(e) => setEditIsActive(e.target.checked)} />
                 <span className="text-slate-300 text-sm">Active (show in bot)</span>
@@ -1078,6 +1109,7 @@ export function BotShop() {
             <tr className="text-left text-slate-300">
               <th className="p-3">Name</th>
               <th className="p-3">Type</th>
+              <th className="p-3">Bot section</th>
               <th className="p-3">⭐</th>
               <th className="p-3">Days</th>
               <th className="p-3">Channel</th>
@@ -1091,7 +1123,7 @@ export function BotShop() {
           <tbody>
             {plansPending && !plans.length && !plansError ? (
               <tr>
-                <td colSpan={10} className="p-4 text-slate-500">
+                <td colSpan={11} className="p-4 text-slate-500">
                   Loading products…
                 </td>
               </tr>
@@ -1108,6 +1140,7 @@ export function BotShop() {
               >
                 <td className="p-3 font-medium">{String(p.name)}</td>
                 <td className="p-3 text-slate-400">{String(p.product_type || "subscription")}</td>
+                <td className="p-3 text-slate-400">{String(p.bot_section || "main")}</td>
                 <td className="p-3">{String(p.price_stars ?? 0)}</td>
                 <td className="p-3">{String(p.duration_days ?? 30)}</td>
                 <td className="p-3 text-slate-400 max-w-[140px] truncate">

@@ -257,6 +257,9 @@ class TelegramStorage:
             from app.services.media_tagging import apply_auto_tags_for_new_media
 
             apply_auto_tags_for_new_media(db, record.id)
+            from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
+
+            enqueue_auto_tag_llm_if_enabled(record.id)
         except Exception:
             logger.exception("auto-tag failed for media id=%s", getattr(record, "id", "?"))
         return record

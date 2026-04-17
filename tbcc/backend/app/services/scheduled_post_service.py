@@ -4,6 +4,7 @@ import json
 import logging
 import random
 from collections import defaultdict
+from dataclasses import dataclass
 
 from telethon import TelegramClient
 from telethon.tl.types import (
@@ -23,6 +24,13 @@ from app.models.channel import Channel
 from app.services.promo_storage import promo_path_from_public_url
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CampaignSendResult:
+    sent_post_ids: list[int]
+    failed_post_ids: list[int]
+    first_error: Exception | None = None
 
 
 def _promo_buffers_from_urls(urls: list[str]) -> list[io.BytesIO]:
@@ -473,8 +481,9 @@ async def send_scheduled_campaign(
     siblings: list[ScheduledTextPost],
     db: Session,
     *,
+    target_post_ids: set[int] | None = None,
     reshuffle_album: bool = False,
-) -> None:
+) -> CampaignSendResult:
     """
     Send the same prepared payload to every sibling channel (shared caption rotation, pool batch, promos).
     siblings must include leader; all rows share one campaign_group_id.
@@ -489,21 +498,44 @@ async def send_scheduled_campaign(
     if not media_items:
         promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, leader)
 
+    sent_post_ids: list[int] = []
+    failed_post_ids: list[int] = []
+    first_error: Exception | None = None
     for p in sorted(siblings, key=lambda x: x.id):
+        if target_post_ids is not None and int(p.id) not in target_post_ids:
+            continue
         channel = db.query(Channel).filter(Channel.id == p.channel_id).first()
         if not channel:
             logger.warning("Campaign skip: channel %s missing for scheduled post %s", p.channel_id, p.id)
+            failed_post_ids.append(int(p.id))
             continue
         silent_kw = _send_options(p)
         reply_to = p.message_thread_id if getattr(p, "message_thread_id", None) else None
-        sent_result = await _execute_telegram_scheduled_send(
-            client,
-            channel.identifier,
-            caption=caption,
-            media_items=media_items,
-            promo_ordered=promo_ordered,
-            reply_markup=reply_markup,
-            silent_kw=silent_kw,
-            reply_to=reply_to,
-        )
-        await _maybe_pin_after_send(client, channel.identifier, p, sent_result)
+        try:
+            sent_result = await _execute_telegram_scheduled_send(
+                client,
+                channel.identifier,
+                caption=caption,
+                media_items=media_items,
+                promo_ordered=promo_ordered,
+                reply_markup=reply_markup,
+                silent_kw=silent_kw,
+                reply_to=reply_to,
+            )
+            await _maybe_pin_after_send(client, channel.identifier, p, sent_result)
+            sent_post_ids.append(int(p.id))
+        except Exception as e:
+            logger.exception(
+                "Campaign send failed for scheduled post %s channel=%s: %s",
+                p.id,
+                channel.identifier,
+                e,
+            )
+            failed_post_ids.append(int(p.id))
+            if first_error is None:
+                first_error = e
+    return CampaignSendResult(
+        sent_post_ids=sent_post_ids,
+        failed_post_ids=failed_post_ids,
+        first_error=first_error,
+    )

@@ -81,24 +81,11 @@ _MIME_FROM_EXT = {
 
 
 async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, str]:
-    """HTTP(S) proxy or download from Telegram Saved Messages (indexed by telegram_message_id)."""
+    """HTTP(S) direct URL, or download from Telegram Saved Messages (indexed by telegram_message_id)."""
     url = str(ctx.source_channel or "").strip()
     # Never HTTP-fetch our own /media/{id}/thumbnail URLs (loopback + Vite proxy → 502).
     if url.startswith(("http://", "https://")) and looks_like_tbcc_internal_media_url(url):
         url = ""
-    if url.startswith(("http://", "https://")):
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
-                r = await client.get(url)
-                r.raise_for_status()
-                data = r.content
-                ct = (r.headers.get("content-type") or "").split(";")[0].strip()
-                if not ct or ct == "application/octet-stream":
-                    kind, ext = sniff_media_kind(data)
-                    ct = _MIME_FROM_EXT.get(ext, "application/octet-stream")
-                return data, ct
-        except httpx.HTTPError as e:
-            raise HTTPException(status_code=502, detail="Failed to fetch media URL") from e
 
     from app.services.telegram_admin import get_telegram_client
 
@@ -122,39 +109,55 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
             out = buf.getvalue()
         return out
 
-    if ctx.telegram_message_id is None:
-        raise HTTPException(status_code=404, detail="No Telegram message id for this media")
-
-    try:
-        client = await get_telegram_client()
+    # Scraped / Telethon-imported rows store the origin as https://t.me/channel — that is HTML, not bytes.
+    # The real file is always in Saved Messages at telegram_message_id (same as poster / album pipeline).
+    if ctx.telegram_message_id is not None:
         try:
-            data = await _download_from_saved(client, ctx.telegram_message_id)
-        except FileReferenceExpiredError:
-            logger.warning(
-                "File reference expired for media id=%s msg=%s; refetching",
-                ctx.id,
-                ctx.telegram_message_id,
-            )
-            messages = await client.get_messages("me", ids=ctx.telegram_message_id)
-            msg = _coerce_single_message(messages)
-            if not msg or not msg.media:
-                raise HTTPException(status_code=404, detail="Media not found in Telegram") from None
-            buf = io.BytesIO()
-            await client.download_media(msg, file=buf)
-            data = buf.getvalue()
-    except HTTPException:
-        raise
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e) or "Telegram not configured") from e
-    except Exception as e:
-        logger.exception("Telegram download failed for media id=%s", ctx.id)
-        raise HTTPException(status_code=502, detail="Telegram download failed: " + str(e)) from e
+            client = await get_telegram_client()
+            try:
+                data = await _download_from_saved(client, ctx.telegram_message_id)
+            except FileReferenceExpiredError:
+                logger.warning(
+                    "File reference expired for media id=%s msg=%s; refetching",
+                    ctx.id,
+                    ctx.telegram_message_id,
+                )
+                messages = await client.get_messages("me", ids=ctx.telegram_message_id)
+                msg = _coerce_single_message(messages)
+                if not msg or not msg.media:
+                    raise HTTPException(status_code=404, detail="Media not found in Telegram") from None
+                buf = io.BytesIO()
+                await client.download_media(msg, file=buf)
+                data = buf.getvalue()
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e) or "Telegram not configured") from e
+        except Exception as e:
+            logger.exception("Telegram download failed for media id=%s", ctx.id)
+            raise HTTPException(status_code=502, detail="Telegram download failed: " + str(e)) from e
 
-    if not data:
-        raise HTTPException(status_code=502, detail="Empty download")
-    kind, ext = sniff_media_kind(data)
-    ct = _MIME_FROM_EXT.get(ext, "application/octet-stream")
-    return data, ct
+        if not data:
+            raise HTTPException(status_code=502, detail="Empty download")
+        kind, ext = sniff_media_kind(data)
+        ct = _MIME_FROM_EXT.get(ext, "application/octet-stream")
+        return data, ct
+
+    if url.startswith(("http://", "https://")):
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+                r = await client.get(url)
+                r.raise_for_status()
+                data = r.content
+                ct = (r.headers.get("content-type") or "").split(";")[0].strip()
+                if not ct or ct == "application/octet-stream":
+                    kind, ext = sniff_media_kind(data)
+                    ct = _MIME_FROM_EXT.get(ext, "application/octet-stream")
+                return data, ct
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail="Failed to fetch media URL") from e
+
+    raise HTTPException(status_code=404, detail="No Telegram message id or fetchable URL for this media")
 
 
 @router.get("/")
@@ -455,3 +458,54 @@ def bulk_set_tags(data: dict = Body(...), db: Session = Depends(get_db)):
         fn(db, mid_int, val)
         n += 1
     return {"updated": n}
+
+
+@router.post("/{media_id}/auto-tag-llm")
+def queue_auto_tag_llm(media_id: int, db: Session = Depends(get_db)):
+    """
+    Queue Celery job to tag this image with OpenAI vision against existing /tags catalog.
+    Requires TBCC_OPENAI_API_KEY. Skips video/documents in worker. Manual trigger (not only import).
+    """
+    from app.models.media import Media
+
+    m = db.query(Media).filter(Media.id == media_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        from app.workers.media_auto_tag_worker import auto_tag_media_llm
+
+        async_result = auto_tag_media_llm.delay(int(media_id))
+        return {"queued": True, "media_id": int(media_id), "task_id": async_result.id}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Celery unavailable: {e}") from e
+
+
+@router.post("/bulk/auto-tag-llm")
+def bulk_queue_auto_tag_llm(data: dict = Body(...), db: Session = Depends(get_db)):
+    """Queue vision auto-tag for many ids (photos; worker skips unsupported types)."""
+    from app.models.media import Media
+
+    ids = data.get("ids") or []
+    if not ids:
+        return {"queued": 0, "error": "Need ids"}
+    id_list: list[int] = []
+    for x in ids:
+        try:
+            id_list.append(int(x))
+        except (TypeError, ValueError):
+            continue
+    if not id_list:
+        return {"queued": 0, "error": "No valid ids"}
+    try:
+        from app.workers.media_auto_tag_worker import auto_tag_media_llm
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Celery unavailable: {e}") from e
+    n = 0
+    task_ids: list[str] = []
+    for mid in id_list:
+        if not db.query(Media).filter(Media.id == mid).first():
+            continue
+        r = auto_tag_media_llm.delay(mid)
+        task_ids.append(r.id)
+        n += 1
+    return {"queued": n, "task_ids": task_ids[:50]}

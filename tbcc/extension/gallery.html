@@ -23,21 +23,24 @@
     </header>
     <div id="view-main" class="panel-view gallery-main">
       <header class="gallery-topbar">
-        <div class="segmented">
-          <button type="button" id="tabCurrent" class="active">Current</button>
-          <button type="button" id="tabAll">All tabs</button>
-        </div>
-        <div id="galleryScanStrip" class="gallery-scan-strip" hidden aria-hidden="true">
-          <span class="gallery-scan-strip__label" id="galleryScanLabel">Scanning page</span>
-          <div class="gallery-scan-strip__track" title="Extra media URLs may appear as the page finishes loading">
-            <div id="galleryScanFill" class="gallery-scan-strip__fill" style="width: 0%"></div>
+        <div class="gallery-transport-shell">
+          <div class="gallery-transport-inner gallery-transport-inner--top">
+            <div class="segmented">
+              <button type="button" id="tabCurrent" class="active">Current</button>
+              <button type="button" id="tabAll">All tabs</button>
+            </div>
+            <div id="galleryScanStrip" class="gallery-scan-strip" hidden aria-hidden="true">
+              <span class="gallery-scan-strip__label" id="galleryScanLabel">Scanning page</span>
+              <div class="gallery-scan-strip__track" title="Extra media URLs may appear as the page finishes loading">
+                <div id="galleryScanFill" class="gallery-scan-strip__fill" style="width: 0%"></div>
+              </div>
+            </div>
+            <button type="button" id="btnRefresh" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Refresh: rescan tab; also reload pools/channels/forum/embeds (see Options, Full refresh)">↻</button>
+            <button type="button" id="btnFilterToggle" class="tbcc-btn-secondary tbcc-btn--compact" title="Filter media (type, size, URL)">Filter</button>
+            <button type="button" id="btnGalleryHelp" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Keyboard shortcuts (same as ? key)">?</button>
+            <button type="button" id="btnOpenCaptureSettings" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Capture and extension options">⚙</button>
           </div>
         </div>
-        <button type="button" id="btnRefresh" class="tbcc-btn-icon" title="Refresh: rescan tab; also reload pools/channels/forum/embeds (see ⚙ Options → Full refresh)">↻</button>
-        <button type="button" id="btnFilterToggle" class="tbcc-btn-secondary">Filter</button>
-        <span id="selectionChip" class="selection-chip">0 selected</span>
-        <button type="button" id="btnGalleryHelp" class="tbcc-btn-icon" title="Shortcuts">?</button>
-        <button type="button" id="btnOpenCaptureSettings" class="tbcc-btn-secondary" title="Capture &amp; extension options">⚙ Options</button>
       </header>
 
       <div id="filterOverlay" class="filter-overlay" aria-hidden="true">
@@ -79,14 +82,16 @@
         <div class="gallery-wrap" id="galleryDropZone">
           <div id="loading" class="loading"><div class="spinner"></div></div>
           <div class="gallery-grid-toolbar">
-            <button type="button" id="btnSelectAll" class="tbcc-btn-secondary" title="Select all visible items">Select all</button>
-            <button type="button" id="btnDeselect" class="tbcc-btn-secondary" disabled title="Clear selection">Deselect</button>
+            <span id="selectionChip" class="selection-chip" title="Selected count in current filter">0 selected</span>
+            <div class="gallery-grid-toolbar-actions">
+              <button type="button" id="btnSelectAll" class="tbcc-btn-secondary tbcc-btn--compact" title="Select all visible items">Select all</button>
+              <button type="button" id="btnDeselect" class="tbcc-btn-secondary tbcc-btn--compact" disabled title="Clear selection">Deselect</button>
+            </div>
           </div>
           <div id="grid" class="grid"></div>
         </div>
       </div>
 
-      <p class="kbd-hint">Shortcuts: <strong>?</strong> · <strong>R</strong> refresh (full reload when “Full refresh” is on in Options) · <strong>O</strong> preview · <strong>Ctrl+S</strong> send · drop files on grid</p>
 
       <div class="progress-outer">
         <div id="progress" class="progress">
@@ -98,37 +103,89 @@
         </div>
       </div>
 
+      <div class="gallery-transport-shell gallery-transport-shell--tools">
+        <div class="gallery-transport-inner gallery-transport-inner--tools" role="toolbar" aria-label="Gallery tools">
+          <button type="button" id="btnDownload" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Download selected">⬇</button>
+          <button type="button" id="btnDownloadZip" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="ZIP selected">📦</button>
+          <button type="button" id="btnCopyJd" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Copy URLs for JDownloader">🔗</button>
+          <button type="button" id="btnToggleOverlay" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Toggle on-page selection boxes">☑</button>
+          <button type="button" id="btnSelectAllOnPage" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Select all on tab (page overlay)">⊞</button>
+          <button type="button" id="btnToggleFoldVariants" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Fold duplicate video resolutions into one tile">⧉</button>
+          <button type="button" id="btnCropOverflow" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Crop and watermarks">✂</button>
+          <button type="button" id="btnAddFilesOverflow" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Add local files">📁</button>
+        </div>
+      </div>
+
       <div id="galleryActionBar" class="gallery-action-bar hidden">
-        <div class="action-bar-row">
-          <select id="poolSelect" title="Pool"></select>
-          <button type="button" id="btnSend" class="primary" disabled>Send to TBCC</button>
-          <button type="button" id="btnTelegramSheetOpen" class="ghost" title="Tags on send, Telegram destination, caption">Destination ▾</button>
-          <span id="actionBarSubtitle" class="action-sub"></span>
-          <div class="overflow-wrap">
-            <button type="button" id="btnOverflow" class="tbcc-btn-icon" title="More actions" aria-haspopup="true">⋯</button>
-            <div id="overflowMenu" class="overflow-menu" role="menu">
-              <button type="button" id="btnDownload" disabled>⬇ Download</button>
-              <button type="button" id="btnDownloadZip" disabled>📦 ZIP</button>
-              <button type="button" id="btnCopyJd" disabled>🔗 Copy for JDownloader</button>
-              <button type="button" id="btnToggleOverlay">☑ On-page boxes</button>
-              <button type="button" id="btnSelectAllOnPage">⊞ Select all on tab</button>
-              <button type="button" id="btnToggleFoldVariants" title="Combine duplicate video resolutions into one tile">Fold video variants</button>
-              <button type="button" id="btnCropOverflow">✂ Crop bottom…</button>
-              <button type="button" id="btnAddFilesOverflow">📁 Add local files</button>
+        <div class="gallery-transport-shell">
+          <div class="gallery-transport-inner gallery-transport-inner--bottom">
+            <div class="action-bar-row">
+              <select id="poolSelect" class="pool-select-compact" title="Pool"></select>
+              <button type="button" id="btnSend" class="primary action-send" disabled>Send to TBCC</button>
+              <button type="button" id="btnTelegramSheetOpen" class="ghost tbcc-btn--compact" title="Tags on send, Telegram destination, caption">Dest ▾</button>
+              <span id="actionBarSubtitle" class="action-sub"></span>
             </div>
           </div>
         </div>
       </div>
 
       <div id="cropPopover" class="filter-overlay crop-popover" aria-hidden="true">
-        <div class="filter-panel">
-          <h3>Crop bottom (images)</h3>
-          <label class="row" style="cursor:pointer">
-            <input type="checkbox" id="cropBottomEnabled" />
-            <span>Remove strip from bottom (watermarks)</span>
-          </label>
-          <div class="row">
-            <label>Percent height <input type="number" id="cropBottomPercent" min="0" max="50" value="8" style="width:56px" /></label>
+        <div class="filter-panel crop-studio-panel">
+          <h3>Image crop &amp; watermarks</h3>
+          <p class="crop-studio-lead">
+            <strong>Percent inset</strong> trims by percent for all sides or one chosen side (top/right/bottom/left). Manual crop, blur, and text apply on top. All of this affects <strong>Send</strong>, <strong>ZIP</strong>, and <strong>Download</strong> for images. Select tiles first for per-image tools.
+          </p>
+          <div class="crop-studio-grid">
+            <div class="crop-studio-sidebar">
+              <label class="row crop-check-row" style="cursor:pointer">
+                <input type="checkbox" id="cropBottomEnabled" />
+                <span>Inset all sides by (%)</span>
+              </label>
+              <div class="row">
+                <label>Percent per edge <input type="number" id="cropBottomPercent" min="0" max="49" value="8" title="Removed from left, right, top, and bottom (max 49%)" style="width:56px" /></label>
+              </div>
+              <div class="row">
+                <label>Inset side
+                  <select id="cropInsetMode" title="Apply percent inset to one side or all sides">
+                    <option value="all">All sides</option>
+                    <option value="top">Top only</option>
+                    <option value="right">Right only</option>
+                    <option value="bottom">Bottom only</option>
+                    <option value="left">Left only</option>
+                  </select>
+                </label>
+              </div>
+              <hr class="crop-studio-divider" />
+              <label class="row">Tool
+                <select id="cropToolMode" title="Draw on the preview">
+                  <option value="crop">Manual crop (one rect)</option>
+                  <option value="blur">Blur region (stack)</option>
+                  <option value="text">Text overlay (click)</option>
+                </select>
+              </label>
+              <div id="cropTextToolRow" class="crop-text-tool-row">
+                <input type="text" id="cropTextInput" placeholder="Overlay text" maxlength="200" style="flex:1;min-width:120px" />
+                <input type="number" id="cropTextFont" min="8" max="120" value="20" title="Font size (px)" style="width:52px" />
+                <input type="color" id="cropTextColor" value="#ffffff" title="Color" style="width:36px;height:28px;padding:0;border:none" />
+              </div>
+              <div class="row crop-studio-actions">
+                <button type="button" id="btnCropClearImage" class="tbcc-btn-secondary">Clear this image</button>
+              </div>
+              <div class="row crop-studio-actions">
+                <button type="button" id="btnCropClearSelected" class="tbcc-btn-secondary">Clear edits · all selected</button>
+              </div>
+              <p id="cropStudioEmptyHint" class="crop-studio-hint" hidden>No image tiles selected — percent inset still applies globally when enabled.</p>
+            </div>
+            <div class="crop-studio-main">
+              <div id="cropStudioThumbs" class="crop-studio-thumbs" aria-label="Selected images"></div>
+              <div id="cropPreviewShell" class="crop-preview-shell">
+                <div id="cropPreviewFrame" class="crop-preview-frame">
+                  <img id="cropPreviewImg" alt="Crop preview" crossorigin="anonymous" />
+                  <canvas id="cropOverlayCanvas" width="1" height="1"></canvas>
+                </div>
+              </div>
+              <p class="crop-preview-help">Drag on the preview (crop/blur). Choose Text, enter text, then click where it should sit.</p>
+            </div>
           </div>
           <div class="filter-actions">
             <button type="button" id="btnCropDone" class="tbcc-btn-secondary">Done</button>

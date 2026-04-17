@@ -49,6 +49,14 @@ def _public_base_url() -> str:
 
 MAX_PROMO_IMAGES = 5
 MAX_DESC_VARIANTS = 15  # primary description + extras in JSON (total pool size for bot)
+ALLOWED_BOT_SECTIONS = {"main", "loot", "packs"}
+
+
+def _normalize_bot_section(raw: object) -> str:
+    s = str(raw or "main").strip().lower()
+    if s not in ALLOWED_BOT_SECTIONS:
+        return "main"
+    return s
 
 
 def _plan_tag_ids_list(p: SubscriptionPlan) -> list[int]:
@@ -324,6 +332,7 @@ def create_plan(data: dict = Body(...), db: Session = Depends(get_db)):
         description=data.get("description"),
         is_active=bool(data.get("is_active", True)),
         product_type=ptype,
+        bot_section=_normalize_bot_section(data.get("bot_section")),
     )
     if "description_variations" in data:
         dv = data.get("description_variations")
@@ -383,6 +392,8 @@ def update_plan(plan_id: int, data: dict = Body(...), db: Session = Depends(get_
                 plan.bundle_zip_original_name = None
                 plan.bundle_zip2_original_name = None
                 plan.bundle_zip_parts_json = None
+    if "bot_section" in data:
+        plan.bot_section = _normalize_bot_section(data.get("bot_section"))
     if "tag_ids" in data:
         raw = data.get("tag_ids")
         if raw is None:

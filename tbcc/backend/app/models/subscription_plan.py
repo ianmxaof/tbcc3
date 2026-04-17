@@ -22,6 +22,8 @@ class SubscriptionPlan(Base):
     description_variations_json = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)  # Inactive = hidden from bot
     product_type = Column(String(32), default="subscription", nullable=False)  # subscription | bundle
+    # Payment bot grouping for dedicated menus/buttons (main | loot | packs)
+    bot_section = Column(String(32), default="main", nullable=False)
     # HTTPS URL shown in /shop promo carousel (optional); kept as first of album for backward compatibility
     promo_image_url = Column(String(1024), nullable=True)
     # JSON array of up to 5 HTTPS URLs (Telegram album); invoice still uses first URL only

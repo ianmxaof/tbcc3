@@ -18,6 +18,9 @@ class PoolCreate(BaseModel):
     interval_minutes: int = 60
     auto_post_enabled: bool = True
     randomize_queue: bool = False
+    route_match_tag_slugs: str | None = None
+    route_nsfw_tiers: str | None = None
+    route_priority: int = 100
 
 
 class PoolUpdate(BaseModel):
@@ -27,6 +30,9 @@ class PoolUpdate(BaseModel):
     interval_minutes: int | None = None
     auto_post_enabled: bool | None = None
     randomize_queue: bool | None = None
+    route_match_tag_slugs: str | None = None
+    route_nsfw_tiers: str | None = None
+    route_priority: int | None = None
 
 
 @router.get("/")
@@ -39,6 +45,31 @@ def list_pools(db: Session = Depends(get_db)):
         d["approved_count"] = cnt
         result.append(d)
     return result
+
+
+@router.get("/{pool_id}/suggest-album")
+def suggest_album_for_pool(
+    pool_id: int,
+    seed_media_id: int | None = None,
+    limit: int = 10,
+    status: str = "approved",
+    db: Session = Depends(get_db),
+):
+    """Pick up to ``limit`` (max 10) approved media ids in the pool, grouped by facet overlap."""
+    from app.models.content_pool import ContentPool
+    from app.services.facet_album_suggest import suggest_album_media_ids
+
+    p = db.query(ContentPool).filter(ContentPool.id == pool_id).first()
+    if not p:
+        return {"error": "Not found", "media_ids": []}
+    ids = suggest_album_media_ids(
+        db,
+        pool_id,
+        seed_media_id=seed_media_id,
+        limit=limit,
+        status=status,
+    )
+    return {"pool_id": pool_id, "media_ids": ids, "seed_media_id": seed_media_id}
 
 
 @router.get("/{pool_id}")
@@ -58,6 +89,9 @@ def create_pool(body: PoolCreate, db: Session = Depends(get_db)):
         interval_minutes=body.interval_minutes,
         auto_post_enabled=body.auto_post_enabled,
         randomize_queue=body.randomize_queue,
+        route_match_tag_slugs=(body.route_match_tag_slugs or "").strip()[:512] or None,
+        route_nsfw_tiers=(body.route_nsfw_tiers or "").strip()[:128] or None,
+        route_priority=int(body.route_priority) if body.route_priority is not None else 100,
     )
     db.add(pool)
     db.commit()
@@ -84,6 +118,14 @@ def update_pool(pool_id: int, body: PoolUpdate, db: Session = Depends(get_db)):
         p.auto_post_enabled = body.auto_post_enabled
     if body.randomize_queue is not None:
         p.randomize_queue = body.randomize_queue
+    if body.route_match_tag_slugs is not None:
+        s = body.route_match_tag_slugs.strip()[:512]
+        p.route_match_tag_slugs = s or None
+    if body.route_nsfw_tiers is not None:
+        t = body.route_nsfw_tiers.strip()[:128]
+        p.route_nsfw_tiers = t or None
+    if body.route_priority is not None:
+        p.route_priority = int(body.route_priority)
     db.commit()
     db.refresh(p)
     d = orm_to_dict(p)

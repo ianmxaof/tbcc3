@@ -83,6 +83,12 @@ def scheduled_post_to_api_dict(post: ScheduledTextPost) -> dict:
     return d
 
 
+def _clear_auto_pause_state(post: ScheduledTextPost) -> None:
+    post.send_failure_streak = 0
+    post.posting_auto_paused_at = None
+    post.posting_auto_pause_reason = None
+
+
 def _patch_scheduled_post_core(
     post: ScheduledTextPost,
     body: ScheduledPostUpdate,
@@ -159,6 +165,8 @@ def _patch_scheduled_post_core(
         post.send_silent = bool(body.send_silent)
     if "pin_after_send" in fs:
         post.pin_after_send = bool(body.pin_after_send)
+    if "clear_auto_pause" in fs and body.clear_auto_pause:
+        _clear_auto_pause_state(post)
 
 
 class ScheduledPostCreate(BaseModel):
@@ -197,6 +205,10 @@ class ScheduledPostUpdate(BaseModel):
     content: str | None = None
     scheduled_at: datetime | None = None
     interval_minutes: int | None = None
+    clear_auto_pause: bool | None = Field(
+        default=None,
+        description="If true, clear auto-pause and send-failure streak (resume Celery beat for this job).",
+    )
     media_ids: list[int] | None = None
     pool_id: int | None = None
     buttons: list[dict] | None = None
@@ -373,6 +385,8 @@ def trigger_scheduled_campaign(
     )
     if not rows:
         return {"error": "Campaign not found"}
+    for p in rows:
+        _clear_auto_pause_state(p)
     leader = rows[0]
     is_recurring = leader.interval_minutes is not None
     if not is_recurring and leader.sent_at and not reshuffle:
@@ -385,7 +399,7 @@ def trigger_scheduled_campaign(
         now = datetime.utcnow()
         for p in rows:
             p.last_posted_at = now
-        db.commit()
+    db.commit()
     post_scheduled_text.delay(leader.id, reshuffle_album=reshuffle)
     return {
         "status": "scheduled",
@@ -463,10 +477,20 @@ def trigger_scheduled_post(
     post = db.query(ScheduledTextPost).filter(ScheduledTextPost.id == post_id).first()
     if not post:
         return {"error": "Not found"}
+    cg = getattr(post, "campaign_group_id", None)
+    rows_clear = [post]
+    if cg:
+        rows_clear = (
+            db.query(ScheduledTextPost)
+            .filter(ScheduledTextPost.campaign_group_id == cg)
+            .order_by(ScheduledTextPost.id)
+            .all()
+        )
+    for p in rows_clear:
+        _clear_auto_pause_state(p)
     is_recurring = post.interval_minutes is not None
     if not is_recurring and post.sent_at and not reshuffle:
         return {"error": "Post already sent"}
-    cg = getattr(post, "campaign_group_id", None)
     rows = [post]
     leader_id = post_id
     if cg:
@@ -485,6 +509,6 @@ def trigger_scheduled_post(
         now = datetime.utcnow()
         for p in rows:
             p.last_posted_at = now
-        db.commit()
+    db.commit()
     post_scheduled_text.delay(leader_id, reshuffle_album=reshuffle)
     return {"status": "scheduled", "post_id": leader_id, "campaign_group_id": cg, "reshuffle": reshuffle}

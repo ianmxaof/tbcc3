@@ -142,6 +142,7 @@ export function MediaLibrary() {
 
   const [statusMutationErr, setStatusMutationErr] = useState<string | null>(null);
   const [bulkMoveFeedback, setBulkMoveFeedback] = useState<string | null>(null);
+  const [autoTagQueueMsg, setAutoTagQueueMsg] = useState<string | null>(null);
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
       api.media.updateStatus(id, status),
@@ -220,6 +221,17 @@ export function MediaLibrary() {
       queryClient.invalidateQueries({ queryKey: ["media"] });
       queryClient.invalidateQueries({ queryKey: ["tags"] });
     },
+  });
+
+  const bulkAutoTagLlm = useMutation({
+    mutationFn: (ids: number[]) => api.media.bulkQueueAutoTagLlm(ids),
+    onSuccess: (data) => {
+      setAutoTagQueueMsg(
+        `Queued ${data.queued} vision auto-tag job(s). Celery + OpenAI key required — refresh in a few seconds.`
+      );
+      setTimeout(() => setAutoTagQueueMsg(null), 12000);
+    },
+    onError: (e: Error) => setAutoTagQueueMsg(`Auto-tag queue failed: ${e.message}`),
   });
 
   const pendingItems = (media as Array<Record<string, unknown>>).filter((m) => m.status === "pending");
@@ -570,12 +582,14 @@ export function MediaLibrary() {
             {s}
           </button>
         ))}
-        {statusFilter === "pending" && pendingIds.length > 0 && (
+        {/* Approve/reject-all apply to every pending row on the current API page (max ~200). Hidden on approved/posted/rejected-only views. */}
+        {(statusFilter === "pending" || statusFilter === undefined) && pendingIds.length > 0 && (
           <div className="flex gap-2 ml-2 flex-wrap items-center">
             <button
               onClick={() => updateStatusBulk.mutate({ ids: pendingIds, status: "approved" })}
               disabled={updateStatusBulk.isPending}
               className="px-3 py-1 rounded bg-green-700 text-green-100 hover:bg-green-600 disabled:opacity-50 text-sm"
+              title="Approve every pending item in the current list (not only selected rows)"
             >
               Approve all ({pendingIds.length})
             </button>
@@ -583,6 +597,7 @@ export function MediaLibrary() {
               onClick={() => updateStatusBulk.mutate({ ids: pendingIds, status: "rejected" })}
               disabled={updateStatusBulk.isPending}
               className="px-3 py-1 rounded bg-red-700 text-red-100 hover:bg-red-600 disabled:opacity-50 text-sm"
+              title="Reject every pending item in the current list"
             >
               Reject all
             </button>
@@ -776,6 +791,15 @@ export function MediaLibrary() {
           </button>
           <button
             type="button"
+            disabled={bulkAutoTagLlm.isPending || selectedIds.length === 0}
+            onClick={() => bulkAutoTagLlm.mutate([...selectedIds])}
+            className="px-3 py-1 rounded bg-emerald-800 text-emerald-100 text-sm hover:bg-emerald-700 disabled:opacity-50"
+            title="Queue OpenAI vision tagging for selected ids (photos; videos skipped in worker). Needs API key + Celery."
+          >
+            {bulkAutoTagLlm.isPending ? "Queueing…" : "Auto-tag (vision)"}
+          </button>
+          <button
+            type="button"
             disabled={bulkRemoveFromPool.isPending}
             onClick={() => {
               if (
@@ -814,6 +838,18 @@ export function MediaLibrary() {
               </button>
             </span>
           )}
+          {autoTagQueueMsg && (
+            <span className="text-emerald-200/90 text-xs basis-full max-w-prose">
+              {autoTagQueueMsg}
+              <button
+                type="button"
+                className="ml-2 text-cyan-400 hover:underline"
+                onClick={() => setAutoTagQueueMsg(null)}
+              >
+                Dismiss
+              </button>
+            </span>
+          )}
           {bulkRemoveFromPool.isError && (
             <span className="text-red-400 text-xs w-full basis-full">
               {bulkRemoveFromPool.error instanceof Error
@@ -844,6 +880,7 @@ export function MediaLibrary() {
                 const poolLabel = poolMap[String(m.pool_id ?? "")] ?? String(m.pool_id ?? "—");
                 const statusLabel = String(m.status ?? "—");
                 const tagsHint = m.tags ? String(m.tags) : "";
+                const tierLabel = m.nsfw_tier ? String(m.nsfw_tier) : "";
                 const selected = selectedIds.includes(id);
                 return (
                   <div
@@ -851,7 +888,7 @@ export function MediaLibrary() {
                     className={`relative aspect-square rounded-lg overflow-hidden border bg-slate-800 group outline-none focus-within:ring-2 focus-within:ring-cyan-500 ${
                       selected ? "border-cyan-500 ring-1 ring-cyan-500/50" : "border-slate-600 hover:border-cyan-500/60"
                     }`}
-                    title={`#${id} · ${poolLabel} · ${statusLabel}${tagsHint ? ` · ${tagsHint}` : ""}`}
+                    title={`#${id} · ${poolLabel} · ${statusLabel}${tierLabel ? ` · tier:${tierLabel}` : ""}${tagsHint ? ` · ${tagsHint}` : ""}`}
                     onDoubleClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -893,6 +930,12 @@ export function MediaLibrary() {
                       <span className="font-medium text-cyan-200/95">{poolLabel}</span>
                       <span className="text-slate-500"> · </span>
                       <span>{statusLabel}</span>
+                      {tierLabel ? (
+                        <>
+                          <span className="text-slate-500"> · </span>
+                          <span className="text-amber-200/90">{tierLabel}</span>
+                        </>
+                      ) : null}
                       {tagsHint ? (
                         <>
                           <span className="text-slate-500"> · </span>
@@ -931,6 +974,9 @@ export function MediaLibrary() {
               <th className="text-left p-3">Source</th>
               <th className="text-left p-3">Pool</th>
               <th className="text-left p-3">Tags</th>
+              <th className="text-left p-3" title="From vision auto-tag">
+                Tier
+              </th>
               <th className="text-left p-3" title="Per-pool deduplication key">
                 Dedup
               </th>
@@ -999,6 +1045,7 @@ export function MediaLibrary() {
                 <td className="p-3 text-slate-400 text-xs max-w-[140px] truncate" title={String(m.tags ?? "")}>
                   {m.tags ? String(m.tags) : "—"}
                 </td>
+                <td className="p-3 text-xs text-amber-200/90 capitalize">{m.nsfw_tier ? String(m.nsfw_tier) : "—"}</td>
                 <td className="p-3 text-slate-500 font-mono text-[10px] max-w-[100px] truncate" title={String(m.file_unique_id ?? "")}>
                   {m.file_unique_id ? String(m.file_unique_id).slice(0, 16) + (String(m.file_unique_id).length > 16 ? "…" : "") : "—"}
                 </td>

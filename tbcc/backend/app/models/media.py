@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, UniqueConstraint
 from datetime import datetime
 
 from .base import Base
@@ -16,5 +16,8 @@ class Media(Base):
     source_channel = Column(String)
     tags = Column(String)  # comma-separated
     pool_id = Column(Integer)
+    # Vision classifier + extras JSON (facets, routing_hint) — see auto_tag_llm + media_pool_routing
+    nsfw_tier = Column(String(16), nullable=True)  # sfw | suggestive | explicit | unknown
+    classification_json = Column(Text, nullable=True)
     status = Column(String, default="pending")  # pending|approved|rejected|posted
     created_at = Column(DateTime, default=datetime.utcnow)

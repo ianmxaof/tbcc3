@@ -264,9 +264,19 @@ async def _fetch_plans_raw() -> list[dict]:
         return []
 
 
-async def fetch_plans() -> list[dict]:
-    """Subscription products (group / channel access)."""
-    return [p for p in await _fetch_plans_raw() if _plan_ok_for_stars_checkout(p)]
+def _plan_in_bot_section(p: dict, section: str) -> bool:
+    sec = str(p.get("bot_section") or "main").strip().lower()
+    want = (section or "main").strip().lower()
+    if not want:
+        want = "main"
+    return sec == want
+
+
+async def fetch_plans(section: str = "main") -> list[dict]:
+    """Subscription products (group/channel access), grouped by bot section."""
+    return [
+        p for p in await _fetch_plans_raw() if _plan_ok_for_stars_checkout(p) and _plan_in_bot_section(p, section)
+    ]
 
 
 async def fetch_bundles() -> list[dict]:
@@ -485,6 +495,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
+                InlineKeyboardButton("🗝 Loot Room (24h key)", callback_data="menu_loot"),
+            ],
+            [
                 InlineKeyboardButton("💎 Premium (group)", callback_data="menu_subscribe"),
                 InlineKeyboardButton("📦 Digital packs", callback_data="menu_packs"),
             ],
@@ -500,36 +513,26 @@ def welcome_html() -> str:
     """Welcome + command list (HTML — Telegram Markdown is fragile with /commands, &, nested bold)."""
     if _health_crypto_auto_checkout:
         pay_line = (
-            "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app) and <b>crypto</b> — tap <b>Wallet / crypto</b> on a plan for "
-            "an automatic checkout link; access unlocks when payment confirms (no admin step).\n\n"
+            "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app) + <b>Wallet / crypto</b> (auto checkout link when available).\n"
+            "⚡ <i>Access unlocks automatically after confirmation.</i>\n\n"
         )
     else:
         pay_line = (
-            "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app, live now). <b>Crypto:</b> tap <b>Wallet / crypto</b> — "
-            "you may get an automatic pay link if the server has NOWPayments + a public <code>https://</code> API URL; "
-            "otherwise use the order reference / pending orders flow.\n\n"
-        )
-    mode = referral_cfg()["mode"]
-    if mode == "community":
-        return (
-            "👋 <b>Welcome!</b> Choose what you need:\n\n"
-            + pay_line
-            + "• /shop — Open the store (premium + packs)\n"
-            "• /subscribe — Premium group access (Stars · crypto · card)\n"
-            "• /packs — Digital packs (images / videos)\n"
-            "• /referral — Your unique code + invite link &amp; rewards\n"
-            "• /status — Your purchases &amp; subscription\n\n"
-            "<i>Tap a button below or use the commands.</i>"
+            "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app, live now) + <b>Wallet / crypto</b>.\n"
+            "⚡ <i>Crypto may use auto checkout when NOWPayments + public HTTPS API are configured; otherwise use order code flow.</i>\n\n"
         )
     return (
-        "👋 <b>Welcome!</b> Here’s what I offer:\n\n"
+        "👋 <b>Welcome to AOF Access Bot</b>\n\n"
         + pay_line
-        + "• /shop — Browse premium &amp; digital packs\n"
-        "• /subscribe — Premium access to the group / channel (Stars · crypto · card)\n"
-        "• /packs — One-time digital packs (images &amp; videos)\n"
-        "• /referral — Your unique code + link; earn free days when friends subscribe\n"
-        "• /status — See your active subscription &amp; purchases\n\n"
-        "<i>Use the buttons or type a command.</i>"
+        + "🔥 <b>Main actions</b>\n"
+        "• /shop — Full storefront (premium + packs + featured offers)\n"
+        "• /loot — Loot Room section (24-hour key + private group run)\n"
+        "• /subscribe — Premium memberships\n"
+        "• /packs — Digital packs\n\n"
+        "📌 <b>Account</b>\n"
+        "• /status — Purchases &amp; active access\n"
+        "• /referral — Your invite link + rewards\n\n"
+        "<i>Tap a button below or run any command.</i>"
     )
 
 
@@ -547,9 +550,39 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except BadRequest as e:
         logger.warning("cmd_help HTML failed: %s", e)
         await msg.reply_text(
-            "Use /start for the menu. Commands: /shop /subscribe /packs /referral /status",
+            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status",
             reply_markup=main_menu_keyboard(),
         )
+
+
+async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dedicated Loot Room menu + plans from bot_section=loot."""
+    if not msg:
+        return
+    await msg.reply_text(
+        "🗝 <b>Loot Room — 24H Key</b>\n\n"
+        "One key. One timed run.\n"
+        "You unlock access to the private Loot Room group for 24 hours.\n\n"
+        "📦 <b>Inside the run</b>\n"
+        "• Free floor drops\n"
+        "• Blurred preview walls\n"
+        "• Premium unlock prompts\n"
+        "• Flash offers and timed posts\n\n"
+        "⚡ <b>Choose a key below</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🗝 Show Loot Room Keys", callback_data="menu_loot_subscribe")],
+                [InlineKeyboardButton("🛍 Open Full Store", callback_data="menu_shop")],
+            ]
+        ),
+    )
+
+
+async def cmd_loot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Loot Room offer section: 24h key + private group flow."""
+    msg = update.effective_message
+    await send_loot_room_message(msg, context)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -595,7 +628,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except BadRequest as e:
         logger.warning("cmd_start welcome HTML failed: %s", e)
         await msg.reply_text(
-            "Welcome! Use /shop, /subscribe, /packs, /referral, /status — or tap a button below.",
+            "Welcome! Use /shop, /loot, /subscribe, /packs, /referral, /status — or tap a button below.",
             reply_markup=main_menu_keyboard(),
         )
 
@@ -698,15 +731,22 @@ def _truncate_btn(s: str, max_len: int = 64) -> str:
     return s[: max_len - 1] + "…"
 
 
-async def send_subscription_catalog_message(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List subscription (group/channel) products — Stars invoice + separate wallet/manual message."""
+async def send_subscription_catalog_message(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    section: str = "main",
+    title: str = "💎 **Premium Access**",
+) -> None:
+    """List subscription products for one bot section — Stars + wallet/manual rows."""
     if not msg:
         return
 
-    plans = await fetch_plans()
+    plans = await fetch_plans(section=section)
     if not plans:
+        section_hint = " (/loot section)" if section == "loot" else ""
         await msg.reply_text(
-            "💎 **Premium access**\n\nNo subscription plans are listed yet. "
+            f"{title}\n\nNo subscription plans are listed yet{section_hint}. "
             "Ask the admin to add products in the dashboard (product type: subscription).",
             parse_mode="Markdown",
         )
@@ -738,16 +778,16 @@ async def send_subscription_catalog_message(msg, context: ContextTypes.DEFAULT_T
         )
 
     await msg.reply_text(
-        "💎 **Premium — Telegram Stars**\n\n"
-        "Tap a plan — an **invoice** opens (Stars only).",
+        f"{title} — Telegram Stars\n\n"
+        "Tap a plan to open an in-app Stars invoice.\n"
+        "⚡ Fastest checkout path.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(stars_kb),
     )
     await msg.reply_text(
-        "⛓ **Premium — wallet / crypto / Cash App**\n\n"
-        "Same products as above. Tap to get an **order code (EPO-…)** and pay **outside** Telegram. "
-        "An admin marks it paid and you get access.\n\n"
-        "_This is a separate message so these buttons are always visible._",
+        "⚡ **Premium Access — Wallet / crypto / external**\n\n"
+        "Same plans as above. Tap to get an order code (**EPO-...**) and pay outside Telegram.\n"
+        "If auto checkout is available, you'll get a direct pay link; otherwise use the order code flow.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(wallet_kb),
     )
@@ -758,7 +798,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = update.effective_message
     if not msg:
         return
-    await send_subscription_catalog_message(msg, context)
+    await send_subscription_catalog_message(msg, context, section="main", title="💎 **Premium Access**")
 
 
 def _bundle_caption_html(p: dict) -> str:
@@ -957,8 +997,14 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user = query.from_user
     if not msg or not user:
         return
-    if query.data == "menu_subscribe":
-        await send_subscription_catalog_message(msg, context)
+    if query.data == "menu_shop":
+        await send_shop_promo(update, context)
+    elif query.data == "menu_subscribe":
+        await send_subscription_catalog_message(msg, context, section="main", title="💎 **Premium Access**")
+    elif query.data == "menu_loot":
+        await send_loot_room_message(msg, context)
+    elif query.data == "menu_loot_subscribe":
+        await send_subscription_catalog_message(msg, context, section="loot", title="🗝 **Loot Room Access**")
     elif query.data == "menu_packs":
         await send_bundle_catalog_message(msg, context)
     elif query.data == "menu_referral":
@@ -1380,6 +1426,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("start", "Welcome & main menu"),
         BotCommand("help", "Commands & what this bot does"),
         BotCommand("shop", "Open the store"),
+        BotCommand("loot", "Loot Room 24h key + private group"),
         BotCommand("subscribe", "Premium — Stars, crypto & fiat"),
         BotCommand("packs", "Digital packs"),
         BotCommand("referral", "Your code, link & rewards"),
@@ -1391,24 +1438,24 @@ async def _post_init(app: Application) -> None:
         logger.warning("set_my_commands failed: %s", e)
     try:
         short_desc = (
-            "AOF — premium: Stars in-app; crypto auto-checkout when the API is configured. /start"
+            "AOF Access Bot: Loot Room keys, premium, and packs. Stars + crypto. Start with /start"
             if _health_crypto_auto_checkout
-            else "AOF — premium: Stars in-app; crypto via Wallet/crypto (auto if NOWPayments on API). /start"
+            else "AOF Access Bot: Loot Room keys, premium, and packs. Stars + Wallet/crypto. Start with /start"
         )
         await app.bot.set_my_short_description(short_desc)
     except Exception as e:
         logger.warning("set_my_short_description failed: %s", e)
     # Long profile text (“What can this bot do?”) — max 512 chars for set_my_description
     long_desc = (
-        "AOF — Join the community and get premium access.\n\n"
-        "Use /start or /help for the full menu.\n\n"
-        "• /shop — Store (premium + packs)\n"
-        "• /subscribe — Premium (Telegram Stars in-app; crypto & card rolling out)\n"
-        "• /packs — Digital packs\n"
-        "• /referral — Your unique code + invite link & rewards\n"
-        "• /status — Purchases & subscription\n\n"
-        "Referral: share your link; top referrers get perks. All tiers are managed in the dashboard shop; "
-        "crypto can unlock automatically when NOWPayments is configured on the API."
+        "AOF Access Bot — get Loot Room keys, premium access, and digital packs.\n\n"
+        "Start with /start.\n\n"
+        "• /shop — full storefront\n"
+        "• /loot — Loot Room 24h key + private group flow\n"
+        "• /subscribe — premium memberships\n"
+        "• /packs — digital packs\n"
+        "• /status — your purchases & access\n"
+        "• /referral — your invite link + rewards\n\n"
+        "Payments: Stars in Telegram + Wallet/crypto options."
     )
     if len(long_desc) > 512:
         long_desc = long_desc[:509] + "..."
@@ -1458,11 +1505,18 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(shop_cmd, cmd_shop))
     app.add_handler(MessageHandler(shop_channel, cmd_shop))
+    app.add_handler(CommandHandler("loot", cmd_loot))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("packs", cmd_packs))
     app.add_handler(CommandHandler("referral", cmd_referral))
     app.add_handler(CommandHandler("status", cmd_status))
     # Handle /subscribe in channels (CommandHandler only matches message, not channel_post)
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/loot(@\w+)?\s*$"),
+            cmd_loot,
+        )
+    )
     app.add_handler(
         MessageHandler(
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/subscribe(@\w+)?\s*$"),
@@ -1488,7 +1542,7 @@ def main() -> None:
         )
     )
     app.add_handler(
-        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(subscribe|packs|referral|status)$")
+        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|referral|status)$")
     )
     app.add_handler(CallbackQueryHandler(handle_pick_pack_callback, pattern=r"^pick_pack_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_external_payment_callback, pattern=r"^ext_(plan|pack)_\d+$"))
@@ -1498,7 +1552,7 @@ def main() -> None:
         MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
     )
 
-    print("Payment bot running. Commands: /start, /help, /shop, /subscribe, /packs, /referral, /status")
+    print("Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status")
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 
 
