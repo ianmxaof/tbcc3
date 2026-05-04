@@ -66,8 +66,9 @@ export function ContentPools() {
   });
 
   const updateChannel = useMutation({
-    mutationFn: (args: { id: number; invite_link?: string; webhook_url?: string }) =>
+    mutationFn: (args: { id: number; identifier?: string; invite_link?: string; webhook_url?: string }) =>
       api.channels.update(args.id, {
+        ...(args.identifier !== undefined ? { identifier: args.identifier } : {}),
         ...(args.invite_link !== undefined ? { invite_link: args.invite_link } : {}),
         ...(args.webhook_url !== undefined ? { webhook_url: args.webhook_url } : {}),
       }),
@@ -248,7 +249,7 @@ export function ContentPools() {
             <thead>
               <tr className="text-left text-slate-400 border-b border-slate-600">
                 <th className="pb-2 pr-4">Name</th>
-                <th className="pb-2 pr-4">Identifier</th>
+                <th className="pb-2 pr-4">Identifier (posting target)</th>
                 <th className="pb-2 pr-4">Invite link</th>
                 <th className="pb-2 pr-4 min-w-[200px]">Outbound webhook</th>
                 <th className="pb-2 pr-4 w-[1%] whitespace-nowrap">Actions</th>
@@ -272,7 +273,26 @@ export function ContentPools() {
               {(channels as Array<Record<string, unknown>>).map((c) => (
                 <tr key={String(c.id)} className="border-b border-slate-700/50">
                   <td className="py-2 pr-4">{String(c.name || c.identifier || c.id)}</td>
-                  <td className="py-2 pr-4 font-mono text-xs">{String(c.identifier || "—")}</td>
+                  <td className="py-2 pr-4">
+                    <input
+                      key={`id-${c.id}-${String(c.identifier || "")}`}
+                      type="text"
+                      placeholder="@username, -100… id, t.me/+invite, or bare id"
+                      defaultValue={String(c.identifier || "")}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (!v) {
+                          e.target.value = String(c.identifier || "");
+                          return;
+                        }
+                        if (String(c.identifier || "") !== v) {
+                          updateChannel.mutate({ id: Number(c.id), identifier: v });
+                        }
+                      }}
+                      className="w-full max-w-xs bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-xs font-mono"
+                      title="Telegram channels use -100xxxxxxxxxx (same for broadcast channels — not only groups). Paste from RawDataBot forward_from_chat, or digits-only; the poster normalizes bare ids. Invite links alone are unreliable for Telethon posting."
+                    />
+                  </td>
                   <td className="py-2 pr-4">
                     <input
                       key={`${c.id}-${c.invite_link || ""}`}

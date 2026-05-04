@@ -1,5 +1,6 @@
 import io
 import logging
+from collections import defaultdict
 from typing import NamedTuple
 
 import httpx
@@ -78,6 +79,100 @@ _MIME_FROM_EXT = {
     "avi": "video/x-msvideo",
     "bin": "application/octet-stream",
 }
+
+
+def _split_tag_tokens(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in str(raw).split(","):
+        t = part.strip().lower()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _smoothed_rate(pos: int, total: int, prior: float, strength: float = 6.0) -> float:
+    if total <= 0:
+        return prior
+    return float((pos + (prior * strength)) / (total + strength))
+
+
+def _build_pool_preference_stats(db: Session, pool_id: int) -> dict:
+    from app.models.media import Media
+
+    rows = (
+        db.query(Media.status, Media.source_channel, Media.media_type, Media.tags, Media.nsfw_tier)
+        .filter(
+            Media.pool_id == pool_id,
+            Media.status.in_(("approved", "posted", "rejected")),
+        )
+        .order_by(Media.id.desc())
+        .limit(5000)
+        .all()
+    )
+    pos_total = 0
+    all_total = 0
+    source_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    type_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    tag_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    tier_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+
+    for status, source_channel, media_type, tags, nsfw_tier in rows:
+        ok = status in ("approved", "posted")
+        all_total += 1
+        if ok:
+            pos_total += 1
+
+        src = (str(source_channel or "").strip().lower())[:512]
+        if src:
+            source_counts[src][1] += 1
+            if ok:
+                source_counts[src][0] += 1
+
+        mt = str(media_type or "").strip().lower()
+        if mt:
+            type_counts[mt][1] += 1
+            if ok:
+                type_counts[mt][0] += 1
+
+        tier = str(nsfw_tier or "").strip().lower()
+        if tier:
+            tier_counts[tier][1] += 1
+            if ok:
+                tier_counts[tier][0] += 1
+
+        for tg in _split_tag_tokens(tags):
+            tag_counts[tg][1] += 1
+            if ok:
+                tag_counts[tg][0] += 1
+
+    base = float(pos_total / all_total) if all_total > 0 else 0.5
+    return {
+        "base": base,
+        "source": {k: _smoothed_rate(v[0], v[1], base) for k, v in source_counts.items()},
+        "type": {k: _smoothed_rate(v[0], v[1], base) for k, v in type_counts.items()},
+        "tag": {k: _smoothed_rate(v[0], v[1], base) for k, v in tag_counts.items()},
+        "tier": {k: _smoothed_rate(v[0], v[1], base) for k, v in tier_counts.items()},
+    }
+
+
+def _recommendation_score(media, stats: dict) -> float:
+    base = float(stats.get("base", 0.5))
+    source_rate = stats["source"].get((str(media.source_channel or "").strip().lower())[:512], base)
+    type_rate = stats["type"].get(str(media.media_type or "").strip().lower(), base)
+    tier_rate = stats["tier"].get(str(media.nsfw_tier or "").strip().lower(), base)
+    tags = _split_tag_tokens(media.tags)
+    if tags:
+        tag_rates = [stats["tag"].get(tg, base) for tg in tags[:12]]
+        tag_rate = float(sum(tag_rates) / len(tag_rates))
+    else:
+        tag_rate = base
+    # Weighted rule score; tiny recency bump keeps ties fresh.
+    return (source_rate * 0.34) + (tag_rate * 0.32) + (type_rate * 0.20) + (tier_rate * 0.10) + (base * 0.04)
 
 
 async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, str]:
@@ -160,6 +255,39 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
     raise HTTPException(status_code=404, detail="No Telegram message id or fetchable URL for this media")
 
 
+async def _fetch_saved_message_thumbnail_bytes(ctx: MediaFetchContext) -> tuple[bytes, str] | None:
+    """
+    Best-effort image thumbnail from Telegram Saved Messages for video/doc rows.
+    Returns (bytes, mime) or None when no thumb is available.
+    """
+    if ctx.telegram_message_id is None:
+        return None
+    from app.services.telegram_admin import get_telegram_client
+
+    try:
+        client = await get_telegram_client()
+        messages = await client.get_messages("me", ids=ctx.telegram_message_id)
+        msg = _coerce_single_message(messages)
+        if not msg or not msg.media:
+            return None
+        # -1 asks Telethon/Telegram for the largest available thumbnail size.
+        buf = io.BytesIO()
+        await client.download_media(msg, file=buf, thumb=-1)
+        data = buf.getvalue()
+        if not data:
+            return None
+        jpeg = _image_bytes_to_thumbnail_jpeg(data)
+        if jpeg:
+            return jpeg, "image/jpeg"
+        kind, ext = sniff_media_kind(data)
+        if kind in ("photo", "gif"):
+            return data, _MIME_FROM_EXT.get(ext, "image/jpeg")
+        return None
+    except Exception:
+        logger.debug("saved-message thumbnail fetch skipped for media id=%s", ctx.id, exc_info=True)
+        return None
+
+
 @router.get("/")
 def list_media(
     db: Session = Depends(get_db),
@@ -167,6 +295,8 @@ def list_media(
     pool_id: int | None = None,
     tag: str | None = None,
     tag_slug: str | None = None,
+    sort: str | None = None,
+    target_pool_id: int | None = None,
 ):
     from app.models.media import Media
     from app.models.tbcc_tag import TbccTag, MediaTagLink
@@ -191,7 +321,19 @@ def list_media(
     elif tag and tag.strip():
         needle = f"%{tag.strip().lower()}%"
         q = q.filter(Media.tags.isnot(None)).filter(Media.tags.ilike(needle))
-    return [orm_to_dict(m) for m in q.order_by(Media.id.desc()).limit(200).all()]
+    items = q.order_by(Media.id.desc()).limit(200).all()
+    sort_mode = (sort or "").strip().lower()
+    model_pool_id = target_pool_id if target_pool_id is not None else pool_id
+    if sort_mode == "recommended" and model_pool_id is not None and items:
+        stats = _build_pool_preference_stats(db, int(model_pool_id))
+        scored: list[dict] = []
+        for m in items:
+            d = orm_to_dict(m)
+            d["recommendation_score"] = round(_recommendation_score(m, stats), 6)
+            scored.append(d)
+        scored.sort(key=lambda x: (float(x.get("recommendation_score", 0.0)), int(x.get("id") or 0)), reverse=True)
+        return scored
+    return [orm_to_dict(m) for m in items]
 
 
 @router.get("/{media_id}")
@@ -222,9 +364,16 @@ async def get_media_thumbnail(media_id: int):
     finally:
         db.close()
 
-    data, mime = await _fetch_media_bytes_and_type(ctx)
     mt = (ctx.media_type or "").lower()
-    if mt != "video":
+    if mt == "video":
+        # For <img> grid thumbnails, prefer Telegram's still preview instead of raw video bytes.
+        thumb = await _fetch_saved_message_thumbnail_bytes(ctx)
+        if thumb is not None:
+            data, mime = thumb
+        else:
+            data, mime = await _fetch_media_bytes_and_type(ctx)
+    else:
+        data, mime = await _fetch_media_bytes_and_type(ctx)
         jpeg = _image_bytes_to_thumbnail_jpeg(data)
         if jpeg:
             data = jpeg

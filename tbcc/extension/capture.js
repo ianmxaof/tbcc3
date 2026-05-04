@@ -7,9 +7,94 @@
 
   var API_BYTES = "http://localhost:8000/import/bytes";
   var API_SAVED_BATCH = "http://localhost:8000/import/saved-batch";
+  var STORAGE_CUSTOM_ADAPTERS = "tbccCustomGalleryAdapters";
   var SAVED_ALBUM_CHUNK = 10;
   /** Parallel remote fetches before sequential POST /import/bytes (Telegram stays serialized on server). */
   var FETCH_CONCURRENCY = 3;
+  var tbccCustomAdapters = [];
+
+  function loadCustomAdaptersFromStorage() {
+    try {
+      chrome.storage.local.get([STORAGE_CUSTOM_ADAPTERS], function (o) {
+        var arr = o && Array.isArray(o[STORAGE_CUSTOM_ADAPTERS]) ? o[STORAGE_CUSTOM_ADAPTERS] : [];
+        tbccCustomAdapters = arr.filter(function (r) {
+          return r && r.enabled !== false && r.domain && r.replaceFrom != null && r.replaceTo != null;
+        });
+      });
+    } catch (_) {}
+  }
+  loadCustomAdaptersFromStorage();
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== "local") return;
+      if (changes[STORAGE_CUSTOM_ADAPTERS]) loadCustomAdaptersFromStorage();
+    });
+  } catch (_) {}
+
+  /**
+   * OnlyFans: keep a growing set of resource URLs via PerformanceObserver (buffered).
+   * Plain performance.getEntriesByType("resource") misses requests that finished before capture.js injected.
+   */
+  (function tbccInitOnlyfansResourcePerfBag() {
+    try {
+      var hn = String(location.hostname || "").toLowerCase();
+      if (hn !== "onlyfans.com" && !hn.endsWith(".onlyfans.com")) return;
+      if (typeof PerformanceObserver === "undefined") return;
+      window.__tbccOfResourceUrlBag = window.__tbccOfResourceUrlBag || {};
+      /** Set on every SPA nav — filters resource-timing entries older than the current route. */
+      if (typeof window.__tbccOfNavBaselineMs !== "number") window.__tbccOfNavBaselineMs = 0;
+      /** Route key so we can reset the bag when the SPA URL changes. */
+      if (!window.__tbccOfNavRoute) window.__tbccOfNavRoute = location.pathname + location.search;
+      if (window.__tbccOfPerfObsActive) return;
+      window.__tbccOfPerfObsActive = true;
+      var bag = window.__tbccOfResourceUrlBag;
+      var po = new PerformanceObserver(function (list) {
+        try {
+          list.getEntries().forEach(function (e) {
+            var n = e && e.name;
+            if (!n || n.indexOf("http") !== 0 || n.length >= 8000) return;
+            var st = (e && typeof e.startTime === "number") ? e.startTime : 0;
+            if (window.__tbccOfNavBaselineMs && st < window.__tbccOfNavBaselineMs) return;
+            bag[n] = 1;
+          });
+        } catch (_) {}
+      });
+      po.observe({ type: "resource", buffered: true });
+
+      function tbccOfResetForRouteChange(reason) {
+        try {
+          window.__tbccOfResourceUrlBag = {};
+          window.__tbccOfNavBaselineMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : 0;
+          window.__tbccOfNavRoute = location.pathname + location.search;
+          window.__tbccOfLastResetReason = reason || "route-change";
+          window.__tbccOfLastResetAt = Date.now();
+        } catch (_) {}
+      }
+
+      try {
+        var _ps = history.pushState;
+        history.pushState = function () {
+          var r = _ps.apply(this, arguments);
+          setTimeout(function () { tbccOfResetForRouteChange("pushState"); }, 0);
+          return r;
+        };
+        var _rs = history.replaceState;
+        history.replaceState = function () {
+          var r = _rs.apply(this, arguments);
+          setTimeout(function () { tbccOfResetForRouteChange("replaceState"); }, 0);
+          return r;
+        };
+      } catch (_) {}
+      window.addEventListener("popstate", function () { tbccOfResetForRouteChange("popstate"); }, true);
+      /** Cheap route sentinel: if URL changes without history hook (rare), still reset. */
+      setInterval(function () {
+        try {
+          var cur = location.pathname + location.search;
+          if (cur !== window.__tbccOfNavRoute) tbccOfResetForRouteChange("poll");
+        } catch (_) {}
+      }, 2500);
+    } catch (_) {}
+  })();
 
   /**
    * Fetch bytes via background service worker (cookies + Referer rules).
@@ -49,7 +134,13 @@
     }
     return new Promise(function (resolve) {
       try {
-        chrome.runtime.sendMessage({ action: "tbcc-content-fetch-bytes", url: url }, function (resp) {
+        var refPage = "";
+        try {
+          refPage = String(location.href || "").split("#")[0];
+        } catch (_) {}
+        chrome.runtime.sendMessage(
+          { action: "tbcc-content-fetch-bytes", url: url, refererPageUrl: refPage },
+          function (resp) {
           if (chrome.runtime.lastError) {
             resolve({ error: chrome.runtime.lastError.message, url: url });
             return;
@@ -59,7 +150,8 @@
             return;
           }
           resolve({ buffer: resp.buffer, url: url });
-        });
+        }
+        );
       } catch (e) {
         resolve({ error: String(e.message || e), url: url });
       }
@@ -72,6 +164,35 @@
     } catch (_) {
       return u || "";
     }
+  }
+
+  function tbccHostMatchesRule(domain) {
+    try {
+      var host = String(location.hostname || "").toLowerCase();
+      var d = String(domain || "").toLowerCase().replace(/^www\./, "");
+      if (!d) return false;
+      return host === d || host.endsWith("." + d);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function applyCustomAdapterRules(url) {
+    if (!url || typeof url !== "string") return url;
+    var next = url;
+    for (var i = 0; i < tbccCustomAdapters.length; i++) {
+      var rule = tbccCustomAdapters[i];
+      if (!rule || !tbccHostMatchesRule(rule.domain)) continue;
+      try {
+        if (rule.mode === "regex") {
+          var rx = new RegExp(String(rule.replaceFrom || ""), "i");
+          next = next.replace(rx, String(rule.replaceTo || ""));
+        } else {
+          next = next.split(String(rule.replaceFrom || "")).join(String(rule.replaceTo || ""));
+        }
+      } catch (_) {}
+    }
+    return next;
   }
 
   /** Walk DOM including open shadow roots (depth-first). */
@@ -134,8 +255,8 @@
     if (s.indexOf("preview") >= 0 || s.indexOf("/mini/") >= 0) score -= 25;
     if (/_s\.(jpe?g|png|gif|webp)/i.test(s)) score -= 20;
     if (s.indexOf("avatar") >= 0 || s.indexOf("icon") >= 0) score -= 15;
-    /** Fapello grid: …/slug_NNN_300px.jpg — prefer …/slug_NNN.jpg when both are candidates. */
-    if (s.indexOf("fapello.com") >= 0 && /_\d+px\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(s)) score -= 55;
+    /** …/name_300px.jpg style thumbs — prefer same path without _NNNpx when upgrading. */
+    if (/_\d+px\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(s)) score -= 55;
     score += Math.min(s.length, 240) / 12;
     return score;
   }
@@ -230,7 +351,7 @@
     var link = el.closest && el.closest("a[href]");
     if (link && link.href) {
       var href = link.href.split("#")[0];
-      if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(href)) push(href);
+      if (isLikelyDirectImageAssetUrl(href)) push(href);
     }
     /** Fapello: always add full-res sibling URL so bestUrlFromCandidates can prefer it over _NNNpx thumbs. */
     if (isFapelloHost()) {
@@ -358,6 +479,24 @@
   }
 
   /**
+   * Forum software (e.g. XenForo) often serves direct images from attachment URLs without a file extension
+   * at the end (example: /attachments/name-jpg.12345/). Treat these as direct image assets.
+   */
+  function isLikelyDirectImageAssetUrl(url) {
+    if (!url) return false;
+    if (isDirectHttpImageUrl(url)) return true;
+    try {
+      var u = new URL(url, location.href);
+      var p = (u.pathname || "").toLowerCase();
+      if (/\/attachments\//i.test(p) && /-(?:jpe?g|jpg|png|gif|webp|avif|bmp)\.\d+\/?$/i.test(p)) return true;
+      if (/\/data\/attachments\//i.test(p) && /\.(?:jpe?g|jpg|png|gif|webp|avif|bmp)(?:\?|$)/i.test(p)) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
    * Find a same-origin link to a detail page near the thumb (wrapper or sibling, like motherless grids).
    */
   function findGenericGalleryLink(el) {
@@ -367,7 +506,7 @@
         var u0 = new URL(a.href, location.href);
         if (
           (u0.protocol === "http:" || u0.protocol === "https:") &&
-          !isDirectHttpImageUrl(a.href) &&
+          !isLikelyDirectImageAssetUrl(a.href) &&
           u0.origin === new URL(location.href).origin
         )
           return a;
@@ -383,7 +522,7 @@
             var u = new URL(c.href, location.href);
             if (
               (u.protocol === "http:" || u.protocol === "https:") &&
-              !isDirectHttpImageUrl(c.href) &&
+              !isLikelyDirectImageAssetUrl(c.href) &&
               u.origin === new URL(location.href).origin
             )
               return c;
@@ -396,7 +535,7 @@
               var u2 = new URL(inner.href, location.href);
               if (
                 (u2.protocol === "http:" || u2.protocol === "https:") &&
-                !isDirectHttpImageUrl(inner.href) &&
+                !isLikelyDirectImageAssetUrl(inner.href) &&
                 u2.origin === new URL(location.href).origin
               )
                 return inner;
@@ -434,6 +573,143 @@
     } catch (_) {
       return false;
     }
+  }
+
+  function isOnlyfansHost() {
+    try {
+      var h = (location.hostname || "").toLowerCase();
+      return h === "onlyfans.com" || h.endsWith(".onlyfans.com");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Larger still variants for chat/gallery grid thumbs (path segments like /300x300/ or _720x1280.jpg). */
+  function onlyfansUpgradeStillUrlCandidates(u) {
+    var out = [];
+    if (!u || String(u).indexOf("http") !== 0) return out;
+    try {
+      var u1 = new URL(u, location.href);
+      var p1 = u1.pathname || "";
+      var p1a = p1.replace(/\/\d{2,4}x\d{2,4}\//g, "/");
+      if (p1a !== p1) {
+        u1.pathname = p1a;
+        out.push(u1.href.split("#")[0]);
+      }
+      var u2 = new URL(u, location.href);
+      var p2 = u2.pathname || "";
+      var p2b = p2.replace(/_(\d{2,4})x(\d{2,4})(\.(?:jpe?g|png|webp|gif|avif))$/i, "$3");
+      if (p2b !== p2) {
+        u2.pathname = p2b;
+        out.push(u2.href.split("#")[0]);
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function onlyfansFindRelatedVideoForImg(el) {
+    if (!el || el.tagName !== "IMG") return null;
+    var imgR = null;
+    try {
+      imgR = el.getBoundingClientRect();
+    } catch (_) {
+      return null;
+    }
+    var n = el.parentElement;
+    for (var d = 0; d < 12 && n; d++) {
+      var vids = n.querySelectorAll && n.querySelectorAll("video");
+      if (vids && vids.length === 1) return vids[0];
+      if (vids && vids.length > 1) {
+        var best = null;
+        var bestOv = 0;
+        for (var vi = 0; vi < vids.length; vi++) {
+          var v = vids[vi];
+          var vr = null;
+          try {
+            vr = v.getBoundingClientRect();
+          } catch (_) {
+            continue;
+          }
+          var ix = Math.max(0, Math.min(imgR.right, vr.right) - Math.max(imgR.left, vr.left));
+          var iy = Math.max(0, Math.min(imgR.bottom, vr.bottom) - Math.max(imgR.top, vr.top));
+          var ov = ix * iy;
+          if (ov > bestOv) {
+            bestOv = ov;
+            best = v;
+          }
+        }
+        if (best && bestOv > 4) return best;
+      }
+      n = n.parentElement;
+    }
+    return null;
+  }
+
+  function onlyfansPickBestHttpVideoUrlFromElement(el) {
+    if (!el || el.tagName !== "VIDEO") return "";
+    var candidates = [];
+    try {
+      if (el.currentSrc) candidates.push(el.currentSrc);
+      if (el.src) candidates.push(el.src);
+      var dataAttrs = [
+        "data-src",
+        "data-mp4",
+        "data-video",
+        "data-video-src",
+        "data-video-url",
+        "data-url",
+        "data-file",
+        "data-original",
+        "data-hls",
+        "data-hls-url",
+        "data-dash",
+        "data-stream",
+      ];
+      for (var di = 0; di < dataAttrs.length; di++) {
+        var dv = el.getAttribute && el.getAttribute(dataAttrs[di]);
+        if (dv && String(dv).trim()) candidates.push(String(dv).trim());
+      }
+      var sources = el.querySelectorAll && el.querySelectorAll("source[src], source[srcset]");
+      if (sources) {
+        for (var si = 0; si < sources.length; si++) {
+          var snode = sources[si];
+          var su = snode.getAttribute("src");
+          if (su) candidates.push(su);
+          var sset = snode.getAttribute("srcset");
+          if (sset) {
+            var b = bestUrlFromSrcset(sset);
+            if (b) candidates.push(b);
+          }
+        }
+      }
+    } catch (_) {}
+    var scoreFn =
+      typeof tbccScoreVideoUrl === "function"
+        ? tbccScoreVideoUrl
+        : function (u2) {
+            var z = (u2 || "").toLowerCase();
+            var sc = 0;
+            if (/\.m3u8(\?|$)/i.test(z)) sc += 80;
+            if (z.indexOf("thumb") >= 0) sc -= 30;
+            return sc;
+          };
+    var seen = {};
+    var best = "";
+    var bestScore = -999999;
+    for (var ci = 0; ci < candidates.length; ci++) {
+      var c = candidates[ci];
+      if (!c || seen[c]) continue;
+      seen[c] = 1;
+      var absC = absUrl(c);
+      if (absC.indexOf("blob:") === 0 || absC.indexOf("data:") === 0) continue;
+      if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(absC, location.href)) continue;
+      var sc = scoreFn(absC);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = absC;
+      }
+    }
+    return best;
   }
 
   function fapelloFullImageUrlFromThumb(url) {
@@ -496,11 +772,145 @@
     return coomerPostUrlFromHref(location.href);
   }
 
+  function isFetlifeHost() {
+    try {
+      return /(^|\.)fetlife\.com$/i.test(location.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isEromeHost() {
+    try {
+      return /(^|\.)erome\.com$/i.test(location.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function eromeCurrentDetailPageUrl() {
+    if (!isEromeHost()) return "";
+    try {
+      var cur = new URL(location.href);
+      if (!/^\/a\/[^/]+/i.test(cur.pathname || "")) return "";
+      return cur.href.split("#")[0];
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /** /videos/12345 on fetlife.com (grid posters link here; player MP4 is inside HTML/JSON). */
+  function fetlifeVideoPageFromHref(href) {
+    if (!href) return "";
+    try {
+      var u = new URL(href, location.href);
+      if (!/(^|\.)fetlife\.com$/i.test(u.hostname)) return "";
+      if (!/\/videos\/\d+/i.test(u.pathname || "")) return "";
+      return u.href.split("#")[0];
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function findFetlifeVideoLink(el) {
+    if (!isFetlifeHost() || !el) return null;
+    var a = el.closest && el.closest("a[href]");
+    if (a && fetlifeVideoPageFromHref(a.href)) return a;
+    var node = el.parentElement;
+    for (var d = 0; d < 14 && node; d++) {
+      if (node.querySelectorAll) {
+        var links = node.querySelectorAll("a[href]");
+        for (var i = 0; i < links.length; i++) {
+          if (fetlifeVideoPageFromHref(links[i].href)) return links[i];
+        }
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function fetlifeVideoDetailUrlIfEligible(el) {
+    if (!isFetlifeHost() || !el) return "";
+    var tag = el.tagName;
+    if (tag !== "IMG" && tag !== "VIDEO") return "";
+    var link = findFetlifeVideoLink(el);
+    if (link && link.href) return fetlifeVideoPageFromHref(link.href);
+    return "";
+  }
+
+  function fetlifePicturePageFromHref(href) {
+    if (!href) return "";
+    try {
+      var u = new URL(href, location.href);
+      if (!/(^|\.)fetlife\.com$/i.test(u.hostname)) return "";
+      if (!/\/pictures\/\d+/i.test(u.pathname || "")) return "";
+      return u.href.split("#")[0];
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function findFetlifePictureLink(el) {
+    if (!isFetlifeHost() || !el) return null;
+    var a = el.closest && el.closest("a[href]");
+    if (a && fetlifePicturePageFromHref(a.href)) return a;
+    var node = el.parentElement;
+    for (var d = 0; d < 14 && node; d++) {
+      if (node.querySelectorAll) {
+        var links = node.querySelectorAll("a[href]");
+        for (var i = 0; i < links.length; i++) {
+          if (fetlifePicturePageFromHref(links[i].href)) return links[i];
+        }
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function fetlifePictureDetailUrlIfEligible(el) {
+    if (!isFetlifeHost() || !el || el.tagName !== "IMG") return "";
+    var link = findFetlifePictureLink(el);
+    if (link && link.href) return fetlifePicturePageFromHref(link.href);
+    return "";
+  }
+
+  /** Single picture permalink: hero <img> is not always wrapped in a link — use current URL for full-res resolve. */
+  function fetlifeSinglePicturePageUrl() {
+    if (!isFetlifeHost()) return "";
+    try {
+      var cur = new URL(location.href);
+      if (!/\/pictures\/\d+\/?$/i.test(cur.pathname || "")) return "";
+      return cur.href.split("#")[0];
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function fetlifeHeroOnPicturePageDetailUrl(el) {
+    if (!isFetlifeHost() || !el || el.tagName !== "IMG") return "";
+    var page = fetlifeSinglePicturePageUrl();
+    if (!page) return "";
+    var w = el.naturalWidth || el.width || 0;
+    var h = el.naturalHeight || el.height || 0;
+    var area = w * h;
+    var cr;
+    try {
+      cr = el.getBoundingClientRect();
+    } catch (_) {
+      return "";
+    }
+    var dispArea = cr.width * cr.height;
+    if (area < 45000 && dispArea < 180 * 180) return "";
+    if (cr.width < 130 || cr.height < 130) return "";
+    return page;
+  }
+
   function genericDetailPageUrlIfEligible(el) {
     if (!el || el.tagName !== "IMG") return "";
     if (isMotherlessHost()) return "";
     if (isCoomerLikeHost()) return "";
     if (isFapelloHost()) return "";
+    if (isFetlifeHost()) return "";
     var link = findGenericGalleryLink(el);
     if (!link || !link.href) return "";
     try {
@@ -509,7 +919,7 @@
       var cur = new URL(location.href);
       if (u.origin !== cur.origin) return "";
       if (u.href.split("#")[0] === cur.href.split("#")[0]) return "";
-      if (isDirectHttpImageUrl(u.href)) return "";
+      if (isLikelyDirectImageAssetUrl(u.href)) return "";
       var path = u.pathname || "";
       if (path.length < 2) return "";
       return u.href.split("#")[0];
@@ -518,11 +928,75 @@
     }
   }
 
+  function analyzeGalleryForAdapterSuggestions() {
+    var imgs = [];
+    try {
+      imgs = Array.prototype.slice.call(document.querySelectorAll("img[src], img[data-src], img[data-original]"));
+    } catch (_) {}
+    var host = "";
+    try {
+      host = String(location.hostname || "").toLowerCase().replace(/^www\./, "");
+    } catch (_) {}
+    var candidates = [];
+    for (var i = 0; i < imgs.length && candidates.length < 300; i++) {
+      var el = imgs[i];
+      var cands = [];
+      pushImageCandidates(el, cands);
+      for (var j = 0; j < cands.length; j++) {
+        var u = absUrl(cands[j] || "");
+        if (!/^https?:\/\//i.test(u)) continue;
+        candidates.push(u);
+      }
+    }
+    var sample = [...new Set(candidates)].slice(0, 400);
+    var suggestions = [];
+    var hasPxThumb = sample.some(function (u) {
+      return /_\d+px\.(jpe?g|png|webp|gif|avif)(\?|$)/i.test(u);
+    });
+    if (hasPxThumb) {
+      suggestions.push({
+        label: "Remove _NNNpx thumbnail suffix",
+        mode: "regex",
+        replaceFrom: "_\\d+px(\\.(?:jpe?g|png|webp|gif|avif)(?:\\?.*)?)$",
+        replaceTo: "$1",
+      });
+    }
+    var hasThumbSegment = sample.some(function (u) {
+      return /\/thumbs?\//i.test(u);
+    });
+    if (hasThumbSegment) {
+      suggestions.push({
+        label: "Replace /thumb/ or /thumbs/ with /images/",
+        mode: "regex",
+        replaceFrom: "\\/thumbs?\\/",
+        replaceTo: "/images/",
+      });
+    }
+    var hasSmallSegment = sample.some(function (u) {
+      return /\/small\/|_small\./i.test(u);
+    });
+    if (hasSmallSegment) {
+      suggestions.push({
+        label: "Drop small-size marker",
+        mode: "regex",
+        replaceFrom: "(?:\\/small\\/|_small\\.)",
+        replaceTo: "/",
+      });
+    }
+    return {
+      host: host,
+      sampleCount: sample.length,
+      suggestions: suggestions.slice(0, 6),
+      sampleUrls: sample.slice(0, 20),
+    };
+  }
+
   function getImageList() {
     var seen = new Set();
     var out = [];
     function add(url, width, height, tagName, naturalWidth, naturalHeight, extra) {
       if (!url) return;
+      url = applyCustomAdapterRules(url);
       /** http(s) URLs only: skip absurdly long strings; data: URLs can be huge (canvas export). */
       if (!url.startsWith("data:") && url.length > 8000) return;
       /** Allow large data:image/* (e.g. canvas.toDataURL from generators like perchance.org). */
@@ -553,6 +1027,25 @@
         row.durationSec = extra.durationSec;
       if (extra && extra.tbccCaptureSource) row.tbccCaptureSource = extra.tbccCaptureSource;
       if (extra && extra.tbccStreamManifest) row.tbccStreamManifest = true;
+      if (extra && extra.posterUrl && typeof extra.posterUrl === "string" && /^https?:\/\//i.test(extra.posterUrl.trim())) {
+        try {
+          row.posterUrl = absUrl(extra.posterUrl.trim());
+        } catch (_) {
+          row.posterUrl = extra.posterUrl.trim();
+        }
+      }
+      if (extra && extra.thumbUrl && typeof extra.thumbUrl === "string" && /^https?:\/\//i.test(extra.thumbUrl.trim())) {
+        try {
+          row.thumbUrl = absUrl(extra.thumbUrl.trim());
+        } catch (_) {
+          row.thumbUrl = extra.thumbUrl.trim();
+        }
+      }
+      if (extra && extra.tbccOfPosterOnly) row.tbccOfPosterOnly = true;
+      try {
+        row.tbccSourcePageUrl = String(location.href || "").split("#")[0];
+      } catch (ePage) {}
+      row.tbccCaptureSeq = out.length;
       out.push(row);
     }
     function tbccParseIso8601Duration(s) {
@@ -617,13 +1110,84 @@
         add(au, 0, 0, "video", 0, 0, extraLd);
       }
     }
+    function upgradePixelWidthThumbPath(url) {
+      if (!url || typeof url !== "string") return "";
+      try {
+        var u = new URL(url, location.href);
+        var path = u.pathname || "";
+        if (!/_\d+px\.(jpe?g|png|webp|gif|avif)(\?|$)/i.test(path)) return "";
+        u.pathname = path.replace(/_\d+px(\.(?:jpe?g|png|webp|gif|avif))$/i, "$1");
+        return u.href.split("#")[0];
+      } catch (_) {
+        return "";
+      }
+    }
+    function buildImgExtra(el) {
+      var extra = {};
+      var cp = coomerPostDetailUrlIfEligible(el);
+      if (cp) extra.coomerPostUrl = cp;
+      else {
+        var md = motherlessDetailUrlIfEligible(el);
+        if (md) extra.motherlessDetailUrl = md;
+        else {
+          var flv = fetlifeVideoDetailUrlIfEligible(el);
+          if (flv) extra.detailPageUrl = flv;
+          else {
+            var flpic = fetlifePictureDetailUrlIfEligible(el);
+            if (flpic) extra.detailPageUrl = flpic;
+            else {
+              var flHero = fetlifeHeroOnPicturePageDetailUrl(el);
+              if (flHero) extra.detailPageUrl = flHero;
+              else {
+                var gdu = genericDetailPageUrlIfEligible(el);
+                if (gdu) extra.detailPageUrl = gdu;
+                else {
+                  var edu = eromeCurrentDetailPageUrl();
+                  if (edu) extra.detailPageUrl = edu;
+                }
+              }
+            }
+          }
+        }
+      }
+      return extra;
+    }
     function processImg(el) {
       var cands = [];
       pushImageCandidates(el, cands);
+      if (isOnlyfansHost()) {
+        var snapO = cands.slice();
+        for (var oix = 0; oix < snapO.length; oix++) {
+          var ovs = onlyfansUpgradeStillUrlCandidates(snapO[oix]);
+          for (var ovi = 0; ovi < ovs.length; ovi++) cands.push(ovs[ovi]);
+        }
+      }
       var src = bestUrlFromCandidates(cands);
       if (!src) return;
       var abs = absUrl(src);
-      var extra = {};
+      var upPx = upgradePixelWidthThumbPath(abs);
+      if (upPx && upPx !== abs) abs = upPx;
+      if (isOnlyfansHost()) {
+        var relV = onlyfansFindRelatedVideoForImg(el);
+        if (relV) {
+          var exV = buildImgExtra(el);
+          try {
+            var durV = relV.duration;
+            if (typeof durV === "number" && isFinite(durV) && durV > 0) exV.durationSec = durV;
+          } catch (_) {}
+          exV.posterUrl = abs;
+          exV.thumbUrl = abs;
+          var vidPick = onlyfansPickBestHttpVideoUrlFromElement(relV);
+          if (vidPick) {
+            add(vidPick, el.width, el.height, "video", el.naturalWidth, el.naturalHeight, exV);
+          } else {
+            exV.tbccOfPosterOnly = true;
+            add(abs, el.width, el.height, "video", el.naturalWidth, el.naturalHeight, exV);
+          }
+          return;
+        }
+      }
+      var extra = buildImgExtra(el);
       var fapFull = isFapelloHost() ? fapelloFullImageUrlFromThumb(abs) : "";
       if (fapFull && fapFull !== abs) {
         var cpF = coomerPostDetailUrlIfEligible(el);
@@ -634,16 +1198,6 @@
         }
         add(fapFull, el.width, el.height, "img", el.naturalWidth, el.naturalHeight, extra);
         return;
-      }
-      var cp = coomerPostDetailUrlIfEligible(el);
-      if (cp) extra.coomerPostUrl = cp;
-      else {
-        var md = motherlessDetailUrlIfEligible(el);
-        if (md) extra.motherlessDetailUrl = md;
-        else {
-          var gdu = genericDetailPageUrlIfEligible(el);
-          if (gdu) extra.detailPageUrl = gdu;
-        }
       }
       add(abs, el.width, el.height, "img", el.naturalWidth, el.naturalHeight, extra);
     }
@@ -746,6 +1300,14 @@
       else {
         var mdv = motherlessDetailUrlIfEligible(el);
         if (mdv) extra.motherlessDetailUrl = mdv;
+        else {
+          var flvv = fetlifeVideoDetailUrlIfEligible(el);
+          if (flvv) extra.detailPageUrl = flvv;
+          else {
+            var edv = eromeCurrentDetailPageUrl();
+            if (edv) extra.detailPageUrl = edv;
+          }
+        }
       }
       try {
         var posterAttr = el.getAttribute && el.getAttribute("poster");
@@ -832,6 +1394,9 @@
     function mergeResourceTimingVideos() {
       try {
         if (typeof performance === "undefined" || !performance.getEntriesByType) return;
+        var hOf = (location.hostname || "").toLowerCase();
+        var isOnlyfans = hOf === "onlyfans.com" || hOf.endsWith(".onlyfans.com");
+        var navBaseMs = isOnlyfans && typeof window.__tbccOfNavBaselineMs === "number" ? window.__tbccOfNavBaselineMs : 0;
         var entries = performance.getEntriesByType("resource");
         var uniq = {};
         var list = [];
@@ -840,14 +1405,26 @@
           if (!name || name.indexOf("http") !== 0) continue;
           var pathOnly = name.split("?")[0].toLowerCase();
           if (!/\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(pathOnly)) continue;
+          if (navBaseMs && typeof entries[i].startTime === "number" && entries[i].startTime < navBaseMs) continue;
           if (uniq[name]) continue;
           uniq[name] = 1;
           list.push(name);
         }
+        if (isOnlyfans && window.__tbccOfResourceUrlBag) {
+          var bagV = window.__tbccOfResourceUrlBag;
+          for (var bk in bagV) {
+            if (!Object.prototype.hasOwnProperty.call(bagV, bk)) continue;
+            var pathB = bk.split("?")[0].toLowerCase();
+            if (!/\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(pathB)) continue;
+            if (uniq[bk]) continue;
+            uniq[bk] = 1;
+            list.push(bk);
+          }
+        }
         list.sort(function (a, b) {
           return scoreResourceTimingVideoUrl(b) - scoreResourceTimingVideoUrl(a);
         });
-        var max = 28;
+        var max = isOnlyfans ? 56 : 28;
         for (var j = 0; j < list.length && j < max; j++) {
           var au = absUrl(list[j]);
           if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) continue;
@@ -862,20 +1439,31 @@
         var h = (location.hostname || "").toLowerCase();
         if (h !== "onlyfans.com" && !h.endsWith(".onlyfans.com")) return;
         var entries = performance.getEntriesByType("resource");
+        var navBaseMs = typeof window.__tbccOfNavBaselineMs === "number" ? window.__tbccOfNavBaselineMs : 0;
         var seen = {};
-        for (var i = 0; i < entries.length; i++) {
-          var name = (entries[i] && entries[i].name) || "";
-          if (!name || name.indexOf("http") !== 0) continue;
+        function considerManifest(name) {
+          if (!name || name.indexOf("http") !== 0) return;
           var pathOnly = name.split("?")[0].toLowerCase();
-          if (!/\.(m3u8|mpd)(\?|$)/i.test(pathOnly)) continue;
-          if (seen[name]) continue;
+          if (!/\.(m3u8|mpd)(\?|$)/i.test(pathOnly)) return;
+          if (seen[name]) return;
           seen[name] = 1;
           var au = absUrl(name);
-          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) continue;
+          if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au, location.href)) return;
           add(au, 0, 0, "video", 0, 0, {
             tbccCaptureSource: "resource-timing",
             tbccStreamManifest: true,
           });
+        }
+        for (var i = 0; i < entries.length; i++) {
+          var _e = entries[i];
+          if (navBaseMs && _e && typeof _e.startTime === "number" && _e.startTime < navBaseMs) continue;
+          considerManifest((_e && _e.name) || "");
+        }
+        if (window.__tbccOfResourceUrlBag) {
+          for (var mk in window.__tbccOfResourceUrlBag) {
+            if (!Object.prototype.hasOwnProperty.call(window.__tbccOfResourceUrlBag, mk)) continue;
+            considerManifest(mk);
+          }
         }
       } catch (_) {}
     }
@@ -886,6 +1474,7 @@
     function scoreResourceTimingImageUrl(u) {
       var s = (u || "").toLowerCase();
       var sc = 0;
+      if (/\/\d{2,4}x\d{2,4}\//.test(s) || /_\d{2,4}x\d{2,4}\.(jpe?g|png|webp|gif|avif)/i.test(s)) sc -= 28;
       if (s.indexOf("2160") >= 0 || s.indexOf("4k") >= 0) sc += 45;
       if (s.indexOf("1080") >= 0) sc += 35;
       if (s.indexOf("720") >= 0) sc += 18;
@@ -897,6 +1486,140 @@
       if (s.indexOf("profile-photos") >= 0) sc -= 22;
       if (s.indexOf("icon") >= 0) sc -= 40;
       return sc;
+    }
+    function onlyfansNormalizeStillKey(url) {
+      try {
+        var u = new URL(url, location.href);
+        var path = u.pathname || "";
+        var norm = path
+          .replace(/\/\d{2,4}x\d{2,4}\//g, "/")
+          .replace(/\/\d{2,4}x\d{2,4}$/g, "")
+          .replace(/_(\d{2,4})x(\d{2,4})(\.(?:jpe?g|png|webp|gif|avif))$/i, "$3");
+        return ((u.hostname || "") + norm).toLowerCase().split("?")[0];
+      } catch (_) {
+        return String(url || "").slice(0, 200);
+      }
+    }
+    function onlyfansCollapseDuplicateStills(arr) {
+      if (!isOnlyfansHost() || !arr || !arr.length) return;
+      var buckets = new Map();
+      var dropIdx = new Set();
+      for (var i = 0; i < arr.length; i++) {
+        var row = arr[i];
+        if (!row || !row.url) continue;
+        var pathOnly = String(row.url).split("?")[0].toLowerCase();
+        if (!/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(pathOnly)) continue;
+        if ((row.mediaType || "").toLowerCase() === "video" || (row.tagName || "").toLowerCase() === "video") continue;
+        var k = onlyfansNormalizeStillKey(row.url);
+        if (!k || k.length < 8) continue;
+        if (!buckets.has(k)) buckets.set(k, i);
+        else {
+          var j = buckets.get(k);
+          var sj = scoreResourceTimingImageUrl(arr[j].url);
+          var si = scoreResourceTimingImageUrl(arr[i].url);
+          if (si > sj) {
+            dropIdx.add(j);
+            buckets.set(k, i);
+          } else {
+            dropIdx.add(i);
+          }
+        }
+      }
+      if (!dropIdx.size) return;
+      var sortedDrop = Array.from(dropIdx).sort(function (a, b) {
+        return b - a;
+      });
+      for (var di = 0; di < sortedDrop.length; di++) {
+        arr.splice(sortedDrop[di], 1);
+      }
+    }
+    function onlyfansMediaStemFromUrl(url) {
+      try {
+        var path = new URL(url, location.href).pathname.split("/").filter(Boolean);
+        var last = path[path.length - 1] || "";
+        return last
+          .replace(/\.[^.]+$/, "")
+          .replace(/_\d+x\d+$/i, "")
+          .slice(0, 96)
+          .toLowerCase();
+      } catch (_) {
+        return "";
+      }
+    }
+    function onlyfansPosterMp4LikelyPair(posterUrl, mp4Url) {
+      var a = onlyfansMediaStemFromUrl(posterUrl);
+      var b = onlyfansMediaStemFromUrl(mp4Url);
+      if (!a || !b) return false;
+      if (a === b) return true;
+      if (a.indexOf(b) >= 0 || b.indexOf(a) >= 0) return true;
+      if (a.length >= 14 && b.length >= 14 && a.slice(0, 14) === b.slice(0, 14)) return true;
+      return false;
+    }
+    function onlyfansNetVideoCapture(row) {
+      var s = row && row.tbccCaptureSource;
+      return s === "resource-timing" || s === "web-request";
+    }
+    function onlyfansUpgradePosterOnlyVideos(arr) {
+      if (!isOnlyfansHost() || !arr || !arr.length) return;
+      var posterIdx = [];
+      var mp4Idx = [];
+      for (var i = 0; i < arr.length; i++) {
+        var row = arr[i];
+        if (!row || !row.url) continue;
+        var low = String(row.url).split("?")[0].toLowerCase();
+        if (row.tbccOfPosterOnly && /\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(low)) posterIdx.push(i);
+        if (/\.(mp4|webm|m4v|mov)(\?|$)/i.test(low) && onlyfansNetVideoCapture(row)) mp4Idx.push(i);
+      }
+      if (!posterIdx.length || !mp4Idx.length) return;
+      var usedMp4 = new Set();
+      for (var pi = 0; pi < posterIdx.length; pi++) {
+        var ii = posterIdx[pi];
+        var pv = arr[ii];
+        if (!pv.tbccOfPosterOnly) continue;
+        var bestI = -1;
+        var bestScore = -999999;
+        for (var mj = 0; mj < mp4Idx.length; mj++) {
+          var jj = mp4Idx[mj];
+          if (usedMp4.has(jj)) continue;
+          var mv = arr[jj];
+          if (!onlyfansPosterMp4LikelyPair(pv.url, mv.url)) continue;
+          var sc = typeof tbccScoreVideoUrl === "function" ? tbccScoreVideoUrl(mv.url) : 0;
+          if (sc > bestScore) {
+            bestScore = sc;
+            bestI = jj;
+          }
+        }
+        if (bestI >= 0) {
+          var chosen = arr[bestI];
+          pv.thumbUrl = pv.url;
+          pv.posterUrl = pv.posterUrl || pv.url;
+          pv.url = chosen.url;
+          delete pv.tbccOfPosterOnly;
+          usedMp4.add(bestI);
+        }
+      }
+      var pending = posterIdx.filter(function (idx) {
+        return arr[idx] && arr[idx].tbccOfPosterOnly;
+      });
+      var unusedMp4 = mp4Idx.filter(function (idx) {
+        return !usedMp4.has(idx);
+      });
+      if (pending.length === 1 && unusedMp4.length === 1) {
+        var pvx = arr[pending[0]];
+        var mx = arr[unusedMp4[0]];
+        pvx.thumbUrl = pvx.url;
+        pvx.posterUrl = pvx.posterUrl || pvx.url;
+        pvx.url = mx.url;
+        delete pvx.tbccOfPosterOnly;
+        usedMp4.add(unusedMp4[0]);
+      }
+      if (!usedMp4.size) return;
+      var dropM = Array.from(usedMp4).sort(function (a, b) {
+        return b - a;
+      });
+      for (var d = 0; d < dropM.length; d++) {
+        arr.splice(dropM[d], 1);
+      }
     }
     function mergeBackgroundImageUrls() {
       try {
@@ -972,14 +1695,17 @@
         if (typeof performance === "undefined" || !performance.getEntriesByType) return;
         var h2 = (location.hostname || "").toLowerCase();
         if (h2 !== "onlyfans.com" && !h2.endsWith(".onlyfans.com")) return;
+        var navBaseMs = typeof window.__tbccOfNavBaselineMs === "number" ? window.__tbccOfNavBaselineMs : 0;
         var entries2 = performance.getEntriesByType("resource");
         var uniq2 = {};
         var list2 = [];
         for (var ii = 0; ii < entries2.length; ii++) {
-          var name2 = (entries2[ii] && entries2[ii].name) || "";
+          var _ei = entries2[ii];
+          var name2 = (_ei && _ei.name) || "";
           if (!name2 || name2.indexOf("http") !== 0) continue;
           var pathOnly2 = name2.split("?")[0].toLowerCase();
           if (!/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(pathOnly2)) continue;
+          if (navBaseMs && _ei && typeof _ei.startTime === "number" && _ei.startTime < navBaseMs) continue;
           var low2 = name2.toLowerCase();
           if (low2.indexOf("avatar") >= 0 || low2.indexOf("/icon") >= 0 || low2.indexOf("emoji") >= 0 || low2.indexOf("favicon") >= 0)
             continue;
@@ -987,10 +1713,25 @@
           uniq2[name2] = 1;
           list2.push(name2);
         }
+        if (window.__tbccOfResourceUrlBag) {
+          for (var ik in window.__tbccOfResourceUrlBag) {
+            if (!Object.prototype.hasOwnProperty.call(window.__tbccOfResourceUrlBag, ik)) continue;
+            var nameB = ik;
+            if (!nameB || nameB.indexOf("http") !== 0) continue;
+            var pathB = nameB.split("?")[0].toLowerCase();
+            if (!/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(pathB)) continue;
+            var lowB = nameB.toLowerCase();
+            if (lowB.indexOf("avatar") >= 0 || lowB.indexOf("/icon") >= 0 || lowB.indexOf("emoji") >= 0 || lowB.indexOf("favicon") >= 0)
+              continue;
+            if (uniq2[nameB]) continue;
+            uniq2[nameB] = 1;
+            list2.push(nameB);
+          }
+        }
         list2.sort(function (a, b) {
           return scoreResourceTimingImageUrl(b) - scoreResourceTimingImageUrl(a);
         });
-        var maxImg = 96;
+        var maxImg = 140;
         for (var jj = 0; jj < list2.length && jj < maxImg; jj++) {
           var au2 = absUrl(list2[jj]);
           if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(au2, location.href)) continue;
@@ -1003,6 +1744,8 @@
     mergeOnlyfansResourceTimingImages();
     mergeGenericResourceTimingImages();
     mergeBackgroundImageUrls();
+    onlyfansCollapseDuplicateStills(out);
+    onlyfansUpgradePosterOnlyVideos(out);
     return out;
   }
 
@@ -1281,6 +2024,14 @@
   window.__tbccGetCaptionBundle = getCaptionBundle;
 
   chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
+    if (msg.action === "tbcc-analyze-gallery-adapter") {
+      try {
+        sendResponse({ ok: true, analysis: analyzeGalleryForAdapterSuggestions() });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+      return true;
+    }
     if (msg.action === "tbcc-getImageList") {
       try {
         sendResponse({ list: getImageList() });

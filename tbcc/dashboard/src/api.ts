@@ -84,13 +84,60 @@ function throwIfBodyError<T extends object>(data: T): T {
   return data;
 }
 
+export type WatchFolderStatus =
+  | { configured: false; hint: string }
+  | {
+      configured: true;
+      debounce_s: number;
+      inbox: {
+        path: string;
+        resolved: boolean;
+        exists: boolean;
+        is_dir: boolean;
+        file_count: number | null;
+      };
+      library: {
+        path: string;
+        resolved: boolean;
+        exists: boolean;
+        is_dir: boolean;
+        files_per_category: Record<string, number | null>;
+      };
+      log: {
+        path: string | null;
+        exists: boolean;
+        recent: Array<Record<string, unknown>>;
+      };
+      runbook: { watch: string; once: string; dry_run: string };
+    };
+
+export type PaymentBotMenuButton = { label: string; action: string };
+export type PaymentBotSettings = {
+  main_menu: PaymentBotMenuButton[][];
+  welcome_html: string;
+  loot_intro_html: string;
+  subscribe_title_main: string;
+  subscribe_title_loot: string;
+  subscription_catalog_columns: number;
+  min_subscription_stars: number;
+  runtime_adapter?: "local" | "command" | null;
+  runtime_cmd_start?: string | null;
+  runtime_cmd_stop?: string | null;
+  runtime_cmd_restart?: string | null;
+  runtime_cmd_reload?: string | null;
+  runtime_cmd_status?: string | null;
+};
+
 export const api = {
   health: () => fetchApi<{ status: string }>("/health"),
   healthDb: () =>
     fetchApi<{ status?: string; database?: string; error?: string; detail?: string }>("/health/db"),
+  watchFolder: {
+    status: () => fetchApi<WatchFolderStatus>("/watch-folder/status"),
+  },
   media: {
     list: (
-      statusOrOpts?: string | { status?: string; pool_id?: number; tag?: string; tag_slug?: string }
+      statusOrOpts?: string | { status?: string; pool_id?: number; tag?: string; tag_slug?: string; sort?: "newest" | "recommended"; target_pool_id?: number }
     ) => {
       const opts = typeof statusOrOpts === "string" ? { status: statusOrOpts } : statusOrOpts;
       const params = new URLSearchParams();
@@ -98,6 +145,8 @@ export const api = {
       if (opts?.pool_id != null) params.set("pool_id", String(opts.pool_id));
       if (opts?.tag) params.set("tag", opts.tag);
       if (opts?.tag_slug) params.set("tag_slug", opts.tag_slug);
+      if (opts?.sort) params.set("sort", opts.sort);
+      if (opts?.target_pool_id != null) params.set("target_pool_id", String(opts.target_pool_id));
       const q = params.toString();
       return fetchApi<Array<Record<string, unknown>>>(q ? `/media?${q}` : "/media");
     },
@@ -371,8 +420,42 @@ export const api = {
           body: JSON.stringify(body),
         })
       ),
+    /** Rotate channel invite with optional join-request gate, limits, and expiry. */
+    rotateInvite: async (
+      channelId: number,
+      body?: {
+        request_needed?: boolean;
+        usage_limit?: number | null;
+        expire_hours?: number | null;
+        title?: string | null;
+        revoke_previous?: boolean;
+      }
+    ) =>
+      throwIfBodyError(
+        await fetchApi<{
+          ok?: boolean;
+          error?: string | null;
+          invite_link?: string;
+          revoked_previous?: boolean;
+          revoke_error?: string | null;
+        }>(`/channels/${channelId}/rotate-invite`, {
+          method: "POST",
+          body: JSON.stringify(body ?? {}),
+        })
+      ),
   },
-  bots: { list: () => fetchApi<Array<Record<string, unknown>>>("/bots") },
+  bots: {
+    list: () => fetchApi<Array<Record<string, unknown>>>("/bots"),
+    runtime: (botKey: string) =>
+      fetchApi<{ bot_key: string; status: string; pid: number | null; started_at?: string; adapter?: string; message?: string }>(
+        `/bots/runtime/${encodeURIComponent(botKey)}`
+      ),
+    control: (botKey: string, action: "start" | "stop" | "restart" | "reload") =>
+      fetchApi<{ ok: boolean; status: string; pid: number | null; message?: string }>(
+        `/bots/runtime/${encodeURIComponent(botKey)}/${action}`,
+        { method: "POST", body: "{}" }
+      ),
+  },
   subscriptions: {
     list: (status?: string) =>
       fetchApi<Array<Record<string, unknown>>>(status ? `/subscriptions?status=${status}` : "/subscriptions"),
@@ -442,6 +525,15 @@ export const api = {
         method: "POST",
       }),
   },
+  paymentBotSettings: {
+    get: () =>
+      fetchApi<{ effective: PaymentBotSettings; overrides: Record<string, unknown> }>("/payment-bot-settings"),
+    patch: (body: Partial<PaymentBotSettings>) =>
+      fetchApi<{ ok: boolean; effective: PaymentBotSettings; overrides: Record<string, unknown> }>(
+        "/payment-bot-settings",
+        { method: "PATCH", body: JSON.stringify(body) }
+      ),
+  },
   externalPaymentOrders: {
     listPending: () =>
       fetchApi<
@@ -508,6 +600,14 @@ export const api = {
       description_variations?: string[];
       /** tbcc_tags.id values from GET /tags */
       tag_ids?: number[];
+      /** Optional fixed NOWPayments quote in USD for wallet/crypto checkout. */
+      nowpayments_price_usd?: number;
+      /** If true, NOWPayments checkout can offer supported currencies. */
+      nowpayments_allow_any_currency?: boolean;
+      /** Optional fixed NOWPayments pay currency (used when allow_any_currency is false). */
+      nowpayments_pay_currency?: string;
+      /** Optional metadata note for operator receiving wallet/address. */
+      nowpayments_receiving_wallet?: string;
     }) =>
       fetchApi<Record<string, unknown>>("/subscription-plans", { method: "POST", body: JSON.stringify(body) }),
     update: (
@@ -525,6 +625,10 @@ export const api = {
         promo_image_urls: string[] | null;
         description_variations: string[] | null;
         tag_ids: number[] | null;
+        nowpayments_price_usd: number | null;
+        nowpayments_allow_any_currency: boolean;
+        nowpayments_pay_currency: string | null;
+        nowpayments_receiving_wallet: string | null;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/subscription-plans/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -591,6 +695,11 @@ export const api = {
       album_order_mode?: "static" | "shuffle" | "carousel";
       send_silent?: boolean;
       pin_after_send?: boolean;
+      /** Append payment-bot deep link button; Stars checkout opens in private chat with the bot. */
+      checkout_stars_enabled?: boolean;
+      checkout_stars_plan_id?: number | null;
+      checkout_button_label?: string | null;
+      checkout_referral_code?: string | null;
     }) =>
       fetchApi<{ posts: Array<Record<string, unknown>>; campaign_group_id: string | null }>(
         "/scheduled-posts",
@@ -618,6 +727,10 @@ export const api = {
         album_order_mode?: "static" | "shuffle" | "carousel" | null;
         send_silent?: boolean | null;
         pin_after_send?: boolean | null;
+        checkout_stars_enabled?: boolean | null;
+        checkout_stars_plan_id?: number | null;
+        checkout_button_label?: string | null;
+        checkout_referral_code?: string | null;
         /** Clear auto-pause after repeated send failures (same as Post now). */
         clear_auto_pause?: boolean;
       }>

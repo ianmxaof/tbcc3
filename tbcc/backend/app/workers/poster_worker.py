@@ -3,8 +3,11 @@ import logging
 import os
 import threading
 from datetime import datetime
+from pathlib import Path
 
 from app.workers.celery_app import celery
+from app.utils.telegram_peer import normalize_telethon_peer_identifier
+from app.utils.telethon_session import admin_session_stem, poster_session_stem
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +61,7 @@ def _note_send_failures_on_rows(posts: list, err: Exception | None) -> None:
             p.posting_auto_pause_reason = msg
 
 
-def _poster_session_name() -> str:
-    """Dedicated Telethon session file for poster worker to avoid cross-process SQLite locks."""
-    name = (os.getenv("TBCC_POSTER_TELEGRAM_SESSION") or "admin_poster").strip()
-    return name or "admin_poster"
-
-
-def _try_bootstrap_poster_from_admin(session_basename: str) -> bool:
+def _try_bootstrap_poster_from_admin() -> bool:
     """
     Copy Telethon auth from admin.session into the poster session file (SQLite backup).
     Opt-in via TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1 so local dev does not require a manual copy.
@@ -72,10 +69,12 @@ def _try_bootstrap_poster_from_admin(session_basename: str) -> bool:
     flag = os.getenv("TBCC_POSTER_AUTO_COPY_ADMIN_SESSION", "").strip().lower()
     if flag not in {"1", "true", "yes", "on"}:
         return False
-    if session_basename == "admin":
+    admin_stem = admin_session_stem()
+    poster_stem = poster_session_stem()
+    if os.path.normcase(os.path.normpath(admin_stem)) == os.path.normcase(os.path.normpath(poster_stem)):
         return False
-    admin_path = os.path.abspath("admin.session")
-    poster_path = os.path.abspath(f"{session_basename}.session")
+    admin_path = admin_stem + ".session"
+    poster_path = poster_stem + ".session"
     if not os.path.isfile(admin_path):
         logger.warning(
             "TBCC_POSTER_AUTO_COPY_ADMIN_SESSION is set but admin.session not found (%s)",
@@ -93,7 +92,8 @@ def _try_bootstrap_poster_from_admin(session_basename: str) -> bool:
             dst.close()
             src.close()
         logger.info(
-            "Bootstrapped poster Telethon session from admin.session -> %s (TBCC_POSTER_AUTO_COPY_ADMIN_SESSION)",
+            "Bootstrapped poster Telethon session from %s -> %s (TBCC_POSTER_AUTO_COPY_ADMIN_SESSION)",
+            admin_path,
             poster_path,
         )
         return True
@@ -120,19 +120,18 @@ async def _ensure_poster_authorized(client) -> None:
     if not client.is_connected():
         await client.connect()
     if not await client.is_user_authorized():
-        session_name = _poster_session_name()
-        if _try_bootstrap_poster_from_admin(session_name):
+        if _try_bootstrap_poster_from_admin():
             await client.disconnect()
             await client.connect()
         if await client.is_user_authorized():
             return
+        stem = poster_session_stem()
+        admin_stem = admin_session_stem()
         raise RuntimeError(
-            f"Telegram poster session is not logged in ({session_name}.session — usually next to cwd, "
-            f"often tbcc/backend). Celery cannot prompt for a phone number. "
-            f"Fix: copy a logged-in admin.session to {session_name}.session (same API_ID/API_HASH), or run a "
-            f"one-time interactive login from tbcc/backend with Telethon using session name '{session_name}'. "
-            f"Override basename with TBCC_POSTER_TELEGRAM_SESSION, or set TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1 "
-            f"to copy admin.session into the poster file on first use (dev convenience)."
+            f"Telegram poster session is not logged in ({stem}.session). Celery cannot prompt for a phone number. "
+            f"Fix: ensure a logged-in admin session exists at {admin_stem}.session (same API_ID/API_HASH), then either "
+            f"copy it to {stem}.session, set TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1 to copy on first use, or run a "
+            f"one-time interactive Telethon login with session stem {Path(stem).name!r} under tbcc/backend."
         )
 
 
@@ -147,7 +146,7 @@ async def _get_poster_client():
         need_new = _poster_client is None
     if need_new:
         c = TelegramClient(
-            _poster_session_name(),
+            poster_session_stem(),
             int(os.environ["API_ID"]),
             os.environ["API_HASH"],
         )
@@ -431,9 +430,10 @@ def post_pool(pool_id: int, channel_identifier: str):
                     attempt += 1
                     try:
                         client = await _get_poster_client()
+                        peer = normalize_telethon_peer_identifier(channel_identifier)
                         await post_pool_albums(
                             client,
-                            channel_identifier,
+                            peer,
                             pool_id,
                             db,
                             album_size=album_size,

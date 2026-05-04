@@ -4,25 +4,25 @@
     {
       "id": "coomer",
       "name": "Coomer",
-      "category": "archives",
+      "category": "onlyfans",
       "url": "https://coomer.st/artists?q={username}&service=&sort_by=favorited&order="
     },
     {
       "id": "fapello",
       "name": "Fapello",
-      "category": "archives",
+      "category": "onlyfans",
       "url": "https://fapello.com/search/{username}"
     },
     {
       "id": "bestcam",
       "name": "BestCam",
-      "category": "cam",
+      "category": "livecams",
       "url": "https://bestcam.tv/search/{username}"
     },
     {
       "id": "bestcamvideos",
       "name": "BestCamVideos",
-      "category": "cam",
+      "category": "livecams",
       "url": "https://bestcamvideos.com/?s={username}"
     }
   ]

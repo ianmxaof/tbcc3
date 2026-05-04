@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import logging
 import os
 from typing import Annotated
@@ -136,7 +137,73 @@ def _browser_like_headers(url: str) -> dict[str, str]:
     return _headers_with_referer(referer or "https://www.erome.com/")
 
 
-async def _httpx_get_media(url: str, timeout: float) -> tuple[bytes, str]:
+def _transient_network_failure(exc: BaseException) -> bool:
+    """DNS blips, refused sockets, timeouts — safe to retry a few times."""
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError)):
+        return True
+    if isinstance(exc, httpx.CloseError):
+        return True
+    e: BaseException | None = exc
+    for _ in range(10):
+        if isinstance(e, OSError):
+            code = getattr(e, "winerror", None) or getattr(e, "errno", None)
+            if code in (
+                11001,
+                11002,
+                10060,
+                10061,
+                10051,
+                errno.EAGAIN,
+                errno.ECONNRESET,
+                errno.ETIMEDOUT,
+                errno.ECONNREFUSED,
+                errno.EHOSTUNREACH,
+                errno.ENETUNREACH,
+            ):
+                return True
+        msg = str(e).lower()
+        if (
+            "getaddrinfo" in msg
+            or "name or service not known" in msg
+            or "temporary failure in name resolution" in msg
+            or "nodename nor servname" in msg
+        ):
+            return True
+        e = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
+    return False
+
+
+def _friendly_download_error(url: str, exc: BaseException) -> str:
+    """Short, actionable message for API clients (avoid raw errno dumps in UI)."""
+    host = ""
+    try:
+        host = (urlparse(url).hostname or "").strip()
+    except Exception:
+        pass
+    raw = str(exc).strip()
+    low = raw.lower()
+    if "getaddrinfo" in low or "11001" in raw or "name or service not known" in low or "nodename nor servname" in low:
+        return (
+            "Could not resolve host (DNS). "
+            + (f"Host: {host}. " if host else "")
+            + "Check the URL, your network, and that the machine running TBCC can reach the internet."
+        )
+    if "certificate" in low or "ssl" in low or "tls" in low:
+        return f"TLS/SSL error while downloading{f' ({host})' if host else ''}: {raw[:180]}"
+    if "timed out" in low or "timeout" in low:
+        return (
+            "Download timed out"
+            + (f" for {host}" if host else "")
+            + ". Try again, use a smaller file, or fetch via the extension session for protected CDNs."
+        )
+    if "403" in raw or "forbidden" in low:
+        return f"HTTP forbidden (403){f' — {host}' if host else ''}. This host may require cookies; use session import from the gallery."
+    if "404" in raw or "not found" in low:
+        return f"Not found (404){f' — {host}' if host else ''}."
+    return f"Could not download: {raw[:220]}"
+
+
+async def _httpx_get_media_attempt(url: str, timeout: float) -> tuple[bytes, str]:
     try:
         p = urlparse(url)
         host = (p.hostname or "").lower()
@@ -171,6 +238,30 @@ async def _httpx_get_media(url: str, timeout: float) -> tuple[bytes, str]:
         return r.content, r.headers.get("content-type", "")
 
 
+async def _httpx_get_media(url: str, timeout: float) -> tuple[bytes, str]:
+    delays_s = (0.0, 0.75, 2.25)
+    last_exc: BaseException | None = None
+    for attempt, delay in enumerate(delays_s):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await _httpx_get_media_attempt(url, timeout)
+        except Exception as e:
+            last_exc = e
+            if attempt + 1 < len(delays_s) and _transient_network_failure(e):
+                logger.info(
+                    "import fetch retry %s/%s url=%s err=%s",
+                    attempt + 1,
+                    len(delays_s),
+                    url[:120],
+                    e,
+                )
+                continue
+            raise
+    assert last_exc is not None
+    raise last_exc
+
+
 def _caption_from_body(data: dict | None) -> str | None:
     if not data:
         return None
@@ -195,6 +286,8 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
             return {"error": f"Invalid URL: {u[:80]}"}
 
     items: list[tuple[bytes, str]] = []
+    ok_urls: list[str] = []
+    url_errors: list[dict[str, str]] = []
     for url in urls:
         url = url.strip()
         url_l = url.lower()
@@ -202,14 +295,22 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
         timeout = 300.0 if is_large_media else 60.0
         try:
             file_bytes, content_type = await _httpx_get_media(url, timeout)
-        except httpx.HTTPError as e:
-            logger.warning("saved-batch-urls fetch failed url=%s err=%s", url[:80], e)
-            return {"error": f"Could not download URL ({e})"}
+            file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
+            media_type = _guess_media_type(url, content_type)
+            media_type = _refine_media_type_from_bytes(file_bytes, media_type)
+            items.append((file_bytes, media_type))
+            ok_urls.append(url)
+        except Exception as e:
+            friendly = _friendly_download_error(url, e)
+            logger.warning("saved-batch-urls fetch failed url=%s err=%s", url[:120], e)
+            url_errors.append({"url": url[:800], "error": friendly})
 
-        file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
-        media_type = _guess_media_type(url, content_type)
-        media_type = _refine_media_type_from_bytes(file_bytes, media_type)
-        items.append((file_bytes, media_type))
+    if not items:
+        if len(url_errors) == 1:
+            return {"error": url_errors[0]["error"]}
+        return {
+            "error": f"Could not download any of {len(url_errors)} URL(s). First: {url_errors[0]['error']}",
+        }
 
     async with import_lock():
         storage = await get_telegram_storage()
@@ -219,11 +320,15 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
             logger.warning("Telegram rejected saved-batch-urls err=%s", e)
             return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
 
-    return {
+    out: dict = {
         "status": "saved_only",
         "message": "Saved to Telegram Saved Messages (grouped into albums of up to 10)",
         "count": len(items),
+        "ok_urls": ok_urls,
     }
+    if url_errors:
+        out["errors"] = url_errors
+    return out
 
 
 @router.post("/url")
@@ -253,9 +358,9 @@ async def import_from_url(data: dict, db: Session = Depends(get_db)):
     timeout = 300.0 if is_large_media else 60.0
     try:
         file_bytes, content_type = await _httpx_get_media(url, timeout)
-    except httpx.HTTPError as e:
-        logger.warning("import/url fetch failed url=%s err=%s", url[:80], e)
-        return {"error": f"Could not download URL ({e})"}
+    except Exception as e:
+        logger.warning("import/url fetch failed url=%s err=%s", url[:120], e)
+        return {"error": _friendly_download_error(url, e)}
 
     file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
     media_type = _guess_media_type(url, content_type)

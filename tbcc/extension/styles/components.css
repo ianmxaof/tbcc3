@@ -209,3 +209,163 @@ body.tbcc-options-page .tbcc-btn-secondary {
   cursor: pointer;
   font-size: 13px;
 }
+
+/* Compact “details” rows (model search sources, adapter lab) */
+body.tbcc-options-page .tbcc-details-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+  font-size: 13px;
+}
+
+body.tbcc-options-page .tbcc-details-row:last-child {
+  border-bottom: none;
+}
+
+body.tbcc-options-page .tbcc-details-row > input[type="checkbox"] {
+  margin: 2px 0 0;
+  flex-shrink: 0;
+}
+
+body.tbcc-options-page .tbcc-details-row-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+body.tbcc-options-page .tbcc-details-main {
+  flex: 1;
+  min-width: 0;
+}
+
+body.tbcc-options-page .tbcc-details-title {
+  font-weight: 500;
+  color: var(--tbcc-text-primary);
+  line-height: 1.3;
+}
+
+body.tbcc-options-page .tbcc-details-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--tbcc-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.tbcc-options-page .tbcc-details-id.cat {
+  margin-left: 0;
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding-top: 2px;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.tbcc-options-page .tbcc-details-actions {
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+body.tbcc-options-page button.tbcc-details-remove {
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--tbcc-error, #f38ba8);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+body.tbcc-options-page button.tbcc-details-remove:hover {
+  color: var(--tbcc-text-primary);
+}
+
+/* Model search: no horizontal scroll in narrow side panel */
+body.tbcc-options-page #siteFields {
+  overflow-x: hidden;
+  max-width: 100%;
+  min-width: 0;
+}
+
+body.tbcc-options-page #siteFields fieldset {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body.tbcc-options-page .tbcc-source-row .tbcc-details-row-body {
+  min-width: 0;
+}
+
+body.tbcc-options-page .tbcc-source-row .tbcc-details-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.tbcc-options-page .tbcc-details-id.cat {
+  max-width: min(120px, 32%);
+}
+
+body.tbcc-options-page #modelSearchHistory {
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+body.tbcc-options-page .tbcc-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+  min-width: 0;
+}
+
+body.tbcc-options-page .tbcc-history-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+body.tbcc-options-page .tbcc-history-main code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+body.tbcc-options-page button.tbcc-history-remove {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0 6px;
+  border: none;
+  background: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--tbcc-text-muted);
+  cursor: pointer;
+}
+
+body.tbcc-options-page button.tbcc-history-remove:hover {
+  color: var(--tbcc-error, #f38ba8);
+}
+
+html.tbcc-options-embed body.tbcc-options-page #siteFields,
+html.tbcc-options-embed body.tbcc-options-page #modelSearchHistory {
+  max-width: 100%;
+}

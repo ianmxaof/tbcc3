@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 from telethon import TelegramClient
 
@@ -16,6 +17,15 @@ _import_lock = asyncio.Lock()
 _client: TelegramClient | None = None
 
 
+def _telegram_session_path() -> str:
+    """Return stable Telethon session path shared across processes."""
+    configured = os.environ.get("TELEGRAM_SESSION_PATH")
+    if configured:
+        return configured
+    backend_root = Path(__file__).resolve().parents[2]
+    return str(backend_root / "admin")
+
+
 async def get_telegram_storage() -> TelegramStorage:
     """Return TelegramStorage backed by a long-lived client (lazy-init)."""
     global _client
@@ -24,7 +34,7 @@ async def get_telegram_storage() -> TelegramStorage:
     async with _init_lock:
         if _client is None:
             _client = TelegramClient(
-                "admin",
+                _telegram_session_path(),
                 int(os.environ["API_ID"]),
                 os.environ["API_HASH"],
             )

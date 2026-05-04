@@ -42,12 +42,26 @@ async def _fetch_plans_raw() -> list[dict]:
         return []
 
 
+def _bot_min_subscription_stars() -> int:
+    """Match payment_bot: TBCC_BOT_MIN_SUBSCRIPTION_STARS (hide placeholder SKUs in /shop footer)."""
+    try:
+        raw = (os.getenv("TBCC_BOT_MIN_SUBSCRIPTION_STARS") or "").strip()
+        if not raw:
+            return 0
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
 def _active_subs(plans: list[dict]) -> list[dict]:
     out = []
+    min_s = _bot_min_subscription_stars()
     for p in plans:
         if p.get("is_active") is False:
             continue
         if (p.get("price_stars") or 0) <= 0:
+            continue
+        if min_s > 0 and int(p.get("price_stars") or 0) < min_s:
             continue
         if (p.get("product_type") or "subscription").lower() != "subscription":
             continue

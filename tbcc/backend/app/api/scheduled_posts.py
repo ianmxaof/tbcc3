@@ -9,6 +9,8 @@ from app.database.session import get_db
 from app.schemas.common import orm_to_dict
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.channel import Channel
+from app.models.subscription_plan import SubscriptionPlan
+from app.services.scheduled_post_service import _checkout_deep_link_payload
 from app.workers.poster_worker import post_scheduled_text
 
 router = APIRouter()
@@ -89,6 +91,27 @@ def _clear_auto_pause_state(post: ScheduledTextPost) -> None:
     post.posting_auto_pause_reason = None
 
 
+def _assert_checkout_row_ok(post: ScheduledTextPost, db: Session) -> None:
+    """Validate Stars checkout fields on a row before commit."""
+    if not bool(getattr(post, "checkout_stars_enabled", False)):
+        return
+    pid = getattr(post, "checkout_stars_plan_id", None)
+    if not pid:
+        raise HTTPException(400, "checkout_stars_plan_id is required when Stars checkout is enabled")
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(pid)).first()
+    if not plan or plan.is_active is False or int(plan.price_stars or 0) <= 0:
+        raise HTTPException(
+            400,
+            "Stars checkout requires an active Commerce product (subscription or bundle) with a Telegram Stars price",
+        )
+    ref = (getattr(post, "checkout_referral_code", None) or "").strip()
+    if ref and not _checkout_deep_link_payload(int(pid), ref):
+        raise HTTPException(
+            400,
+            "Invalid checkout referral code or plan id (must fit Telegram start-parameter limits)",
+        )
+
+
 def _patch_scheduled_post_core(
     post: ScheduledTextPost,
     body: ScheduledPostUpdate,
@@ -165,6 +188,20 @@ def _patch_scheduled_post_core(
         post.send_silent = bool(body.send_silent)
     if "pin_after_send" in fs:
         post.pin_after_send = bool(body.pin_after_send)
+    if "checkout_stars_enabled" in fs:
+        post.checkout_stars_enabled = bool(body.checkout_stars_enabled)
+        if not post.checkout_stars_enabled:
+            post.checkout_stars_plan_id = None
+            post.checkout_button_label = None
+            post.checkout_referral_code = None
+    if "checkout_stars_plan_id" in fs:
+        post.checkout_stars_plan_id = body.checkout_stars_plan_id
+    if "checkout_button_label" in fs:
+        v = body.checkout_button_label
+        post.checkout_button_label = (v.strip()[:64] if isinstance(v, str) and v.strip() else None)
+    if "checkout_referral_code" in fs:
+        v = body.checkout_referral_code
+        post.checkout_referral_code = (v.strip().upper()[:16] if isinstance(v, str) and v.strip() else None)
     if "clear_auto_pause" in fs and body.clear_auto_pause:
         _clear_auto_pause_state(post)
 
@@ -196,6 +233,16 @@ class ScheduledPostCreate(BaseModel):
     album_order_mode: str | None = None  # static | shuffle | carousel
     send_silent: bool | None = None
     pin_after_send: bool | None = None
+    checkout_stars_enabled: bool = False
+    checkout_stars_plan_id: int | None = None
+    checkout_button_label: str | None = Field(
+        default=None,
+        description="Optional CTA label (max 64). Default: plan name + Stars price.",
+    )
+    checkout_referral_code: str | None = Field(
+        default=None,
+        description="Optional 1–16 char referral code; attributes /start to referrer before checkout.",
+    )
 
 
 class ScheduledPostUpdate(BaseModel):
@@ -221,6 +268,10 @@ class ScheduledPostUpdate(BaseModel):
     album_order_mode: str | None = None
     send_silent: bool | None = None
     pin_after_send: bool | None = None
+    checkout_stars_enabled: bool | None = None
+    checkout_stars_plan_id: int | None = None
+    checkout_button_label: str | None = None
+    checkout_referral_code: str | None = None
 
 
 def _resolve_create_channel_ids(body: ScheduledPostCreate) -> list[int]:
@@ -308,9 +359,23 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
                 album_carousel_index=None,
                 send_silent=bool(body.send_silent),
                 pin_after_send=bool(body.pin_after_send),
+                checkout_stars_enabled=bool(body.checkout_stars_enabled),
+                checkout_stars_plan_id=body.checkout_stars_plan_id if body.checkout_stars_plan_id else None,
+                checkout_button_label=(
+                    body.checkout_button_label.strip()[:64]
+                    if isinstance(body.checkout_button_label, str) and body.checkout_button_label.strip()
+                    else None
+                ),
+                checkout_referral_code=(
+                    body.checkout_referral_code.strip().upper()[:16]
+                    if isinstance(body.checkout_referral_code, str) and body.checkout_referral_code.strip()
+                    else None
+                ),
             )
             db.add(post)
             created.append(post)
+        for p in created:
+            _assert_checkout_row_ok(p, db)
         db.commit()
         result_posts = []
         for p in created:
@@ -344,6 +409,8 @@ def update_scheduled_campaign(campaign_group_id: str, body: ScheduledPostUpdate,
     fs = getattr(body, "model_fields_set", None) or getattr(body, "__fields_set__", None) or set()
     for p in rows:
         _patch_scheduled_post_core(p, body, fs, allow_channel_id=False)
+    for p in rows:
+        _assert_checkout_row_ok(p, db)
     db.commit()
     result_posts = []
     for p in rows:
@@ -430,6 +497,8 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
                 return {"error": "Cannot edit campaign: already sent"}
         for p in rows:
             _patch_scheduled_post_core(p, body, fs, allow_channel_id=False)
+        for p in rows:
+            _assert_checkout_row_ok(p, db)
         db.commit()
         result_posts = []
         for p in rows:
@@ -440,6 +509,7 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
             result_posts.append(d)
         return {"posts": result_posts, "campaign_group_id": cg}
     _patch_scheduled_post_core(post, body, fs, allow_channel_id=True)
+    _assert_checkout_row_ok(post, db)
     db.commit()
     db.refresh(post)
     d = scheduled_post_to_api_dict(post)

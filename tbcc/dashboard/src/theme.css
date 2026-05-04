@@ -1,0 +1,93 @@
+:root {
+  --tbcc-d-bg-900: #0f172a;
+  --tbcc-d-bg-800: #1e293b;
+  --tbcc-d-bg-700: #334155;
+  --tbcc-d-bg-600: #475569;
+  --tbcc-d-border: #334155;
+  --tbcc-d-text-100: #f1f5f9;
+  --tbcc-d-text-200: #e2e8f0;
+  --tbcc-d-text-300: #cbd5e1;
+  --tbcc-d-text-400: #94a3b8;
+  --tbcc-d-text-500: #64748b;
+  --tbcc-d-accent-600: #0891b2;
+  --tbcc-d-accent-400: #22d3ee;
+}
+
+:root[data-dashboard-theme="chatgpt"] {
+  --tbcc-d-bg-900: #141414;
+  --tbcc-d-bg-800: #1f1f1f;
+  --tbcc-d-bg-700: #2a2a2a;
+  --tbcc-d-bg-600: #3a3a3a;
+  --tbcc-d-border: #383838;
+  --tbcc-d-text-100: #f3f4f6;
+  --tbcc-d-text-200: #e5e7eb;
+  --tbcc-d-text-300: #d1d5db;
+  --tbcc-d-text-400: #9ca3af;
+  --tbcc-d-text-500: #6b7280;
+  --tbcc-d-accent-600: #0f9d7a;
+  --tbcc-d-accent-400: #34d399;
+}
+
+:root[data-dashboard-theme="github"] {
+  --tbcc-d-bg-900: #0d1117;
+  --tbcc-d-bg-800: #161b22;
+  --tbcc-d-bg-700: #21262d;
+  --tbcc-d-bg-600: #30363d;
+  --tbcc-d-border: #30363d;
+  --tbcc-d-text-100: #f0f6fc;
+  --tbcc-d-text-200: #e6edf3;
+  --tbcc-d-text-300: #c9d1d9;
+  --tbcc-d-text-400: #9da7b3;
+  --tbcc-d-text-500: #7d8590;
+  --tbcc-d-accent-600: #1f6feb;
+  --tbcc-d-accent-400: #58a6ff;
+}
+
+:root[data-dashboard-theme="obsidian"] {
+  --tbcc-d-bg-900: #141414;
+  --tbcc-d-bg-800: #1e1e1e;
+  --tbcc-d-bg-700: #2a2a2a;
+  --tbcc-d-bg-600: #3a3a3a;
+  --tbcc-d-border: #3b3b3b;
+  --tbcc-d-text-100: #f4f4f5;
+  --tbcc-d-text-200: #e4e4e7;
+  --tbcc-d-text-300: #d4d4d8;
+  --tbcc-d-text-400: #a1a1aa;
+  --tbcc-d-text-500: #71717a;
+  --tbcc-d-accent-600: #7c3aed;
+  --tbcc-d-accent-400: #a78bfa;
+}
+
+:root[data-dashboard-theme="cursor"] {
+  --tbcc-d-bg-900: #0c1018;
+  --tbcc-d-bg-800: #141a27;
+  --tbcc-d-bg-700: #1e2736;
+  --tbcc-d-bg-600: #2d3a50;
+  --tbcc-d-border: #2b3448;
+  --tbcc-d-text-100: #f3f6ff;
+  --tbcc-d-text-200: #e7edff;
+  --tbcc-d-text-300: #ced7f5;
+  --tbcc-d-text-400: #b3bfdc;
+  --tbcc-d-text-500: #8190b8;
+  --tbcc-d-accent-600: #3b82f6;
+  --tbcc-d-accent-400: #60a5fa;
+}
+
+body {
+  background: var(--tbcc-d-bg-900);
+  color: var(--tbcc-d-text-200);
+}
+
+/* Tailwind utility color remap for theme presets */
+.bg-slate-900 { background-color: var(--tbcc-d-bg-900) !important; }
+.bg-slate-800 { background-color: var(--tbcc-d-bg-800) !important; }
+.bg-slate-700 { background-color: var(--tbcc-d-bg-700) !important; }
+.bg-slate-600 { background-color: var(--tbcc-d-bg-600) !important; }
+.border-slate-700, .border-slate-600 { border-color: var(--tbcc-d-border) !important; }
+.text-slate-100 { color: var(--tbcc-d-text-100) !important; }
+.text-slate-200 { color: var(--tbcc-d-text-200) !important; }
+.text-slate-300 { color: var(--tbcc-d-text-300) !important; }
+.text-slate-400 { color: var(--tbcc-d-text-400) !important; }
+.text-slate-500 { color: var(--tbcc-d-text-500) !important; }
+.bg-cyan-600 { background-color: var(--tbcc-d-accent-600) !important; }
+.text-cyan-400 { color: var(--tbcc-d-accent-400) !important; }

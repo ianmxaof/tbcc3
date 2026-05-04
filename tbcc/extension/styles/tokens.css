@@ -21,3 +21,75 @@
   --tbcc-font-heading: 14px;
   --tbcc-min-touch: 36px;
 }
+
+:root[data-tbcc-theme="dark"] {
+  /* default theme */
+}
+
+:root[data-tbcc-theme="chatgpt"] {
+  --tbcc-bg-base: #1f1f1f;
+  --tbcc-bg-card: #171717;
+  --tbcc-bg-surface: #2a2a2a;
+  --tbcc-bg-elevated: #3a3a3a;
+  --tbcc-text-heading: #10a37f;
+  --tbcc-text-section: #cfd4db;
+  --tbcc-text-primary: #eceff3;
+  --tbcc-text-secondary: #b6bcc6;
+  --tbcc-text-muted: #8a929f;
+  --tbcc-accent: #10a37f;
+  --tbcc-accent-hover: #16b38d;
+  --tbcc-success: #6ee7b7;
+  --tbcc-error: #fb7185;
+  --tbcc-warning: #f59e0b;
+}
+
+:root[data-tbcc-theme="github"] {
+  --tbcc-bg-base: #0d1117;
+  --tbcc-bg-card: #161b22;
+  --tbcc-bg-surface: #21262d;
+  --tbcc-bg-elevated: #30363d;
+  --tbcc-text-heading: #79c0ff;
+  --tbcc-text-section: #c9d1d9;
+  --tbcc-text-primary: #e6edf3;
+  --tbcc-text-secondary: #9da7b3;
+  --tbcc-text-muted: #7d8590;
+  --tbcc-accent: #58a6ff;
+  --tbcc-accent-hover: #79c0ff;
+  --tbcc-success: #3fb950;
+  --tbcc-error: #f85149;
+  --tbcc-warning: #d29922;
+}
+
+:root[data-tbcc-theme="obsidian"] {
+  --tbcc-bg-base: #191919;
+  --tbcc-bg-card: #202020;
+  --tbcc-bg-surface: #2a2a2a;
+  --tbcc-bg-elevated: #3a3a3a;
+  --tbcc-text-heading: #a78bfa;
+  --tbcc-text-section: #d4d4d8;
+  --tbcc-text-primary: #ededf0;
+  --tbcc-text-secondary: #b7b7bf;
+  --tbcc-text-muted: #8b8b94;
+  --tbcc-accent: #a78bfa;
+  --tbcc-accent-hover: #c4b5fd;
+  --tbcc-success: #86efac;
+  --tbcc-error: #fb7185;
+  --tbcc-warning: #fbbf24;
+}
+
+:root[data-tbcc-theme="cursor"] {
+  --tbcc-bg-base: #10131a;
+  --tbcc-bg-card: #141925;
+  --tbcc-bg-surface: #1d2432;
+  --tbcc-bg-elevated: #2b3448;
+  --tbcc-text-heading: #8ec7ff;
+  --tbcc-text-section: #ccd6f6;
+  --tbcc-text-primary: #e5ecff;
+  --tbcc-text-secondary: #b8c4e6;
+  --tbcc-text-muted: #8190b8;
+  --tbcc-accent: #6ea8fe;
+  --tbcc-accent-hover: #8ec7ff;
+  --tbcc-success: #7adfbb;
+  --tbcc-error: #f48fb1;
+  --tbcc-warning: #f8c16c;
+}

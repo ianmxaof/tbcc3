@@ -11,8 +11,12 @@ import { InfoDisclosure } from "../components/InfoDisclosure";
 
 export function MediaLibrary() {
   const [statusFilter, setStatusFilter] = useState<string | undefined>("pending");
+  /** 0 = all pools (API omits pool_id). Backend always supported this; the UI did not until now. */
+  const [poolFilterId, setPoolFilterId] = useState(0);
   const [tagFilter, setTagFilter] = useState("");
   const [tagSlugFilter, setTagSlugFilter] = useState("");
+  const [sortMode, setSortMode] = useState<"newest" | "recommended">("newest");
+  const [recommendPoolId, setRecommendPoolId] = useState<number>(0);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [suiteIndex, setSuiteIndex] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
@@ -22,13 +26,20 @@ export function MediaLibrary() {
   const [bulkTagsText, setBulkTagsText] = useState("");
   const queryClient = useQueryClient();
   const { data: media = [], isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["media", statusFilter, tagFilter, tagSlugFilter],
-    queryFn: () =>
-      api.media.list({
+    queryKey: ["media", statusFilter, poolFilterId, tagFilter, tagSlugFilter, sortMode, recommendPoolId],
+    queryFn: () => {
+      const modelPoolForSort =
+        poolFilterId > 0 ? poolFilterId : recommendPoolId > 0 ? recommendPoolId : undefined;
+      return api.media.list({
         status: statusFilter,
+        ...(poolFilterId > 0 ? { pool_id: poolFilterId } : {}),
         ...(tagFilter.trim() ? { tag: tagFilter.trim() } : {}),
         ...(tagSlugFilter.trim() ? { tag_slug: tagSlugFilter.trim() } : {}),
-      }),
+        ...(sortMode === "recommended" && modelPoolForSort
+          ? { sort: "recommended" as const, target_pool_id: modelPoolForSort }
+          : {}),
+      });
+    },
   });
   const { data: tagList = [] } = useQuery({
     queryKey: ["tags"],
@@ -78,6 +89,14 @@ export function MediaLibrary() {
       setSavedImportPool(ids[0]);
     }
   }, [pools, savedImportPool]);
+
+  useEffect(() => {
+    const ids = (pools as Array<{ id: number }>).map((p) => p.id);
+    if (!ids.length) return;
+    if (!recommendPoolId || !ids.includes(recommendPoolId)) {
+      setRecommendPoolId(ids[0]);
+    }
+  }, [pools, recommendPoolId]);
 
   useEffect(() => {
     const ids = (pools as Array<{ id: number }>).map((p) => p.id);
@@ -324,7 +343,8 @@ export function MediaLibrary() {
       <h1 className="text-2xl font-semibold mb-2">Master media pool</h1>
       <div className="mb-3 flex justify-end">
         <InfoDisclosure>
-          Central store for imported media. <strong>List</strong>: click a row to open the <strong>gallery suite</strong> (full-size
+          Central store for imported media. Use <strong>List pool</strong> below to show only one queue (curate per pool) or{" "}
+          <strong>All pools</strong> to see everything. <strong>List</strong>: click a row to open the <strong>gallery suite</strong> (full-size
           preview, tags, pool routing). <strong>Gallery</strong> grid: click tile to toggle selection; <strong>Ctrl/Cmd+click</strong>{" "}
           toggles one; <strong>Shift+click</strong> selects a range; <strong>double-click</strong> opens suite.
           <br />
@@ -641,6 +661,25 @@ export function MediaLibrary() {
           </div>
         )}
         <label className="flex items-center gap-2 text-xs text-slate-400">
+          List pool
+          <select
+            value={poolFilterId || ""}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setPoolFilterId(raw === "" ? 0 : Number(raw));
+            }}
+            className="px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200 max-w-[200px]"
+            title="Limit the library to one TBCC pool (separate galleries per pool)"
+          >
+            <option value="">All pools</option>
+            {(pools as Array<{ id: number; name?: string }>).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name || `Pool ${p.id}`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 text-xs text-slate-400">
           Tag slug
           <select
             value={tagSlugFilter}
@@ -667,6 +706,40 @@ export function MediaLibrary() {
             title="Legacy substring match on combined tag string"
           />
         </label>
+        <label className="flex items-center gap-2 text-xs text-slate-400">
+          Sort
+          <select
+            value={sortMode}
+            onChange={(e) => setSortMode(e.target.value as "newest" | "recommended")}
+            className="px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
+            title="Recommended uses your existing accept/reject history per pool"
+          >
+            <option value="newest">Newest</option>
+            <option value="recommended">Recommended</option>
+          </select>
+        </label>
+        {sortMode === "recommended" && poolFilterId === 0 && (
+          <label className="flex items-center gap-2 text-xs text-slate-400">
+            Model pool
+            <select
+              value={recommendPoolId || ""}
+              onChange={(e) => setRecommendPoolId(Number(e.target.value))}
+              className="px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200 max-w-[170px]"
+              title="When listing all pools, use this pool's past approvals/rejections to rank rows"
+            >
+              {(pools as Array<{ id: number; name?: string }>).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name || `Pool ${p.id}`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {sortMode === "recommended" && poolFilterId > 0 && (
+          <span className="text-xs text-slate-500" title="Recommended ranking uses the same pool as List pool">
+            Ranking: this pool
+          </span>
+        )}
         <span className="text-slate-500 text-xs hidden sm:inline">View</span>
         <button
           type="button"

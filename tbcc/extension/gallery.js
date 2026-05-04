@@ -24,6 +24,52 @@ function normalizeTbccMediaUrlForImport(url) {
   } catch (_) {}
   return url;
 }
+
+/** Sidebar is extension-origin; some CDNs require browser-session fetch to avoid hotlink/CORS failures. */
+function hostNeedsGalleryThumbProxy(url) {
+  try {
+    const h = (new URL(url).hostname || "").toLowerCase();
+    return h.includes("fetlife") || h === "onlyfans.com" || h.endsWith(".onlyfans.com");
+  } catch (_) {
+    return false;
+  }
+}
+
+function thumbReferrerPolicyForUrl(url) {
+  try {
+    const h = (new URL(url).hostname || "").toLowerCase();
+    if (h.includes("fetlife") || h === "onlyfans.com" || h.endsWith(".onlyfans.com")) {
+      return "strict-origin-when-cross-origin";
+    }
+  } catch (_) {}
+  return "no-referrer";
+}
+
+function loadThumbViaSession(url, imgEl) {
+  if (!url || !imgEl) return;
+  void (async () => {
+    try {
+      const resp = await new Promise((resolve) => {
+        try {
+          chrome.runtime.sendMessage({ action: "tbcc-proxy-thumb", url }, (r) => {
+            if (chrome.runtime.lastError) resolve(null);
+            else resolve(r);
+          });
+        } catch (_) {
+          resolve(null);
+        }
+      });
+      if (resp && resp.ok && resp.dataUrl) {
+        imgEl.src = resp.dataUrl;
+        imgEl.removeAttribute("referrerpolicy");
+        return;
+      }
+    } catch (_) {}
+    imgEl.referrerPolicy = thumbReferrerPolicyForUrl(url);
+    imgEl.src = url;
+  })();
+}
+
 const STORAGE_COLLECTED = "tbcc_collected";
 const STORAGE_SETTINGS = "tbcc_gallery_settings";
 const STORAGE_SELECTION = "tbccSelectionUrls";
@@ -57,13 +103,55 @@ let settings = {
   captureLazyDelayMs: 0,
   /** Fold multiple MP4 URLs that look like the same asset (different resolutions) into one tile. */
   foldVideoVariants: true,
+  /** If enabled, clear previous selections each time the panel opens. */
+  clearSelectionOnOpen: false,
   /**
    * When true (default), ↻ / R also reloads pools, channels, forum topics, and embedded iframes
    * (Collected / Tools / Options) before rescanning — same work as closing and reopening the side panel.
    * When false, ↻ only runs a tab rescan (legacy behavior).
    */
   refreshHard: true,
+  /**
+   * When false (default), stored selections for URLs that don't match the current tab page (different SPA route /
+   * different origin) are NOT synthesized back into the grid on refresh — fixes "orphan tiles from previous page".
+   * When true, previous behavior: every URL in stored selection is re-added even if the current page doesn't show it.
+   */
+  preserveOrphanSelections: false,
+  /** Log per-tile render/load/error events to the console (use for flicker diagnostics; costs CPU when on). */
+  debugTileRender: false,
+  /** Phase 2: in-panel sub-tab history for in-tab navigation. */
+  subtabEnabled: true,
+  subtabCap: 3,
+  subtabAutoCapture: true,
+  /** Phase 3: grid sort / details view. */
+  gridSortMode: "default",
+  gridViewMode: "grid",
+  /** Completion notifications (toast + optional system notification). */
+  notifyUseSystem: true,
+  notifyOnZipComplete: true,
+  notifyOnSendTbccComplete: true,
+  notifyOnSendSavedComplete: true,
+  notifyOnSendChannelComplete: true,
 };
+let tbccLightboxVideoObjectUrl = "";
+/** Avoid retry-loop flicker for URLs that repeatedly fail thumbnail load in current panel session. */
+const thumbLoadFailUntilMs = new Map();
+const THUMB_FAIL_COOLDOWN_MS = 30000;
+
+function shouldSkipThumbUrl(url) {
+  if (!url) return false;
+  const until = thumbLoadFailUntilMs.get(url);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+function noteThumbLoadResult(url, ok) {
+  if (!url) return;
+  if (ok) {
+    thumbLoadFailUntilMs.delete(url);
+    return;
+  }
+  thumbLoadFailUntilMs.set(url, Date.now() + THUMB_FAIL_COOLDOWN_MS);
+}
 
 const tabCurrentBtn = document.getElementById("tabCurrent");
 const tabAllBtn = document.getElementById("tabAll");
@@ -76,6 +164,7 @@ const filterType = document.getElementById("filterType");
 const filterMinW = document.getElementById("filterMinW");
 const filterMinH = document.getElementById("filterMinH");
 const filterUrl = document.getElementById("filterUrl");
+const filterHideUiClutter = document.getElementById("filterHideUiClutter");
 const selectAllCb = document.getElementById("selectAll");
 const selectionChip = document.getElementById("selectionChip");
 const btnGalleryHelp = document.getElementById("btnGalleryHelp");
@@ -114,6 +203,7 @@ const importQueueEl = document.getElementById("importQueue");
 const tbccLightbox = document.getElementById("tbccLightbox");
 const tbccLightboxImg = document.getElementById("tbccLightboxImg");
 const tbccLightboxVideo = document.getElementById("tbccLightboxVideo");
+const tbccLightboxVideoErr = document.getElementById("tbccLightboxVideoErr");
 const tbccLightboxClose = document.getElementById("tbccLightboxClose");
 const progressEl = document.getElementById("progress");
 const progressTitle = document.getElementById("progressTitle");
@@ -142,8 +232,8 @@ const galleryScanStrip = document.getElementById("galleryScanStrip");
 const galleryScanFill = document.getElementById("galleryScanFill");
 const galleryScanLabel = document.getElementById("galleryScanLabel");
 const btnToggleFoldVariants = document.getElementById("btnToggleFoldVariants");
-const btnSelectAll = document.getElementById("btnSelectAll");
-const btnDeselect = document.getElementById("btnDeselect");
+const btnSelectToggle = document.getElementById("btnSelectToggle");
+const btnSelectAnchorToggle = document.getElementById("btnSelectAnchorToggle");
 const tagChipRow = document.getElementById("tagChipRow");
 const tagCatalogSelect = document.getElementById("tagCatalogSelect");
 const btnTagSuggest = document.getElementById("btnTagSuggest");
@@ -152,6 +242,20 @@ const tagNewName = document.getElementById("tagNewName");
 const tagNewCategory = document.getElementById("tagNewCategory");
 const btnTagCreate = document.getElementById("btnTagCreate");
 const btnTagsClear = document.getElementById("btnTagsClear");
+const viewMainEl = document.getElementById("view-main");
+const galleryCtxMenu = document.getElementById("tbccGalleryCtxMenu");
+const tbccSubtabBar = document.getElementById("tbccSubtabBar");
+const tbccSubtabStrip = document.getElementById("tbccSubtabStrip");
+const tbccMemHud = document.getElementById("tbccMemHud");
+const tbccSubtabSettingsBtn = document.getElementById("tbccSubtabSettings");
+const tbccSubtabPopover = document.getElementById("tbccSubtabPopover");
+const tbccSubtabEnabledCb = document.getElementById("tbccSubtabEnabled");
+const tbccSubtabCapInput = document.getElementById("tbccSubtabCap");
+const tbccSubtabAutoCaptureCb = document.getElementById("tbccSubtabAutoCapture");
+const tbccSubtabClearAllBtn = document.getElementById("tbccSubtabClearAll");
+const tbccSubtabPopoverDoneBtn = document.getElementById("tbccSubtabPopoverDone");
+const tbccSortSelect = document.getElementById("tbccSortSelect");
+const tbccSortDetailsToggle = document.getElementById("tbccSortDetailsToggle");
 
 let tagCatalog = [];
 /** Ordered display names for tags applied on next pool Send */
@@ -319,10 +423,11 @@ function setsEqual(a, b) {
 
 /** Selection count that matches the current grid (filtered list only). */
 function selectedCountInFilteredList() {
-  const list = getFilteredList();
+  const rows = getDisplayRows();
   let n = 0;
-  for (const i of list) {
-    if (selectedUrls.has(i.url)) n++;
+  for (const row of rows) {
+    const u = getUrlForDisplayRow(row);
+    if (selectedUrls.has(u)) n++;
   }
   return n;
 }
@@ -416,33 +521,47 @@ function looksLikeBareDomain(s) {
 }
 
 async function loadTagCatalog() {
-  try {
-    const r = await fetch(`${API_BASE}/tags`);
-    if (!r.ok) throw new Error(await r.text());
-    tagCatalog = await r.json();
-    if (tagCatalogSelect) {
-      const prev = tagCatalogSelect.value;
-      tagCatalogSelect.innerHTML = "";
-      const ph = document.createElement("option");
-      ph.value = "";
-      ph.textContent = "Pick from catalog…";
-      tagCatalogSelect.appendChild(ph);
-      for (const t of tagCatalog) {
-        const label =
-          (t.name != null && String(t.name).trim()) || (t.slug != null && String(t.slug).trim()) || "";
-        if (!label) continue;
-        const o = document.createElement("option");
-        o.value = label;
-        o.textContent = label;
-        tagCatalogSelect.appendChild(o);
-      }
-      if (prev && [...tagCatalogSelect.options].some((opt) => opt.value === prev)) {
-        tagCatalogSelect.value = prev;
+  const endpoints = [
+    `${API_BASE}/tags/`,
+    `${API_BASE}/tags`,
+    "http://127.0.0.1:8000/tags/",
+    "http://127.0.0.1:8000/tags",
+  ];
+  let lastErr = null;
+  for (let pass = 0; pass < 2; pass++) {
+    for (const url of endpoints) {
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) throw new Error(await r.text());
+        tagCatalog = await r.json();
+        if (tagCatalogSelect) {
+          const prev = tagCatalogSelect.value;
+          tagCatalogSelect.innerHTML = "";
+          const ph = document.createElement("option");
+          ph.value = "";
+          ph.textContent = "Pick from catalog…";
+          tagCatalogSelect.appendChild(ph);
+          for (const t of tagCatalog) {
+            const label =
+              (t.name != null && String(t.name).trim()) || (t.slug != null && String(t.slug).trim()) || "";
+            if (!label) continue;
+            const o = document.createElement("option");
+            o.value = label;
+            o.textContent = label;
+            tagCatalogSelect.appendChild(o);
+          }
+          if (prev && [...tagCatalogSelect.options].some((opt) => opt.value === prev)) {
+            tagCatalogSelect.value = prev;
+          }
+        }
+        return;
+      } catch (e) {
+        lastErr = e;
       }
     }
-  } catch (e) {
-    console.warn("TBCC loadTagCatalog:", e);
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  console.warn("TBCC loadTagCatalog:", lastErr);
 }
 
 async function createTagOnServer() {
@@ -657,10 +776,24 @@ async function syncOverlayToggleButton() {
   btnToggleOverlay.setAttribute("aria-pressed", on ? "true" : "false");
 }
 
+async function ensureOverlayScriptReady(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { action: "tbcc-overlay-refresh" });
+    return true;
+  } catch (_) {}
+  try {
+    await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ["page-overlay.js"] });
+    await chrome.tabs.sendMessage(tabId, { action: "tbcc-overlay-refresh" });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function notifyOverlayRefresh() {
   const tid = await resolveTargetTabId();
   if (!tid) return;
-  chrome.tabs.sendMessage(tid, { action: "tbcc-overlay-refresh" }).catch(() => {});
+  await ensureOverlayScriptReady(tid);
 }
 
 /** Parse a positive integer from a filter input; empty / invalid → NaN (no filter on that axis). */
@@ -676,6 +809,24 @@ function itemDimsForFilter(i) {
   return { w, h };
 }
 
+/** SVG / data-URL vectors and small square-ish UI assets (favicons, sprites) often clutter the grid. */
+const TBCC_FILTER_UI_CLUTTER_MAX_PX = 128;
+
+function urlLooksLikeSvgAsset(url) {
+  const s = String(url || "").trim();
+  const low = s.toLowerCase();
+  if (low.startsWith("data:image/svg+xml")) return true;
+  const path = s.split(/[?#]/)[0].toLowerCase();
+  return /\.svg(\?|$)/i.test(path) || path.endsWith(".svg");
+}
+
+function itemMatchesUiClutterHeuristic(i) {
+  if (urlLooksLikeSvgAsset(i.url)) return true;
+  const { w, h } = itemDimsForFilter(i);
+  if (w > 0 && h > 0 && w <= TBCC_FILTER_UI_CLUTTER_MAX_PX && h <= TBCC_FILTER_UI_CLUTTER_MAX_PX) return true;
+  return false;
+}
+
 let _filterDimRerenderTimer = null;
 /** Min W/H filters depend on lazy dimensions; debounce full rebuilds so clicks are not lost to DOM churn. */
 function cancelPendingFilterDimRerender() {
@@ -687,7 +838,8 @@ function cancelPendingFilterDimRerender() {
 function scheduleFilterRerenderFromLazyDims() {
   const minW = parsePositiveIntInput(filterMinW);
   const minH = parsePositiveIntInput(filterMinH);
-  if (Number.isNaN(minW) && Number.isNaN(minH)) return;
+  const hideUi = filterHideUiClutter && filterHideUiClutter.checked;
+  if (Number.isNaN(minW) && Number.isNaN(minH) && !hideUi) return;
   cancelPendingFilterDimRerender();
   _filterDimRerenderTimer = setTimeout(() => {
     _filterDimRerenderTimer = null;
@@ -721,7 +873,69 @@ function getFilteredList() {
   }
   const urlSub = filterUrl && filterUrl.value.trim();
   if (urlSub) list = list.filter((i) => (i.url || "").includes(urlSub));
-  return list;
+  if (filterHideUiClutter && filterHideUiClutter.checked) {
+    list = list.filter((i) => !itemMatchesUiClutterHeuristic(i));
+  }
+  return applyGridSort(list);
+}
+
+/**
+ * Sort mode is persisted in settings.gridSortMode. Kept stable (the user's capture order is the default).
+ * Unknown dimensions sort last within their bucket so incomplete metadata doesn't fight with complete tiles.
+ */
+function applyGridSort(list) {
+  const mode = String((settings && settings.gridSortMode) || "default");
+  if (!list || mode === "default" || mode === "") return list;
+  const fileName = (u) => String((u || "").split(/[?#]/)[0].split("/").pop() || "");
+  const area = (i) => {
+    const w = Number(i.naturalWidth || i.width || 0);
+    const h = Number(i.naturalHeight || i.height || 0);
+    return w > 0 && h > 0 ? w * h : 0;
+  };
+  const dur = (i) => (Number.isFinite(i.durationSec) && i.durationSec > 0 ? i.durationSec : 0);
+  const size = (i) => (i && i.file && Number.isFinite(i.file.size) ? i.file.size : 0);
+  const typeRank = (i) => (itemLooksLikeVideo(i) ? 1 : 0);
+  const sorted = list.slice();
+  const cmp = (a, b) => {
+    switch (mode) {
+      case "resDesc": {
+        const d = area(b) - area(a);
+        if (d !== 0) return d;
+        return (area(b) === 0 ? 1 : 0) - (area(a) === 0 ? 1 : 0);
+      }
+      case "resAsc": {
+        const aA = area(a);
+        const aB = area(b);
+        if (aA === 0 && aB !== 0) return 1;
+        if (aB === 0 && aA !== 0) return -1;
+        return aA - aB;
+      }
+      case "durDesc":
+        return dur(b) - dur(a);
+      case "durAsc": {
+        const dA = dur(a);
+        const dB = dur(b);
+        if (dA === 0 && dB !== 0) return 1;
+        if (dB === 0 && dA !== 0) return -1;
+        return dA - dB;
+      }
+      case "type": {
+        const t = typeRank(a) - typeRank(b);
+        if (t !== 0) return t;
+        return area(b) - area(a);
+      }
+      case "sizeDesc":
+        return size(b) - size(a);
+      case "nameAsc":
+        return fileName(a.url).localeCompare(fileName(b.url));
+      case "nameDesc":
+        return fileName(b.url).localeCompare(fileName(a.url));
+      default:
+        return 0;
+    }
+  };
+  sorted.sort(cmp);
+  return sorted;
 }
 
 /**
@@ -729,6 +943,8 @@ function getFilteredList() {
  * Shorter gaps feel much snappier; stagnant passes still exit early when two runs add nothing.
  */
 const SCAN_MERGE_DELAYS_MS = [0, 400, 1000];
+/** OnlyFans chat/gallery: lazy carousels + CDN bursts — extra merge passes pick up late resource timing / webRequest. */
+const SCAN_MERGE_DELAYS_MS_ONLYFANS = [0, 400, 1000, 2000, 3200, 4800];
 
 function setScanStripVisible(visible) {
   if (!galleryScanStrip) return;
@@ -757,6 +973,138 @@ function itemLooksLikeVideo(item) {
     (item.mediaType || item.tagName || "").toLowerCase() === "video" ||
     /\.(mp4|webm|m3u8|mpd|mov|m4v)(\?|$)/i.test(ulow)
   );
+}
+
+function urlPathLooksLikeDirectVideo(url) {
+  const p = String(url || "").split(/[?#]/)[0].toLowerCase();
+  return /\.(mp4|webm|mov|m4v|m3u8|mpd|mkv|ogv)(\?|$)/i.test(p);
+}
+
+function urlPathLooksLikeRasterImage(url) {
+  const p = String(url || "").split(/[?#]/)[0].toLowerCase();
+  return /\.(jpe?g|png|gif|webp|avif|bmp)(\?|$)/i.test(p);
+}
+
+function galleryItemMarkedVideo(item) {
+  return (
+    (item.mediaType || "").toLowerCase() === "video" || (item.tagName || "").toLowerCase() === "video"
+  );
+}
+
+function tbccPageLooksLikeTwitterX(pageUrl) {
+  if (!pageUrl || typeof pageUrl !== "string") return false;
+  try {
+    const h = new URL(pageUrl).hostname.toLowerCase();
+    return /(^|\.)x\.com$/i.test(h) || /(^|\.)twitter\.com$/i.test(h);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Ordinal among blob <video> rows from the same tab (for pairing with network-captured MP4 order). */
+function twitterBlobVideoOrdinalSameTab(item) {
+  let n = 0;
+  const tid = Number(item && item.tabId);
+  if (!Number.isFinite(tid)) return 0;
+  for (const x of imageList) {
+    if (x === item) return n;
+    if (
+      x &&
+      galleryItemMarkedVideo(x) &&
+      String(x.url || "").startsWith("blob:") &&
+      Number(x.tabId) === tid
+    )
+      n++;
+  }
+  return n;
+}
+
+async function tbccTwitterNetMediaListsInOrder(tabId) {
+  const tid = Number(tabId);
+  const mp4s = [];
+  const m3u8s = [];
+  if (!Number.isFinite(tid)) return { mp4s, m3u8s };
+  const key = `tbcc_net_media_${tid}`;
+  try {
+    const sess = await chrome.storage.session.get(key);
+    const netUrls = Array.isArray(sess[key]) ? sess[key] : [];
+    for (const u of netUrls) {
+      if (!u || typeof u !== "string") continue;
+      try {
+        const p = new URL(u);
+        if (p.hostname.toLowerCase() !== "video.twimg.com") continue;
+        const path = p.pathname.toLowerCase();
+        if (/\.mp4(\?|$)/i.test(path)) mp4s.push(u);
+        else if (/\.m3u8(\?|$)/i.test(path)) m3u8s.push(u);
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { mp4s, m3u8s };
+}
+
+/** Resolve page blob: video to video.twimg.com using tab URL + session net log (ZIP / download / retry). */
+async function tbccTryResolveBlobVideoViaTwitterNet(item) {
+  if (!item || !galleryItemMarkedVideo(item) || !String(item.url || "").startsWith("blob:")) return "";
+  if (item.tabId == null || !Number.isFinite(Number(item.tabId))) return "";
+  let onTwitter = tbccPageLooksLikeTwitterX(String(item.tbccSourcePageUrl || ""));
+  if (!onTwitter) {
+    try {
+      const t = await chrome.tabs.get(Number(item.tabId));
+      onTwitter = tbccPageLooksLikeTwitterX(String((t && t.url) || ""));
+    } catch (_) {}
+  }
+  if (!onTwitter) return "";
+  const { mp4s, m3u8s } = await tbccTwitterNetMediaListsInOrder(item.tabId);
+  const ord = twitterBlobVideoOrdinalSameTab(item);
+  return mp4s[ord] || m3u8s[ord] || "";
+}
+
+async function tbccUpgradeTwitterBlobVideosInCapture(tabId, deduped, pageUrl, seenKeys) {
+  if (!tbccPageLooksLikeTwitterX(pageUrl) || !Number.isFinite(Number(tabId)) || !Array.isArray(deduped)) return;
+  const { mp4s, m3u8s } = await tbccTwitterNetMediaListsInOrder(tabId);
+  let bix = 0;
+  const upgraded = new Set();
+  for (const it of deduped) {
+    if (!it || !String(it.url || "").startsWith("blob:")) continue;
+    if (!galleryItemMarkedVideo(it)) continue;
+    const next = mp4s[bix] || m3u8s[bix] || "";
+    bix++;
+    if (!next) continue;
+    upgraded.add(next);
+    const oldKey = String(it.url || "").slice(0, 400);
+    if (seenKeys && seenKeys.has(oldKey)) seenKeys.delete(oldKey);
+    it.url = next;
+    it.mediaType = "video";
+    it.tagName = "video";
+    const nk = next.slice(0, 400);
+    if (seenKeys) seenKeys.add(nk);
+  }
+  if (!upgraded.size) return;
+  for (let i = deduped.length - 1; i >= 0; i--) {
+    const it = deduped[i];
+    if (it && it.tbccCaptureSource === "web-request" && upgraded.has(it.url)) {
+      deduped.splice(i, 1);
+      if (seenKeys) seenKeys.delete(String(it.url || "").slice(0, 400));
+    }
+  }
+}
+
+/**
+ * Detail-page resolve occasionally sets `url` to og:image (.webp) while `thumbUrl` still holds the real stream * from the <video> element — downloads must follow the stream URL.
+ */
+function bestHttpMediaUrlForItem(it) {
+  if (!it || !it.url) return "";
+  const primary = String(it.url);
+  const thumb = it.thumbUrl && String(it.thumbUrl);
+  if (
+    galleryItemMarkedVideo(it) &&
+    urlPathLooksLikeRasterImage(primary) &&
+    thumb &&
+    urlPathLooksLikeDirectVideo(thumb)
+  ) {
+    return thumb;
+  }
+  return primary;
 }
 
 function normalizeVideoStemForGroup(url) {
@@ -1080,6 +1428,11 @@ async function runCaptureInTab(tabId) {
     if (payload.list && payload.list.length) mergedList.push(...payload.list);
   }
   if (!mergedList.length && firstErr) return { tabId, list: [], error: firstErr };
+  let topPageUrl = "";
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab && tab.url && /^https?:\/\//i.test(tab.url)) topPageUrl = String(tab.url).split("#")[0];
+  } catch (_) {}
   const seenKeys = new Set();
   const deduped = [];
   for (const it of mergedList) {
@@ -1095,7 +1448,15 @@ async function runCaptureInTab(tabId) {
       ? window.tbccGalleryAdapters.mergeOnlyfansWebRequestUrls
       : null;
   if (mergeNet) await mergeNet(tabId, deduped, seenKeys);
-  return { tabId, list: deduped.map((i) => ({ ...i, tabId })) };
+  await tbccUpgradeTwitterBlobVideosInCapture(tabId, deduped, topPageUrl, seenKeys);
+  return {
+    tabId,
+    list: deduped.map((i) => ({
+      ...i,
+      tabId,
+      tbccSourcePageUrl: (i && i.tbccSourcePageUrl) || topPageUrl || "",
+    })),
+  };
 }
 
 function resolveTabIdFromGalleryItems() {
@@ -1192,7 +1553,87 @@ async function captureAllTabs() {
   return merged;
 }
 
-function applySelectionFromStorage(storedSel) {
+/**
+ * Called when an overlay-added URL isn't in the fresh capture. Meta (from page-overlay.js or older capture runs)
+ * can supply poster/thumb/duration/dimensions so the synthesized tile behaves like a native video cell.
+ */
+function synthesizeRowFromOverlayMeta(url, meta) {
+  const mt =
+    (meta && (meta.mediaType || meta.tagName || "")).toLowerCase() === "video"
+      ? "video"
+      : guessMediaType(url);
+  const row = {
+    url,
+    mediaType: mt,
+    tagName: mt === "video" ? "video" : "img",
+    tabId: currentTabId,
+    tbccCaptureSource: "overlay-checkbox",
+  };
+  if (meta) {
+    if (meta.posterUrl && /^https?:\/\//i.test(meta.posterUrl)) row.posterUrl = meta.posterUrl;
+    if (meta.thumbUrl && /^https?:\/\//i.test(meta.thumbUrl)) row.thumbUrl = meta.thumbUrl;
+    if (typeof meta.durationSec === "number" && isFinite(meta.durationSec) && meta.durationSec > 0)
+      row.durationSec = meta.durationSec;
+    if (Number.isFinite(meta.width) && meta.width > 0) row.width = meta.width;
+    if (Number.isFinite(meta.height) && meta.height > 0) row.height = meta.height;
+    if (Number.isFinite(meta.naturalWidth) && meta.naturalWidth > 0) row.naturalWidth = meta.naturalWidth;
+    if (Number.isFinite(meta.naturalHeight) && meta.naturalHeight > 0) row.naturalHeight = meta.naturalHeight;
+    if (meta.pageUrl) row.tbccSourcePageUrl = meta.pageUrl;
+  }
+  return row;
+}
+
+function metaPageMatchesCurrentTab(meta, currentPageUrl) {
+  if (!meta || !meta.pageUrl || !currentPageUrl) return false;
+  try {
+    const a = new URL(meta.pageUrl);
+    const b = new URL(currentPageUrl);
+    if (a.hostname !== b.hostname) return false;
+    return a.pathname.split("#")[0] === b.pathname.split("#")[0];
+  } catch (_) {
+    return false;
+  }
+}
+
+async function getCurrentTabUrl() {
+  if (currentTabId == null) return "";
+  try {
+    const t = await chrome.tabs.get(currentTabId);
+    return (t && t.url) || "";
+  } catch (_) {
+    return "";
+  }
+}
+
+async function pruneOrphanSelections(currentPageUrl) {
+  try {
+    const { tbccSelectionUrls = [], tbccSelectionMeta = {} } = await chrome.storage.local.get([
+      "tbccSelectionUrls",
+      "tbccSelectionMeta",
+    ]);
+    const urlsInList = new Set(imageList.map((i) => i.url));
+    const metaMap = tbccSelectionMeta && typeof tbccSelectionMeta === "object" ? tbccSelectionMeta : {};
+    const kept = [];
+    const keptMeta = {};
+    for (const u of tbccSelectionUrls) {
+      if (urlsInList.has(u)) {
+        kept.push(u);
+        if (metaMap[u]) keptMeta[u] = metaMap[u];
+        continue;
+      }
+      const meta = metaMap[u];
+      if (meta && metaPageMatchesCurrentTab(meta, currentPageUrl)) {
+        kept.push(u);
+        keptMeta[u] = meta;
+      }
+    }
+    if (kept.length !== tbccSelectionUrls.length || Object.keys(keptMeta).length !== Object.keys(metaMap).length) {
+      await chrome.storage.local.set({ tbccSelectionUrls: kept, tbccSelectionMeta: keptMeta });
+    }
+  } catch (_) {}
+}
+
+async function applySelectionFromStorage(storedSel) {
   const urlsInList = new Set(imageList.map((i) => i.url));
   const thumbToFull = new Map();
   imageList.forEach((i) => {
@@ -1212,20 +1653,424 @@ function applySelectionFromStorage(storedSel) {
       else selectedUrls.add(mapped);
     }
   }
-  if (activeTab === "current") {
-    for (const u of storedSel) {
-      if (urlsInList.has(u) || !/^https?:\/\//i.test(u)) continue;
-      const mt = guessMediaType(u);
-      imageList.push({
-        url: u,
-        mediaType: mt,
-        tagName: mt === "video" ? "video" : "img",
-        tabId: currentTabId,
-      });
-      urlsInList.add(u);
-      selectedUrls.add(u);
+  if (activeTab !== "current") return;
+  let metaMap = {};
+  try {
+    const got = await chrome.storage.local.get("tbccSelectionMeta");
+    if (got && got.tbccSelectionMeta && typeof got.tbccSelectionMeta === "object") metaMap = got.tbccSelectionMeta;
+  } catch (_) {}
+  const currentPageUrl = await getCurrentTabUrl();
+  const preserveAll = !!settings.preserveOrphanSelections;
+  for (const u of storedSel) {
+    if (urlsInList.has(u) || !/^https?:\/\//i.test(u)) continue;
+    const meta = metaMap[u];
+    const fromThisPage = metaPageMatchesCurrentTab(meta, currentPageUrl);
+    if (!preserveAll && !fromThisPage) continue;
+    const row = synthesizeRowFromOverlayMeta(u, meta);
+    imageList.push(row);
+    urlsInList.add(u);
+    selectedUrls.add(u);
+  }
+}
+
+/* =========================================================
+ * Sub-tab history (Phase 2)
+ * =========================================================
+ * Keeps up to settings.subtabCap snapshots of (pageUrl → imageList + selectionUrls)
+ * for the currently-attached browser tab. Switching chips swaps the grid state
+ * but does NOT navigate the browser tab. Snapshots hold URL strings + metadata
+ * only (no decoded image data), so a 300-item snapshot is ~50-150KB of JSON.
+ */
+
+const SUBTAB_STORAGE_PREFIX = "tbcc_gallery_subtabs:";
+const SUBTAB_MAX_IMAGES_PER_SNAPSHOT = 600;
+/** In-memory state; authoritative copy is mirrored into chrome.storage.session. */
+let galleryTabs = [];
+let activeGalleryTabId = null;
+let subtabSaveTimer = null;
+let subtabRestoredForTabId = null;
+
+function subtabStorageKey() {
+  if (currentTabId == null) return "";
+  return SUBTAB_STORAGE_PREFIX + String(currentTabId);
+}
+
+function makeSubtabId() {
+  return "st-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+function normalizePageKey(url) {
+  try {
+    const u = new URL(url);
+    return (u.host + u.pathname.replace(/\/+$/, "")).toLowerCase() || u.host.toLowerCase();
+  } catch (_) {
+    return String(url || "")
+      .split("#")[0]
+      .toLowerCase();
+  }
+}
+
+function prettySubtabLabel(url) {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./i, "");
+    const seg = (u.pathname || "/")
+      .split("/")
+      .filter(Boolean)
+      .pop();
+    if (!seg) return host;
+    return host + "/" + decodeURIComponent(seg).slice(0, 28);
+  } catch (_) {
+    return String(url || "").slice(0, 40);
+  }
+}
+
+function recomputeSubtabLabelSuffixes() {
+  const buckets = new Map();
+  for (const t of galleryTabs) {
+    const key = (t.pageHost || "") + "|" + prettySubtabLabel(t.pageUrl);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(t);
+  }
+  for (const arr of buckets.values()) {
+    if (arr.length === 1) {
+      arr[0].suffix = "";
+      continue;
+    }
+    arr.sort((a, b) => (a.capturedAt || 0) - (b.capturedAt || 0));
+    arr.forEach((t, idx) => {
+      t.suffix = "(" + (idx + 1) + ")";
+    });
+  }
+}
+
+function snapshotCurrentStateIntoActiveSubtab() {
+  if (!settings.subtabEnabled || activeGalleryTabId == null) return;
+  const t = galleryTabs.find((x) => x.id === activeGalleryTabId);
+  if (!t) return;
+  const src = Array.isArray(imageList) ? imageList : [];
+  if (src.length === 0 && (t.imageListSnapshot || []).length > 0) return;
+  const trimmed = src.length > SUBTAB_MAX_IMAGES_PER_SNAPSHOT ? src.slice(0, SUBTAB_MAX_IMAGES_PER_SNAPSHOT) : src;
+  t.imageListSnapshot = trimmed.map((i) => ({
+    url: i.url,
+    mediaType: i.mediaType,
+    tagName: i.tagName,
+    thumbUrl: i.thumbUrl,
+    posterUrl: i.posterUrl,
+    width: i.width,
+    height: i.height,
+    naturalWidth: i.naturalWidth,
+    naturalHeight: i.naturalHeight,
+    durationSec: i.durationSec,
+    tbccCaptureSource: i.tbccCaptureSource,
+    tbccStreamManifest: i.tbccStreamManifest,
+    tbccSourcePageUrl: i.tbccSourcePageUrl,
+    tabId: i.tabId,
+  }));
+  t.selectionUrls = Array.from(selectedUrls);
+  t.lastActivatedAt = Date.now();
+  scheduleSubtabSave();
+}
+
+function scheduleSubtabSave() {
+  const forTabId = currentTabId;
+  if (subtabSaveTimer) clearTimeout(subtabSaveTimer);
+  subtabSaveTimer = setTimeout(() => {
+    subtabSaveTimer = null;
+    if (forTabId !== currentTabId) return;
+    void persistSubtabs(forTabId);
+  }, 250);
+}
+
+async function persistSubtabs(forTabId) {
+  if (forTabId == null) forTabId = currentTabId;
+  if (forTabId == null || forTabId !== currentTabId) return;
+  const key = SUBTAB_STORAGE_PREFIX + String(forTabId);
+  if (!key) return;
+  try {
+    const payload = {
+      v: 1,
+      activeId: activeGalleryTabId,
+      tabs: galleryTabs.map((t) => ({
+        id: t.id,
+        pageUrl: t.pageUrl,
+        pageHost: t.pageHost,
+        pagePath: t.pagePath,
+        capturedAt: t.capturedAt,
+        lastActivatedAt: t.lastActivatedAt,
+        suffix: t.suffix,
+        selectionUrls: t.selectionUrls || [],
+        imageListSnapshot: t.imageListSnapshot || [],
+      })),
+    };
+    if (chrome.storage.session && chrome.storage.session.set) {
+      await chrome.storage.session.set({ [key]: payload });
+    } else {
+      await chrome.storage.local.set({ [key]: payload });
+    }
+  } catch (_) {}
+}
+
+async function restoreSubtabsForCurrentTab() {
+  const key = subtabStorageKey();
+  if (!key) return;
+  try {
+    const store = chrome.storage.session && chrome.storage.session.get ? chrome.storage.session : chrome.storage.local;
+    const got = await new Promise((r) => store.get(key, (o) => r(o)));
+    const payload = got && got[key];
+    if (!payload || !Array.isArray(payload.tabs)) return;
+    galleryTabs = payload.tabs.map((t) => ({
+      id: t.id || makeSubtabId(),
+      pageUrl: t.pageUrl || "",
+      pageHost: t.pageHost || "",
+      pagePath: t.pagePath || "",
+      capturedAt: t.capturedAt || Date.now(),
+      lastActivatedAt: t.lastActivatedAt || t.capturedAt || Date.now(),
+      suffix: t.suffix || "",
+      selectionUrls: Array.isArray(t.selectionUrls) ? t.selectionUrls : [],
+      imageListSnapshot: Array.isArray(t.imageListSnapshot) ? t.imageListSnapshot : [],
+    }));
+    activeGalleryTabId = payload.activeId || (galleryTabs[0] && galleryTabs[0].id) || null;
+  } catch (_) {}
+}
+
+function evictOverCapSubtabs() {
+  const cap = Math.max(1, Math.min(5, parseInt(String(settings.subtabCap || 3), 10) || 3));
+  if (galleryTabs.length <= cap) return;
+  galleryTabs.sort((a, b) => (b.lastActivatedAt || 0) - (a.lastActivatedAt || 0));
+  galleryTabs = galleryTabs.slice(0, cap);
+  if (!galleryTabs.find((x) => x.id === activeGalleryTabId)) {
+    activeGalleryTabId = (galleryTabs[0] && galleryTabs[0].id) || null;
+  }
+}
+
+async function ensureSubtabForCurrentPage() {
+  if (!settings.subtabEnabled) return null;
+  if (currentTabId == null) return null;
+  if (subtabRestoredForTabId !== currentTabId) {
+    galleryTabs = [];
+    activeGalleryTabId = null;
+    await restoreSubtabsForCurrentTab();
+    subtabRestoredForTabId = currentTabId;
+  }
+  const url = await getCurrentTabUrl();
+  if (!url) return null;
+  const key = normalizePageKey(url);
+  let match = galleryTabs.find((t) => normalizePageKey(t.pageUrl) === key);
+  if (match) {
+    if (activeGalleryTabId !== match.id) snapshotCurrentStateIntoActiveSubtab();
+    match.lastActivatedAt = Date.now();
+    activeGalleryTabId = match.id;
+    scheduleSubtabSave();
+    return match;
+  }
+  snapshotCurrentStateIntoActiveSubtab();
+  let host = "",
+    path = "";
+  try {
+    const u = new URL(url);
+    host = u.hostname;
+    path = u.pathname;
+  } catch (_) {}
+  match = {
+    id: makeSubtabId(),
+    pageUrl: url,
+    pageHost: host,
+    pagePath: path,
+    capturedAt: Date.now(),
+    lastActivatedAt: Date.now(),
+    suffix: "",
+    selectionUrls: [],
+    imageListSnapshot: [],
+  };
+  galleryTabs.push(match);
+  activeGalleryTabId = match.id;
+  evictOverCapSubtabs();
+  recomputeSubtabLabelSuffixes();
+  scheduleSubtabSave();
+  return match;
+}
+
+async function switchToSubtab(id) {
+  const target = galleryTabs.find((t) => t.id === id);
+  if (!target || target.id === activeGalleryTabId) return;
+  snapshotCurrentStateIntoActiveSubtab();
+  activeGalleryTabId = target.id;
+  target.lastActivatedAt = Date.now();
+  imageList = (target.imageListSnapshot || []).map((i) => ({ ...i }));
+  selectedUrls = new Set(target.selectionUrls || []);
+  try {
+    await chrome.storage.local.set({ [STORAGE_SELECTION]: Array.from(selectedUrls) });
+  } catch (_) {}
+  renderSubtabBar();
+  renderGrid();
+  updateCountAndSend();
+  scheduleSubtabSave();
+}
+
+async function closeSubtab(id) {
+  const idx = galleryTabs.findIndex((t) => t.id === id);
+  if (idx < 0) return;
+  const wasActive = galleryTabs[idx].id === activeGalleryTabId;
+  galleryTabs.splice(idx, 1);
+  if (wasActive) {
+    galleryTabs.sort((a, b) => (b.lastActivatedAt || 0) - (a.lastActivatedAt || 0));
+    activeGalleryTabId = (galleryTabs[0] && galleryTabs[0].id) || null;
+    if (activeGalleryTabId) {
+      const target = galleryTabs.find((t) => t.id === activeGalleryTabId);
+      imageList = (target.imageListSnapshot || []).map((i) => ({ ...i }));
+      selectedUrls = new Set(target.selectionUrls || []);
+      try {
+        await chrome.storage.local.set({ [STORAGE_SELECTION]: Array.from(selectedUrls) });
+      } catch (_) {}
+      renderGrid();
+      updateCountAndSend();
+    } else {
+      imageList = [];
+      selectedUrls = new Set();
+      renderGrid();
     }
   }
+  recomputeSubtabLabelSuffixes();
+  renderSubtabBar();
+  scheduleSubtabSave();
+}
+
+function renderSubtabBar() {
+  if (!tbccSubtabBar || !tbccSubtabStrip) return;
+  if (!settings.subtabEnabled || galleryTabs.length === 0) {
+    tbccSubtabBar.hidden = true;
+    return;
+  }
+  tbccSubtabBar.hidden = false;
+  tbccSubtabStrip.innerHTML = "";
+  const ordered = galleryTabs.slice().sort((a, b) => (a.capturedAt || 0) - (b.capturedAt || 0));
+  for (const t of ordered) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "tbcc-subtab-chip" + (t.id === activeGalleryTabId ? " is-active" : "");
+    chip.dataset.subtabId = t.id;
+    chip.setAttribute("role", "tab");
+    chip.setAttribute("aria-selected", t.id === activeGalleryTabId ? "true" : "false");
+    chip.title = t.pageUrl;
+    const label = document.createElement("span");
+    label.className = "tbcc-subtab-chip__label";
+    label.textContent = prettySubtabLabel(t.pageUrl) + (t.suffix ? " " + t.suffix : "");
+    chip.appendChild(label);
+    const count = document.createElement("span");
+    count.className = "tbcc-subtab-chip__count";
+    const nItems = (t.imageListSnapshot || []).length;
+    const nSel = (t.selectionUrls || []).length;
+    count.textContent = nSel > 0 ? nItems + "·" + nSel : String(nItems);
+    chip.appendChild(count);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "tbcc-subtab-chip__close";
+    close.title = "Close sub-tab";
+    close.textContent = "×";
+    close.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void closeSubtab(t.id);
+    });
+    chip.addEventListener("click", () => {
+      void switchToSubtab(t.id);
+    });
+    chip.appendChild(close);
+    tbccSubtabStrip.appendChild(chip);
+  }
+  updateMemHud();
+}
+
+function fmtBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1024) return n + "B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + "K";
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + "M";
+  return (n / (1024 * 1024 * 1024)).toFixed(2) + "G";
+}
+
+function updateMemHud() {
+  if (!tbccMemHud) return;
+  try {
+    const pm = performance && performance.memory ? performance.memory : null;
+    if (pm && pm.usedJSHeapSize) {
+      const used = pm.usedJSHeapSize;
+      const lim = pm.jsHeapSizeLimit || 0;
+      const pct = lim ? used / lim : 0;
+      tbccMemHud.textContent = "heap " + fmtBytes(used) + (lim ? " / " + fmtBytes(lim) : "") + "  · " + galleryTabs.length + " sub";
+      tbccMemHud.classList.toggle("is-warn", pct >= 0.55 && pct < 0.8);
+      tbccMemHud.classList.toggle("is-hot", pct >= 0.8);
+    } else {
+      tbccMemHud.textContent = galleryTabs.length + " sub · heap n/a";
+      tbccMemHud.classList.remove("is-warn", "is-hot");
+    }
+  } catch (_) {}
+}
+
+function openSubtabPopover(open) {
+  if (!tbccSubtabPopover) return;
+  if (open) {
+    if (tbccSubtabEnabledCb) tbccSubtabEnabledCb.checked = !!settings.subtabEnabled;
+    if (tbccSubtabCapInput) tbccSubtabCapInput.value = String(settings.subtabCap || 3);
+    if (tbccSubtabAutoCaptureCb) tbccSubtabAutoCaptureCb.checked = !!settings.subtabAutoCapture;
+    tbccSubtabPopover.hidden = false;
+  } else {
+    tbccSubtabPopover.hidden = true;
+  }
+}
+
+async function clearAllSubtabs() {
+  galleryTabs = [];
+  activeGalleryTabId = null;
+  await persistSubtabs();
+  renderSubtabBar();
+}
+
+async function wireSubtabUi() {
+  if (!tbccSubtabSettingsBtn) return;
+  tbccSubtabSettingsBtn.addEventListener("click", () => {
+    openSubtabPopover(tbccSubtabPopover && tbccSubtabPopover.hidden);
+  });
+  tbccSubtabPopoverDoneBtn &&
+    tbccSubtabPopoverDoneBtn.addEventListener("click", () => {
+      openSubtabPopover(false);
+    });
+  tbccSubtabEnabledCb &&
+    tbccSubtabEnabledCb.addEventListener("change", () => {
+      settings.subtabEnabled = !!tbccSubtabEnabledCb.checked;
+      persistSettingsNow();
+      renderSubtabBar();
+    });
+  tbccSubtabCapInput &&
+    tbccSubtabCapInput.addEventListener("change", () => {
+      const n = parseInt(tbccSubtabCapInput.value, 10);
+      settings.subtabCap = Math.max(1, Math.min(5, isNaN(n) ? 3 : n));
+      tbccSubtabCapInput.value = String(settings.subtabCap);
+      evictOverCapSubtabs();
+      recomputeSubtabLabelSuffixes();
+      persistSettingsNow();
+      scheduleSubtabSave();
+      renderSubtabBar();
+    });
+  tbccSubtabAutoCaptureCb &&
+    tbccSubtabAutoCaptureCb.addEventListener("change", () => {
+      settings.subtabAutoCapture = !!tbccSubtabAutoCaptureCb.checked;
+      persistSettingsNow();
+    });
+  tbccSubtabClearAllBtn && tbccSubtabClearAllBtn.addEventListener("click", () => void clearAllSubtabs());
+  document.addEventListener("click", (e) => {
+    if (!tbccSubtabPopover || tbccSubtabPopover.hidden) return;
+    if (tbccSubtabPopover.contains(e.target) || (tbccSubtabSettingsBtn && tbccSubtabSettingsBtn.contains(e.target))) return;
+    openSubtabPopover(false);
+  });
+  setInterval(updateMemHud, 3000);
+}
+
+function persistSettingsNow() {
+  try {
+    chrome.storage.local.set({ [STORAGE_SETTINGS]: settings });
+  } catch (_) {}
 }
 
 async function appendMergedCapture(tabId) {
@@ -1245,8 +2090,11 @@ async function appendMergedCapture(tabId) {
 async function doRefresh() {
   showLoading(true);
   let scanStripHandled = false;
+  const prevImageList = Array.isArray(imageList) ? imageList.slice() : [];
+  const prevSelection = new Set(selectedUrls);
   const { [STORAGE_SELECTION]: storedArr = [] } = await chrome.storage.local.get(STORAGE_SELECTION);
   const storedSel = new Set(Array.isArray(storedArr) ? storedArr : []);
+  if (settings.subtabEnabled && activeGalleryTabId != null) snapshotCurrentStateIntoActiveSubtab();
   try {
     if (activeTab === "all") {
       imageList = await captureAllTabs();
@@ -1267,8 +2115,15 @@ async function doRefresh() {
     if (window.tbccGalleryAdapters && typeof window.tbccGalleryAdapters.runGalleryResolvePipeline === "function") {
       imageList = await window.tbccGalleryAdapters.runGalleryResolvePipeline(imageList);
     }
-    applySelectionFromStorage(storedSel);
+    if (settings.subtabEnabled && settings.subtabAutoCapture && activeTab === "current") {
+      await ensureSubtabForCurrentPage();
+    }
+    await applySelectionFromStorage(storedSel);
+    if (!settings.preserveOrphanSelections && activeTab === "current") {
+      await pruneOrphanSelections(await getCurrentTabUrl());
+    }
     await persistSelection();
+    renderSubtabBar();
 
     if (activeTab === "current" && currentTabId != null) {
       setScanStripVisible(true);
@@ -1276,14 +2131,20 @@ async function doRefresh() {
       showLoading(false);
       renderGrid();
       await notifyOverlayRefresh();
+      let scanDelays = SCAN_MERGE_DELAYS_MS;
+      try {
+        const tab = await chrome.tabs.get(currentTabId);
+        const u = (tab && tab.url) || "";
+        if (/onlyfans\.com/i.test(u)) scanDelays = SCAN_MERGE_DELAYS_MS_ONLYFANS;
+      } catch (_) {}
       let stagnantPass = 0;
-      for (let p = 0; p < SCAN_MERGE_DELAYS_MS.length; p++) {
-        setScanProgress(0.28 + ((p + 1) / SCAN_MERGE_DELAYS_MS.length) * 0.68, "Scanning…");
-        await new Promise((r) => setTimeout(r, SCAN_MERGE_DELAYS_MS[p]));
+      for (let p = 0; p < scanDelays.length; p++) {
+        setScanProgress(0.28 + ((p + 1) / scanDelays.length) * 0.68, "Scanning…");
+        await new Promise((r) => setTimeout(r, scanDelays[p]));
         const before = imageList.length;
         const merged = await appendMergedCapture(currentTabId);
         if (merged > 0) {
-          applySelectionFromStorage(storedSel);
+          await applySelectionFromStorage(storedSel);
           await persistSelection();
           renderGrid();
         }
@@ -1295,13 +2156,19 @@ async function doRefresh() {
       setTimeout(() => setScanStripVisible(false), 480);
       scanStripHandled = true;
       await notifyOverlayRefresh();
+      if (settings.subtabEnabled) snapshotCurrentStateIntoActiveSubtab();
       return;
     }
+  } catch (e) {
+    console.warn("TBCC gallery refresh failed", e);
+    imageList = prevImageList;
+    selectedUrls = prevSelection;
   } finally {
     showLoading(false);
     if (!scanStripHandled) setScanStripVisible(false);
   }
   renderGrid();
+  if (settings.subtabEnabled) snapshotCurrentStateIntoActiveSubtab();
   await notifyOverlayRefresh();
 }
 
@@ -1352,100 +2219,170 @@ function formatVideoCellLabel(item, videoEl) {
 
 function mediaFormatLabel(item, isVideo) {
   const ulow = String(item.url || "").toLowerCase();
+  const tlow = String(item.thumbUrl || "").toLowerCase();
+  const mime = String(item.type || item.mimeType || "").toLowerCase();
+  const name = String(item.name || "").toLowerCase();
+  const attachmentExt = extractAttachmentExt(item.url || "") || extractAttachmentExt(item.thumbUrl || "");
+  if (attachmentExt) return attachmentExt.toUpperCase();
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "JPG";
+  if (mime.includes("png")) return "PNG";
+  if (mime.includes("webp")) return "WEBP";
+  if (mime.includes("gif")) return "GIF";
+  if (mime.includes("mp4")) return "MP4";
+  if (mime.includes("webm")) return "WEBM";
+  if (/\.jpe?g$/i.test(name)) return "JPG";
+  if (/\.png$/i.test(name)) return "PNG";
+  if (/\.webp$/i.test(name)) return "WEBP";
+  if (/\.gif$/i.test(name)) return "GIF";
+  if (/\.mp4$/i.test(name)) return "MP4";
+  if (/\.webm$/i.test(name)) return "WEBM";
   if (/\.mp4(\?|$)/i.test(ulow)) return "MP4";
   if (/\.webm(\?|$)/i.test(ulow)) return "WEBM";
   if (/\.webp(\?|$)/i.test(ulow)) return "WEBP";
   if (/\.png(\?|$)/i.test(ulow)) return "PNG";
   if (/\.(jpe?g)(\?|$)/i.test(ulow)) return "JPG";
   if (/\.gif(\?|$)/i.test(ulow)) return "GIF";
+  if (/\.webp(\?|$)/i.test(tlow)) return "WEBP";
+  if (/\.png(\?|$)/i.test(tlow)) return "PNG";
+  if (/\.(jpe?g)(\?|$)/i.test(tlow)) return "JPG";
+  if (/\.gif(\?|$)/i.test(tlow)) return "GIF";
   if (isVideo) return "VIDEO";
   return "Media";
 }
 
-/** Poster + seek first frame so tiles are not a blank grey gradient when the player starts at t=0 black. */
+function extractAttachmentExt(rawUrl) {
+  try {
+    const p = new URL(String(rawUrl || "")).pathname.toLowerCase();
+    const m = p.match(/-(jpe?g|png|gif|webp|avif|bmp|mp4|webm|mov|m4v|mkv)\.\d+\/?$/i);
+    return m && m[1] ? (m[1] === "jpeg" ? "jpg" : m[1].toLowerCase()) : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function thumbUrlLooksUsable(url) {
+  if (!url || typeof url !== "string") return false;
+  return /^https?:\/\//i.test(url) || /^blob:/i.test(url) || /^data:/i.test(url);
+}
+
+/**
+ * Video grid tiles: poster and/or thumb image only. Do not mount a <video> per cell — Chrome caps
+ * WebMediaPlayer count (~75+ per document); large grids hit that and previews break entirely.
+ * Full playback stays in the lightbox single <video>.
+ */
 function appendVideoMediaToCell(div, item, dimsEl) {
   const wrap = document.createElement("div");
   wrap.className = "cell-media-wrap";
-  let posterEl = null;
-  if (item.posterUrl && /^https?:\/\//i.test(item.posterUrl)) {
-    posterEl = document.createElement("img");
-    posterEl.className = "cell-video-poster";
-    posterEl.alt = "";
-    posterEl.loading = "lazy";
-    posterEl.decoding = "async";
-    posterEl.src = item.posterUrl;
-    posterEl.onerror = () => {
-      try {
-        posterEl.remove();
-      } catch (_) {}
-      posterEl = null;
-    };
-    wrap.appendChild(posterEl);
-  }
-  const v = document.createElement("video");
-  v.className = "cell-media cell-video";
-  v.src = item.url;
-  v.muted = true;
-  v.playsInline = true;
-  v.preload = "metadata";
-  v.setAttribute("playsinline", "");
-  v.onerror = () => {
-    if (!wrap.querySelector(".placeholder")) {
-      const ph = document.createElement("div");
-      ph.className = "placeholder";
-      ph.textContent = "Video";
-      wrap.appendChild(ph);
-    }
+  let triedThumb = false;
+
+  const markDimsFromImg = (img) => {
     try {
-      v.remove();
-    } catch (_) {}
-  };
-  const markReady = () => {
-    v.classList.add("tbcc-thumb-ready");
-    dimsEl.textContent = formatVideoCellLabel(item, v);
-    try {
-      if (v.videoWidth > 0 && v.videoHeight > 0) {
-        item.naturalWidth = v.videoWidth;
-        item.naturalHeight = v.videoHeight;
-        item.width = item.width || v.videoWidth;
-        item.height = item.height || v.videoHeight;
+      if (img && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        item.naturalWidth = img.naturalWidth;
+        item.naturalHeight = img.naturalHeight;
+        if (!item.width || item.width < img.naturalWidth) item.width = img.naturalWidth;
+        if (!item.height || item.height < img.naturalHeight) item.height = img.naturalHeight;
       }
     } catch (_) {}
+    dimsEl.textContent = formatVideoCellLabel(item, null);
     scheduleFilterRerenderFromLazyDims();
   };
-  v.addEventListener(
-    "loadedmetadata",
-    () => {
-      try {
-        const dur = v.duration;
-        if (typeof dur === "number" && isFinite(dur) && dur > 0.08) v.currentTime = Math.min(0.08, dur * 0.02);
-        else v.currentTime = 0.02;
-      } catch (_) {
-        markReady();
-      }
-    },
-    { once: true }
-  );
-  v.addEventListener("seeked", markReady, { once: true });
-  v.addEventListener("loadeddata", () => {
-    if (!v.classList.contains("tbcc-thumb-ready")) {
-      try {
-        v.currentTime = 0.06;
-      } catch (_) {
-        markReady();
-      }
+
+  function appendPlaceholder() {
+    if (wrap.querySelector(".placeholder")) return;
+    const ph = document.createElement("div");
+    ph.className = "placeholder";
+    ph.textContent = "Video";
+    wrap.appendChild(ph);
+    dimsEl.textContent = formatVideoCellLabel(item, null);
+  }
+
+  function tryThumbOrPlaceholder() {
+    const thumb = item.thumbUrl;
+    if (!triedThumb && thumb && thumbUrlLooksUsable(thumb) && thumb !== item.posterUrl) {
+      triedThumb = true;
+      addStill(thumb);
+      return;
     }
-  });
-  wrap.appendChild(v);
+    appendPlaceholder();
+  }
+
+  function addStill(url) {
+    if (shouldSkipThumbUrl(url)) {
+      tryThumbOrPlaceholder();
+      return;
+    }
+    /** Page `blob:` URLs are not loadable from the extension document — avoids error/flicker loops. */
+    if (String(url).startsWith("blob:")) {
+      tryThumbOrPlaceholder();
+      return;
+    }
+    const img = document.createElement("img");
+    img.className = "cell-video-poster";
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.addEventListener(
+      "load",
+      () => {
+        noteThumbLoadResult(url, true);
+        img.classList.add("tbcc-thumb-ready");
+        markDimsFromImg(img);
+      },
+      { once: true }
+    );
+    img.addEventListener(
+      "error",
+      () => {
+        noteThumbLoadResult(url, false);
+        try {
+          img.remove();
+        } catch (_) {}
+        tryThumbOrPlaceholder();
+      },
+      { once: true }
+    );
+    if (hostNeedsGalleryThumbProxy(url)) loadThumbViaSession(url, img);
+    else {
+      img.referrerPolicy = thumbReferrerPolicyForUrl(url);
+      img.src = url;
+    }
+    wrap.appendChild(img);
+  }
+
+  if (item.posterUrl && thumbUrlLooksUsable(item.posterUrl)) {
+    addStill(item.posterUrl);
+  } else if (item.thumbUrl && thumbUrlLooksUsable(item.thumbUrl)) {
+    triedThumb = true;
+    addStill(item.thumbUrl);
+  } else {
+    appendPlaceholder();
+  }
   div.appendChild(wrap);
 }
 
+let __tbccRenderGridCount = 0;
 function renderGrid() {
   if (!gridEl) return;
+  __tbccRenderGridCount++;
   cancelPendingFilterDimRerender();
   pruneVideoGroupPick();
   const list = getFilteredList();
   const displayRows = getDisplayRows();
+  if (settings.debugTileRender) {
+    try {
+      const stack = new Error().stack || "";
+      const caller = stack.split("\n").slice(2, 4).join(" ← ").trim();
+      console.log("[tbcc-tile] renderGrid", {
+        seq: __tbccRenderGridCount,
+        total: imageList.length,
+        filtered: list.length,
+        rows: displayRows.length,
+        selected: selectedUrls.size,
+        caller,
+      });
+    } catch (_) {}
+  }
   const gridWidth = gridEl.clientWidth || 280;
   const cols = Math.max(1, Math.min(MAX_COLS, Math.floor(gridWidth / CELL_MIN_PX) || 1));
   gridEl.style.setProperty("--cols", String(cols));
@@ -1492,9 +2429,17 @@ function renderGrid() {
     dimsEl.textContent = isVideo ? formatVideoCellLabel(item, null) : formatDimsLabel(item);
 
     if (isVideo) {
-      const play = document.createElement("div");
+      const play = document.createElement("button");
+      play.type = "button";
       play.className = "cell-play";
       play.textContent = "▶";
+      play.title = "Preview in lightbox";
+      play.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        openLightboxForItem(getItemForDisplayRow(row));
+      });
       div.appendChild(play);
       appendVideoMediaToCell(div, item, dimsEl);
 
@@ -1547,27 +2492,67 @@ function renderGrid() {
       img.className = "cell-media";
       img.alt = "";
       img.loading = "lazy";
-      img.referrerPolicy = "no-referrer";
-      img.src = item.url;
+      /**
+       * Image rows can carry both `url` and `thumbUrl`; prefer thumbUrl when primary looks like
+       * a tiny variant path (e.g. /300x300/), otherwise use primary URL.
+       */
+      const primaryUrl = String(item.url || "");
+      const tinyVariantPath = /\/\d{2,4}x\d{2,4}\//i.test(primaryUrl) || /_\d{2,4}x\d{2,4}\./i.test(primaryUrl);
+      const chosenUrl = tinyVariantPath && thumbUrlLooksUsable(item.thumbUrl) ? item.thumbUrl : primaryUrl;
+      const skipKnownFail = shouldSkipThumbUrl(chosenUrl);
+      if (!skipKnownFail) {
+        img.referrerPolicy = thumbReferrerPolicyForUrl(chosenUrl);
+        if (hostNeedsGalleryThumbProxy(chosenUrl)) loadThumbViaSession(chosenUrl, img);
+        else img.src = chosenUrl;
+      }
       applyInsetPreviewStyle(img, item.url);
+      if (settings.debugTileRender) {
+        try {
+          console.log("[tbcc-tile] mount", { url: item.url, mt: item.mediaType, src: img.src, ts: Date.now() });
+        } catch (_) {}
+      }
       img.onload = () => {
+        noteThumbLoadResult(chosenUrl, true);
         if (img.naturalWidth && img.naturalHeight) {
           dimsEl.textContent = `${img.naturalWidth}×${img.naturalHeight}`;
           item.naturalWidth = img.naturalWidth;
           item.naturalHeight = img.naturalHeight;
-          item.width = item.width || img.naturalWidth;
-          item.height = item.height || img.naturalHeight;
+          if (!item.width || item.width < img.naturalWidth) item.width = img.naturalWidth;
+          if (!item.height || item.height < img.naturalHeight) item.height = img.naturalHeight;
           scheduleFilterRerenderFromLazyDims();
+          if (settings.debugTileRender) {
+            try {
+              console.log("[tbcc-tile] load-ok", {
+                url: item.url,
+                nw: img.naturalWidth,
+                nh: img.naturalHeight,
+                ts: Date.now(),
+              });
+            } catch (_) {}
+          }
         }
       };
       img.onerror = () => {
+        noteThumbLoadResult(chosenUrl, false);
+        if (settings.debugTileRender) {
+          try {
+            console.warn("[tbcc-tile] load-err", { url: item.url, src: img.src, ts: Date.now() });
+          } catch (_) {}
+        }
         const ph = document.createElement("div");
         ph.className = "placeholder";
         ph.textContent = "—";
         div.appendChild(ph);
         img.remove();
       };
-      div.appendChild(img);
+      if (skipKnownFail) {
+        const ph = document.createElement("div");
+        ph.className = "placeholder";
+        ph.textContent = "—";
+        div.appendChild(ph);
+      } else {
+        div.appendChild(img);
+      }
     }
     const hover = document.createElement("div");
     hover.className = "cell-hover-meta";
@@ -1581,10 +2566,32 @@ function renderGrid() {
       hover.appendChild(document.createTextNode(Math.round(item.file.size / 1024) + " KB"));
     }
     div.appendChild(hover);
+    const nameEl = document.createElement("span");
+    nameEl.className = "tbcc-details-name";
+    const fn = String((item.url || "").split(/[?#]/)[0].split("/").pop() || "");
+    nameEl.textContent = fn || item.url || "";
+    const sub = document.createElement("small");
+    const subBits = [];
+    if (fmt) subBits.push(fmt);
+    if (Number.isFinite(item.durationSec) && item.durationSec > 0) subBits.push(formatDurationSeconds(item.durationSec));
+    subBits.push(dimsEl.textContent || "…");
+    sub.textContent = subBits.filter(Boolean).join(" · ");
+    nameEl.appendChild(sub);
+    div.appendChild(nameEl);
     div.appendChild(dimsEl);
     div.addEventListener("click", (e) => {
       if (e.target === cb || (cb && cb.contains && cb.contains(e.target))) return;
       if (e.target.closest && e.target.closest(".cell-variant-row")) return;
+      /**
+       * Selection click can re-render the grid immediately, which can prevent native dblclick
+       * from firing on the same DOM node. Use click.detail===2 as a stable fallback.
+       */
+      if (e.detail >= 2) {
+        e.preventDefault();
+        e.stopPropagation();
+        openLightboxForItem(getItemForDisplayRow(row));
+        return;
+      }
       handleCellSelectionPointer(e, row, idx);
     });
     div.addEventListener("dblclick", (e) => {
@@ -1604,15 +2611,32 @@ function renderGrid() {
 }
 
 function updateCountAndSend() {
-  const list = getFilteredList();
+  const rows = getDisplayRows();
   const selInView = selectedCountInFilteredList();
-  if (selectionChip) selectionChip.textContent = selInView + " / " + list.length + " selected";
+  if (selectionChip) selectionChip.textContent = selInView + " / " + rows.length + " selected";
   if (btnSend) btnSend.disabled = selInView === 0;
   if (btnDownload) btnDownload.disabled = selInView === 0;
   if (btnDownloadZip) btnDownloadZip.disabled = selInView === 0;
   if (btnCopyJd) btnCopyJd.disabled = selInView === 0;
-  if (btnSelectAll) btnSelectAll.disabled = list.length === 0 || selInView === list.length;
-  if (btnDeselect) btnDeselect.disabled = selInView === 0;
+  if (btnSelectToggle) {
+    btnSelectToggle.disabled = rows.length === 0;
+    const allSelected = rows.length > 0 && selInView === rows.length;
+    btnSelectToggle.textContent = allSelected ? "Deselect all" : "Select all";
+    btnSelectToggle.title = allSelected
+      ? "Clear selection from visible items"
+      : "Select all visible items";
+  }
+  if (btnSelectAnchorToggle) {
+    btnSelectAnchorToggle.disabled = rows.length === 0;
+    const idx = rows.length ? Math.min(Math.max(0, lastSelectionAnchorIndex), rows.length - 1) : 0;
+    const anchorUrl = rows.length ? getUrlForDisplayRow(rows[idx]) : "";
+    const anchorOn = !!(anchorUrl && selectedUrls.has(anchorUrl));
+    btnSelectAnchorToggle.title = rows.length
+      ? anchorOn
+        ? "Deselect anchor tile (row " + (idx + 1) + " of " + rows.length + ")"
+        : "Select anchor tile (row " + (idx + 1) + " of " + rows.length + ")"
+      : "Toggle selection on anchor tile (last clicked row)";
+  }
   updateSendButtonLabel();
   updateForumCheckboxLabel();
   updateActionBarVisibility();
@@ -1622,11 +2646,158 @@ function updateCountAndSend() {
   persistSelection();
 }
 
+function runSelectToggle() {
+  const rows = getDisplayRows();
+  if (!rows.length) return;
+  const urls = rows.map((row) => getUrlForDisplayRow(row)).filter(Boolean);
+  if (!urls.length) return;
+  const selInView = selectedCountInFilteredList();
+  const allSelected = selInView === urls.length;
+  if (allSelected) {
+    urls.forEach((u) => selectedUrls.delete(u));
+    lastSelectionAnchorIndex = 0;
+  } else {
+    urls.forEach((u) => selectedUrls.add(u));
+  }
+  renderGrid();
+  updateCountAndSend();
+}
+
+function runSelectAnchorToggle() {
+  const rows = getDisplayRows();
+  if (!rows.length) return;
+  const idx = Math.min(Math.max(0, lastSelectionAnchorIndex), rows.length - 1);
+  const url = getUrlForDisplayRow(rows[idx]);
+  if (!url) return;
+  if (selectedUrls.has(url)) selectedUrls.delete(url);
+  else selectedUrls.add(url);
+  renderGrid();
+  updateCountAndSend();
+}
+
+function galleryCtxMenuIgnoresTarget(target) {
+  if (!target || !target.closest) return true;
+  if (target.closest("input, textarea, select")) return true;
+  if (target.closest("[contenteditable='true']")) return true;
+  if (target.closest(".gallery-panel-nav")) return true;
+  return false;
+}
+
+function closeGalleryContextMenu() {
+  if (!galleryCtxMenu) return;
+  galleryCtxMenu.hidden = true;
+  galleryCtxMenu.setAttribute("aria-hidden", "true");
+}
+
+function syncGalleryContextMenuItems() {
+  if (!galleryCtxMenu) return;
+  const syncDisabled = (ctx, btn) => {
+    const el = galleryCtxMenu.querySelector(`[data-ctx="${ctx}"]`);
+    if (el && btn) el.disabled = !!btn.disabled;
+  };
+  syncDisabled("download", btnDownload);
+  syncDisabled("zip", btnDownloadZip);
+  syncDisabled("copyJd", btnCopyJd);
+  syncDisabled("send", btnSend);
+  syncDisabled("selectToggle", btnSelectToggle);
+  syncDisabled("selectAnchorToggle", btnSelectAnchorToggle);
+  const st = galleryCtxMenu.querySelector('[data-ctx="selectToggle"]');
+  if (st && btnSelectToggle) st.textContent = btnSelectToggle.textContent || "Select all";
+}
+
+function openGalleryContextMenu(clientX, clientY) {
+  if (!galleryCtxMenu) return;
+  syncGalleryContextMenuItems();
+  galleryCtxMenu.hidden = false;
+  galleryCtxMenu.setAttribute("aria-hidden", "false");
+  galleryCtxMenu.style.left = `${clientX}px`;
+  galleryCtxMenu.style.top = `${clientY}px`;
+  const place = () => {
+    const inner = galleryCtxMenu.querySelector(".tbcc-gallery-ctx-menu__inner");
+    const rect = (inner || galleryCtxMenu).getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let left = clientX;
+    let top = clientY;
+    if (left + w > vw - 6) left = Math.max(6, vw - w - 6);
+    if (top + h > vh - 6) top = Math.max(6, vh - h - 6);
+    if (left < 6) left = 6;
+    if (top < 6) top = 6;
+    galleryCtxMenu.style.left = `${left}px`;
+    galleryCtxMenu.style.top = `${top}px`;
+  };
+  requestAnimationFrame(() => requestAnimationFrame(place));
+}
+
+function onGalleryContextMenuAction(key) {
+  closeGalleryContextMenu();
+  switch (key) {
+    case "refresh":
+      btnRefresh && btnRefresh.click();
+      return;
+    case "overlay":
+      btnToggleOverlay && btnToggleOverlay.click();
+      return;
+    case "selectToggle":
+      btnSelectToggle && btnSelectToggle.click();
+      return;
+    case "selectAnchorToggle":
+      btnSelectAnchorToggle && !btnSelectAnchorToggle.disabled && runSelectAnchorToggle();
+      return;
+    case "selectAllPage":
+      btnSelectAllOnPage && btnSelectAllOnPage.click();
+      return;
+    case "download":
+      btnDownload && btnDownload.click();
+      return;
+    case "zip":
+      btnDownloadZip && btnDownloadZip.click();
+      return;
+    case "copyJd":
+      btnCopyJd && btnCopyJd.click();
+      return;
+    case "send":
+      btnSend && btnSend.click();
+      return;
+    case "filter":
+      btnFilterToggle && btnFilterToggle.click();
+      return;
+    case "fold":
+      btnToggleFoldVariants && btnToggleFoldVariants.click();
+      return;
+    case "crop":
+      btnCropOverflow && btnCropOverflow.click();
+      return;
+    case "addFiles":
+      btnAddFilesOverflow && btnAddFilesOverflow.click();
+      return;
+    case "telegram":
+      btnTelegramSheetOpen && btnTelegramSheetOpen.click();
+      return;
+    case "options":
+      btnOpenCaptureSettings && btnOpenCaptureSettings.click();
+      return;
+    case "help":
+      btnGalleryHelp && btnGalleryHelp.click();
+      return;
+    default:
+  }
+}
+
 function filenameFromUrl(url) {
   try {
     const u = new URL(url);
     const seg = u.pathname.split("/").filter(Boolean).pop() || "media";
-    return seg.split("?")[0].replace(/[^\w.\-]+/g, "_") || "media";
+    const clean = seg.split("?")[0].replace(/[^\w.\-]+/g, "_") || "media";
+    const m = clean.match(/^(.+)-((?:jpe?g|jpg|png|gif|webp|avif|bmp|mp4|webm|mov|m4v|mkv))\.\d+$/i);
+    if (m && m[1] && m[2]) {
+      const stem = m[1].replace(/[^\w.\-]+/g, "_") || "media";
+      const ext = m[2].toLowerCase() === "jpeg" ? "jpg" : m[2].toLowerCase();
+      return `${stem}.${ext}`;
+    }
+    return clean;
   } catch (_) {
     return "media";
   }
@@ -1892,14 +3063,31 @@ function filenameForCropUrl(url) {
   return (n.replace(/\.[^.]+$/, "") || "media") + ".jpg";
 }
 
-async function fetchUrlBytesToBlob(url) {
+async function tbccRefererPageForItem(it) {
+  if (!it) return "";
+  if (it.tbccSourcePageUrl && /^https?:\/\//i.test(String(it.tbccSourcePageUrl))) {
+    return String(it.tbccSourcePageUrl).split("#")[0];
+  }
+  const tid = it.tabId;
+  if (tid != null && tid !== "" && Number.isFinite(Number(tid))) {
+    try {
+      const tab = await chrome.tabs.get(Number(tid));
+      const u = tab && tab.url;
+      if (u && /^https?:\/\//i.test(u)) return String(u).split("#")[0];
+    } catch (_) {}
+  }
+  return "";
+}
+
+async function fetchUrlBytesToBlob(url, refererPageUrl) {
   url = normalizeTbccMediaUrlForImport(url);
+  const ref = typeof refererPageUrl === "string" ? refererPageUrl : "";
   try {
     const r = await fetch(url, { credentials: "omit", mode: "cors" });
     if (r.ok) return await r.blob();
   } catch (_) {}
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ action: "tbcc-content-fetch-bytes", url }, (res) => {
+    chrome.runtime.sendMessage({ action: "tbcc-content-fetch-bytes", url, refererPageUrl: ref }, (res) => {
       if (chrome.runtime.lastError) {
         resolve(null);
         return;
@@ -1914,7 +3102,7 @@ async function fetchUrlBytesToBlob(url) {
 /**
  * One gallery item → blob + entry name for ZIP (reuses fetchUrlBytesToBlob for http(s) CORS fallback).
  */
-async function getBlobAndNameForZipItem(it, idx) {
+async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
   const n = idx + 1;
   const pad = String(n).padStart(3, "0");
   if (it.file) {
@@ -1938,6 +3126,15 @@ async function getBlobAndNameForZipItem(it, idx) {
     return { filename: pad + "_" + nameOut, blob };
   }
   if (it.url && it.url.startsWith("blob:")) {
+    if (!twitterBlobRetry) {
+      const tw = await tbccTryResolveBlobVideoViaTwitterNet(it);
+      if (tw) {
+        it.url = tw;
+        it.mediaType = "video";
+        it.tagName = "video";
+        return getBlobAndNameForZipItem(it, idx, true);
+      }
+    }
     const r = await fetch(it.url);
     let blob = await r.blob();
     if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
@@ -1949,18 +3146,20 @@ async function getBlobAndNameForZipItem(it, idx) {
     return { filename: pad + "_media" + ext, blob };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
+    const httpFetchUrl = bestHttpMediaUrlForItem(it) || it.url;
     if (
       typeof tbccIsLikelyHtmlPageUrl === "function" &&
       (it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video") &&
-      tbccIsLikelyHtmlPageUrl(it.url)
+      tbccIsLikelyHtmlPageUrl(httpFetchUrl)
     ) {
       throw new Error(
         "URL looks like a video page (HTML), not a direct file — use a resolved stream URL or another downloader."
       );
     }
-    const url = normalizeTbccMediaUrlForImport(it.url);
-    let blob = await fetchUrlBytesToBlob(url);
-    if (!blob) throw new Error("Could not fetch: " + String(it.url).slice(0, 96));
+    const url = normalizeTbccMediaUrlForImport(httpFetchUrl);
+    const refPage = await tbccRefererPageForItem(it);
+    let blob = await fetchUrlBytesToBlob(url, refPage);
+    if (!blob) throw new Error("Could not fetch: " + String(httpFetchUrl).slice(0, 96));
     if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
       try {
         blob = await applyImagePipeline(blob, it.url);
@@ -1970,7 +3169,7 @@ async function getBlobAndNameForZipItem(it, idx) {
         blob,
       };
     }
-    const base = filenameFromUrl(it.url);
+    const base = filenameFromUrl(httpFetchUrl);
     const ext = it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
     const hasExt = /\.\w{2,5}$/i.test(base);
     const filename = pad + "_" + (hasExt ? base : base + ext);
@@ -2188,6 +3387,7 @@ function saveGalleryUiState() {
     filterMinW: filterMinW ? filterMinW.value : "",
     filterMinH: filterMinH ? filterMinH.value : "",
     filterUrl: filterUrl ? filterUrl.value : "",
+    filterHideUiClutter: filterHideUiClutter ? !!filterHideUiClutter.checked : false,
     activeTab,
   };
   chrome.storage.local.set({ [STORAGE_UI_STATE]: payload });
@@ -2199,6 +3399,9 @@ function applyGalleryUiState(ui) {
   if (filterMinW && ui.filterMinW != null) filterMinW.value = String(ui.filterMinW);
   if (filterMinH && ui.filterMinH != null) filterMinH.value = String(ui.filterMinH);
   if (filterUrl && ui.filterUrl != null) filterUrl.value = String(ui.filterUrl);
+  if (filterHideUiClutter && ui.filterHideUiClutter != null) {
+    filterHideUiClutter.checked = !!ui.filterHideUiClutter;
+  }
   if (ui.activeTab === "all" && tabAllBtn && tabCurrentBtn) {
     activeTab = "all";
     tabAllBtn.classList.add("active");
@@ -2210,10 +3413,30 @@ function applyGalleryUiState(ui) {
   }
 }
 
+function setLightboxVideoMessage(msg) {
+  if (!tbccLightboxVideoErr) return;
+  const t = (msg || "").trim();
+  tbccLightboxVideoErr.textContent = t;
+  tbccLightboxVideoErr.hidden = !t;
+}
+
+function revokeLightboxVideoObjectUrl() {
+  if (!tbccLightboxVideoObjectUrl) return;
+  try {
+    URL.revokeObjectURL(tbccLightboxVideoObjectUrl);
+  } catch (_) {}
+  tbccLightboxVideoObjectUrl = "";
+}
+
 function closeLightbox() {
   if (!tbccLightbox) return;
   tbccLightbox.classList.remove("visible");
+  setLightboxVideoMessage("");
   if (tbccLightboxVideo) {
+    revokeLightboxVideoObjectUrl();
+    delete tbccLightboxVideo.dataset.tbccBlobTried;
+    tbccLightboxVideo.onerror = null;
+    tbccLightboxVideo.onloadeddata = null;
     tbccLightboxVideo.pause();
     tbccLightboxVideo.removeAttribute("src");
   }
@@ -2222,16 +3445,76 @@ function closeLightbox() {
 
 function openLightboxForItem(item) {
   if (!item || !tbccLightbox) return;
-  const u = String(item.url || "");
+  void (async () => {
+    let work = item;
+    if (String(item.url || "").startsWith("blob:") && galleryItemMarkedVideo(item)) {
+      const tw = await tbccTryResolveBlobVideoViaTwitterNet(item);
+      if (tw) work = { ...item, url: tw, mediaType: "video", tagName: "video" };
+    }
+    openLightboxForItemAfterResolve(work);
+  })();
+}
+
+function openLightboxForItemAfterResolve(item) {
+  if (!item || !tbccLightbox) return;
+  const u = String(bestHttpMediaUrlForItem(item) || item.url || "");
+  const uLow = u.toLowerCase();
+  const urlLooksLikeVideoFile = /\.(mp4|webm|m3u8|mpd|mov|m4v)(\?|$)/i.test(uLow);
+  /** Raster URLs are not decodable as HTML5 video — use the image lightbox (fixes black player on .webp). */
+  const urlIsRasterImage = /\.(jpe?g|png|gif|webp|avif|bmp)(\?|$)/i.test(uLow);
+  const markedVideo = (item.mediaType || item.tagName || "").toLowerCase() === "video";
   const isVideo =
-    (item.mediaType || item.tagName || "").toLowerCase() === "video" ||
-    /\.(mp4|webm|m3u8|mpd)(\?|$)/i.test(u) ||
-    (item.file && item.file.type && item.file.type.startsWith("video/"));
+    !urlIsRasterImage &&
+    (urlLooksLikeVideoFile ||
+      (markedVideo && !urlPathLooksLikeRasterImage(String(item.url || ""))) ||
+      (item.file && item.file.type && item.file.type.startsWith("video/")));
+  setLightboxVideoMessage("");
   if (tbccLightboxImg) tbccLightboxImg.style.display = "none";
   if (tbccLightboxVideo) tbccLightboxVideo.style.display = "none";
   if (isVideo && tbccLightboxVideo) {
-    tbccLightboxVideo.src = u;
-    tbccLightboxVideo.style.display = "block";
+    if (/\.(m3u8|mpd)(\?|$)/i.test(uLow)) {
+      setLightboxVideoMessage(
+        "HLS/DASH often will not play in this preview. Use Download or your backend HLS import if the site only offers a manifest."
+      );
+    }
+    const vEl = tbccLightboxVideo;
+    revokeLightboxVideoObjectUrl();
+    delete vEl.dataset.tbccBlobTried;
+    vEl.onerror = null;
+    vEl.onloadeddata = null;
+    vEl.onerror = async () => {
+      const ve = vEl.error;
+      const canTryBlobFallback =
+        !vEl.dataset.tbccBlobTried &&
+        /^https?:\/\//i.test(u) &&
+        !/\.(m3u8|mpd)(\?|$)/i.test(uLow);
+      if (canTryBlobFallback) {
+        vEl.dataset.tbccBlobTried = "1";
+        setLightboxVideoMessage("Direct playback failed; trying session-backed fallback...");
+        try {
+          const refPage = await tbccRefererPageForItem(item);
+          const fallbackBlob = await fetchUrlBytesToBlob(u, refPage);
+          if (fallbackBlob && fallbackBlob.size > 0) {
+            tbccLightboxVideoObjectUrl = URL.createObjectURL(fallbackBlob);
+            vEl.src = tbccLightboxVideoObjectUrl;
+            return;
+          }
+        } catch (_) {}
+      }
+      let hint = "Video failed to load or decode in the sidebar player.";
+      if (ve && typeof MediaError !== "undefined") {
+        if (ve.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED)
+          hint = "This URL format is not supported in the sidebar player (try Download or open in an external app).";
+        else if (ve.code === MediaError.MEDIA_ERR_NETWORK) hint = "Network error while loading video (check VPN/proxy and refresh capture).";
+        else if (ve.code === MediaError.MEDIA_ERR_DECODE) hint = "Decode error — the file may be DRM/protected or a non-standard variant.";
+      }
+      setLightboxVideoMessage(hint);
+    };
+    vEl.onloadeddata = () => {
+      if (!/\.(m3u8|mpd)(\?|$)/i.test(uLow)) setLightboxVideoMessage("");
+    };
+    vEl.src = u;
+    vEl.style.display = "block";
   } else if (tbccLightboxImg) {
     tbccLightboxImg.src = u;
     tbccLightboxImg.style.display = "block";
@@ -2254,6 +3537,26 @@ function showToast(message, type) {
   }, ms);
 }
 
+function showSystemNotification(title, message) {
+  try {
+    if (!chrome || !chrome.notifications) return;
+    const iconUrl = chrome.runtime.getURL("icons/icon16.png");
+    chrome.notifications.create("tbcc-sidepanel-" + Date.now(), {
+      type: "basic",
+      iconUrl,
+      title: title || "TBCC",
+      message: message || "",
+    });
+  } catch (_) {}
+}
+
+function notifyCompletion(message, type, settingsKey, title) {
+  showToast(message, type || "info");
+  if (!settings || settings.notifyUseSystem === false) return;
+  if (settingsKey && settings[settingsKey] === false) return;
+  showSystemNotification(title || "TBCC", message);
+}
+
 function updateActionBarVisibility() {
   if (!galleryActionBar) return;
   galleryActionBar.classList.toggle("hidden", selectedCountInFilteredList() === 0);
@@ -2269,6 +3572,13 @@ function setFilterOverlayOpen(open) {
   if (!filterOverlay) return;
   filterOverlay.classList.toggle("visible", !!open);
   filterOverlay.setAttribute("aria-hidden", open ? "false" : "true");
+  if (open && filterMinW) {
+    requestAnimationFrame(() => {
+      try {
+        filterMinW.focus();
+      } catch (_) {}
+    });
+  }
 }
 
 function resetFilterFields() {
@@ -2276,6 +3586,7 @@ function resetFilterFields() {
   if (filterMinW) filterMinW.value = "";
   if (filterMinH) filterMinH.value = "";
   if (filterUrl) filterUrl.value = "";
+  if (filterHideUiClutter) filterHideUiClutter.checked = false;
   saveGalleryUiState();
   renderGrid();
 }
@@ -2389,8 +3700,9 @@ async function downloadSelectedAsZip() {
         resolve();
       });
     });
-    if (progressStatus)
-      progressStatus.textContent = "Saved ZIP with " + ok + " file(s) to Downloads/tbcc/ (use for digital bundle upload).";
+    const msg = "Saved ZIP with " + ok + " file(s) to Downloads/tbcc/ (use for digital bundle upload).";
+    if (progressStatus) progressStatus.textContent = msg;
+    notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete");
   } catch (e) {
     if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
   }
@@ -2403,7 +3715,7 @@ async function copySelectedUrlsForJDownloader() {
   const list = getFilteredList();
   const selected = list.filter((i) => selectedUrls.has(i.url));
   const lines = selected
-    .map((i) => i.url)
+    .map((i) => bestHttpMediaUrlForItem(i) || i.url)
     .filter((u) => typeof u === "string" && (u.startsWith("http://") || u.startsWith("https://")));
   if (!lines.length) return;
   try {
@@ -2450,17 +3762,18 @@ async function downloadSelected() {
           });
         });
       } else if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
+        const httpFetchUrl = bestHttpMediaUrlForItem(it) || it.url;
         if (
           typeof tbccIsLikelyHtmlPageUrl === "function" &&
           (it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video") &&
-          tbccIsLikelyHtmlPageUrl(it.url)
+          tbccIsLikelyHtmlPageUrl(httpFetchUrl)
         ) {
           throw new Error(
             "That URL is a page (HTML), not a video file. The extension needs a direct .mp4 (or similar) link — or use JDownloader / your backend to resolve the stream."
           );
         }
         if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-          const raw = await fetchUrlBytesToBlob(it.url);
+          const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
           if (!raw || !raw.size) throw new Error("Could not fetch image for processing");
           const out = await applyImagePipeline(raw, it.url);
           const filename = "tbcc/" + idx + "_" + filenameForCropUrl(it.url);
@@ -2472,13 +3785,33 @@ async function downloadSelected() {
               else resolve();
             });
           });
+        } else if (hostNeedsSessionFetch(httpFetchUrl)) {
+          const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it));
+          if (!raw || !raw.size) throw new Error("Could not fetch media for download (session)");
+          const base = filenameFromUrl(httpFetchUrl);
+          const ext =
+            it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video"
+              ? /\.(mp4|webm|m4v|mov|mkv|m3u8|mpd)(\?|$)/i.test(base)
+                ? ""
+                : ".mp4"
+              : "";
+          const hasExt = /\.\w{2,5}$/i.test(base);
+          const filename = ("tbcc/" + idx + "_" + (hasExt ? base : base + ext)).replace(/[^\w.\-]+/g, "_");
+          const blobUrl = URL.createObjectURL(raw);
+          await new Promise((resolve, reject) => {
+            chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
+              URL.revokeObjectURL(blobUrl);
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve();
+            });
+          });
         } else {
-          const base = filenameFromUrl(it.url);
+          const base = filenameFromUrl(httpFetchUrl);
           const ext = it.mediaType === "video" || (it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
           const hasExt = /\.\w{2,5}$/i.test(base);
           const filename = "tbcc/" + idx + "_" + (hasExt ? base : base + ext);
           await new Promise((resolve, reject) => {
-            chrome.downloads.download({ url: it.url, filename, saveAs: false }, () => {
+            chrome.downloads.download({ url: httpFetchUrl, filename, saveAs: false }, () => {
               if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
               else resolve();
             });
@@ -2497,9 +3830,35 @@ async function downloadSelected() {
             });
           });
         } else {
-          await new Promise((resolve) => {
-            chrome.downloads.download({ url: it.url, filename: "tbcc/" + idx + "_media", saveAs: false }, resolve);
-          });
+          try {
+            const tw = await tbccTryResolveBlobVideoViaTwitterNet(it);
+            if (tw) {
+              it.url = tw;
+              it.mediaType = "video";
+              it.tagName = "video";
+              i--;
+              continue;
+            }
+            const r = await fetch(it.url);
+            const b = await r.blob();
+            const ext =
+              it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
+            const blobUrl = URL.createObjectURL(b);
+            await new Promise((resolve, reject) => {
+              chrome.downloads.download(
+                { url: blobUrl, filename: "tbcc/" + idx + "_media" + ext, saveAs: false },
+                () => {
+                  URL.revokeObjectURL(blobUrl);
+                  if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+                  else resolve();
+                }
+              );
+            });
+          } catch (_) {
+            throw new Error(
+              "Page-only blob: video — play clips on X so video.twimg.com URLs appear, then tap Refresh in TBCC and try again."
+            );
+          }
         }
       }
       n++;
@@ -2559,6 +3918,12 @@ btnToggleOverlay &&
     const { tbccOverlayMode } = await chrome.storage.local.get("tbccOverlayMode");
     await chrome.storage.local.set({ tbccOverlayMode: !tbccOverlayMode });
     await syncOverlayToggleButton();
+    const tid = await resolveTargetTabId();
+    if (!tid) return;
+    const ok = await ensureOverlayScriptReady(tid);
+    if (!ok) {
+      alert("Could not enable on-screen buttons on this tab. Open a normal http(s) page and reload that tab once.");
+    }
   });
 
 btnSelectAllOnPage &&
@@ -2572,7 +3937,7 @@ btnSelectAllOnPage &&
     }
   });
 
-[filterType, filterMinW, filterMinH, filterUrl].forEach((el) => {
+[filterType, filterMinW, filterMinH, filterUrl, filterHideUiClutter].forEach((el) => {
   if (!el) return;
   el.addEventListener("change", () => {
     saveGalleryUiState();
@@ -2588,39 +3953,74 @@ btnSelectAllOnPage &&
 });
 
 tabCurrentBtn &&
-  tabCurrentBtn.addEventListener("click", () => {
+  tabCurrentBtn.addEventListener("click", async () => {
     activeTab = "current";
     tabCurrentBtn.classList.add("active");
     tabAllBtn && tabAllBtn.classList.remove("active");
     saveGalleryUiState();
+    await clearSelectionForNewCapture();
     doRefresh();
   });
 tabAllBtn &&
-  tabAllBtn.addEventListener("click", () => {
+  tabAllBtn.addEventListener("click", async () => {
     activeTab = "all";
     tabAllBtn.classList.add("active");
     tabCurrentBtn && tabCurrentBtn.classList.remove("active");
     saveGalleryUiState();
+    await clearSelectionForNewCapture();
     doRefresh();
   });
 
 btnRefresh && btnRefresh.addEventListener("click", () => refreshPanelOrHardScan());
 
-btnSelectAll &&
-  btnSelectAll.addEventListener("click", () => {
-    const list = getFilteredList();
-    list.forEach((i) => selectedUrls.add(i.url));
-    renderGrid();
-    updateCountAndSend();
+viewMainEl &&
+  viewMainEl.addEventListener("contextmenu", (e) => {
+    if (viewMainEl.hidden) return;
+    if (e.target.closest && e.target.closest("#tbccGalleryCtxMenu")) {
+      e.preventDefault();
+      return;
+    }
+    if (galleryCtxMenuIgnoresTarget(e.target)) return;
+    e.preventDefault();
+    openGalleryContextMenu(e.clientX, e.clientY);
   });
 
-btnDeselect &&
-  btnDeselect.addEventListener("click", () => {
-    selectedUrls.clear();
-    lastSelectionAnchorIndex = 0;
-    renderGrid();
-    updateCountAndSend();
+galleryCtxMenu &&
+  galleryCtxMenu.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-ctx]");
+    if (!btn || btn.disabled) return;
+    e.stopPropagation();
+    onGalleryContextMenuAction(btn.getAttribute("data-ctx"));
   });
+
+document.addEventListener(
+  "click",
+  (e) => {
+    if (!galleryCtxMenu || galleryCtxMenu.hidden) return;
+    if (e.target.closest && e.target.closest("#tbccGalleryCtxMenu")) return;
+    closeGalleryContextMenu();
+  },
+  true
+);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !galleryCtxMenu || galleryCtxMenu.hidden) return;
+  closeGalleryContextMenu();
+});
+
+gridEl &&
+  gridEl.addEventListener(
+    "scroll",
+    () => {
+      closeGalleryContextMenu();
+    },
+    { passive: true }
+  );
+
+btnSelectToggle &&
+  btnSelectToggle.addEventListener("click", runSelectToggle);
+
+btnSelectAnchorToggle && btnSelectAnchorToggle.addEventListener("click", runSelectAnchorToggle);
 
 tagCatalogSelect &&
   tagCatalogSelect.addEventListener("change", () => {
@@ -2696,15 +4096,36 @@ function hostNeedsSessionFetch(url) {
       h.includes("kemono.su") ||
       h.includes("kemono.si") ||
       h === "fapello.com" ||
-      h.endsWith(".fapello.com")
+      h.endsWith(".fapello.com") ||
+      h === "fetlife.com" ||
+      h.endsWith(".fetlife.com") ||
+      h === "nudostar.com" ||
+      h.endsWith(".nudostar.com") ||
+      h === "video.twimg.com"
     );
   } catch (_) {
     return false;
   }
 }
 
+function shouldRetryImportViaSession(url, err) {
+  const msg = String(err || "").toLowerCase();
+  const u = String(url || "").toLowerCase();
+  if (hostNeedsSessionFetch(url)) return true;
+  if (u.includes("/attachments/") || u.includes("/data/attachments/")) return true;
+  return (
+    msg.includes("403") ||
+    msg.includes("forbidden") ||
+    msg.includes("could not download") ||
+    msg.includes("access denied") ||
+    msg.includes("cloudflare") ||
+    msg.includes("captcha") ||
+    msg.includes("referer")
+  );
+}
+
 /** Fetch image bytes using Chrome cookie jar + Referer (same idea as a logged-in tab). */
-async function importUrlViaExtensionSession(url, poolId, savedOnly) {
+async function importUrlViaExtensionSession(url, poolId, savedOnly, refererPageUrl) {
   url = normalizeTbccMediaUrlForImport(url);
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
@@ -2714,6 +4135,7 @@ async function importUrlViaExtensionSession(url, poolId, savedOnly) {
         poolId,
         savedOnly: !!savedOnly,
         source: "extension:gallery-session",
+        refererPageUrl: typeof refererPageUrl === "string" ? refererPageUrl : "",
       },
       (data) => {
         if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message });
@@ -2864,9 +4286,26 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
             });
             const data = await parseImportResponse(r);
             if (data.status === "saved_only" && !data.error) {
+              const okSet =
+                Array.isArray(data.ok_urls) && data.ok_urls.length
+                  ? new Set(data.ok_urls.map((u) => normalizeTbccMediaUrlForImport(u)))
+                  : null;
               for (const it of slice) {
+                const u = normalizeTbccMediaUrlForImport(it.url);
+                if (okSet && !okSet.has(u)) {
+                  bump();
+                  continue;
+                }
                 await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
                 bump();
+              }
+              if (Array.isArray(data.errors) && data.errors.length) {
+                const first = data.errors[0] && data.errors[0].error;
+                appendErr(
+                  data.errors.length === 1
+                    ? first || "One URL failed"
+                    : `${data.errors.length} URL(s) failed; others were sent. ${first ? String(first).slice(0, 120) : ""}`
+                );
               }
             } else {
               appendErr(data.error || "Saved batch (URLs) failed");
@@ -2921,7 +4360,7 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
             }
             if (isImageItem(it)) {
               try {
-                const raw = await fetchUrlBytesToBlob(it.url);
+                const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
                 if (raw && raw.size > 0) {
                   const cropped = await applyImagePipeline(raw, it.url);
                   pendingCrops.push({
@@ -3026,7 +4465,7 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr) {
           try {
             const form = new FormData();
             for (const it of chunk) {
-              const raw = await fetchUrlBytesToBlob(it.url);
+              const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
               if (!raw || !raw.size) throw new Error("fetch bytes");
               const cropped = await applyImagePipeline(raw, it.url);
               form.append("files", cropped, filenameForCropUrl(it.url));
@@ -3223,6 +4662,8 @@ async function runSendBatch(savedOnly) {
   }
   const poolId = await getPoolId();
   const importedMediaIds = [];
+  let telegramPostAttempted = false;
+  let telegramPostHadError = false;
   if (btnSend) btnSend.disabled = true;
   progressEl.classList.add("visible");
   if (progressTitle)
@@ -3270,8 +4711,21 @@ async function runSendBatch(savedOnly) {
     updateCountAndSend();
     clearGallerySendTags();
     const hadErrSaved = progressError && progressError.textContent && progressError.textContent.trim();
-    if (hadErrSaved) showToast("Some items failed — see progress details.", "error");
-    else showToast("Completed " + done + " / " + total + " (Saved Messages).", "success");
+    if (hadErrSaved) {
+      notifyCompletion(
+        "Saved Messages finished with errors (" + done + " / " + total + ").",
+        "error",
+        "notifyOnSendSavedComplete",
+        "TBCC Saved Messages"
+      );
+    } else {
+      notifyCompletion(
+        "Completed " + done + " / " + total + " (Saved Messages).",
+        "success",
+        "notifyOnSendSavedComplete",
+        "TBCC Saved Messages"
+      );
+    }
     return;
   }
 
@@ -3318,7 +4772,7 @@ async function runSendBatch(savedOnly) {
   for (const it of httpPage) {
     if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
       try {
-        const raw = await fetchUrlBytesToBlob(it.url);
+        const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
         if (raw && raw.size > 0) {
           const cropped = await applyImagePipeline(raw, it.url);
           const data = await postImportBytes(
@@ -3346,7 +4800,12 @@ async function runSendBatch(savedOnly) {
     }
     if (hostNeedsSessionFetch(it.url)) {
       try {
-        const data = await importUrlViaExtensionSession(it.url, poolId, savedOnly);
+        const data = await importUrlViaExtensionSession(
+          it.url,
+          poolId,
+          savedOnly,
+          await tbccRefererPageForItem(it)
+        );
         const ok =
           (data.status === "imported" || data.status === "skipped" || data.status === "saved_only") && !data.error;
         if (ok) {
@@ -3366,9 +4825,16 @@ async function runSendBatch(savedOnly) {
       needBytesByTab[it.tabId].push(it.url);
       continue;
     }
-    const data = await importOneUrl(it.url, poolId, savedOnly);
-    const ok =
+    let data = await importOneUrl(it.url, poolId, savedOnly);
+    let ok =
       (data.status === "imported" || data.status === "skipped" || data.status === "saved_only") && !data.error;
+    if (!ok && data.error && shouldRetryImportViaSession(it.url, data.error)) {
+      try {
+        data = await importUrlViaExtensionSession(it.url, poolId, savedOnly, await tbccRefererPageForItem(it));
+        ok =
+          (data.status === "imported" || data.status === "skipped" || data.status === "saved_only") && !data.error;
+      } catch (_) {}
+    }
     if (ok) {
       if (savedOnly && data.status === "saved_only")
         await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
@@ -3405,7 +4871,7 @@ async function runSendBatch(savedOnly) {
       const it = urlToItem.get(url);
       if (shouldApplyImagePipelineForUrl(url) && it && isImageItem(it)) {
         try {
-          const raw = await fetchUrlBytesToBlob(url);
+          const raw = await fetchUrlBytesToBlob(url, await tbccRefererPageForItem(it || { tabId, url }));
           if (raw && raw.size > 0) {
             const cropped = await applyImagePipeline(raw, url);
             const data = await postImportBytes(
@@ -3434,7 +4900,12 @@ async function runSendBatch(savedOnly) {
       }
       if (!hostNeedsSessionFetch(url)) {
         try {
-          const data = await importUrlViaExtensionSession(url, poolId, savedOnly);
+          const data = await importUrlViaExtensionSession(
+            url,
+            poolId,
+            savedOnly,
+            await tbccRefererPageForItem(it || { tabId, url })
+          );
           const ok =
             (data.status === "imported" || data.status === "skipped" || data.status === "saved_only") &&
             !data.error;
@@ -3490,11 +4961,13 @@ async function runSendBatch(savedOnly) {
     const uniqueIds = [...new Set(importedMediaIds)];
     const mode = (postDestMode && postDestMode.value) || "channel";
     if (fc && uniqueIds.length) {
+      telegramPostAttempted = true;
       let threadId = null;
       if (mode === "forum") {
         const ft = forumTopicSelect && forumTopicSelect.value ? parseInt(forumTopicSelect.value, 10) : 0;
         if (!ft) {
           appendErr("Select a forum topic, or set destination to “Channel or group”.");
+          telegramPostHadError = true;
         } else {
           threadId = ft;
         }
@@ -3523,10 +4996,17 @@ async function runSendBatch(savedOnly) {
             j = text ? JSON.parse(text) : {};
           } catch (_) {}
           if (j.error) appendErr(String(j.error));
-          else if (j.errors && j.errors.length) appendErr(j.errors.join("; "));
-          else if (j.ok === false && j.sent_chunks === 0) appendErr("Telegram post returned no chunks sent");
+          if (j.error) telegramPostHadError = true;
+          else if (j.errors && j.errors.length) {
+            appendErr(j.errors.join("; "));
+            telegramPostHadError = true;
+          } else if (j.ok === false && j.sent_chunks === 0) {
+            appendErr("Telegram post returned no chunks sent");
+            telegramPostHadError = true;
+          }
         } catch (e) {
           appendErr(e.message || String(e));
+          telegramPostHadError = true;
         }
       }
     }
@@ -3541,8 +5021,33 @@ async function runSendBatch(savedOnly) {
   updateCountAndSend();
   clearGallerySendTags();
   const hadErr = progressError && progressError.textContent && progressError.textContent.trim();
-  if (hadErr) showToast("Some items failed — see progress details.", "error");
-  else showToast("Completed " + done + " / " + total + " item(s).", "success");
+  if (hadErr) {
+    notifyCompletion(
+      "TBCC send finished with errors (" + done + " / " + total + ").",
+      "error",
+      "notifyOnSendTbccComplete",
+      "TBCC send status"
+    );
+  } else {
+    notifyCompletion(
+      "Completed " + done + " / " + total + " item(s).",
+      "success",
+      "notifyOnSendTbccComplete",
+      "TBCC import complete"
+    );
+  }
+  if (telegramPostAttempted && !telegramPostHadError) {
+    const mode = (postDestMode && postDestMode.value) || "channel";
+    const ch = forumChannelSelect && forumChannelSelect.selectedOptions && forumChannelSelect.selectedOptions[0];
+    const channelName = ch ? (ch.textContent || "").trim() : "selected destination";
+    const label = mode === "forum" ? "forum topic" : "channel/group";
+    notifyCompletion(
+      "Telegram post sent to " + label + ": " + channelName,
+      "success",
+      "notifyOnSendChannelComplete",
+      "TBCC Telegram post"
+    );
+  }
 }
 
 /**
@@ -3575,7 +5080,7 @@ btnOpenCaptureSettings &&
 btnGalleryHelp &&
   btnGalleryHelp.addEventListener("click", () => {
     window.alert(
-      "TBCC Gallery shortcuts:\n\nR — Refresh (pools/channels/embeds + rescan when “Full refresh” is on in ⚙ Options)\nO — Preview first selected\nCtrl+S — Send\nEsc — Close preview\n\nDouble-click a tile for full-size preview.\n\nTags: open Destination before Send — catalog, create, or Suggest from page; after a pool import they merge as manual tags (saved-only skips tagging).\n\nCapture settings (format, auto-scan, …) are under ⚙ Options."
+      "TBCC Gallery shortcuts:\n\nR — Refresh (pools/channels/embeds + rescan when “Full refresh” is on in ⚙ Options)\nO — Preview first selected\nCtrl+S — Send\nEsc — Close preview / quick menu\n\nRight-click in the gallery (below the top nav) for a quick menu: refresh, on-page boxes, select, download, filter, and more.\n\nDouble-click a tile for full-size preview.\n\nTags: open Destination before Send — catalog, create, or Suggest from page; after a pool import they merge as manual tags (saved-only skips tagging).\n\nCapture settings (format, auto-scan, …) are under ⚙ Options."
     );
   });
 btnFilterToggle &&
@@ -3720,6 +5225,13 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
 
 (async function init() {
   const initStarted = Date.now();
+  try {
+    window.__tbccGallerySidepanelPort = chrome.runtime.connect({ name: "tbcc-gallery-sidepanel" });
+  } catch (_) {}
+  window.addEventListener("pagehide", (ev) => {
+    if (ev && ev.persisted) return;
+    void chrome.storage.local.set({ tbccOverlayMode: false });
+  });
   const s = await new Promise((r) => chrome.storage.local.get(STORAGE_SETTINGS, (o) => r(o[STORAGE_SETTINGS])));
   if (s) {
     settings = { ...settings, ...s };
@@ -3730,9 +5242,44 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
     if (typeof settings.cropBottomEnabled !== "boolean") settings.cropBottomEnabled = !!settings.cropBottomEnabled;
     settings.cropInsetMode = currentInsetMode();
     if (typeof settings.foldVideoVariants !== "boolean") settings.foldVideoVariants = true;
+    if (typeof settings.clearSelectionOnOpen !== "boolean") settings.clearSelectionOnOpen = false;
+    if (typeof settings.preserveOrphanSelections !== "boolean") settings.preserveOrphanSelections = false;
+    if (typeof settings.debugTileRender !== "boolean") settings.debugTileRender = false;
+    if (typeof settings.subtabEnabled !== "boolean") settings.subtabEnabled = true;
+    if (typeof settings.subtabAutoCapture !== "boolean") settings.subtabAutoCapture = true;
+    settings.subtabCap = Math.max(1, Math.min(5, parseInt(String(settings.subtabCap || 3), 10) || 3));
+    if (typeof settings.gridSortMode !== "string") settings.gridSortMode = "default";
+    if (settings.gridViewMode !== "details") settings.gridViewMode = "grid";
+  }
+  if (settings.clearSelectionOnOpen === true) {
+    await clearSelectionForNewCapture();
   }
   syncCropUiFromSettings();
   syncFoldToggleLabel();
+  if (tbccSortSelect) {
+    tbccSortSelect.value = settings.gridSortMode || "default";
+    tbccSortSelect.addEventListener("change", () => {
+      settings.gridSortMode = tbccSortSelect.value || "default";
+      persistSettingsNow();
+      renderGrid();
+    });
+  }
+  if (tbccSortDetailsToggle) {
+    tbccSortDetailsToggle.classList.toggle("is-active", settings.gridViewMode === "details");
+    tbccSortDetailsToggle.addEventListener("click", () => {
+      settings.gridViewMode = settings.gridViewMode === "details" ? "grid" : "details";
+      tbccSortDetailsToggle.classList.toggle("is-active", settings.gridViewMode === "details");
+      if (gridEl) gridEl.classList.toggle("grid--details", settings.gridViewMode === "details");
+      persistSettingsNow();
+      renderGrid();
+    });
+    if (gridEl) gridEl.classList.toggle("grid--details", settings.gridViewMode === "details");
+  }
+  currentTabId = await resolveTargetTabId();
+  await restoreSubtabsForCurrentTab();
+  subtabRestoredForTabId = currentTabId;
+  await wireSubtabUi();
+  renderSubtabBar();
   const rawImgEd = await new Promise((r) =>
     chrome.storage.local.get(STORAGE_IMAGE_EDITS, (o) => r(o[STORAGE_IMAGE_EDITS]))
   );
@@ -3851,7 +5398,9 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
       if (btnSend && !btnSend.disabled) sendToTBCC();
     }
   });
-  window.addEventListener("resize", () => { if (imageList.length) renderGrid(); });
+  window.addEventListener("resize", () => {
+    if (imageList.length) renderGrid();
+  });
   gridEl && gridEl.addEventListener("mousedown", onGridCtrlMarqueeMouseDown);
   window.addEventListener("blur", () => {
     if (!marqueeDrag) return;

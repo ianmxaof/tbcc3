@@ -4,16 +4,26 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TBCC — Extension options</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles/tokens.css" />
   <link rel="stylesheet" href="styles/components.css" />
 </head>
 <body class="tbcc-options-page">
   <nav class="top">
-    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
+    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#adapter-lab">Adapter lab</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
   </nav>
 
   <section id="capture-settings" class="card">
     <h1>Capture (side panel gallery)</h1>
+    <label class="row2">Theme preset
+      <select id="tbccThemePreset">
+        <option value="dark">Dark</option>
+        <option value="chatgpt">ChatGPT</option>
+        <option value="github">GitHub</option>
+        <option value="obsidian">Obsidian</option>
+        <option value="cursor">Cursor</option>
+      </select>
+    </label>
     <p class="sub" style="margin:0 0 12px">These apply when you refresh or scan a tab in the gallery. Same settings as the old gallery settings modal.</p>
     <label class="row2">Format
       <select id="captureSettingFormat">
@@ -22,11 +32,19 @@
       </select>
     </label>
     <label class="row2"><input type="checkbox" id="captureSettingAutoRefresh" /> Auto-scan when the side panel opens or becomes visible</label>
+    <label class="row2"><input type="checkbox" id="captureSettingClearSelectionOnOpen" /> Clear selected gallery items when the side panel opens</label>
     <label class="row2"><input type="checkbox" id="captureSettingHardRefresh" /> Full refresh (↻ / <strong>R</strong>): reload pools, channels, forum topics, and embedded panels (Collected / Tools / this Options page), then rescan the tab — same as closing and reopening the side panel</label>
     <label class="row2"><input type="checkbox" id="captureSettingResourceTiming" /> More resource-timing images (non–OnlyFans)</label>
     <label class="row2">Lazy-load delay before scan (ms, 0–3000)
       <input type="number" id="captureSettingLazyDelay" min="0" max="3000" value="0" style="width:72px" />
     </label>
+    <h2 style="margin:12px 0 8px">Notifications</h2>
+    <p class="sub" style="margin:0 0 8px">Toast always shows in the side panel; enable system notifications for desktop-level completion alerts.</p>
+    <label class="row2"><input type="checkbox" id="captureSettingNotifySystem" /> Enable system notifications (desktop)</label>
+    <label class="row2"><input type="checkbox" id="captureSettingNotifyZip" /> Notify when ZIP bundle finishes</label>
+    <label class="row2"><input type="checkbox" id="captureSettingNotifySendTbcc" /> Notify when Send to TBCC finishes</label>
+    <label class="row2"><input type="checkbox" id="captureSettingNotifySendSaved" /> Notify when Send to Saved Messages finishes</label>
+    <label class="row2"><input type="checkbox" id="captureSettingNotifySendChannel" /> Notify when channel/group/forum post finishes</label>
     <p style="margin:12px 0 6px;font-size:12px;color:var(--tbcc-text-muted)">Edges / watermarks: use <strong>Crop &amp; watermarks</strong> in the gallery overflow menu (percent trims all four sides).</p>
     <button type="button" id="captureSettingClearCache" class="tbcc-btn-secondary">Clear gallery cache</button>
     <p id="tbccApiStatus" style="margin:14px 0 0;font-size:12px;color:var(--tbcc-text-muted)">Checking API…</p>
@@ -58,11 +76,47 @@
     </fieldset>
   </section>
 
+  <section id="adapter-lab" class="card tbcc-options-section">
+    <h1>Adapter lab</h1>
+    <p class="sub">Manual per-domain rules plus assisted analysis for galleries that only expose thumbnail URLs.</p>
+    <fieldset>
+      <legend>Analyze current tab</legend>
+      <p class="sub" style="margin:0 0 10px">Open the target gallery tab, then click analyze to generate possible full-resolution rewrite rules.</p>
+      <button type="button" id="btnAnalyzeAdapter" class="tbcc-btn-secondary">Analyze current tab</button>
+      <div id="adapterAnalyzeResult" class="sub" style="margin-top:10px"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Add manual rule</legend>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:120px">Domain</span>
+        <input type="text" id="adapterDomain" class="tbcc-input" placeholder="example.com" style="min-width:220px" />
+      </label>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:120px">Mode</span>
+        <select id="adapterMode" class="tbcc-input" style="min-width:180px;max-width:260px">
+          <option value="literal">Literal replace</option>
+          <option value="regex">Regex replace</option>
+        </select>
+      </label>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:120px">Replace from</span>
+        <input type="text" id="adapterFrom" class="tbcc-input" placeholder="_300px.jpg" style="min-width:220px" />
+      </label>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:120px">Replace to</span>
+        <input type="text" id="adapterTo" class="tbcc-input" placeholder=".jpg" style="min-width:220px" />
+      </label>
+      <button type="button" id="btnAddAdapterRule" class="tbcc-btn-primary">Add adapter rule</button>
+    </fieldset>
+    <h2>Active rules</h2>
+    <div id="adapterRulesList"></div>
+  </section>
+
   <section id="model" class="card tbcc-options-section">
     <h1>Model search</h1>
     <p class="sub">
-      Select a <strong>username</strong> on any page → right‑click → <strong>TBCC — Look up username</strong> → choose one source or <strong>Search all enabled sites</strong>.
-      Built‑in sites ship with the extension; add your own below (URL must include <code>{username}</code>).
+      Highlight a <strong>username</strong>, or right-click a username link / <code>@handle</code> directly → <strong>TBCC — Look up username</strong> → open all enabled sources by category or choose a single source.
+      Default sites ship with the extension; add more below and pick <strong>OnlyFans search</strong> or <strong>Live cam search</strong> so new URLs land in that list (URL must include <code>{username}</code>).
     </p>
 
     <h2>Open results as</h2>
@@ -97,7 +151,10 @@
       </label>
       <label class="row" style="flex-wrap:wrap;margin-top:8px">
         <span style="min-width:120px">Category</span>
-        <input type="text" id="customSiteCat" class="tbcc-input" placeholder="custom (optional)" style="min-width:160px" />
+        <select id="customSiteCat" class="tbcc-input" style="min-width:180px;max-width:260px">
+          <option value="onlyfans">OnlyFans search</option>
+          <option value="livecams">Live cam search</option>
+        </select>
       </label>
       <button type="button" id="btnAddCustomSite" class="tbcc-btn-primary">Add source</button>
     </fieldset>
@@ -105,9 +162,17 @@
     <h2>Sources</h2>
     <p class="sub" style="margin:0 0 10px">Toggle sources on or off. Only enabled sources appear in the context menu.</p>
     <div id="siteFields"></div>
+
+    <h2>Username search history</h2>
+    <p class="sub" style="margin:0 0 10px">Recent usernames searched by TBCC model search.</p>
+    <div id="modelSearchHistory" class="sub" style="max-height:180px;overflow:auto;border:1px solid var(--tbcc-border,#313244);border-radius:8px;padding:8px 10px;"></div>
+    <div style="margin-top:8px">
+      <button type="button" id="btnClearModelSearchHistory" class="tbcc-btn-secondary">Clear username history</button>
+    </div>
+
     <p id="status"></p>
     <p class="footer">
-      Built‑in list: <code>extension/model-search-sites.json</code>. Custom sources are stored in this browser. Reload the extension after editing the JSON file.
+      Default list: <code>extension/model-search-sites.json</code>. Extra sources are stored in this browser. Reload the extension after editing the JSON file.
     </p>
   </section>
 

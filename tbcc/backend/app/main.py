@@ -12,9 +12,11 @@ from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, link_resolver
 from app.database.session import engine
 from app.models.base import Base
+from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
+from app.models.link_resolver_request import LinkResolverRequest  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
 from app.services.nowpayments_client import crypto_auto_checkout_ready
 
@@ -35,6 +37,45 @@ def on_startup():
     url = str(engine.url)
     if "sqlite" in url:
         Base.metadata.create_all(bind=engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS payment_bot_settings ("
+                    "id INTEGER PRIMARY KEY, "
+                    "main_menu_json TEXT, "
+                    "welcome_html TEXT, "
+                    "loot_intro_html TEXT, "
+                    "subscribe_title_main VARCHAR(128), "
+                    "subscribe_title_loot VARCHAR(128), "
+                    "subscription_catalog_columns INTEGER, "
+                    "min_subscription_stars INTEGER, "
+                    "runtime_adapter VARCHAR(32), "
+                    "runtime_cmd_start TEXT, "
+                    "runtime_cmd_stop TEXT, "
+                    "runtime_cmd_restart TEXT, "
+                    "runtime_cmd_reload TEXT, "
+                    "runtime_cmd_status TEXT)"
+                )
+            )
+        try:
+            inspector = inspect(engine)
+            if "payment_bot_settings" in inspector.get_table_names():
+                cols = {c["name"] for c in inspector.get_columns("payment_bot_settings")}
+                with engine.begin() as conn:
+                    if "runtime_adapter" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_adapter VARCHAR(32)"))
+                    if "runtime_cmd_start" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_start TEXT"))
+                    if "runtime_cmd_stop" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_stop TEXT"))
+                    if "runtime_cmd_restart" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_restart TEXT"))
+                    if "runtime_cmd_reload" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_reload TEXT"))
+                    if "runtime_cmd_status" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_status TEXT"))
+        except Exception:
+            logger.exception("SQLite: failed to patch payment_bot_settings columns")
         # create_all() does not ALTER existing SQLite tables — add columns from newer models if missing.
         try:
             inspector = inspect(engine)
@@ -245,6 +286,46 @@ def on_startup():
             "Postgres (or non-SQLite): tables are not auto-created here. "
             "If API returns UndefinedTable, run: cd backend && python -m alembic upgrade head"
         )
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "CREATE TABLE IF NOT EXISTS payment_bot_settings ("
+                        "id INTEGER PRIMARY KEY, "
+                        "main_menu_json TEXT, "
+                        "welcome_html TEXT, "
+                        "loot_intro_html TEXT, "
+                        "subscribe_title_main VARCHAR(128), "
+                        "subscribe_title_loot VARCHAR(128), "
+                        "subscription_catalog_columns INTEGER, "
+                        "min_subscription_stars INTEGER, "
+                        "runtime_adapter VARCHAR(32), "
+                        "runtime_cmd_start TEXT, "
+                        "runtime_cmd_stop TEXT, "
+                        "runtime_cmd_restart TEXT, "
+                        "runtime_cmd_reload TEXT, "
+                        "runtime_cmd_status TEXT)"
+                    )
+                )
+            logger.info("Startup: ensured payment_bot_settings table exists")
+            inspector = inspect(engine)
+            if "payment_bot_settings" in inspector.get_table_names():
+                cols = {c["name"] for c in inspector.get_columns("payment_bot_settings")}
+                with engine.begin() as conn:
+                    if "runtime_adapter" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_adapter VARCHAR(32)"))
+                    if "runtime_cmd_start" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_start TEXT"))
+                    if "runtime_cmd_stop" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_stop TEXT"))
+                    if "runtime_cmd_restart" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_restart TEXT"))
+                    if "runtime_cmd_reload" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_reload TEXT"))
+                    if "runtime_cmd_status" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_status TEXT"))
+        except Exception:
+            logger.exception("Startup: failed to ensure payment_bot_settings table")
         # Keep Postgres dev/prod resilient when model columns are added before alembic is applied.
         try:
             inspector = inspect(engine)
@@ -484,12 +565,15 @@ app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(subscriptions.router, prefix="/subscriptions", tags=["subscriptions"])
 app.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
 app.include_router(growth_settings.router, prefix="/growth-settings", tags=["growth-settings"])
+app.include_router(payment_bot_settings.router, prefix="/payment-bot-settings", tags=["payment-bot-settings"])
 app.include_router(external_payment_orders.router, prefix="/external-payment-orders", tags=["external-payment-orders"])
 app.include_router(webhooks_payment.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(subscription_plans.router, prefix="/subscription-plans", tags=["subscription-plans"])
 app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 app.include_router(scheduled_posts.router, prefix="/scheduled-posts", tags=["scheduled-posts"])
 app.include_router(internal_launch.router, prefix="/internal", tags=["internal"])
+app.include_router(watch_folder.router, prefix="/watch-folder", tags=["watch-folder"])
+app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
 
 
 @app.get("/")

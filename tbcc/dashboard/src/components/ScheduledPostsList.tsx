@@ -160,6 +160,10 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const [editButtons, setEditButtons] = useState<Array<{ text: string; url: string }>>([]);
   const [editSendSilent, setEditSendSilent] = useState(false);
   const [editPinAfterSend, setEditPinAfterSend] = useState(false);
+  const [editCheckoutStarsEnabled, setEditCheckoutStarsEnabled] = useState(false);
+  const [editCheckoutPlanId, setEditCheckoutPlanId] = useState(0);
+  const [editCheckoutButtonLabel, setEditCheckoutButtonLabel] = useState("");
+  const [editCheckoutReferralCode, setEditCheckoutReferralCode] = useState("");
   const [editScheduleError, setEditScheduleError] = useState<string | null>(null);
   const [triggerNotice, setTriggerNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
@@ -175,6 +179,13 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     queryKey: ["scheduledPosts"],
     queryFn: () => api.scheduledPosts.list(),
   });
+  const { data: subscriptionPlansRaw = [] } = useQuery({
+    queryKey: ["subscriptionPlans"],
+    queryFn: () => api.subscriptionPlans.list(),
+  });
+  const salablePlans = (subscriptionPlansRaw as Array<Record<string, unknown>>).filter(
+    (p) => p.is_active !== false && Number(p.price_stars || 0) > 0
+  );
   const { data: editForumTopicsRes } = useQuery({
     queryKey: ["forumTopics", editChannelId],
     queryFn: () => api.channels.forumTopics(editChannelId),
@@ -318,6 +329,11 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     setEditButtons(parseButtonsFromPost(leader));
     setEditSendSilent(Boolean(leader.send_silent));
     setEditPinAfterSend(Boolean(leader.pin_after_send));
+    setEditCheckoutStarsEnabled(Boolean(leader.checkout_stars_enabled));
+    const cop = leader.checkout_stars_plan_id != null ? Number(leader.checkout_stars_plan_id) : 0;
+    setEditCheckoutPlanId(Number.isFinite(cop) && cop > 0 ? cop : 0);
+    setEditCheckoutButtonLabel(String(leader.checkout_button_label || ""));
+    setEditCheckoutReferralCode(String(leader.checkout_referral_code || ""));
     setEditUploadMsg(null);
     setEditScheduleError(null);
     setEditOpen(true);
@@ -378,6 +394,15 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       : [];
     body.send_silent = editSendSilent;
     body.pin_after_send = editPinAfterSend;
+    body.checkout_stars_enabled = editCheckoutStarsEnabled;
+    body.checkout_stars_plan_id =
+      editCheckoutStarsEnabled && editCheckoutPlanId > 0 ? editCheckoutPlanId : null;
+    body.checkout_button_label = editCheckoutButtonLabel.trim() || null;
+    body.checkout_referral_code = editCheckoutReferralCode.trim().toUpperCase() || null;
+    if (editCheckoutStarsEnabled && (!editCheckoutPlanId || editCheckoutPlanId <= 0)) {
+      setEditScheduleError("Stars checkout requires a Commerce product with a Stars price.");
+      return;
+    }
     await updateScheduled.mutateAsync({ id, body });
     setEditOpen(false);
     setEditing(null);
@@ -647,6 +672,67 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   >
                     + Add button
                   </button>
+                </div>
+                <div className="mt-3 pt-3 border-t border-slate-600/50 space-y-2">
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editCheckoutStarsEnabled}
+                      onChange={(e) => {
+                        setEditCheckoutStarsEnabled(e.target.checked);
+                        if (!e.target.checked) setEditCheckoutPlanId(0);
+                      }}
+                    />
+                    Stars checkout button (payment bot)
+                  </label>
+                  <p className="text-slate-500 text-xs pl-6">
+                    Appends a button linking to your payment bot; the Telegram Stars invoice opens in private chat (same
+                    as Commerce /subscribe).
+                  </p>
+                  {editCheckoutStarsEnabled && (
+                    <div className="pl-6 space-y-2 border-l border-slate-600/80 ml-1">
+                      <label className="block text-xs text-slate-400">
+                        Commerce product
+                        <select
+                          value={editCheckoutPlanId || ""}
+                          onChange={(e) => setEditCheckoutPlanId(Number(e.target.value) || 0)}
+                          className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                        >
+                          <option value="">Select plan…</option>
+                          {salablePlans.map((p) => (
+                            <option key={String(p.id)} value={Number(p.id)}>
+                              {String(p.name || `Plan ${p.id}`)} — {Number(p.price_stars || 0)}⭐ (
+                              {String(p.product_type || "subscription")})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block text-xs text-slate-400">
+                        Button label (optional)
+                        <input
+                          type="text"
+                          value={editCheckoutButtonLabel}
+                          onChange={(e) => setEditCheckoutButtonLabel(e.target.value)}
+                          placeholder="Default: plan name + ⭐ price"
+                          maxLength={64}
+                          className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                        />
+                      </label>
+                      <label className="block text-xs text-slate-400">
+                        Referral code (optional)
+                        <input
+                          type="text"
+                          value={editCheckoutReferralCode}
+                          onChange={(e) =>
+                            setEditCheckoutReferralCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ""))
+                          }
+                          placeholder="1–16 letters or digits"
+                          maxLength={16}
+                          className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                        />
+                      </label>
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-col gap-2 pt-1 border-t border-slate-600/50">
                   <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">

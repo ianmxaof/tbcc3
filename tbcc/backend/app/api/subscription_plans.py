@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.schemas.common import orm_to_dict
+from app.models.external_payment_order import ExternalPaymentOrder
+from app.models.subscription import Subscription
 from app.models.subscription_plan import SubscriptionPlan
 from app.models.tbcc_tag import TbccTag
 from app.services.bundle_parts import (
@@ -57,6 +59,38 @@ def _normalize_bot_section(raw: object) -> str:
     if s not in ALLOWED_BOT_SECTIONS:
         return "main"
     return s
+
+
+def _clean_nowpayments_pay_currency(raw: object) -> str | None:
+    s = str(raw or "").strip().lower()
+    if not s:
+        return None
+    if len(s) > 64:
+        raise HTTPException(status_code=400, detail="nowpayments_pay_currency max length is 64")
+    return s
+
+
+def _clean_nowpayments_receiving_wallet(raw: object) -> str | None:
+    s = str(raw or "").strip()
+    if not s:
+        return None
+    if len(s) > 255:
+        raise HTTPException(status_code=400, detail="nowpayments_receiving_wallet max length is 255")
+    return s
+
+
+def _clean_nowpayments_price_usd(raw: object) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail="nowpayments_price_usd must be a number") from e
+    if v <= 0:
+        raise HTTPException(status_code=400, detail="nowpayments_price_usd must be greater than 0")
+    return round(v, 8)
 
 
 def _plan_tag_ids_list(p: SubscriptionPlan) -> list[int]:
@@ -333,7 +367,16 @@ def create_plan(data: dict = Body(...), db: Session = Depends(get_db)):
         is_active=bool(data.get("is_active", True)),
         product_type=ptype,
         bot_section=_normalize_bot_section(data.get("bot_section")),
+        nowpayments_price_usd=_clean_nowpayments_price_usd(data.get("nowpayments_price_usd")),
+        nowpayments_allow_any_currency=bool(data.get("nowpayments_allow_any_currency", True)),
+        nowpayments_pay_currency=_clean_nowpayments_pay_currency(data.get("nowpayments_pay_currency")),
+        nowpayments_receiving_wallet=_clean_nowpayments_receiving_wallet(data.get("nowpayments_receiving_wallet")),
     )
+    if not plan.nowpayments_allow_any_currency and not plan.nowpayments_pay_currency:
+        raise HTTPException(
+            status_code=400,
+            detail="nowpayments_pay_currency is required when nowpayments_allow_any_currency is false",
+        )
     if "description_variations" in data:
         dv = data.get("description_variations")
         if dv is not None and not isinstance(dv, list):
@@ -394,6 +437,21 @@ def update_plan(plan_id: int, data: dict = Body(...), db: Session = Depends(get_
                 plan.bundle_zip_parts_json = None
     if "bot_section" in data:
         plan.bot_section = _normalize_bot_section(data.get("bot_section"))
+    if "nowpayments_price_usd" in data:
+        plan.nowpayments_price_usd = _clean_nowpayments_price_usd(data.get("nowpayments_price_usd"))
+    if "nowpayments_allow_any_currency" in data:
+        plan.nowpayments_allow_any_currency = bool(data.get("nowpayments_allow_any_currency"))
+    if "nowpayments_pay_currency" in data:
+        plan.nowpayments_pay_currency = _clean_nowpayments_pay_currency(data.get("nowpayments_pay_currency"))
+    if "nowpayments_receiving_wallet" in data:
+        plan.nowpayments_receiving_wallet = _clean_nowpayments_receiving_wallet(
+            data.get("nowpayments_receiving_wallet")
+        )
+    if not plan.nowpayments_allow_any_currency and not plan.nowpayments_pay_currency:
+        raise HTTPException(
+            status_code=400,
+            detail="nowpayments_pay_currency is required when nowpayments_allow_any_currency is false",
+        )
     if "tag_ids" in data:
         raw = data.get("tag_ids")
         if raw is None:
@@ -476,6 +534,14 @@ def delete_plan(plan_id: int, db: Session = Depends(get_db)):
     plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == plan_id).first()
     if not plan:
         return {"error": "Not found"}
+    # FK blocks: subscriptions.plan_id and external_payment_orders.plan_id reference this row.
+    db.query(ExternalPaymentOrder).filter(ExternalPaymentOrder.plan_id == plan_id).delete(
+        synchronize_session=False
+    )
+    db.query(Subscription).filter(Subscription.plan_id == plan_id).update(
+        {Subscription.plan_id: None},
+        synchronize_session=False,
+    )
     delete_all_bundle_part_files(plan_id)
     db.delete(plan)
     db.commit()

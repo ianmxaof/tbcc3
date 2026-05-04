@@ -9,6 +9,12 @@
   const elHard = document.getElementById("captureSettingHardRefresh");
   const elRt = document.getElementById("captureSettingResourceTiming");
   const elLazy = document.getElementById("captureSettingLazyDelay");
+  const elClearSelOnOpen = document.getElementById("captureSettingClearSelectionOnOpen");
+  const elNotifySystem = document.getElementById("captureSettingNotifySystem");
+  const elNotifyZip = document.getElementById("captureSettingNotifyZip");
+  const elNotifySendTbcc = document.getElementById("captureSettingNotifySendTbcc");
+  const elNotifySendSaved = document.getElementById("captureSettingNotifySendSaved");
+  const elNotifySendChannel = document.getElementById("captureSettingNotifySendChannel");
   const btnClear = document.getElementById("captureSettingClearCache");
   const apiStatus = document.getElementById("tbccApiStatus");
 
@@ -29,6 +35,12 @@
     if (elAuto) elAuto.checked = s.autoRefresh !== false;
     if (elHard) elHard.checked = s.refreshHard !== false;
     if (elRt) elRt.checked = s.resourceTimingAllImages === true;
+    if (elClearSelOnOpen) elClearSelOnOpen.checked = s.clearSelectionOnOpen === true;
+    if (elNotifySystem) elNotifySystem.checked = s.notifyUseSystem !== false;
+    if (elNotifyZip) elNotifyZip.checked = s.notifyOnZipComplete !== false;
+    if (elNotifySendTbcc) elNotifySendTbcc.checked = s.notifyOnSendTbccComplete !== false;
+    if (elNotifySendSaved) elNotifySendSaved.checked = s.notifyOnSendSavedComplete !== false;
+    if (elNotifySendChannel) elNotifySendChannel.checked = s.notifyOnSendChannelComplete !== false;
     if (elLazy) {
       const d = parseInt(String(s.captureLazyDelayMs || 0), 10);
       elLazy.value = String(isNaN(d) ? 0 : Math.max(0, Math.min(3000, d)));
@@ -43,6 +55,18 @@
     elHard.addEventListener("change", () => mergeSave({ refreshHard: !!elHard.checked }));
   if (elRt)
     elRt.addEventListener("change", () => mergeSave({ resourceTimingAllImages: !!elRt.checked }));
+  if (elClearSelOnOpen)
+    elClearSelOnOpen.addEventListener("change", () => mergeSave({ clearSelectionOnOpen: !!elClearSelOnOpen.checked }));
+  if (elNotifySystem)
+    elNotifySystem.addEventListener("change", () => mergeSave({ notifyUseSystem: !!elNotifySystem.checked }));
+  if (elNotifyZip)
+    elNotifyZip.addEventListener("change", () => mergeSave({ notifyOnZipComplete: !!elNotifyZip.checked }));
+  if (elNotifySendTbcc)
+    elNotifySendTbcc.addEventListener("change", () => mergeSave({ notifyOnSendTbccComplete: !!elNotifySendTbcc.checked }));
+  if (elNotifySendSaved)
+    elNotifySendSaved.addEventListener("change", () => mergeSave({ notifyOnSendSavedComplete: !!elNotifySendSaved.checked }));
+  if (elNotifySendChannel)
+    elNotifySendChannel.addEventListener("change", () => mergeSave({ notifyOnSendChannelComplete: !!elNotifySendChannel.checked }));
   if (elLazy)
     elLazy.addEventListener("change", () => {
       let d = parseInt(elLazy.value, 10);

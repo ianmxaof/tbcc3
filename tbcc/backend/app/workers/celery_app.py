@@ -33,6 +33,7 @@ celery.conf.include = [
     "app.workers.milestone_worker",
     "app.workers.landing_bulletin_worker",
     "app.workers.media_auto_tag_worker",
+    "app.workers.link_resolver_worker",
 ]
 
 celery.conf.task_routes = {

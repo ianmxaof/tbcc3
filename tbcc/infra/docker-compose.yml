@@ -26,11 +26,54 @@ services:
       API_ID: ${API_ID:-}
       API_HASH: ${API_HASH:-}
       ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID:-}
+      TBCC_BYPASS_API_KEY: ${TBCC_BYPASS_API_KEY:-}
+      TBCC_BYPASS_ENABLED: ${TBCC_BYPASS_ENABLED:-1}
     ports:
       - "8000:8000"
     depends_on:
       - postgres
       - redis
+
+  payment_bot:
+    build: ../backend
+    command: python -m bots.payment_bot
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      TBCC_API_URL: http://api:8000
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      TBCC_INTERNAL_API_KEY: ${TBCC_INTERNAL_API_KEY:-}
+      TBCC_PAYMENT_BOT_USERNAME: ${TBCC_PAYMENT_BOT_USERNAME:-}
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+      ADMIN_TELEGRAM_ID: ${ADMIN_TELEGRAM_ID:-}
+    depends_on:
+      - api
+      - redis
+      - postgres
+    profiles: ["bot"]
+
+  secretary_bot:
+    build: ../backend
+    command: python -m bots.secretary_bot
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      TBCC_API_URL: http://api:8000
+      TBCC_SECRETARY_BOT_TOKEN: ${TBCC_SECRETARY_BOT_TOKEN:-}
+      TBCC_PAYMENT_BOT_USERNAME: ${TBCC_PAYMENT_BOT_USERNAME:-}
+      BOT_USERNAME: ${BOT_USERNAME:-}
+      TBCC_OPENAI_API_KEY: ${TBCC_OPENAI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TBCC_LLM_MODEL: ${TBCC_LLM_MODEL:-}
+      TBCC_SECRETARY_LLM_MODEL: ${TBCC_SECRETARY_LLM_MODEL:-}
+      API_ID: ${API_ID:-}
+      API_HASH: ${API_HASH:-}
+    depends_on:
+      - api
+      - redis
+      - postgres
+    profiles: ["bot"]
 
   worker_scrape:
     build: ../backend
@@ -64,6 +107,19 @@ services:
       REDIS_URL: redis://redis:6379/0
       API_ID: ${API_ID:-}
       API_HASH: ${API_HASH:-}
+    depends_on:
+      - redis
+      - postgres
+
+  # Link resolver (Bypass.vip): consumes link + link_priority queues used by /link-resolver
+  worker_link:
+    build: ../backend
+    command: celery -A app.workers.celery_app worker -Q link,link_priority --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/tbcc
+      REDIS_URL: redis://redis:6379/0
+      TBCC_BYPASS_API_KEY: ${TBCC_BYPASS_API_KEY:-}
+      TBCC_BYPASS_ENABLED: ${TBCC_BYPASS_ENABLED:-1}
     depends_on:
       - redis
       - postgres

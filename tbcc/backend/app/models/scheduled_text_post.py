@@ -46,6 +46,11 @@ class ScheduledTextPost(Base):
     album_order_mode = Column(String(16), nullable=True)
     album_carousel_index = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=True)
+    # Optional: append URL button → payment bot deep link; opens same Telegram Stars invoice as Bot Shop /subscribe.
+    checkout_stars_enabled = Column(Boolean, nullable=False, default=False)
+    checkout_stars_plan_id = Column(Integer, nullable=True)
+    checkout_button_label = Column(String(64), nullable=True)
+    checkout_referral_code = Column(String(16), nullable=True)
 
     def get_media_ids(self) -> list[int]:
         if not self.media_ids:

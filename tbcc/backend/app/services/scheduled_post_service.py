@@ -2,11 +2,14 @@
 import io
 import json
 import logging
+import os
 import random
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 
 from telethon import TelegramClient
+from telethon.errors.rpcerrorlist import ChatRestrictedError
 from telethon.tl.types import (
     MessageMediaDocument,
     ReplyInlineMarkup,
@@ -21,9 +24,24 @@ from app.models.media import Media
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.content_pool import ContentPool
 from app.models.channel import Channel
+from app.models.subscription_plan import SubscriptionPlan
 from app.services.promo_storage import promo_path_from_public_url
+from app.utils.telegram_peer import normalize_telethon_peer_identifier
 
 logger = logging.getLogger(__name__)
+
+
+def _log_chat_restricted_help(channel_identifier: str) -> None:
+    """Operator hint when Telegram returns ChatRestrictedError (common misconfiguration)."""
+    logger.error(
+        "ChatRestrictedError posting to %r — Telegram blocked this account from sending media to that chat "
+        "(SendMultiMediaRequest). Fix: (1) In Telegram, open the channel/group → Administrators → ensure the account "
+        "for this worker's Telethon session (admin_poster.session / TBCC_POSTER_TELEGRAM_SESSION) is an admin with "
+        "permission to post messages and send media. (2) For private channels, set the dashboard channel "
+        "Identifier to the stable numeric id -100… (not only a t.me/+ invite). (3) If the channel was converted or "
+        "the account was demoted, re-add the account as admin.",
+        channel_identifier,
+    )
 
 
 @dataclass
@@ -217,6 +235,68 @@ def _is_image_document(media) -> bool:
             if fn.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
                 return True
     return False
+
+
+def _checkout_deep_link_payload(plan_id: int, referral_code: str | None) -> str | None:
+    """Telegram /start payload must stay within 64 bytes (UTF-8)."""
+    code = (referral_code or "").strip().upper()
+    if code:
+        if not re.match(r"^[A-Z0-9]{1,16}$", code):
+            return None
+        raw = f"c{int(plan_id)}_{code}"
+    else:
+        raw = f"c{int(plan_id)}"
+    if len(raw.encode("utf-8")) > 64:
+        return None
+    return raw
+
+
+def _merge_scheduled_post_buttons(post: ScheduledTextPost, db: Session, buttons_data: list) -> list:
+    """
+    Append optional URL button → TBCC payment bot deep link (same Stars invoice flow as /subscribe).
+    Native Stars UI opens in the user's private chat with the bot after they tap the button — not inside the channel post.
+    """
+    base = list(buttons_data) if buttons_data else []
+    if not bool(getattr(post, "checkout_stars_enabled", False)):
+        return base
+    plan_id = getattr(post, "checkout_stars_plan_id", None)
+    if not plan_id:
+        logger.warning("scheduled post %s: checkout enabled but no checkout_stars_plan_id", getattr(post, "id", "?"))
+        return base
+    bot = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "").strip().lstrip("@")
+    if not bot:
+        logger.warning(
+            "scheduled post %s: Stars checkout enabled but TBCC_PAYMENT_BOT_USERNAME is unset",
+            getattr(post, "id", "?"),
+        )
+        return base
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(plan_id)).first()
+    if not plan or plan.is_active is False or int(plan.price_stars or 0) <= 0:
+        logger.warning(
+            "scheduled post %s: checkout plan %s missing, inactive, or has no Stars price",
+            getattr(post, "id", "?"),
+            plan_id,
+        )
+        return base
+    ref = getattr(post, "checkout_referral_code", None)
+    payload = _checkout_deep_link_payload(int(plan_id), ref)
+    if not payload:
+        logger.warning(
+            "scheduled post %s: invalid checkout deep link (plan=%s ref=%r)",
+            getattr(post, "id", "?"),
+            plan_id,
+            ref,
+        )
+        return base
+    url = f"https://t.me/{bot}?start={payload}"
+    label = (getattr(post, "checkout_button_label", None) or "").strip()
+    if not label:
+        stars = int(plan.price_stars or 0)
+        name = (plan.name or "Subscribe").strip()[:36]
+        label = f"{name} — {stars}⭐"
+    if len(label) > 64:
+        label = label[:63] + "…"
+    return base + [{"text": label, "url": url}]
 
 
 def _build_reply_markup(buttons_data: list):
@@ -448,10 +528,12 @@ async def send_scheduled_post(
     reshuffle_album: bool = False,
 ) -> None:
     """Send a scheduled post (text, optional media, optional buttons)."""
+    channel_identifier = normalize_telethon_peer_identifier(channel_identifier)
     slot = _peek_caption_slot_index(post)
     album_order_mode = _album_order_mode_for_send(post, reshuffle_album)
     caption = resolve_scheduled_caption(post)
-    reply_markup = _build_reply_markup(post.get_buttons())
+    merged = _merge_scheduled_post_buttons(post, db, post.get_buttons())
+    reply_markup = _build_reply_markup(merged)
     silent_kw = _send_options(post)
     reply_to = post.message_thread_id if getattr(post, "message_thread_id", None) else None
 
@@ -461,16 +543,20 @@ async def send_scheduled_post(
     if not media_items:
         promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, post)
 
-    sent_result = await _execute_telegram_scheduled_send(
-        client,
-        channel_identifier,
-        caption=caption,
-        media_items=media_items,
-        promo_ordered=promo_ordered,
-        reply_markup=reply_markup,
-        silent_kw=silent_kw,
-        reply_to=reply_to,
-    )
+    try:
+        sent_result = await _execute_telegram_scheduled_send(
+            client,
+            channel_identifier,
+            caption=caption,
+            media_items=media_items,
+            promo_ordered=promo_ordered,
+            reply_markup=reply_markup,
+            silent_kw=silent_kw,
+            reply_to=reply_to,
+        )
+    except ChatRestrictedError:
+        _log_chat_restricted_help(channel_identifier)
+        raise
 
     await _maybe_pin_after_send(client, channel_identifier, post, sent_result)
 
@@ -491,7 +577,8 @@ async def send_scheduled_campaign(
     slot = _peek_caption_slot_index(leader)
     album_order_mode = _album_order_mode_for_send(leader, reshuffle_album)
     caption = resolve_scheduled_caption(leader)
-    reply_markup = _build_reply_markup(leader.get_buttons())
+    merged = _merge_scheduled_post_buttons(leader, db, leader.get_buttons())
+    reply_markup = _build_reply_markup(merged)
     mids, promo_urls, use_pool = _resolve_variant_sources(leader, slot)
     media_items = _gather_media_items_for_send(leader, db, mids, use_pool, album_order_mode)
     promo_ordered: list[str] = []
@@ -509,12 +596,13 @@ async def send_scheduled_campaign(
             logger.warning("Campaign skip: channel %s missing for scheduled post %s", p.channel_id, p.id)
             failed_post_ids.append(int(p.id))
             continue
+        peer = normalize_telethon_peer_identifier(channel.identifier)
         silent_kw = _send_options(p)
         reply_to = p.message_thread_id if getattr(p, "message_thread_id", None) else None
         try:
             sent_result = await _execute_telegram_scheduled_send(
                 client,
-                channel.identifier,
+                peer,
                 caption=caption,
                 media_items=media_items,
                 promo_ordered=promo_ordered,
@@ -522,13 +610,18 @@ async def send_scheduled_campaign(
                 silent_kw=silent_kw,
                 reply_to=reply_to,
             )
-            await _maybe_pin_after_send(client, channel.identifier, p, sent_result)
+            await _maybe_pin_after_send(client, peer, p, sent_result)
             sent_post_ids.append(int(p.id))
+        except ChatRestrictedError as e:
+            _log_chat_restricted_help(peer)
+            failed_post_ids.append(int(p.id))
+            if first_error is None:
+                first_error = e
         except Exception as e:
             logger.exception(
                 "Campaign send failed for scheduled post %s channel=%s: %s",
                 p.id,
-                channel.identifier,
+                peer,
                 e,
             )
             failed_post_ids.append(int(p.id))

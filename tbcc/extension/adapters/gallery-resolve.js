@@ -155,10 +155,28 @@
       seenResolved.add(resolved);
       const next = { ...entry };
       delete next.detailPageUrl;
-      next.url = resolved;
+      const resPath = String(resolved).split(/[?#]/)[0].toLowerCase();
+      const entryPath = String(entry.url || "").split(/[?#]/)[0].toLowerCase();
+      const resolvedIsImage = /\.(jpe?g|png|gif|webp|avif|bmp)(\?|$)/i.test(resPath);
+      const resolvedIsVideo = /\.(mp4|webm|mov|m4v|m3u8|mpd|mkv|ogv)(\?|$)/i.test(resPath);
+      const entryIsVideo = /\.(mp4|webm|mov|m4v|m3u8|mpd|mkv|ogv)(\?|$)/i.test(entryPath);
+      const entryWasVideo =
+        (entry.mediaType || "").toLowerCase() === "video" || (entry.tagName || "").toLowerCase() === "video";
+      let urlOut = resolved;
+      let mediaTypeOut = /\.(mp4|webm|mov|m4v|m3u8|mpd|mkv|ogv)(\?|$)/i.test(resolved) ? "video" : "image";
+      if (entryWasVideo && resolvedIsImage && !resolvedIsVideo && entryIsVideo) {
+        urlOut = entry.url;
+        mediaTypeOut = "video";
+        next.posterUrl = resolved;
+      }
+      next.url = urlOut;
       next.thumbUrl = entry.url;
       next.source = "detail-page";
-      next.mediaType = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(resolved) ? "video" : "image";
+      next.mediaType = mediaTypeOut;
+      if (next.mediaType === "video" && entry.url && /^https?:\/\//i.test(entry.url)) {
+        const p = String(entry.url).split("?")[0].toLowerCase();
+        if (/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(p)) next.posterUrl = entry.url;
+      }
       next.width = 0;
       next.height = 0;
       next.naturalWidth = 0;

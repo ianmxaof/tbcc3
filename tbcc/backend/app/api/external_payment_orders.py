@@ -184,22 +184,70 @@ def create_external_order(
         }
         # Automatic crypto checkout (IPN → /webhooks/nowpayments) when keys + public HTTPS base are set.
         if nowpayments_configured() and can_use_nowpayments_ipn():
+            base = public_api_base_url()
+            ipn_url = f"{base}/webhooks/nowpayments"
+            override_raw = plan.nowpayments_price_usd
+            usd = (
+                float(override_raw)
+                if override_raw is not None and float(override_raw) > 0
+                else stars_to_usd(int(plan.price_stars or 0))
+            )
+            min_checkout_usd = 0.0
             try:
-                base = public_api_base_url()
-                ipn_url = f"{base}/webhooks/nowpayments"
-                usd = stars_to_usd(int(plan.price_stars or 0))
+                min_checkout_usd = float((os.getenv("TBCC_NOWPAYMENTS_MIN_CHECKOUT_USD") or "0").strip() or "0")
+            except Exception:
+                min_checkout_usd = 0.0
+            min_checkout_usd = max(0.0, min_checkout_usd)
+            effective_usd = max(usd, min_checkout_usd) if min_checkout_usd > 0 else usd
+            force_currency = None
+            if plan.nowpayments_allow_any_currency is False:
+                # Legacy/dirty rows may have fixed-currency mode but blank plan currency.
+                # Fall back to env default so checkout creation does not fail hard.
+                force_currency = (
+                    (plan.nowpayments_pay_currency or "")
+                    or (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "")
+                ).strip().lower() or None
+            out["crypto_checkout_quote"] = {
+                "plan_id": int(plan.id),
+                "price_stars": int(plan.price_stars or 0),
+                "nowpayments_price_usd_saved": float(override_raw) if override_raw is not None else None,
+                "usd_used_for_checkout": round(usd, 2),
+                "usd_sent_to_nowpayments": round(effective_usd, 2),
+                "min_checkout_usd_env": round(min_checkout_usd, 2) if min_checkout_usd > 0 else None,
+            }
+            try:
+                logger.info(
+                    "NOWPayments create_payment order=%s plan_id=%s allow_any=%s resolved_pay_currency=%s env_default_currency=%s raw_usd=%.2f effective_usd=%.2f",
+                    code,
+                    int(plan.id),
+                    bool(plan.nowpayments_allow_any_currency),
+                    force_currency,
+                    (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip().lower() or None,
+                    usd,
+                    effective_usd,
+                )
                 np = create_payment(
                     order_id=code,
-                    price_usd=usd,
+                    price_usd=effective_usd,
                     order_description=(plan.name or "TBCC")[:512],
                     ipn_callback_url=ipn_url,
+                    pay_currency=force_currency,
                 )
                 url, extra = checkout_url_and_hint(np)
                 out["crypto_pay_url"] = url
                 if extra:
                     out["crypto_pay_details"] = extra
+                out["crypto_nowpayments_meta"] = {
+                    "price_usd": effective_usd,
+                    "price_usd_catalog": usd,
+                    "min_checkout_usd": min_checkout_usd if min_checkout_usd > 0 else None,
+                    "allow_any_currency": bool(plan.nowpayments_allow_any_currency),
+                    "pay_currency": force_currency,
+                    "receiving_wallet": (plan.nowpayments_receiving_wallet or "").strip() or None,
+                }
             except Exception as e:
                 logger.warning("NOWPayments checkout not created for %s: %s", code, e)
+                out["crypto_checkout_error"] = str(e)
         return out
 
     logger.error(

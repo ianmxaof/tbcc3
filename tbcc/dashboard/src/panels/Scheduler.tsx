@@ -47,6 +47,10 @@ export function Scheduler() {
   const [scheduleAlbumOrderMode, setScheduleAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
   const [scheduleSendSilent, setScheduleSendSilent] = useState(false);
   const [schedulePinAfterSend, setSchedulePinAfterSend] = useState(false);
+  const [scheduleCheckoutStars, setScheduleCheckoutStars] = useState(false);
+  const [scheduleCheckoutPlanId, setScheduleCheckoutPlanId] = useState(0);
+  const [scheduleCheckoutButtonLabel, setScheduleCheckoutButtonLabel] = useState("");
+  const [scheduleCheckoutReferralCode, setScheduleCheckoutReferralCode] = useState("");
   const [pinToolChannelId, setPinToolChannelId] = useState(0);
   const [pinToolMessageId, setPinToolMessageId] = useState("");
   const [pinToolUnpin, setPinToolUnpin] = useState(false);
@@ -79,6 +83,13 @@ export function Scheduler() {
     queryKey: ["scheduledPosts"],
     queryFn: () => api.scheduledPosts.list(),
   });
+  const { data: subscriptionPlansRaw = [] } = useQuery({
+    queryKey: ["subscriptionPlans"],
+    queryFn: () => api.subscriptionPlans.list(),
+  });
+  const salablePlans = (subscriptionPlansRaw as Array<Record<string, unknown>>).filter(
+    (p) => p.is_active !== false && Number(p.price_stars || 0) > 0
+  );
   useEffect(() => {
     setScheduleAlbumVariants((prev) => padAlbumVariants(prev, captionVariations.length));
   }, [captionVariations.length]);
@@ -136,6 +147,11 @@ export function Scheduler() {
           : {}),
         send_silent: scheduleSendSilent,
         pin_after_send: schedulePinAfterSend,
+        checkout_stars_enabled: scheduleCheckoutStars,
+        checkout_stars_plan_id:
+          scheduleCheckoutStars && scheduleCheckoutPlanId > 0 ? scheduleCheckoutPlanId : null,
+        checkout_button_label: scheduleCheckoutButtonLabel.trim() || null,
+        checkout_referral_code: scheduleCheckoutReferralCode.trim().toUpperCase() || null,
       };
       if (trimmed.length >= 2) {
         base.content_variations = trimmed;
@@ -159,6 +175,10 @@ export function Scheduler() {
       setScheduleAlbumOrderMode("static");
       setScheduleSendSilent(false);
       setSchedulePinAfterSend(false);
+      setScheduleCheckoutStars(false);
+      setScheduleCheckoutPlanId(0);
+      setScheduleCheckoutButtonLabel("");
+      setScheduleCheckoutReferralCode("");
       setCalendarScheduleModalOpen(false);
     },
   });
@@ -446,6 +466,69 @@ export function Scheduler() {
               >
                 + Add button
               </button>
+              <div className="mt-3 pt-3 border-t border-slate-600/60 space-y-2">
+                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={scheduleCheckoutStars}
+                    onChange={(e) => {
+                      setScheduleCheckoutStars(e.target.checked);
+                      if (!e.target.checked) setScheduleCheckoutPlanId(0);
+                    }}
+                  />
+                  <span>
+                    Stars checkout button (payment bot) — uses Commerce plan price &amp; fulfillment
+                  </span>
+                </label>
+                <p className="text-slate-500 text-xs pl-6">
+                  Appends a URL button to your{" "}
+                  <code className="text-slate-400">TBCC_PAYMENT_BOT_USERNAME</code> deep link. Tapping it opens a private
+                  chat with the bot and shows the same Telegram Stars invoice as the shop. Caption and album above are
+                  unchanged (your promo creative).
+                </p>
+                {scheduleCheckoutStars && (
+                  <div className="pl-6 space-y-2 border-l border-slate-600/80 ml-1">
+                    <label className="block text-xs text-slate-400">
+                      Commerce product (Stars price)
+                      <select
+                        value={scheduleCheckoutPlanId || ""}
+                        onChange={(e) => setScheduleCheckoutPlanId(Number(e.target.value) || 0)}
+                        className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                      >
+                        <option value="">Select plan…</option>
+                        {salablePlans.map((p) => (
+                          <option key={String(p.id)} value={Number(p.id)}>
+                            {String(p.name || `Plan ${p.id}`)} — {Number(p.price_stars || 0)}⭐ (
+                            {String(p.product_type || "subscription")})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-xs text-slate-400">
+                      Button label (optional)
+                      <input
+                        type="text"
+                        value={scheduleCheckoutButtonLabel}
+                        onChange={(e) => setScheduleCheckoutButtonLabel(e.target.value)}
+                        placeholder="Default: plan name + ⭐ price"
+                        maxLength={64}
+                        className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                      />
+                    </label>
+                    <label className="block text-xs text-slate-400">
+                      Referral code (optional, 1–16 letters/digits)
+                      <input
+                        type="text"
+                        value={scheduleCheckoutReferralCode}
+                        onChange={(e) => setScheduleCheckoutReferralCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ""))}
+                        placeholder="From user’s /referral in the payment bot"
+                        maxLength={16}
+                        className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
               <div className="flex flex-col gap-2 pt-2 border-t border-slate-600/60 mt-2">
                 <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
                   <input
@@ -611,6 +694,7 @@ export function Scheduler() {
           disabled={
             createScheduledPost.isPending ||
             selectedChannelIds.length === 0 ||
+            (scheduleCheckoutStars && scheduleCheckoutPlanId <= 0) ||
             (!captionVariations.some((s) => s.trim()) &&
               !poolId &&
               !scheduleAlbumVariants.some(

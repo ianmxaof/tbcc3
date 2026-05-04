@@ -12,6 +12,9 @@ const STORAGE_ENABLED = "tbccModelSearchEnabledSites";
 const STORAGE_MODE = "tbccModelSearchOpenMode";
 const STORAGE_REVERSE_ENABLED = "tbccReverseImageEnabledSites";
 const STORAGE_REVERSE_MODE = "tbccReverseImageOpenMode";
+const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
+const STORAGE_CUSTOM_ADAPTERS = "tbccCustomGalleryAdapters";
+const STORAGE_THEME = "tbccThemePreset";
 
 /** Legacy "dashboard" single-tab aggregator removed — map to foreground tabs. */
 function normalizeOpenMode(stored) {
@@ -22,10 +25,220 @@ function normalizeOpenMode(stored) {
 const statusEl = document.getElementById("status");
 const siteFields = document.getElementById("siteFields");
 const reverseSiteFields = document.getElementById("reverseSiteFields");
+const themePresetSelect = document.getElementById("tbccThemePreset");
+const historyEl = document.getElementById("modelSearchHistory");
+const btnClearHistory = document.getElementById("btnClearModelSearchHistory");
+const adapterRulesListEl = document.getElementById("adapterRulesList");
+const btnAnalyzeAdapter = document.getElementById("btnAnalyzeAdapter");
+const adapterAnalyzeResultEl = document.getElementById("adapterAnalyzeResult");
+const adapterDomainEl = document.getElementById("adapterDomain");
+const adapterModeEl = document.getElementById("adapterMode");
+const adapterFromEl = document.getElementById("adapterFrom");
+const adapterToEl = document.getElementById("adapterTo");
+const btnAddAdapterRule = document.getElementById("btnAddAdapterRule");
 
 function setStatus(msg, isErr) {
   statusEl.textContent = msg || "";
   statusEl.className = isErr ? "err" : "";
+}
+
+function formatHistoryTime(ts) {
+  if (!ts || !Number.isFinite(ts)) return "";
+  try {
+    return new Date(ts).toLocaleString();
+  } catch (_) {
+    return "";
+  }
+}
+
+async function renderModelSearchHistory() {
+  if (!historyEl) return;
+  const data = await new Promise((resolve) => {
+    chrome.storage.local.get([STORAGE_MODEL_SEARCH_HISTORY], resolve);
+  });
+  const rows = Array.isArray(data[STORAGE_MODEL_SEARCH_HISTORY]) ? data[STORAGE_MODEL_SEARCH_HISTORY] : [];
+  if (!rows.length) {
+    historyEl.textContent = "No usernames searched yet.";
+    return;
+  }
+  historyEl.innerHTML = "";
+  rows.forEach((r) => {
+    const username = String(r && r.username ? r.username : "").trim();
+    if (!username) return;
+    const ts = Number(r && r.ts ? r.ts : 0);
+    const line = document.createElement("div");
+    line.className = "tbcc-history-row";
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "tbcc-history-remove";
+    rm.setAttribute("aria-label", "Remove this entry");
+    rm.textContent = "×";
+    rm.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const latest = await new Promise((resolve) => {
+        chrome.storage.local.get([STORAGE_MODEL_SEARCH_HISTORY], resolve);
+      });
+      const arr = Array.isArray(latest[STORAGE_MODEL_SEARCH_HISTORY]) ? latest[STORAGE_MODEL_SEARCH_HISTORY] : [];
+      const filtered = arr.filter(
+        (x) =>
+          !(
+            String(x && x.username ? x.username : "").trim() === username &&
+            Number(x && x.ts ? x.ts : 0) === ts
+          )
+      );
+      await new Promise((resolve) =>
+        chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_HISTORY]: filtered }, resolve)
+      );
+      setStatus("History entry removed.");
+      await renderModelSearchHistory();
+      setTimeout(() => setStatus(""), 1400);
+    });
+    const mid = document.createElement("div");
+    mid.className = "tbcc-history-main";
+    const left = document.createElement("code");
+    left.textContent = username;
+    const right = document.createElement("span");
+    right.className = "cat";
+    right.textContent = formatHistoryTime(Number(r && r.ts ? r.ts : 0));
+    mid.appendChild(left);
+    mid.appendChild(right);
+    line.appendChild(rm);
+    line.appendChild(mid);
+    historyEl.appendChild(line);
+  });
+}
+
+function normalizeRuleDomain(raw) {
+  const s = String(raw || "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+  return s.split("/")[0];
+}
+
+async function getAdapterRules() {
+  const data = await new Promise((resolve) => chrome.storage.local.get([STORAGE_CUSTOM_ADAPTERS], resolve));
+  return Array.isArray(data[STORAGE_CUSTOM_ADAPTERS]) ? data[STORAGE_CUSTOM_ADAPTERS] : [];
+}
+
+async function saveAdapterRules(rules) {
+  await new Promise((resolve) => chrome.storage.local.set({ [STORAGE_CUSTOM_ADAPTERS]: rules }, resolve));
+}
+
+async function renderAdapterRules() {
+  if (!adapterRulesListEl) return;
+  const rules = await getAdapterRules();
+  if (!rules.length) {
+    adapterRulesListEl.innerHTML = '<p class="sub" style="margin:0">No adapter rules yet.</p>';
+    return;
+  }
+  adapterRulesListEl.innerHTML = "";
+  rules.forEach((r) => {
+    if (!r) return;
+    const row = document.createElement("div");
+    row.className = "tbcc-details-row tbcc-adapter-rule-row";
+
+    const cbId = `adapter_rule_${r.id}`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.id = cbId;
+    cb.checked = r.enabled !== false;
+    cb.addEventListener("change", async () => {
+      const next = await getAdapterRules();
+      const idx = next.findIndex((x) => x && x.id === r.id);
+      if (idx >= 0) {
+        next[idx].enabled = !!cb.checked;
+        await saveAdapterRules(next);
+        setStatus("Saved.");
+        setTimeout(() => setStatus(""), 1200);
+      }
+    });
+
+    const body = document.createElement("label");
+    body.className = "tbcc-details-row-body";
+    body.setAttribute("for", cbId);
+
+    const main = document.createElement("div");
+    main.className = "tbcc-details-main";
+    const title = document.createElement("div");
+    title.className = "tbcc-details-title";
+    title.innerHTML = `<code>${escapeHtml(r.domain || "")}</code> <span class="cat">${escapeHtml(
+      r.mode || "literal"
+    )}</span>`;
+    const detail = document.createElement("div");
+    detail.className = "tbcc-details-sub";
+    const detailText = `${r.replaceFrom || ""} → ${r.replaceTo || ""}`;
+    detail.title = detailText;
+    detail.textContent = detailText.length > 64 ? `${detailText.slice(0, 62)}…` : detailText;
+    main.appendChild(title);
+    main.appendChild(detail);
+    body.appendChild(main);
+
+    const actions = document.createElement("div");
+    actions.className = "tbcc-details-actions";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "tbcc-details-remove";
+    del.textContent = "Remove";
+    del.addEventListener("click", async () => {
+      const next = (await getAdapterRules()).filter((x) => x && x.id !== r.id);
+      await saveAdapterRules(next);
+      await renderAdapterRules();
+      setStatus("Rule removed.");
+      setTimeout(() => setStatus(""), 1200);
+    });
+    actions.appendChild(del);
+
+    row.appendChild(cb);
+    row.appendChild(body);
+    row.appendChild(actions);
+    adapterRulesListEl.appendChild(row);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function analyzeCurrentTabForAdapter() {
+  if (!adapterAnalyzeResultEl) return;
+  adapterAnalyzeResultEl.textContent = "Analyzing current tab…";
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab || !tab.id) {
+    adapterAnalyzeResultEl.textContent = "No active tab found.";
+    return;
+  }
+  let resp;
+  try {
+    resp = await chrome.tabs.sendMessage(tab.id, { action: "tbcc-analyze-gallery-adapter" });
+  } catch (_) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["capture.js"] });
+      resp = await chrome.tabs.sendMessage(tab.id, { action: "tbcc-analyze-gallery-adapter" });
+    } catch (e2) {
+      adapterAnalyzeResultEl.textContent = "Could not analyze this tab. Reload the page and try again.";
+      return;
+    }
+  }
+  const analysis = resp && resp.analysis ? resp.analysis : null;
+  if (!analysis) {
+    adapterAnalyzeResultEl.textContent = "No adapter signals found.";
+    return;
+  }
+  const host = normalizeRuleDomain(analysis.host || "");
+  const suggestions = Array.isArray(analysis.suggestions) ? analysis.suggestions : [];
+  if (!suggestions.length) {
+    adapterAnalyzeResultEl.textContent = `Scanned ${analysis.sampleCount || 0} URLs on ${host || "this host"}; no clear rewrite pattern found.`;
+    return;
+  }
+  const best = suggestions[0];
+  if (adapterDomainEl && !adapterDomainEl.value) adapterDomainEl.value = host;
+  if (adapterModeEl) adapterModeEl.value = best.mode || "literal";
+  if (adapterFromEl) adapterFromEl.value = best.replaceFrom || "";
+  if (adapterToEl) adapterToEl.value = best.replaceTo || "";
+  adapterAnalyzeResultEl.textContent = `Suggested: ${best.label || "rule"} (${analysis.sampleCount || 0} URLs sampled). Review fields below, then click "Add adapter rule".`;
 }
 
 async function loadBuiltinModelSearchConfig() {
@@ -48,8 +261,12 @@ function saveMode(mode) {
 }
 
 function saveCustomSites(arr) {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_CUSTOM_SITES]: arr }, resolve);
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_CUSTOM_SITES]: arr }, () => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message || String(err)));
+      else resolve();
+    });
   });
 }
 
@@ -71,96 +288,118 @@ function wireCheckboxListeners() {
   });
 }
 
-function renderBuiltinSites(cfg, enabledMap) {
-  const byCat = {};
-  for (const s of cfg.sites || []) {
-    const c = s.category || "other";
-    if (!byCat[c]) byCat[c] = [];
-    byCat[c].push(s);
-  }
-  const cats = Object.keys(byCat).sort();
-  for (const cat of cats) {
-    const fs = document.createElement("fieldset");
-    const leg = document.createElement("legend");
-    leg.textContent = cat + " (built-in)";
-    fs.appendChild(leg);
-    for (const s of byCat[cat]) {
-      const id = `site_${s.id}`;
-      const label = document.createElement("label");
-      label.className = "row";
-      label.setAttribute("for", id);
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.id = id;
-      cb.dataset.siteId = s.id;
-      cb.checked = enabledMap[s.id] !== false;
-      const span = document.createElement("span");
-      span.textContent = s.name || s.id;
-      const small = document.createElement("span");
-      small.className = "cat";
-      small.textContent = s.id;
-      label.appendChild(cb);
-      label.appendChild(span);
-      label.appendChild(small);
-      fs.appendChild(label);
-    }
-    siteFields.appendChild(fs);
-  }
-}
+function createModelSearchSourceRow(site, enabledMap, isBuiltin) {
+  const row = document.createElement("div");
+  row.className = "tbcc-details-row tbcc-source-row";
+  const u = (site.url || "").trim();
+  if (u) row.title = u;
 
-function renderCustomSites(customSites, enabledMap) {
-  if (!customSites.length) return;
-  const fs = document.createElement("fieldset");
-  const leg = document.createElement("legend");
-  leg.textContent = "Your added sources";
-  fs.appendChild(leg);
-  for (const s of customSites) {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.style.cssText = "align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid #313244;";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.dataset.siteId = s.id;
-    cb.checked = enabledMap[s.id] !== false;
-    const mid = document.createElement("div");
-    mid.style.flex = "1";
-    mid.style.minWidth = "0";
-    const title = document.createElement("div");
-    title.textContent = s.name || s.id;
-    title.style.fontWeight = "500";
-    const urlLine = document.createElement("div");
-    urlLine.style.cssText = "font-size:11px;color:#6c7086;word-break:break-all;margin-top:2px;";
-    urlLine.textContent = s.url || "";
-    mid.appendChild(title);
-    mid.appendChild(urlLine);
+  const cbId = `site_${site.id}`;
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.id = cbId;
+  cb.dataset.siteId = site.id;
+  cb.checked = enabledMap[site.id] !== false;
+  if (u) cb.title = u;
+
+  const body = document.createElement("label");
+  body.className = "tbcc-details-row-body";
+  body.setAttribute("for", cbId);
+  if (u) body.title = u;
+
+  const main = document.createElement("div");
+  main.className = "tbcc-details-main";
+  const nameLine = document.createElement("div");
+  nameLine.className = "tbcc-details-title";
+  nameLine.textContent = site.name || site.id;
+  if (u) nameLine.title = u;
+  main.appendChild(nameLine);
+
+  const idSpan = document.createElement("span");
+  idSpan.className = "cat tbcc-details-id";
+  idSpan.textContent = site.id;
+
+  body.appendChild(main);
+  body.appendChild(idSpan);
+
+  const actions = document.createElement("div");
+  actions.className = "tbcc-details-actions";
+  if (!isBuiltin) {
     const del = document.createElement("button");
     del.type = "button";
+    del.className = "tbcc-details-remove";
     del.textContent = "Remove";
-    del.dataset.deleteSiteId = s.id;
-    del.style.cssText =
-      "padding:4px 10px;border:1px solid #45475a;border-radius:4px;background:#313244;color:#f38ba8;cursor:pointer;font-size:11px;flex-shrink:0;";
-    del.addEventListener("click", async () => {
+    del.addEventListener("click", async (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
       const data = await new Promise((resolve) => {
         chrome.storage.local.get([STORAGE_MODEL_SEARCH_CUSTOM_SITES, STORAGE_ENABLED], resolve);
       });
       const arr = Array.isArray(data[STORAGE_MODEL_SEARCH_CUSTOM_SITES])
         ? data[STORAGE_MODEL_SEARCH_CUSTOM_SITES]
         : [];
-      const next = arr.filter((x) => x.id !== s.id);
+      const next = arr.filter((x) => x.id !== site.id);
       const em = { ...(data[STORAGE_ENABLED] || {}) };
-      delete em[s.id];
+      delete em[site.id];
       await saveCustomSites(next);
       await saveEnabled(em);
       setStatus("Removed.");
       await refreshModelSearchUi();
       setTimeout(() => setStatus(""), 1600);
     });
-    row.appendChild(cb);
-    row.appendChild(mid);
-    row.appendChild(del);
-    fs.appendChild(row);
+    actions.appendChild(del);
   }
-  siteFields.appendChild(fs);
+
+  row.appendChild(cb);
+  row.appendChild(body);
+  row.appendChild(actions);
+  return row;
+}
+
+/** Two sections only: OnlyFans search + Live cam search. Bundled JSON + user URLs merged per category. */
+function renderMergedModelSearchSources(cfg, customSites, enabledMap) {
+  const builtinByCat = {
+    [MODEL_SEARCH_CATEGORY_ONLYFANS]: [],
+    [MODEL_SEARCH_CATEGORY_LIVECAMS]: [],
+  };
+  for (const s of cfg.sites || []) {
+    const c = normalizeModelSearchCategory(s.category);
+    if (builtinByCat[c]) builtinByCat[c].push(s);
+  }
+  const customByCat = {
+    [MODEL_SEARCH_CATEGORY_ONLYFANS]: [],
+    [MODEL_SEARCH_CATEGORY_LIVECAMS]: [],
+  };
+  for (const s of customSites) {
+    customByCat[normalizeModelSearchCategory(s.category)].push(s);
+  }
+
+  for (const cat of [MODEL_SEARCH_CATEGORY_ONLYFANS, MODEL_SEARCH_CATEGORY_LIVECAMS]) {
+    const fs = document.createElement("fieldset");
+    const leg = document.createElement("legend");
+    leg.textContent = modelSearchCategoryLabel(cat);
+    fs.appendChild(leg);
+
+    const bundled = builtinByCat[cat] || [];
+    const custom = customByCat[cat] || [];
+    const merged = [
+      ...bundled.map((s) => ({ site: s, isBuiltin: true })),
+      ...custom.map((s) => ({ site: s, isBuiltin: false })),
+    ];
+
+    if (!merged.length) {
+      const empty = document.createElement("p");
+      empty.className = "sub";
+      empty.style.margin = "0";
+      empty.textContent = "No sources in this category yet.";
+      fs.appendChild(empty);
+    } else {
+      for (const { site, isBuiltin } of merged) {
+        fs.appendChild(createModelSearchSourceRow(site, enabledMap, isBuiltin));
+      }
+    }
+    siteFields.appendChild(fs);
+  }
 }
 
 function validateCustomUrl(url) {
@@ -206,8 +445,7 @@ async function refreshModelSearchUi() {
   await saveEnabled(enabledMap);
 
   siteFields.innerHTML = "";
-  renderBuiltinSites(cfg, enabledMap);
-  renderCustomSites(custom, enabledMap);
+  renderMergedModelSearchSources(cfg, custom, enabledMap);
   wireCheckboxListeners();
 }
 
@@ -227,7 +465,7 @@ async function refreshModelSearchUi() {
       const catEl = document.getElementById("customSiteCat");
       const name = (nameEl && nameEl.value.trim()) || "";
       const url = (urlEl && urlEl.value.trim()) || "";
-      const category = (catEl && catEl.value.trim()) || "custom";
+      const category = normalizeModelSearchCategory((catEl && catEl.value.trim()) || MODEL_SEARCH_CATEGORY_ONLYFANS);
       const err = validateCustomUrl(url);
       if (!name) {
         setStatus("Enter a display name.", true);
@@ -246,13 +484,17 @@ async function refreshModelSearchUi() {
         ? data[STORAGE_MODEL_SEARCH_CUSTOM_SITES]
         : [];
       arr.push(site);
-      await saveCustomSites(arr);
+      try {
+        await saveCustomSites(arr);
+      } catch (e) {
+        setStatus(String(e.message || e), true);
+        return;
+      }
       const em = collectEnabledFromInputs();
       em[id] = true;
       await saveEnabled(em);
       if (nameEl) nameEl.value = "";
       if (urlEl) urlEl.value = "";
-      if (catEl) catEl.value = "";
       setStatus("Source added.");
       await refreshModelSearchUi();
       setTimeout(() => setStatus(""), 1600);
@@ -274,7 +516,68 @@ async function refreshModelSearchUi() {
       }
     });
   });
+  await renderModelSearchHistory();
 })();
+
+if (btnClearHistory) {
+  btnClearHistory.addEventListener("click", async () => {
+    await new Promise((resolve) => chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_HISTORY]: [] }, resolve));
+    await renderModelSearchHistory();
+    setStatus("Username history cleared.");
+    setTimeout(() => setStatus(""), 1600);
+  });
+}
+
+if (btnAnalyzeAdapter) {
+  btnAnalyzeAdapter.addEventListener("click", () => {
+    void analyzeCurrentTabForAdapter();
+  });
+}
+
+if (btnAddAdapterRule) {
+  btnAddAdapterRule.addEventListener("click", async () => {
+    const domain = normalizeRuleDomain(adapterDomainEl && adapterDomainEl.value);
+    const mode = String((adapterModeEl && adapterModeEl.value) || "literal").toLowerCase() === "regex" ? "regex" : "literal";
+    const replaceFrom = String((adapterFromEl && adapterFromEl.value) || "").trim();
+    const replaceTo = String((adapterToEl && adapterToEl.value) || "");
+    if (!domain) {
+      setStatus("Adapter rule needs a domain.", true);
+      return;
+    }
+    if (!replaceFrom) {
+      setStatus("Adapter rule needs a 'replace from' pattern.", true);
+      return;
+    }
+    if (mode === "regex") {
+      try {
+        new RegExp(replaceFrom, "i");
+      } catch (_) {
+        setStatus("Invalid regex pattern.", true);
+        return;
+      }
+    }
+    const rules = await getAdapterRules();
+    const next = [
+      {
+        id: "rule_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
+        domain,
+        mode,
+        replaceFrom,
+        replaceTo,
+        enabled: true,
+        createdAt: Date.now(),
+      },
+      ...rules,
+    ].slice(0, 300);
+    await saveAdapterRules(next);
+    await renderAdapterRules();
+    if (adapterAnalyzeResultEl) adapterAnalyzeResultEl.textContent = "";
+    if (adapterFromEl) adapterFromEl.value = "";
+    if (adapterToEl) adapterToEl.value = "";
+    setStatus("Adapter rule saved.");
+    setTimeout(() => setStatus(""), 1600);
+  });
+}
 
 async function loadReverseConfig() {
   const url = chrome.runtime.getURL("reverse-image-sites.json");
@@ -399,3 +702,31 @@ const STORAGE_TBCC_INTERNAL_KEY = "tbccInternalApiKey";
     });
   });
 })();
+
+(function () {
+  if (!themePresetSelect) return;
+  const valid = new Set(["dark", "chatgpt", "github", "obsidian", "cursor"]);
+  chrome.storage.local.get([STORAGE_THEME], (data) => {
+    const current = String(data?.[STORAGE_THEME] || "dark").toLowerCase();
+    themePresetSelect.value = valid.has(current) ? current : "dark";
+  });
+  themePresetSelect.addEventListener("change", () => {
+    const next = String(themePresetSelect.value || "dark").toLowerCase();
+    chrome.storage.local.set({ [STORAGE_THEME]: valid.has(next) ? next : "dark" }, () => {
+      setStatus("Saved.");
+      setTimeout(() => setStatus(""), 1600);
+    });
+  });
+})();
+
+void renderAdapterRules();
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes[STORAGE_MODEL_SEARCH_HISTORY]) {
+    void renderModelSearchHistory();
+  }
+  if (changes[STORAGE_CUSTOM_ADAPTERS]) {
+    void renderAdapterRules();
+  }
+});

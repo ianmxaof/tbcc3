@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <title>TBCC Gallery</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles/gallery.css" />
 </head>
 <body>
@@ -36,7 +37,7 @@
               </div>
             </div>
             <button type="button" id="btnRefresh" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Refresh: rescan tab; also reload pools/channels/forum/embeds (see Options, Full refresh)">↻</button>
-            <button type="button" id="btnFilterToggle" class="tbcc-btn-secondary tbcc-btn--compact" title="Filter media (type, size, URL)">Filter</button>
+            <button type="button" id="btnFilterToggle" class="tbcc-btn-secondary tbcc-btn--compact" title="Filter: size, type, URL; optional hide SVG / tiny UI tiles">Filter</button>
             <button type="button" id="btnGalleryHelp" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Keyboard shortcuts (same as ? key)">?</button>
             <button type="button" id="btnOpenCaptureSettings" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Capture and extension options">⚙</button>
           </div>
@@ -44,48 +45,113 @@
       </header>
 
       <div id="filterOverlay" class="filter-overlay" aria-hidden="true">
-        <div class="filter-panel" role="dialog" aria-labelledby="filterHeading">
-          <h3 id="filterHeading">Filter media</h3>
-          <p class="filter-help">
-            <strong>Min W</strong> and <strong>min H</strong> both apply: a tile must be at least that wide <em>and</em> at least that tall.
-            Sizes come from the page scan; labels on tiles update as images load — if the grid looked empty, wait a moment or clear filters and try again.
-          </p>
-          <div class="row">
-            <select id="filterType" title="Type">
-              <option value="">All types</option>
-              <option value="image">Image</option>
-              <option value="video">Video</option>
-              <option value=".jpg">JPG</option>
-              <option value=".jpeg">JPEG</option>
-              <option value=".png">PNG</option>
-              <option value=".webp">WEBP</option>
-              <option value=".gif">GIF</option>
-            </select>
-            <input type="number" id="filterMinW" placeholder="min W" min="0" title="Minimum width (pixels); combined with min H" />
-            <input type="number" id="filterMinH" placeholder="min H" min="0" title="Minimum height (pixels); combined with min W" />
+        <div class="filter-panel filter-panel--compact" role="dialog" aria-labelledby="filterHeading">
+          <h3 id="filterHeading" class="filter-panel__title">Filter</h3>
+
+          <div class="filter-panel__dense">
+            <div class="filter-toolbar-row">
+              <label class="tbcc-filter-dim" title="Minimum width (px). If both W and H are set, a tile must meet both. Unknown size passes until loaded.">
+                <span class="tbcc-filter-sym" aria-hidden="true">↔</span>
+                <input type="number" id="filterMinW" min="0" inputmode="numeric" aria-label="Minimum width in pixels" />
+              </label>
+              <label class="tbcc-filter-dim" title="Minimum height (px). If both W and H are set, a tile must meet both. Unknown size passes until loaded.">
+                <span class="tbcc-filter-sym" aria-hidden="true">↕</span>
+                <input type="number" id="filterMinH" min="0" inputmode="numeric" aria-label="Minimum height in pixels" />
+              </label>
+              <select id="filterType" class="tbcc-filter-type" title="Restrict by kind or file extension in URL">
+                <option value="">All</option>
+                <option value="image" title="Non-video">Img</option>
+                <option value="video" title="Video elements / video-like URLs">Vid</option>
+                <option value=".jpg" title="JPEG">.jpg</option>
+                <option value=".jpeg" title="JPEG">.jpeg</option>
+                <option value=".png" title="PNG">.png</option>
+                <option value=".webp" title="WebP">.webp</option>
+                <option value=".gif" title="GIF">.gif</option>
+                <option value=".svg" title="SVG in URL path">.svg</option>
+              </select>
+              <label class="tbcc-filter-tog" title="Hide SVG / data:image/svg+xml URLs and tiles ≤128×128 when both dimensions are known (common UI sprites). May hide small real photos.">
+                <span class="tbcc-filter-tog__face" aria-hidden="true">⊘</span>
+                <span class="tbcc-sr-only">Hide SVG and tiny UI tiles (≤128 px)</span>
+                <input type="checkbox" id="filterHideUiClutter" />
+              </label>
+            </div>
+            <div class="filter-toolbar-row filter-toolbar-row--url">
+              <span class="tbcc-filter-sym tbcc-filter-sym--static" title="URL substring" aria-hidden="true">🔗</span>
+              <input type="text" id="filterUrl" class="tbcc-filter-url" placeholder="contains…" title="Show only tiles whose URL includes this text" />
+              <label class="tbcc-filter-tog" title="Select or clear every tile that matches the current filters">
+                <span class="tbcc-filter-tog__face" aria-hidden="true">☑</span>
+                <span class="tbcc-sr-only">Select all matching filter</span>
+                <input type="checkbox" id="selectAll" />
+              </label>
+            </div>
           </div>
-          <div class="row">
-            <input type="text" id="filterUrl" placeholder="URL contains" style="flex:1;min-width:160px" />
-          </div>
-          <label class="row" style="cursor:pointer">
-            <input type="checkbox" id="selectAll" title="Select all / none on page" />
-            <span>Select all matching filter</span>
-          </label>
+
+          <details class="filter-help-details">
+            <summary class="filter-help-details__summary">Filter tips</summary>
+            <div class="filter-help-details__body">
+              <p>
+                <strong>Min width and min height</strong> both apply when set: a tile must be at least that wide <em>and</em> at least that tall. If a dimension is still unknown (0), that axis does not exclude the tile until the image loads.
+              </p>
+              <p>
+                Sizes come from the page scan; labels on tiles update as images load. If the grid looks empty, wait a moment, clear filters, or turn off “tiny UI” hiding.
+              </p>
+            </div>
+          </details>
+
           <div class="filter-actions">
-            <button type="button" id="btnFilterReset" class="tbcc-btn-secondary">Clear filters</button>
-            <button type="button" id="btnFilterDone" class="tbcc-btn-secondary">Done</button>
+            <button type="button" id="btnFilterReset" class="tbcc-btn-secondary tbcc-btn--compact" title="Clear all filter fields">Clear</button>
+            <button type="button" id="btnFilterDone" class="tbcc-btn-secondary tbcc-btn--compact" title="Close">Done</button>
           </div>
         </div>
       </div>
 
       <div class="gallery-stage">
+        <div id="tbccSubtabBar" class="tbcc-subtab-bar" hidden aria-label="In-tab navigation history">
+          <div class="tbcc-subtab-strip" id="tbccSubtabStrip" role="tablist"></div>
+          <div class="tbcc-subtab-meta">
+            <span id="tbccMemHud" class="tbcc-mem-hud" title="JS heap used / total (Chromium only)">—</span>
+            <button type="button" id="tbccSubtabSettings" class="tbcc-btn-secondary tbcc-btn--compact" title="Sub-tab history settings">⋯</button>
+          </div>
+          <div id="tbccSubtabPopover" class="tbcc-subtab-popover" hidden>
+            <label class="tbcc-subtab-popover__row">
+              <input type="checkbox" id="tbccSubtabEnabled" />
+              <span>Keep in-tab history</span>
+            </label>
+            <label class="tbcc-subtab-popover__row">
+              <span>History cap</span>
+              <input type="number" id="tbccSubtabCap" min="1" max="5" step="1" />
+            </label>
+            <label class="tbcc-subtab-popover__row">
+              <input type="checkbox" id="tbccSubtabAutoCapture" />
+              <span>Auto-capture on page navigation</span>
+            </label>
+            <div class="tbcc-subtab-popover__actions">
+              <button type="button" id="tbccSubtabClearAll" class="tbcc-btn-secondary tbcc-btn--compact">Clear history</button>
+              <button type="button" id="tbccSubtabPopoverDone" class="tbcc-btn-secondary tbcc-btn--compact">Done</button>
+            </div>
+          </div>
+        </div>
         <div class="gallery-wrap" id="galleryDropZone">
           <div id="loading" class="loading"><div class="spinner"></div></div>
           <div class="gallery-grid-toolbar">
             <span id="selectionChip" class="selection-chip" title="Selected count in current filter">0 selected</span>
             <div class="gallery-grid-toolbar-actions">
-              <button type="button" id="btnSelectAll" class="tbcc-btn-secondary tbcc-btn--compact" title="Select all visible items">Select all</button>
-              <button type="button" id="btnDeselect" class="tbcc-btn-secondary tbcc-btn--compact" disabled title="Clear selection">Deselect</button>
+              <label class="tbcc-sort-row" title="Sort the grid">
+                <span class="tbcc-sort-row__label">Sort</span>
+                <select id="tbccSortSelect" class="tbcc-sort-select">
+                  <option value="default">Capture order</option>
+                  <option value="resDesc">Resolution ↓</option>
+                  <option value="resAsc">Resolution ↑</option>
+                  <option value="durDesc">Duration ↓</option>
+                  <option value="durAsc">Duration ↑</option>
+                  <option value="type">Type</option>
+                  <option value="sizeDesc">Size ↓</option>
+                  <option value="nameAsc">Name A→Z</option>
+                  <option value="nameDesc">Name Z→A</option>
+                </select>
+                <button type="button" id="tbccSortDetailsToggle" class="tbcc-btn-secondary tbcc-btn--compact" title="Toggle details list view">☰</button>
+              </label>
+              <button type="button" id="btnSelectToggle" class="tbcc-btn-secondary tbcc-btn--compact" disabled title="Select or deselect all visible items">Select all</button>
             </div>
           </div>
           <div id="grid" class="grid"></div>
@@ -113,6 +179,15 @@
           <button type="button" id="btnToggleFoldVariants" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Fold duplicate video resolutions into one tile">⧉</button>
           <button type="button" id="btnCropOverflow" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Crop and watermarks">✂</button>
           <button type="button" id="btnAddFilesOverflow" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Add local files">📁</button>
+          <button
+            type="button"
+            id="btnSelectAnchorToggle"
+            class="tbcc-btn-icon tbcc-btn-icon--tool tbcc-transport-tool-trailing"
+            disabled
+            title="Toggle selection on anchor tile (last clicked row)"
+          >
+            ⊡
+          </button>
         </div>
       </div>
 
@@ -257,11 +332,43 @@
 
       <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
+      <div
+        id="tbccGalleryCtxMenu"
+        class="tbcc-gallery-ctx-menu"
+        hidden
+        aria-hidden="true"
+        role="presentation"
+      >
+        <div class="tbcc-gallery-ctx-menu__inner" role="menu" aria-label="Gallery quick actions">
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="refresh">Refresh / rescan</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="overlay">Toggle on-page boxes</button>
+          <hr class="tbcc-gallery-ctx-menu__sep" />
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectToggle">Select all visible</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectAnchorToggle">Toggle anchor row</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectAllPage">Select all on page (overlay)</button>
+          <hr class="tbcc-gallery-ctx-menu__sep" />
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="download">Download selected</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="zip">ZIP selected</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="copyJd">Copy URLs (JDownloader)</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="send">Send to TBCC</button>
+          <hr class="tbcc-gallery-ctx-menu__sep" />
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="filter">Filter…</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="fold">Toggle fold video variants</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="crop">Crop &amp; watermarks</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="addFiles">Add local files</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="telegram">Destination &amp; tags…</button>
+          <hr class="tbcc-gallery-ctx-menu__sep" />
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="options">Capture &amp; extension options</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="help">Keyboard shortcuts</button>
+        </div>
+      </div>
+
       <div id="tbccLightbox" role="dialog" aria-modal="true">
         <div class="inner">
           <button type="button" class="close-lb" id="tbccLightboxClose" title="Close (Esc)">×</button>
           <img id="tbccLightboxImg" alt="" style="display:none" />
           <video id="tbccLightboxVideo" controls playsinline style="display:none"></video>
+          <div id="tbccLightboxVideoErr" class="lightbox-video-err" hidden></div>
         </div>
       </div>
 

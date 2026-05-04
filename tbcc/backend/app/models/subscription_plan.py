@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Integer, String, Text
 
 from .base import Base
 
@@ -36,3 +36,11 @@ class SubscriptionPlan(Base):
     bundle_zip_parts_json = Column(Text, nullable=True)
     # JSON array of tbcc_tags.id values (shop catalog / hashtags on Telegram)
     plan_tag_ids_json = Column(Text, nullable=True)
+    # Optional fixed NOWPayments USD quote for external checkout; fallback derives from Stars price.
+    nowpayments_price_usd = Column(Float, nullable=True)
+    # If true, checkout can offer supported currencies; if false, lock to nowpayments_pay_currency.
+    nowpayments_allow_any_currency = Column(Boolean, default=True, nullable=False)
+    # Optional NOWPayments pay currency ticker/network (e.g. "usdttrc20", "btc", "ton"), used when allow_any is false.
+    nowpayments_pay_currency = Column(String(64), nullable=True)
+    # Optional operator note: preferred receiving wallet/address for this product (metadata + bot message only).
+    nowpayments_receiving_wallet = Column(String(255), nullable=True)

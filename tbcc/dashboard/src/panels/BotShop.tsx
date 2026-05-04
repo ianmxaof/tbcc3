@@ -148,6 +148,10 @@ export function BotShop() {
   const [botSection, setBotSection] = useState<"main" | "loot" | "packs">("main");
   const [isActive, setIsActive] = useState(true);
   const [promoImageUrls, setPromoImageUrls] = useState<string[]>([]);
+  const [npPriceUsd, setNpPriceUsd] = useState("");
+  const [npAllowAnyCurrency, setNpAllowAnyCurrency] = useState(true);
+  const [npPayCurrency, setNpPayCurrency] = useState("");
+  const [npReceivingWallet, setNpReceivingWallet] = useState("");
   /** Set when dashboard upload returns telegram_hint from API */
   const [promoHintAfterUpload, setPromoHintAfterUpload] = useState<string | null>(null);
   /** Shown briefly after a successful "Add product" (avoid sticky create.isSuccess from react-query). */
@@ -172,6 +176,10 @@ export function BotShop() {
   const [editBotSection, setEditBotSection] = useState<"main" | "loot" | "packs">("main");
   const [editIsActive, setEditIsActive] = useState(true);
   const [editPromoImageUrls, setEditPromoImageUrls] = useState<string[]>([]);
+  const [editNpPriceUsd, setEditNpPriceUsd] = useState("");
+  const [editNpAllowAnyCurrency, setEditNpAllowAnyCurrency] = useState(true);
+  const [editNpPayCurrency, setEditNpPayCurrency] = useState("");
+  const [editNpReceivingWallet, setEditNpReceivingWallet] = useState("");
   const [editPromoHintAfterUpload, setEditPromoHintAfterUpload] = useState<string | null>(null);
   const newPromoFileInputRef = useRef<HTMLInputElement>(null);
   const editPromoFileInputRef = useRef<HTMLInputElement>(null);
@@ -192,6 +200,10 @@ export function BotShop() {
         product_type: productType,
         bot_section: botSection,
         is_active: isActive,
+        nowpayments_price_usd: npPriceUsd.trim() ? Number(npPriceUsd) : undefined,
+        nowpayments_allow_any_currency: npAllowAnyCurrency,
+        nowpayments_pay_currency: npAllowAnyCurrency ? undefined : npPayCurrency.trim().toLowerCase() || undefined,
+        nowpayments_receiving_wallet: npReceivingWallet.trim() || undefined,
         promo_image_urls:
           promoImageUrls.map((s) => s.trim()).filter(Boolean).length > 0
             ? promoImageUrls.map((s) => s.trim()).filter(Boolean).slice(0, MAX_PROMO_IMAGES)
@@ -213,6 +225,10 @@ export function BotShop() {
       setBotSection("main");
       setIsActive(true);
       setPromoImageUrls([]);
+      setNpPriceUsd("");
+      setNpAllowAnyCurrency(true);
+      setNpPayCurrency("");
+      setNpReceivingWallet("");
       setPromoHintAfterUpload(null);
       setJustCreatedOk(true);
     },
@@ -339,6 +355,14 @@ export function BotShop() {
     setEditBotSection(sec === "loot" || sec === "packs" ? (sec as "loot" | "packs") : "main");
     setEditIsActive(p.is_active !== false);
     setEditPromoImageUrls(promoUrlsFromPlan(p));
+    setEditNpPriceUsd(
+      p.nowpayments_price_usd == null || p.nowpayments_price_usd === ""
+        ? ""
+        : String(p.nowpayments_price_usd),
+    );
+    setEditNpAllowAnyCurrency(p.nowpayments_allow_any_currency !== false);
+    setEditNpPayCurrency(String(p.nowpayments_pay_currency || ""));
+    setEditNpReceivingWallet(String(p.nowpayments_receiving_wallet || ""));
     setEditPromoHintAfterUpload(null);
     setBundleUploadFlash(null);
     const tids = p.tag_ids;
@@ -367,6 +391,10 @@ export function BotShop() {
         product_type: editProductType,
         bot_section: editBotSection,
         is_active: editIsActive,
+        nowpayments_price_usd: editNpPriceUsd.trim() ? Number(editNpPriceUsd) : null,
+        nowpayments_allow_any_currency: editNpAllowAnyCurrency,
+        nowpayments_pay_currency: editNpAllowAnyCurrency ? null : editNpPayCurrency.trim().toLowerCase() || null,
+        nowpayments_receiving_wallet: editNpReceivingWallet.trim() || null,
         promo_image_urls: editPromoImageUrls.map((s) => s.trim()).filter(Boolean).slice(0, MAX_PROMO_IMAGES),
         tag_ids: editTagIds,
       },
@@ -624,6 +652,47 @@ export function BotShop() {
               className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
             />
           </label>
+          <label className="block">
+            <span className="text-slate-400 text-xs">NOWPayments price override (USD, optional)</span>
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              value={npPriceUsd}
+              onChange={(e) => setNpPriceUsd(e.target.value)}
+              placeholder="Leave empty = derive from Stars"
+              className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+            />
+          </label>
+          <label className="block">
+            <span className="text-slate-400 text-xs">NOWPayments pay currency</span>
+            <input
+              type="text"
+              value={npPayCurrency}
+              onChange={(e) => setNpPayCurrency(e.target.value)}
+              placeholder="e.g. btc, ton, usdttrc20"
+              disabled={npAllowAnyCurrency}
+              className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 disabled:opacity-60"
+            />
+          </label>
+          <label className="flex items-center gap-2 mt-6 sm:mt-8">
+            <input
+              type="checkbox"
+              checked={npAllowAnyCurrency}
+              onChange={(e) => setNpAllowAnyCurrency(e.target.checked)}
+            />
+            <span className="text-slate-300 text-sm">Allow any supported checkout currency</span>
+          </label>
+          <label className="block">
+            <span className="text-slate-400 text-xs">Receiving wallet metadata (optional)</span>
+            <input
+              type="text"
+              value={npReceivingWallet}
+              onChange={(e) => setNpReceivingWallet(e.target.value)}
+              placeholder="Your target wallet/address note"
+              className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+            />
+          </label>
           <label className="block sm:col-span-2">
             <span className="text-slate-400 text-xs">Grant access to channel / group</span>
             <select
@@ -691,14 +760,25 @@ export function BotShop() {
           <button
             type="button"
             onClick={() => create.mutate()}
-            disabled={create.isPending || priceStars <= 0}
+            disabled={create.isPending || priceStars <= 0 || (!npAllowAnyCurrency && !npPayCurrency.trim())}
             className="px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-500 disabled:opacity-50"
-            title={priceStars <= 0 ? "Set Stars price greater than 0" : "Save this product to the database"}
+            title={
+              priceStars <= 0
+                ? "Set Stars price greater than 0"
+                : !npAllowAnyCurrency && !npPayCurrency.trim()
+                  ? "Set NOWPayments pay currency or enable any-currency mode"
+                  : "Save this product to the database"
+            }
           >
             {create.isPending ? "Creating…" : "Add product"}
           </button>
           {priceStars <= 0 && (
             <span className="text-amber-200/90 text-xs">Set price (Stars) above 0 to enable Add product.</span>
+          )}
+          {!npAllowAnyCurrency && !npPayCurrency.trim() && (
+            <span className="text-amber-200/90 text-xs">
+              Set NOWPayments pay currency (e.g. <code>btc</code>, <code>ton</code>, <code>usdttrc20</code>) or enable any-currency mode.
+            </span>
           )}
         </div>
       </div>
@@ -920,6 +1000,47 @@ export function BotShop() {
                   className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
                 />
               </label>
+              <label className="block">
+                <span className="text-slate-400 text-xs">NOWPayments price override (USD, optional)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={editNpPriceUsd}
+                  onChange={(e) => setEditNpPriceUsd(e.target.value)}
+                  placeholder="Leave empty = derive from Stars"
+                  className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                />
+              </label>
+              <label className="block">
+                <span className="text-slate-400 text-xs">NOWPayments pay currency</span>
+                <input
+                  type="text"
+                  value={editNpPayCurrency}
+                  onChange={(e) => setEditNpPayCurrency(e.target.value)}
+                  placeholder="e.g. btc, ton, usdttrc20"
+                  disabled={editNpAllowAnyCurrency}
+                  className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 disabled:opacity-60"
+                />
+              </label>
+              <label className="flex items-center gap-2 mt-6 sm:mt-8">
+                <input
+                  type="checkbox"
+                  checked={editNpAllowAnyCurrency}
+                  onChange={(e) => setEditNpAllowAnyCurrency(e.target.checked)}
+                />
+                <span className="text-slate-300 text-sm">Allow any supported checkout currency</span>
+              </label>
+              <label className="block">
+                <span className="text-slate-400 text-xs">Receiving wallet metadata (optional)</span>
+                <input
+                  type="text"
+                  value={editNpReceivingWallet}
+                  onChange={(e) => setEditNpReceivingWallet(e.target.value)}
+                  placeholder="Your target wallet/address note"
+                  className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                />
+              </label>
               <label className="block sm:col-span-2">
                 <span className="text-slate-400 text-xs">Grant access to channel / group</span>
                 <select
@@ -1092,7 +1213,7 @@ export function BotShop() {
                 <button
                   type="button"
                   onClick={saveProductEditor}
-                  disabled={patch.isPending || editPriceStars <= 0}
+                  disabled={patch.isPending || editPriceStars <= 0 || (!editNpAllowAnyCurrency && !editNpPayCurrency.trim())}
                   className="px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-500 disabled:opacity-50"
                 >
                   {patch.isPending ? "Saving…" : "Save changes"}
@@ -1114,6 +1235,7 @@ export function BotShop() {
               <th className="p-3">Days</th>
               <th className="p-3">Channel</th>
               <th className="p-3">Promo</th>
+              <th className="p-3">Crypto</th>
               <th className="p-3">Zip</th>
               <th className="p-3">Tags</th>
               <th className="p-3">Active</th>
@@ -1123,7 +1245,7 @@ export function BotShop() {
           <tbody>
             {plansPending && !plans.length && !plansError ? (
               <tr>
-                <td colSpan={11} className="p-4 text-slate-500">
+                <td colSpan={12} className="p-4 text-slate-500">
                   Loading products…
                 </td>
               </tr>
@@ -1148,6 +1270,11 @@ export function BotShop() {
                 </td>
                 <td className="p-3 text-slate-500 max-w-[80px] truncate" title={promoList.join("\n") || ""}>
                   {promoN > 1 ? `${promoN}×` : promoN === 1 ? "img" : "—"}
+                </td>
+                <td className="p-3 text-slate-400 text-xs">
+                  {p.nowpayments_allow_any_currency === false
+                    ? String(p.nowpayments_pay_currency || "fixed")
+                    : "any"}
                 </td>
                 <td className="p-3 text-slate-400 text-xs">
                   {(p.product_type as string) === "bundle"

@@ -80,6 +80,7 @@ def create_payment(
     price_usd: float,
     order_description: str,
     ipn_callback_url: str,
+    pay_currency: str | None = None,
 ) -> dict[str, Any]:
     """
     POST /v1/payment — returns API JSON (includes invoice_url or payment id + pay_address).
@@ -88,15 +89,17 @@ def create_payment(
     if not key:
         raise RuntimeError("TBCC_NOWPAYMENTS_API_KEY not set")
 
-    pay_currency = (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "usdttrc20").strip()
+    # If unset, omit pay_currency so hosted checkout can expose more currency choices.
+    currency = (pay_currency or os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip()
     payload = {
         "price_amount": price_usd,
         "price_currency": "usd",
-        "pay_currency": pay_currency,
         "ipn_callback_url": ipn_callback_url,
         "order_id": order_id,
         "order_description": (order_description or "TBCC order")[:512],
     }
+    if currency:
+        payload["pay_currency"] = currency
     try:
         with httpx.Client(timeout=60.0) as client:
             r = client.post(
@@ -113,7 +116,10 @@ def create_payment(
         except Exception:
             pass
         logger.warning("NOWPayments create payment failed: %s %s", e.response.status_code, detail)
-        raise RuntimeError(f"NOWPayments error {e.response.status_code}") from e
+        msg = f"NOWPayments error {e.response.status_code}"
+        if detail:
+            msg += f": {detail}"
+        raise RuntimeError(msg) from e
 
 
 def payment_done_status(payment_status: str | None) -> bool:

@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -12,6 +13,7 @@ from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.pool_cleanup import cascade_delete_pool
 from app.services.telegram_admin import get_telegram_client
+from app.utils.telegram_peer import normalize_telethon_peer_identifier
 from telethon import functions
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,18 @@ class ChannelCreate(BaseModel):
     name: str
     identifier: str
     invite_link: str | None = None
+
+
+class ChannelRotateInviteBody(BaseModel):
+    """
+    Create a fresh Telegram invite with optional join-request gate and limits.
+    """
+
+    request_needed: bool = True
+    usage_limit: int | None = None
+    expire_hours: int | None = None
+    title: str | None = None
+    revoke_previous: bool = True
 
 
 @router.get("/")
@@ -116,6 +130,108 @@ async def pin_channel_message(channel_id: int, body: ChannelPinBody, db: Session
         logger.info("pin-message failed channel_id=%s: %s", channel_id, e)
         return {"ok": False, "error": str(e)}
     return {"ok": True, "error": None}
+
+
+@router.post("/{channel_id}/rotate-invite")
+async def rotate_channel_invite(
+    channel_id: int,
+    body: ChannelRotateInviteBody = Body(default=ChannelRotateInviteBody()),
+    db: Session = Depends(get_db),
+):
+    """
+    Programmatically rotate a channel invite link.
+
+    Supports join-request links (`request_needed=true`), usage limits, and expiry windows.
+    Saves the new link to channels.invite_link.
+    """
+    ch = db.query(Channel).filter(Channel.id == channel_id).first()
+    if not ch:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    try:
+        client = await get_telegram_client()
+    except Exception as e:
+        logger.warning("rotate-invite: no telegram client: %s", e)
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    peer = normalize_telethon_peer_identifier(ch.identifier)
+    usage_limit = body.usage_limit
+    if usage_limit is not None and usage_limit <= 0:
+        usage_limit = None
+    expire_at = None
+    if body.expire_hours is not None and body.expire_hours > 0:
+        expire_at = datetime.now(timezone.utc) + timedelta(hours=int(body.expire_hours))
+    title = (body.title or "").strip() or None
+
+    try:
+        entity = await client.get_input_entity(peer)
+    except Exception as e:
+        logger.info("rotate-invite: cannot resolve entity channel_id=%s peer=%s: %s", channel_id, peer, e)
+        return {"ok": False, "error": f"Cannot resolve channel identifier: {e}"}
+
+    old_link = (ch.invite_link or "").strip() or None
+    try:
+        invite = await client(
+            functions.messages.ExportChatInviteRequest(
+                peer=entity,
+                legacy=False,
+                request_needed=bool(body.request_needed),
+                usage_limit=usage_limit,
+                expire_date=expire_at,
+                title=title,
+            )
+        )
+    except TypeError:
+        # Telethon/API compatibility fallback (older signatures may not expose all kwargs).
+        invite = await client(
+            functions.messages.ExportChatInviteRequest(
+                peer=entity,
+                legacy=False,
+                usage_limit=usage_limit,
+                expire_date=expire_at,
+                title=title,
+            )
+        )
+    except Exception as e:
+        logger.info("rotate-invite failed channel_id=%s peer=%s: %s", channel_id, peer, e)
+        return {"ok": False, "error": str(e)}
+
+    new_link = str(getattr(invite, "link", "") or "").strip()
+    if not new_link:
+        return {"ok": False, "error": "Telegram returned no invite link"}
+
+    # Best effort revoke of previous exported invite (if present and different).
+    revoked_previous = False
+    revoke_error = None
+    if body.revoke_previous and old_link and old_link != new_link:
+        try:
+            await client(
+                functions.messages.EditExportedChatInviteRequest(
+                    peer=entity,
+                    link=old_link,
+                    revoked=True,
+                )
+            )
+            revoked_previous = True
+        except Exception as e:
+            # Non-fatal: keep new invite even if old could not be revoked (e.g. old wasn't exported by this admin).
+            revoke_error = str(e)
+
+    ch.invite_link = new_link
+    db.commit()
+    db.refresh(ch)
+    return {
+        "ok": True,
+        "channel_id": channel_id,
+        "identifier_used": peer,
+        "invite_link": new_link,
+        "request_needed": bool(body.request_needed),
+        "usage_limit": usage_limit,
+        "expire_hours": body.expire_hours,
+        "title": title,
+        "old_invite_link": old_link,
+        "revoked_previous": revoked_previous,
+        "revoke_error": revoke_error,
+    }
 
 
 @router.get("/{channel_id}")

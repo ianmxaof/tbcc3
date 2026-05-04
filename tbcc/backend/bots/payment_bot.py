@@ -11,18 +11,28 @@ Run: python -m bots.payment_bot (from tbcc/backend with PYTHONPATH=backend)
 
 Requires: BOT_TOKEN in tbcc/.env; TBCC_API_URL if API is not http://localhost:8000
 
+Optional: /resolve needs TBCC_INTERNAL_API_KEY, TBCC_BYPASS_API_KEY on the API + worker, Redis, and Celery
+consuming queues link + link_priority (see tbcc/.env.example).
+
 Optional env (slow VPN / strict firewall / corporate proxy):
   TELEGRAM_HTTP_TIMEOUT — seconds for connect/read/write/pool (default 30; was PTB default 5).
   TELEGRAM_BOOTSTRAP_RETRIES — retries during startup if Telegram is slow (default 5; 0 = fail fast).
   TELEGRAM_PROXY — proxy URL for Bot API (or set HTTPS_PROXY / HTTP_PROXY; see httpx docs).
 If you still see ConnectTimeout, confirm outbound HTTPS to api.telegram.org is allowed (firewall/VPN/DNS).
+
+Optional env (catalog):
+  TBCC_BOT_MIN_SUBSCRIPTION_STARS — minimum Stars price for subscription rows in the bot (0 = off). Use e.g. 101 to hide a 100 ⭐ test SKU.
+  TBCC_SUBSCRIPTION_CATALOG_COLUMNS — subscription Stars/crypto keyboard: buttons per row, 1–4 (default 2).
 """
+import asyncio
 import html
 import io
 import logging
 import os
 import random
+import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -78,6 +88,102 @@ API_BASE = os.getenv("TBCC_API_URL", "http://localhost:8000")
 
 # Set from GET /health in _post_init — used in welcome copy.
 _health_crypto_auto_checkout: bool = False
+_runtime_settings_cache: dict | None = None
+_runtime_settings_loaded_at: float = 0.0
+_runtime_settings_ttl_s = 30.0
+
+_default_main_menu = [
+    [{"label": "🗝 Loot Room (24h key)", "action": "menu_loot"}],
+    [
+        {"label": "💎 Premium (group)", "action": "menu_subscribe"},
+        {"label": "📦 Digital packs", "action": "menu_packs"},
+    ],
+    [
+        {"label": "🔗 Referral", "action": "menu_referral"},
+        {"label": "📋 Status", "action": "menu_status"},
+    ],
+]
+
+
+def _nowpayments_currency_label(pay_currency_slug: str | None) -> str:
+    """Short human label for dashboard button text and payment messages (uses env as fallback)."""
+    s = (pay_currency_slug or os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip().lower()
+    if not s:
+        return "Crypto"
+    if s == "usdttrc20":
+        return "USDT"
+    if s in ("usdterc20", "usdt_erc20"):
+        return "USDT (ERC-20)"
+    if s == "btc":
+        return "BTC"
+    if s == "eth":
+        return "ETH"
+    if s == "ton":
+        return "TON"
+    if s.startswith("usdt"):
+        return "USDT"
+    if len(s) <= 10:
+        return s.upper()
+    return s[:10] + "…"
+
+
+def _runtime_settings_defaults() -> dict:
+    return {
+        "main_menu": _default_main_menu,
+        "welcome_html": "",
+        "loot_intro_html": "",
+        "subscribe_title_main": "💎 **Premium Access**",
+        "subscribe_title_loot": "🗝 **Loot Room Access**",
+        "subscription_catalog_columns": 2,
+        "min_subscription_stars": _bot_min_subscription_stars(),
+    }
+
+
+def _normalized_runtime_settings(raw: dict | None) -> dict:
+    base = _runtime_settings_defaults()
+    if not isinstance(raw, dict):
+        return base
+    out = dict(base)
+    for key in out.keys():
+        if key in raw:
+            out[key] = raw[key]
+    try:
+        cols = int(out.get("subscription_catalog_columns") or 2)
+    except (TypeError, ValueError):
+        cols = 2
+    out["subscription_catalog_columns"] = max(1, min(4, cols))
+    try:
+        min_stars = int(out.get("min_subscription_stars") or 0)
+    except (TypeError, ValueError):
+        min_stars = 0
+    out["min_subscription_stars"] = max(0, min_stars)
+    if not isinstance(out.get("main_menu"), list) or not out["main_menu"]:
+        out["main_menu"] = _default_main_menu
+    return out
+
+
+async def _get_runtime_settings(force_refresh: bool = False) -> dict:
+    global _runtime_settings_cache, _runtime_settings_loaded_at
+    now = time.monotonic()
+    if (
+        not force_refresh
+        and _runtime_settings_cache is not None
+        and (now - _runtime_settings_loaded_at) < _runtime_settings_ttl_s
+    ):
+        return _runtime_settings_cache
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{API_BASE.rstrip('/')}/payment-bot-settings", timeout=10.0)
+            if r.is_success:
+                payload = r.json()
+                effective = payload.get("effective") if isinstance(payload, dict) else None
+                _runtime_settings_cache = _normalized_runtime_settings(effective)
+            else:
+                _runtime_settings_cache = _runtime_settings_cache or _runtime_settings_defaults()
+    except Exception:
+        _runtime_settings_cache = _runtime_settings_cache or _runtime_settings_defaults()
+    _runtime_settings_loaded_at = now
+    return _runtime_settings_cache
 
 
 def _telegram_http_timeout_seconds() -> float:
@@ -226,11 +332,34 @@ async def _resolve_bundle_promo_photo(promo: str) -> InputFile | str | None:
         return None
 
 
-def _plan_ok_for_stars_checkout(p: dict) -> bool:
+def _bot_min_subscription_stars() -> int:
+    """Optional floor so placeholder / test subscription SKUs stay out of the bot (see TBCC_BOT_MIN_SUBSCRIPTION_STARS)."""
+    try:
+        raw = (os.getenv("TBCC_BOT_MIN_SUBSCRIPTION_STARS") or "").strip()
+        if not raw:
+            return 0
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _subscription_catalog_columns() -> int:
+    """Inline keyboard width for /subscribe plan grid (default 2)."""
+    try:
+        n = int((os.getenv("TBCC_SUBSCRIPTION_CATALOG_COLUMNS") or "2").strip() or "2")
+    except ValueError:
+        n = 2
+    return max(1, min(4, n))
+
+
+def _plan_ok_for_stars_checkout(p: dict, min_stars: int | None = None) -> bool:
     """Active subscription products with Stars price — matches dashboard shop filters."""
     if not isinstance(p, dict):
         return False
     if p.get("price_stars", 0) <= 0:
+        return False
+    m = _bot_min_subscription_stars() if min_stars is None else max(0, int(min_stars))
+    if m > 0 and int(p.get("price_stars") or 0) < m:
         return False
     if p.get("is_active") is False:
         return False
@@ -272,10 +401,12 @@ def _plan_in_bot_section(p: dict, section: str) -> bool:
     return sec == want
 
 
-async def fetch_plans(section: str = "main") -> list[dict]:
+async def fetch_plans(section: str = "main", min_stars: int | None = None) -> list[dict]:
     """Subscription products (group/channel access), grouped by bot section."""
     return [
-        p for p in await _fetch_plans_raw() if _plan_ok_for_stars_checkout(p) and _plan_in_bot_section(p, section)
+        p
+        for p in await _fetch_plans_raw()
+        if _plan_ok_for_stars_checkout(p, min_stars=min_stars) and _plan_in_bot_section(p, section)
     ]
 
 
@@ -442,6 +573,76 @@ async def api_create_external_order(telegram_user_id: int, plan_id: int) -> tupl
         return None, f"Request failed: {e!s}"
 
 
+async def api_link_resolver_create(telegram_user_id: int, url: str) -> tuple[dict | None, str | None]:
+    """POST /link-resolver/requests — returns (request_dict, error_hint)."""
+    headers = {}
+    key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    if key:
+        headers["X-TBCC-Internal-Key"] = key
+    api_url = f"{API_BASE.rstrip('/')}/link-resolver/requests"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                api_url,
+                json={"telegram_user_id": telegram_user_id, "url": url},
+                headers=headers,
+                timeout=30.0,
+            )
+            if r.is_success:
+                data = r.json()
+                req = data.get("request") if isinstance(data, dict) else None
+                if isinstance(req, dict):
+                    return req, None
+                return None, "Invalid API response"
+            body = (r.text or "")[:500]
+            detail = _fastapi_error_detail(r)
+            if r.status_code == 403:
+                return None, (
+                    "API rejected the request (missing or wrong X-TBCC-Internal-Key). "
+                    "Set TBCC_INTERNAL_API_KEY in tbcc/.env for the bot and API."
+                )
+            if r.status_code == 503:
+                return None, detail or body or "Link resolver unavailable (Bypass API key or Celery?)."
+            return None, detail or body or f"API error {r.status_code}"
+    except httpx.ConnectError:
+        return (
+            None,
+            f"Could not connect to TBCC API at {API_BASE}. Start the backend and set TBCC_API_URL.",
+        )
+    except Exception as e:
+        logger.warning("link_resolver create failed: %s", e)
+        return None, f"Request failed: {e!s}"
+
+
+async def api_link_resolver_get(request_public_id: str, telegram_user_id: int) -> tuple[dict | None, str | None]:
+    """GET /link-resolver/requests/{id}?telegram_user_id=…"""
+    headers = {}
+    key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    if key:
+        headers["X-TBCC-Internal-Key"] = key
+    api_url = f"{API_BASE.rstrip('/')}/link-resolver/requests/{request_public_id}"
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                api_url,
+                params={"telegram_user_id": telegram_user_id},
+                headers=headers,
+                timeout=20.0,
+            )
+            if r.is_success:
+                data = r.json()
+                req = data.get("request") if isinstance(data, dict) else None
+                if isinstance(req, dict):
+                    return req, None
+                return None, "Invalid API response"
+            if r.status_code in (403, 404):
+                return None, "Not found or access denied."
+            return None, _fastapi_error_detail(r) or (r.text or "")[:300]
+    except Exception as e:
+        logger.warning("link_resolver get failed: %s", e)
+        return None, str(e)[:300]
+
+
 async def resolve_referrer_id_from_start_payload(payload: str) -> int | None:
     """Parse /start ref_* — short codes from referral_codes, or legacy numeric Telegram user ids."""
     if not payload.startswith("ref_"):
@@ -490,27 +691,35 @@ async def create_subscription(
         return None
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Quick actions (same as commands below)."""
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("🗝 Loot Room (24h key)", callback_data="menu_loot"),
-            ],
-            [
-                InlineKeyboardButton("💎 Premium (group)", callback_data="menu_subscribe"),
-                InlineKeyboardButton("📦 Digital packs", callback_data="menu_packs"),
-            ],
-            [
-                InlineKeyboardButton("🔗 Referral", callback_data="menu_referral"),
-                InlineKeyboardButton("📋 Status", callback_data="menu_status"),
-            ],
-        ]
-    )
+def main_menu_keyboard(settings: dict | None = None) -> InlineKeyboardMarkup:
+    """Quick actions (dashboard-configurable tree)."""
+    st = _normalized_runtime_settings(settings)
+    rows: list[list[InlineKeyboardButton]] = []
+    for row in st.get("main_menu") or _default_main_menu:
+        out_row: list[InlineKeyboardButton] = []
+        if not isinstance(row, list):
+            continue
+        for btn in row:
+            if not isinstance(btn, dict):
+                continue
+            label = str(btn.get("label") or "").strip()
+            action = str(btn.get("action") or "").strip()
+            if not label or not action.startswith("menu_"):
+                continue
+            out_row.append(InlineKeyboardButton(label[:64], callback_data=action))
+        if out_row:
+            rows.append(out_row)
+    if not rows:
+        return main_menu_keyboard(_runtime_settings_defaults())
+    return InlineKeyboardMarkup(rows)
 
 
-def welcome_html() -> str:
+def welcome_html(settings: dict | None = None) -> str:
     """Welcome + command list (HTML — Telegram Markdown is fragile with /commands, &, nested bold)."""
+    st = _normalized_runtime_settings(settings)
+    custom = str(st.get("welcome_html") or "").strip()
+    if custom:
+        return custom
     if _health_crypto_auto_checkout:
         pay_line = (
             "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app) + <b>Wallet / crypto</b> (auto checkout link when available).\n"
@@ -528,7 +737,8 @@ def welcome_html() -> str:
         "• /shop — Full storefront (premium + packs + featured offers)\n"
         "• /loot — Loot Room section (24-hour key + private group run)\n"
         "• /subscribe — Premium memberships\n"
-        "• /packs — Digital packs\n\n"
+        "• /packs — Digital packs\n"
+        "• /resolve — Unwrap supported ad/short links (needs API bypass key + Celery worker)\n\n"
         "📌 <b>Account</b>\n"
         "• /status — Purchases &amp; active access\n"
         "• /referral — Your invite link + rewards\n\n"
@@ -536,21 +746,94 @@ def welcome_html() -> str:
     )
 
 
+async def cmd_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Resolve ad/short links via TBCC link-resolver + Bypass.vip (async Celery job)."""
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "Usage: /resolve <url>\n\n"
+            "Unwraps supported ad-link intermediaries when the server has a Bypass API key configured "
+            "and a Celery worker is running with queues **link** and **link_priority**.\n"
+            "Active subscribers get the priority queue and higher hourly limits."
+        )
+        return
+    url = " ".join(args).strip()
+    try:
+        max_wait = int(os.getenv("TBCC_LINK_RESOLVER_POLL_MAX_S", "120"))
+    except ValueError:
+        max_wait = 120
+    max_wait = max(15, min(max_wait, 300))
+
+    status_msg = await msg.reply_text("⏳ Resolving…")
+    created, err = await api_link_resolver_create(user.id, url)
+    if err or not created:
+        await status_msg.edit_text(f"❌ Could not start resolve: {err or 'unknown error'}")
+        return
+    public_id = created.get("public_id")
+    if not public_id:
+        await status_msg.edit_text("❌ Invalid response from API (missing request id).")
+        return
+
+    terminal = frozenset(("succeeded", "failed", "blocked"))
+    elapsed = 0
+    last: dict | None = None
+    while elapsed < max_wait:
+        row, gerr = await api_link_resolver_get(str(public_id), user.id)
+        if gerr or not row:
+            await status_msg.edit_text(f"❌ Lost job status: {gerr or 'unknown'}")
+            return
+        last = row
+        st = (row.get("status") or "").lower()
+        if st in terminal:
+            break
+        elapsed += 1
+        if elapsed % 10 == 0:
+            try:
+                await status_msg.edit_text(f"⏳ Still resolving… ({elapsed}s)")
+            except BadRequest:
+                pass
+        await asyncio.sleep(1)
+
+    if not last:
+        await status_msg.edit_text("❌ Timeout waiting for resolver.")
+        return
+    st = (last.get("status") or "").lower()
+    if st == "succeeded" and last.get("final_url"):
+        risk = last.get("risk_level") or "low"
+        out = last["final_url"]
+        await status_msg.edit_text(
+            f"✅ Resolved ({risk} risk)\n\n{out}",
+            disable_web_page_preview=True,
+        )
+        return
+    if st == "blocked":
+        reason = last.get("reason_code") or "blocked"
+        await status_msg.edit_text(f"🚫 Blocked: {reason}")
+        return
+    detail = last.get("error_detail") or last.get("reason_code") or "failed"
+    await status_msg.edit_text(f"❌ Resolve failed: {detail}")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help — same overview as /start (without referral deep-link side effects)."""
     msg = update.effective_message
     if not msg:
         return
+    st = await _get_runtime_settings()
     try:
         await msg.reply_text(
-            welcome_html(),
+            welcome_html(st),
             parse_mode="HTML",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(st),
         )
     except BadRequest as e:
         logger.warning("cmd_help HTML failed: %s", e)
         await msg.reply_text(
-            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status",
+            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status /resolve",
             reply_markup=main_menu_keyboard(),
         )
 
@@ -559,7 +842,9 @@ async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Dedicated Loot Room menu + plans from bot_section=loot."""
     if not msg:
         return
-    await msg.reply_text(
+    st = await _get_runtime_settings()
+    custom_loot_intro = str(st.get("loot_intro_html") or "").strip()
+    intro = custom_loot_intro or (
         "🗝 <b>Loot Room — 24H Key</b>\n\n"
         "One key. One timed run.\n"
         "You unlock access to the private Loot Room group for 24 hours.\n\n"
@@ -568,7 +853,10 @@ async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> Non
         "• Blurred preview walls\n"
         "• Premium unlock prompts\n"
         "• Flash offers and timed posts\n\n"
-        "⚡ <b>Choose a key below</b>",
+        "⚡ <b>Choose a key below</b>"
+    )
+    await msg.reply_text(
+        intro,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             [
@@ -586,6 +874,7 @@ async def cmd_loot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    st = await _get_runtime_settings()
     """Handle /start - including ref_XXX deep link for referrals."""
     msg = update.effective_message
     user = update.effective_user
@@ -619,17 +908,41 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
             return
 
+    # Dashboard scheduled post → same Stars invoice as /subscribe (deep link c{plan}[_refcode])
+    m_checkout = re.match(r"^c(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
+    if m_checkout:
+        plan_id = int(m_checkout.group(1))
+        ref_suffix = m_checkout.group(2)
+        if ref_suffix:
+            referrer_uid = await lookup_referrer_by_code(ref_suffix)
+            if referrer_uid is not None and referrer_uid != user.id:
+                await record_referral(user.id, referrer_uid)
+        plan = await fetch_plan_by_id(plan_id)
+        if not plan:
+            await msg.reply_text("That offer is not available anymore.")
+            return
+        ptype = (plan.get("product_type") or "subscription").lower()
+        if ptype not in ("subscription", "bundle"):
+            await msg.reply_text("That product is not available for quick checkout.")
+            return
+        await _send_stars_invoice_for_private_chat(context, msg, user.id, plan)
+        try:
+            await msg.reply_text("⬇️ Complete payment in the invoice above.")
+        except Exception:
+            pass
+        return
+
     try:
         await msg.reply_text(
-            welcome_html(),
+            welcome_html(st),
             parse_mode="HTML",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(st),
         )
     except BadRequest as e:
         logger.warning("cmd_start welcome HTML failed: %s", e)
         await msg.reply_text(
             "Welcome! Use /shop, /loot, /subscribe, /packs, /referral, /status — or tap a button below.",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(st),
         )
 
 
@@ -731,6 +1044,62 @@ def _truncate_btn(s: str, max_len: int = 64) -> str:
     return s[: max_len - 1] + "…"
 
 
+def _subscription_duration_badge(duration_days) -> str:
+    """Short human label for plan length (avoid 36500d-style noise in button text)."""
+    try:
+        d = int(duration_days)
+    except (TypeError, ValueError):
+        d = 30
+    if d <= 0:
+        return "—"
+    if d >= 20000:
+        return "long"
+    if d >= 3600:
+        return f"{d // 365}y+"
+    if d >= 300:
+        return f"{d // 365}y"
+    if d >= 120:
+        m = max(1, round(d / 30))
+        return f"{m}mo"
+    if d == 1:
+        return "1d"
+    return f"{d}d"
+
+
+def _inline_buttons_in_rows(buttons: list[InlineKeyboardButton], columns: int) -> list[list[InlineKeyboardButton]]:
+    if columns < 1:
+        columns = 1
+    if columns > 4:
+        columns = 4
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(buttons), columns):
+        rows.append(buttons[i : i + columns])
+    return rows
+
+
+def _subscription_stars_row_label(p: dict) -> str:
+    name = str(p.get("name") or "Plan").strip()
+    stars = int(p.get("price_stars") or 0)
+    bad = f"{name} · {_subscription_duration_badge(p.get('duration_days', 30))} · {stars}⭐"
+    if len(bad) <= 64:
+        return bad
+    return f"{_truncate_btn(name, 32)} · {_subscription_duration_badge(p.get('duration_days', 30))} · {stars}⭐"
+
+
+def _subscription_wallet_row_label(p: dict, c_label: str) -> str:
+    """Shorter crypto row: keep currency once, avoid 64-char overflow with long plan names."""
+    name = str(p.get("name") or "Plan").strip()
+    cshort = (c_label or "Crypto").strip() or "Crypto"
+    if cshort in ("USDT (TRC-20)", "USDT"):
+        cshort = "USDT"
+    elif len(cshort) > 10:
+        cshort = cshort[:9] + "…"
+    s = f"{cshort} · {name}"
+    if len(s) > 64:
+        s = f"{cshort} · {_truncate_btn(name, 44)}"
+    return _truncate_btn(s, 64)
+
+
 async def send_subscription_catalog_message(
     msg,
     context: ContextTypes.DEFAULT_TYPE,
@@ -742,7 +1111,8 @@ async def send_subscription_catalog_message(
     if not msg:
         return
 
-    plans = await fetch_plans(section=section)
+    st = await _get_runtime_settings()
+    plans = await fetch_plans(section=section, min_stars=int(st.get("min_subscription_stars") or 0))
     if not plans:
         section_hint = " (/loot section)" if section == "loot" else ""
         await msg.reply_text(
@@ -752,30 +1122,29 @@ async def send_subscription_catalog_message(
         )
         return
 
-    # Two separate messages so wallet buttons are never hidden (Telegram max 64 chars per button label).
-    stars_kb: list[list[InlineKeyboardButton]] = []
-    wallet_kb: list[list[InlineKeyboardButton]] = []
+    # Two separate messages so Stars rows stay on-screen; wallet grid matches by plan order.
+    # 2+ buttons per row (configurable) — Telegram does not support custom-emoji *entities* on button labels; use
+    # standard emoji/Unicode; Premium "letter" custom emoji are best in message *text* with MessageEntity, not in keyboards.
+    c_label = _nowpayments_currency_label(None)
+    cols = int(st.get("subscription_catalog_columns") or _subscription_catalog_columns())
+    star_btns: list[InlineKeyboardButton] = []
+    wallet_btns: list[InlineKeyboardButton] = []
     for p in plans:
-        stars = p.get("price_stars", 0)
-        name = p.get("name", "Plan")
-        days = p.get("duration_days", 30)
         pid = int(p["id"])
-        stars_kb.append(
-            [
-                InlineKeyboardButton(
-                    _truncate_btn(f"{name} — {stars} ⭐ ({days}d)"),
-                    callback_data=f"plan_{pid}",
-                ),
-            ]
+        star_btns.append(
+            InlineKeyboardButton(
+                _truncate_btn(_subscription_stars_row_label(p), 64),
+                callback_data=f"plan_{pid}",
+            )
         )
-        wallet_kb.append(
-            [
-                InlineKeyboardButton(
-                    _truncate_btn(f"Wallet / crypto — {name}", 64),
-                    callback_data=f"ext_plan_{pid}",
-                ),
-            ]
+        wallet_btns.append(
+            InlineKeyboardButton(
+                _subscription_wallet_row_label(p, c_label),
+                callback_data=f"ext_plan_{pid}",
+            )
         )
+    stars_kb = _inline_buttons_in_rows(star_btns, cols)
+    wallet_kb = _inline_buttons_in_rows(wallet_btns, cols)
 
     await msg.reply_text(
         f"{title} — Telegram Stars\n\n"
@@ -784,10 +1153,11 @@ async def send_subscription_catalog_message(
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(stars_kb),
     )
+    c_hint = _nowpayments_currency_label(None)
     await msg.reply_text(
-        "⚡ **Premium Access — Wallet / crypto / external**\n\n"
-        "Same plans as above. Tap to get an order code (**EPO-...**) and pay outside Telegram.\n"
-        "If auto checkout is available, you'll get a direct pay link; otherwise use the order code flow.",
+        f"💳 **Pay with crypto** — {c_hint}\n\n"
+        "Same plans as above. **Each row** matches the Stars grid — left-to-right, then next row. "
+        "You get the pay page, **wallet + amount**, or manual code (EPO) if something fails.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(wallet_kb),
     )
@@ -798,7 +1168,9 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = update.effective_message
     if not msg:
         return
-    await send_subscription_catalog_message(msg, context, section="main", title="💎 **Premium Access**")
+    st = await _get_runtime_settings()
+    title = str(st.get("subscribe_title_main") or "💎 **Premium Access**")
+    await send_subscription_catalog_message(msg, context, section="main", title=title)
 
 
 def _bundle_caption_html(p: dict) -> str:
@@ -856,11 +1228,13 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
     kb_stars = InlineKeyboardMarkup(
         [[InlineKeyboardButton(_truncate_btn(f"Buy — {stars} ⭐"), callback_data=f"pack_{pid}")]]
     )
+    pname = str(p.get("name") or f"pack #{pid}")
+    c_label = _nowpayments_currency_label(None)
     kb_wallet = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    _truncate_btn(f"Wallet / crypto — pack #{pid}", 64),
+                    _truncate_btn(f"{c_label} — {pname}", 64),
                     callback_data=f"ext_pack_{pid}",
                 )
             ]
@@ -910,7 +1284,8 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
             logger.warning("bundle detail fallback send failed: %s", e2)
     try:
         await msg.reply_text(
-            "⛓ <b>Same pack — pay outside Telegram</b> (order code). Tap:",
+            f"💳 <b>Crypto (NOWPayments)</b> — {html.escape(c_label)}\n"
+            "<b>Direct wallet or hosted link</b> — tap:",
             parse_mode="HTML",
             reply_markup=kb_wallet,
         )
@@ -940,10 +1315,10 @@ async def send_bundle_catalog_message(msg, context: ContextTypes.DEFAULT_TYPE) -
     extra = ""
     if len(bundles) > 100:
         extra = f"\n\n<i>Showing buttons for the first 100 of {len(bundles)} packs.</i>"
+    c_hint = _nowpayments_currency_label(None)
     await msg.reply_text(
-        "📦 <b>Digital packs</b>\n\n"
-        "Tap a pack below — you’ll get the <b>description</b>, then <b>Buy</b> (Stars) and "
-        "<b>Wallet / crypto</b> (order code) for that pack only."
+        f"📦 <b>Digital packs</b>\n\n"
+        f"Pick a pack — then <b>Buy</b> (Stars) or <b>crypto</b> ({html.escape(c_hint)} when fixed in settings)."
         + extra,
         parse_mode="HTML",
         reply_markup=_bundle_pick_keyboard(bundles),
@@ -988,6 +1363,7 @@ async def cmd_packs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    st = await _get_runtime_settings()
     """Inline buttons from /start menu."""
     query = update.callback_query
     if not query or not query.data:
@@ -1000,11 +1376,15 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if query.data == "menu_shop":
         await send_shop_promo(update, context)
     elif query.data == "menu_subscribe":
-        await send_subscription_catalog_message(msg, context, section="main", title="💎 **Premium Access**")
+        await send_subscription_catalog_message(
+            msg, context, section="main", title=str(st.get("subscribe_title_main") or "💎 **Premium Access**")
+        )
     elif query.data == "menu_loot":
         await send_loot_room_message(msg, context)
     elif query.data == "menu_loot_subscribe":
-        await send_subscription_catalog_message(msg, context, section="loot", title="🗝 **Loot Room Access**")
+        await send_subscription_catalog_message(
+            msg, context, section="loot", title=str(st.get("subscribe_title_loot") or "🗝 **Loot Room Access**")
+        )
     elif query.data == "menu_packs":
         await send_bundle_catalog_message(msg, context)
     elif query.data == "menu_referral":
@@ -1059,18 +1439,96 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
     ref = (result.get("order") or {}).get("reference_code", "?")
     header = f"<b>Order</b> <code>{html.escape(str(ref))}</code>\n\n"
     pay_url = result.get("crypto_pay_url")
+    details = result.get("crypto_pay_details")
+    body = ""
     pay_extra = ""
     if pay_url:
-        eu = html.escape(str(pay_url), quote=True)
-        pay_extra += (
-            "\n\n🔗 <a href=\"" + eu + "\">Pay with crypto (automatic)</a>\n"
-            "<i>Access unlocks when payment confirms — no admin step.</i>"
+        pay_currency = (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip()
+        coin_lbl = _nowpayments_currency_label(pay_currency or None)
+        coin_hint = (
+            f"Coin: <code>{html.escape(pay_currency)}</code>"
+            if pay_currency
+            else "Pick a coin on the next page."
         )
-    details = result.get("crypto_pay_details")
-    if details:
+        eu = html.escape(str(pay_url), quote=True)
+        body = (
+            f"✅ <b>Hosted checkout</b> — {html.escape(coin_lbl)}\n"
+            "<i>Unlocks when payment confirms.</i>"
+        )
+        pay_extra += (
+            "\n\n🔗 <a href=\"" + eu + "\">Open pay page</a>\n" + coin_hint
+        )
+        pay_extra += (
+            "\n\nStuck? Reference: <code>" + html.escape(str(ref)) + "</code>"
+        )
+    elif details:
+        meta0 = result.get("crypto_nowpayments_meta")
+        pc = (
+            (meta0.get("pay_currency") if isinstance(meta0, dict) else None)
+            or (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip().lower()
+            or None
+        )
+        c_lbl = _nowpayments_currency_label(pc)
+        body = (
+            f"✅ <b>Direct wallet</b> — {html.escape(c_lbl)}\n"
+            "Send the <b>exact</b> amount to the address below. <i>Unlocks when confirmed.</i>"
+        )
         pay_extra += "\n\n" + str(details)
+    else:
+        checkout_err = str(result.get("crypto_checkout_error") or "")
+        quote = result.get("crypto_checkout_quote")
+        quote_line = ""
+        if isinstance(quote, dict):
+            try:
+                sent = quote.get("usd_sent_to_nowpayments")
+                saved = quote.get("nowpayments_price_usd_saved")
+                used = quote.get("usd_used_for_checkout")
+                stars = quote.get("price_stars")
+                if sent is not None and used is not None:
+                    if saved is not None and float(saved) > 0:
+                        src = "dashboard USD override"
+                        tail = (
+                            " If it still says minimum, add a few dollars to the override or try a different pay coin in NOWPayments."
+                        )
+                    else:
+                        src = f"{stars} ⭐ → USD (no override saved)"
+                        tail = (
+                            " Set <b>NOWPayments price override (USD)</b> on this product and <b>Save changes</b>."
+                        )
+                    quote_line = (
+                        f"\n\n<i>Server billed <b>${float(sent):.2f} USD</b> to NOWPayments "
+                        f"(basis <b>${float(used):.2f}</b> — {html.escape(str(src))}).{tail}</i>"
+                    )
+            except Exception:
+                quote_line = ""
+        if "less than minimal" in checkout_err.lower() or "amount_minimal_error" in checkout_err.lower():
+            body = (
+                "⚠️ <b>Crypto amount is below the network minimum</b> for this coin.\n"
+                "Raise <b>NOWPayments price override (USD)</b> on this product (e.g. +$1), or use <b>Buy</b> (Stars)."
+            )
+        else:
+            body = (
+                "⚠️ <b>Crypto checkout failed.</b>\n"
+                "Use <b>Buy</b> (Telegram Stars) or the manual reference below."
+            )
+        pay_extra += quote_line + "\n\n" + instr
+    meta = result.get("crypto_nowpayments_meta")
+    if isinstance(meta, dict):
+        meta_lines: list[str] = []
+        if not details:
+            p_usd = meta.get("price_usd")
+            try:
+                if p_usd is not None:
+                    meta_lines.append(f"Order total: <b>${float(p_usd):.2f} USD</b>")
+            except Exception:
+                pass
+        rw = (meta.get("receiving_wallet") or "").strip() if isinstance(meta.get("receiving_wallet"), str) else ""
+        if rw:
+            meta_lines.append(f"Note: <code>{html.escape(rw)}</code>")
+        if meta_lines:
+            pay_extra += "\n\n" + "\n".join(meta_lines)
     try:
-        await msg.reply_text(header + instr + pay_extra, parse_mode="HTML")
+        await msg.reply_text(header + body + pay_extra, parse_mode="HTML")
     except BadRequest as e:
         logger.warning("external order message failed: %s", e)
         await msg.reply_text(f"Order {ref} created. Check API logs if instructions did not show.")
@@ -1079,6 +1537,68 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
+
+
+async def _send_stars_invoice_for_private_chat(
+    context: ContextTypes.DEFAULT_TYPE,
+    msg,
+    buyer_telegram_user_id: int,
+    plan: dict,
+) -> None:
+    """Send Telegram Stars invoice (same flow as catalog Buy) — private chat only."""
+    plan_id = int(plan.get("id") or 0)
+    ptype = (plan.get("product_type") or "subscription").lower()
+    price_stars = int(plan.get("price_stars") or 0)
+    if price_stars <= 0:
+        await msg.reply_text("This product has no price set.")
+        return
+
+    desc = _pick_display_description(plan)
+    if not desc:
+        if ptype == "bundle":
+            desc = "Digital pack — images & videos"
+        else:
+            desc = f"Subscription — {plan.get('duration_days', 30)} days access"
+
+    invoice_payload = (
+        f"sub_{plan_id}_{buyer_telegram_user_id}"
+        if ptype == "subscription"
+        else f"bundle_{plan_id}_{buyer_telegram_user_id}"
+    )
+
+    album_sent = await _maybe_send_promo_album_before_invoice(msg, plan)
+
+    promo_urls = _plan_promo_urls(plan)
+    promo = "" if album_sent else (promo_urls[0] if promo_urls else "")
+    invoice_kw: dict = {
+        "chat_id": msg.chat_id,
+        "title": plan.get("name", "Product")[:128],
+        "description": desc[:255],
+        "payload": invoice_payload,
+        "provider_token": "",
+        "currency": "XTR",
+        "prices": [LabeledPrice(label=plan.get("name", "Product")[:64], amount=price_stars)],
+    }
+    if is_public_https_for_telegram(promo):
+        invoice_kw["photo_url"] = promo
+    elif promo:
+        logger.info(
+            "Skipping invoice photo_url (not public HTTPS for Telegram) plan_id=%s url=%s",
+            plan_id,
+            promo[:100],
+        )
+
+    try:
+        await context.bot.send_invoice(**invoice_kw)
+    except BadRequest as e:
+        if invoice_kw.get("photo_url") and (
+            "photo" in str(e).lower() or "wrong" in str(e).lower() or "invalid" in str(e).lower()
+        ):
+            logger.warning("send_invoice photo rejected, retrying without photo: %s", e)
+            invoice_kw.pop("photo_url", None)
+            await context.bot.send_invoice(**invoice_kw)
+        else:
+            raise
 
 
 async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1114,58 +1634,10 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text("This product has no price set.")
         return
 
-    desc = _pick_display_description(plan)
-    if not desc:
-        if ptype == "bundle":
-            desc = "Digital pack — images & videos"
-        else:
-            desc = f"Subscription — {plan.get('duration_days', 30)} days access"
+    if not query.message:
+        return
+    await _send_stars_invoice_for_private_chat(context, query.message, query.from_user.id, plan)
 
-    invoice_payload = (
-        f"sub_{plan_id}_{query.from_user.id}"
-        if ptype == "subscription"
-        else f"bundle_{plan_id}_{query.from_user.id}"
-    )
-
-    album_sent = False
-    if query.message:
-        album_sent = await _maybe_send_promo_album_before_invoice(query.message, plan)
-
-    # Telegram fetches photo_url from its servers — localhost / http / private IPs never work.
-    promo_urls = _plan_promo_urls(plan)
-    promo = "" if album_sent else (promo_urls[0] if promo_urls else "")
-    invoice_kw: dict = {
-        "chat_id": query.message.chat_id,
-        "title": plan.get("name", "Product")[:128],
-        "description": desc[:255],
-        "payload": invoice_payload,
-        "provider_token": "",
-        "currency": "XTR",
-        "prices": [LabeledPrice(label=plan.get("name", "Product")[:64], amount=price_stars)],
-    }
-    if is_public_https_for_telegram(promo):
-        invoice_kw["photo_url"] = promo
-    elif promo:
-        logger.info(
-            "Skipping invoice photo_url (not public HTTPS for Telegram) plan_id=%s url=%s",
-            plan_id,
-            promo[:100],
-        )
-
-    try:
-        await context.bot.send_invoice(**invoice_kw)
-    except BadRequest as e:
-        # Some hosts (or WEBP/GIF) are rejected; retry without photo so checkout still works.
-        if invoice_kw.get("photo_url") and (
-            "photo" in str(e).lower() or "wrong" in str(e).lower() or "invalid" in str(e).lower()
-        ):
-            logger.warning("send_invoice photo rejected, retrying without photo: %s", e)
-            invoice_kw.pop("photo_url", None)
-            await context.bot.send_invoice(**invoice_kw)
-        else:
-            raise
-
-    # Photo messages cannot be edited to plain text — only strip the Buy button, then nudge user.
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as e:
@@ -1376,7 +1848,13 @@ async def _post_init(app: Application) -> None:
     """Log bot identity; register command menu + short description (visible before user sends /start)."""
     global _health_crypto_auto_checkout
     me = await app.bot.get_me()
+    st = await _get_runtime_settings(force_refresh=True)
     logger.info("Payment bot online: @%s id=%s — /shop uses MessageHandler + promo flow", me.username, me.id)
+    logger.info(
+        "Payment bot runtime settings: columns=%s min_stars=%s",
+        st.get("subscription_catalog_columns"),
+        st.get("min_subscription_stars"),
+    )
     try:
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{API_BASE.rstrip('/')}/health", timeout=10.0)
@@ -1454,6 +1932,7 @@ async def _post_init(app: Application) -> None:
         "• /subscribe — premium memberships\n"
         "• /packs — digital packs\n"
         "• /status — your purchases & access\n"
+        "• /resolve — unwrap supported ad/short links\n"
         "• /referral — your invite link + rewards\n\n"
         "Payments: Stars in Telegram + Wallet/crypto options."
     )
@@ -1510,6 +1989,7 @@ def main() -> None:
     app.add_handler(CommandHandler("packs", cmd_packs))
     app.add_handler(CommandHandler("referral", cmd_referral))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("resolve", cmd_resolve))
     # Handle /subscribe in channels (CommandHandler only matches message, not channel_post)
     app.add_handler(
         MessageHandler(
@@ -1552,7 +2032,9 @@ def main() -> None:
         MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
     )
 
-    print("Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status")
+    print(
+        "Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status, /resolve"
+    )
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 
 

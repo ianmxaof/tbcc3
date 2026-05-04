@@ -30,6 +30,8 @@ const STORAGE_LAST_TAB = "tbccLastActiveTabId";
 const STORAGE_COLLECTED = "tbcc_collected";
 const STORAGE_MODEL_SEARCH_ENABLED = "tbccModelSearchEnabledSites";
 const STORAGE_MODEL_SEARCH_MODE = "tbccModelSearchOpenMode";
+const STORAGE_LAST_COPIED_USERNAME = "tbccLastCopiedUsername";
+const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
 const STORAGE_REVERSE_IMAGE_ENABLED = "tbccReverseImageEnabledSites";
 const STORAGE_REVERSE_IMAGE_MODE = "tbccReverseImageOpenMode";
 const STORAGE_MODEL_SEARCH_LAST_SUMMARY = "tbccModelSearchLastSummary";
@@ -113,6 +115,73 @@ function tbccSiteIdFromMenuId(menuId) {
   }
 }
 
+function normalizeUsernameCandidate(raw) {
+  if (!raw) return "";
+  let s = String(raw).trim();
+  s = s.replace(/^@+/, "");
+  s = s.replace(/^[^\w]+|[^\w.:-]+$/g, "");
+  if (!s) return "";
+  if (!/^[a-zA-Z0-9._-]{2,64}$/.test(s)) return "";
+  return s;
+}
+
+function usernameFromText(text) {
+  if (!text) return "";
+  const s = String(text);
+  const tagged = s.match(/@([a-zA-Z0-9._-]{2,64})/);
+  if (tagged && tagged[1]) return normalizeUsernameCandidate(tagged[1]);
+  return normalizeUsernameCandidate(s);
+}
+
+function usernameFromUrl(rawUrl) {
+  if (!rawUrl) return "";
+  const str = String(rawUrl).trim();
+  const tagged = str.match(/@([a-zA-Z0-9._-]{2,64})/);
+  if (tagged && tagged[1]) return normalizeUsernameCandidate(tagged[1]);
+  try {
+    const u = new URL(str);
+    for (const key of ["username", "user", "u", "model", "handle", "nick", "q"]) {
+      const n = normalizeUsernameCandidate(u.searchParams.get(key) || "");
+      if (n) return n;
+    }
+    const skip = new Set(["search", "models", "model", "profile", "profiles", "user", "users", "www", "en"]);
+    const segs = u.pathname
+      .split("/")
+      .map((x) => decodeURIComponent(x || "").trim())
+      .filter(Boolean);
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const seg = segs[i];
+      if (skip.has(seg.toLowerCase())) continue;
+      const n = normalizeUsernameCandidate(seg);
+      if (n) return n;
+    }
+  } catch (_) {}
+  return "";
+}
+
+async function resolveModelSearchUsernameFromContext(info, tab) {
+  const sel = usernameFromText((info.selectionText || "").trim());
+  if (sel) return sel;
+  const fromLink =
+    usernameFromText(String(info.linkText || "").trim()) ||
+    usernameFromUrl((info.linkUrl || "").trim()) ||
+    usernameFromUrl((info.srcUrl || "").trim());
+  if (fromLink) return fromLink;
+  if (tab && tab.id != null) {
+    try {
+      const resp = await chrome.tabs.sendMessage(tab.id, { action: "tbcc-get-context-username" });
+      const fromPage = usernameFromText(resp && resp.username ? resp.username : "");
+      if (fromPage) return fromPage;
+    } catch (_) {}
+  }
+  try {
+    const data = await chrome.storage.local.get(STORAGE_LAST_COPIED_USERNAME);
+    const fromCopied = usernameFromText(data && data[STORAGE_LAST_COPIED_USERNAME] ? data[STORAGE_LAST_COPIED_USERNAME] : "");
+    if (fromCopied) return fromCopied;
+  } catch (_) {}
+  return "";
+}
+
 async function recordModelSearchSummary(username, sites, onlySiteId) {
   const rows = sites.map((s) => ({
     siteId: s.id,
@@ -128,6 +197,20 @@ async function recordModelSearchSummary(username, sites, onlySiteId) {
     rows,
   };
   await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: summary });
+}
+
+async function recordModelSearchHistory(username) {
+  const clean = normalizeUsernameCandidate(username);
+  if (!clean) return;
+  let arr = [];
+  try {
+    const data = await chrome.storage.local.get(STORAGE_MODEL_SEARCH_HISTORY);
+    arr = Array.isArray(data[STORAGE_MODEL_SEARCH_HISTORY]) ? data[STORAGE_MODEL_SEARCH_HISTORY] : [];
+  } catch (_) {}
+  const now = Date.now();
+  const deduped = arr.filter((x) => x && x.username && String(x.username).toLowerCase() !== clean.toLowerCase());
+  const next = [{ username: clean, ts: now }, ...deduped].slice(0, 200);
+  await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_HISTORY]: next });
 }
 
 function guessResultCountFromHtml(html) {
@@ -164,7 +247,12 @@ async function fetchCountsForSites(username, sites) {
   }
 }
 
-async function launchModelSearch(username, onlySiteId = null) {
+async function launchModelSearch(username, onlySiteId = null, onlyCategory = null) {
+  const cleanUsername = normalizeUsernameCandidate(username);
+  if (!cleanUsername) {
+    notify("TBCC", "Model search expects a username.");
+    return;
+  }
   let cfg;
   try {
     cfg = await getMergedModelSearchSites();
@@ -175,6 +263,10 @@ async function launchModelSearch(username, onlySiteId = null) {
   const data = await chrome.storage.local.get([STORAGE_MODEL_SEARCH_ENABLED, STORAGE_MODEL_SEARCH_MODE]);
   const enabled = data[STORAGE_MODEL_SEARCH_ENABLED] || {};
   let sites = (cfg.sites || []).filter((s) => enabled[s.id] !== false);
+  if (onlyCategory) {
+    const cat = normalizeModelSearchCategory(onlyCategory);
+    sites = sites.filter((s) => normalizeModelSearchCategory(s.category) === cat);
+  }
   if (onlySiteId) {
     sites = sites.filter((s) => s.id === onlySiteId);
   }
@@ -187,12 +279,13 @@ async function launchModelSearch(username, onlySiteId = null) {
   const wantActive = mode === "foreground";
   let first = true;
   for (const s of sites) {
-    const u = buildModelSearchUrl(s.url, username);
+    const u = buildModelSearchUrl(s.url, cleanUsername);
     await chrome.tabs.create({ url: u, active: wantActive && first });
     first = false;
   }
-  await recordModelSearchSummary(username, sites, onlySiteId);
-  void fetchCountsForSites(username, sites);
+  await recordModelSearchSummary(cleanUsername, sites, onlySiteId);
+  await recordModelSearchHistory(cleanUsername);
+  void fetchCountsForSites(cleanUsername, sites);
 }
 
 /**
@@ -211,7 +304,11 @@ function hostNeedsSessionFetch(url) {
       h.includes("coomer.party") ||
       h.includes("kemono.party") ||
       h.includes("kemono.su") ||
-      h.includes("kemono.si")
+      h.includes("kemono.si") ||
+      h === "fetlife.com" ||
+      h.endsWith(".fetlife.com") ||
+      h.includes("fetlife") ||
+      h === "video.twimg.com"
     );
   } catch (_) {
     return false;
@@ -280,14 +377,27 @@ async function mergeCookiesForUrls(urlList) {
   return pairs.join("; ");
 }
 
-async function fetchUrlWithBrowserSession(url) {
+async function fetchUrlWithBrowserSession(url, refererPageUrl) {
   const eromeChain = eromeReferrerChain(url);
   let cookieHeader = "";
   if (eromeChain) {
     cookieHeader = await mergeCookiesForUrls(eromeChain);
   } else {
     try {
-      cookieHeader = (await chrome.cookies.getAll({ url })).map((c) => `${c.name}=${c.value}`).join("; ");
+      const u0 = new URL(url);
+      const h0 = (u0.hostname || "").toLowerCase();
+      if (h0.includes("fetlife")) {
+        cookieHeader = await mergeCookiesForUrls([url, "https://fetlife.com/"]);
+      } else if (h0 === "nudostar.com" || h0.endsWith(".nudostar.com")) {
+        cookieHeader = await mergeCookiesForUrls([url, "https://nudostar.com/forum/", "https://nudostar.com/"]);
+      } else if (h0 === "video.twimg.com") {
+        const twUrls = [url, "https://x.com/", "https://twitter.com/"];
+        const ref = String(refererPageUrl || "").trim().split("#")[0];
+        if (ref && /^https?:\/\//i.test(ref)) twUrls.push(ref);
+        cookieHeader = await mergeCookiesForUrls(twUrls);
+      } else {
+        cookieHeader = (await chrome.cookies.getAll({ url })).map((c) => `${c.name}=${c.value}`).join("; ");
+      }
     } catch (_) {}
   }
   const base = {};
@@ -312,7 +422,64 @@ async function fetchUrlWithBrowserSession(url) {
   try {
     const u = new URL(url);
     const h = u.hostname.toLowerCase();
+    if (h === "nudostar.com" || h.endsWith(".nudostar.com")) {
+      const refs = [];
+      const addRef = (s) => {
+        const t = String(s || "").trim();
+        if (!t || refs.includes(t)) return;
+        refs.push(t);
+      };
+      if (refererPageUrl) {
+        try {
+          const rp = new URL(String(refererPageUrl).split("#")[0]);
+          const rh = rp.hostname.toLowerCase();
+          if (rh === "nudostar.com" || rh.endsWith(".nudostar.com")) addRef(rp.toString());
+        } catch (_) {}
+      }
+      addRef(`${u.protocol}//${u.hostname}/forum/`);
+      addRef(`${u.protocol}//${u.hostname}/`);
+      addRef("https://nudostar.com/forum/");
+      addRef("https://nudostar.com/");
+      for (const ref of refs) {
+        try {
+          let res = await fetch(url, { method: "GET", credentials: "omit", headers: { ...base, Referer: ref } });
+          if (res.ok) return await res.arrayBuffer();
+          res = await fetch(url, {
+            method: "GET",
+            credentials: "omit",
+            headers: { ...base, Referer: ref, Origin: `${u.protocol}//${u.hostname}` },
+          });
+          if (res.ok) return await res.arrayBuffer();
+        } catch (_) {}
+      }
+    }
+    /** Twitter / X: CDN rejects Referer https://video.twimg.com/ — must look like navigation from x.com. */
+    if (h === "video.twimg.com") {
+      const refs = [];
+      const pushRef = (s) => {
+        const t = String(s || "").trim().split("#")[0];
+        if (t && /^https?:\/\//i.test(t) && !refs.includes(t)) refs.push(t);
+      };
+      pushRef(refererPageUrl);
+      pushRef("https://x.com/");
+      pushRef("https://twitter.com/");
+      for (const ref of refs) {
+        try {
+          const origin = new URL(ref).origin;
+          const res = await fetch(url, {
+            method: "GET",
+            credentials: "omit",
+            headers: { ...base, Referer: ref, Origin: origin },
+          });
+          if (res.ok) return await res.arrayBuffer();
+        } catch (_) {}
+      }
+      throw new Error(
+        "Twitter / X video CDN blocked fetch — play the clip on X, tap Refresh in TBCC, then download the video.twimg.com tile (not a blob: entry)."
+      );
+    }
     if (h.includes("onlyfans.com")) base.Referer = "https://onlyfans.com/";
+    else if (/(^|\.)fetlife\.com$/i.test(h) || h.includes("fetlife")) base.Referer = "https://fetlife.com/";
     else if (h.includes("motherless") || h.endsWith("motherlessmedia.com"))
       base.Referer = "https://motherless.com/";
     else if (/(^|\.)coomer\.(st|party)$/.test(h) || /^n\d+\.coomer\.(st|party)$/i.test(h))
@@ -384,6 +551,75 @@ function parseDetailPagePrimaryImageFromHtml(html) {
     if (/motherless|motherlessmedia|cdn/i.test(u2)) return u2.startsWith("//") ? "https:" + u2 : u2;
   }
   return "";
+}
+
+/**
+ * FetLife video pages embed escaped MP4/M3U8 URLs in JSON; og:video is often empty.
+ * Prefer CDN URLs; ignore obvious preview/thumb paths.
+ */
+function parseFetlifeStreamFromHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  const flat = html.replace(/\\\//g, "/");
+  const candidates = [];
+  const re = /https?:\/\/[^\s"'<>]+?\.(?:mp4|webm|m4v|m3u8)(?:\?[^\s"'<>]*)?/gi;
+  let m;
+  while ((m = re.exec(flat)) !== null) {
+    let u = m[0].replace(/&amp;/g, "&");
+    if (!/^https?:\/\//i.test(u)) continue;
+    candidates.push(u);
+  }
+  const uniq = [...new Set(candidates)];
+  const score = (u) => {
+    const s = u.toLowerCase();
+    let sc = 0;
+    if (s.includes("fetlife") || s.includes("cloudfront") || s.includes("fetlifecdn")) sc += 55;
+    if (s.includes(".mp4")) sc += 42;
+    if (s.includes(".webm")) sc += 38;
+    if (s.includes(".m3u8")) sc += 22;
+    if (s.includes("1080") || s.includes("2160") || s.includes("4k")) sc += 20;
+    if (s.includes("720")) sc += 10;
+    if (s.includes("thumb") || s.includes("preview") || s.includes("sprite") || s.includes("poster")) sc -= 55;
+    return sc;
+  };
+  uniq.sort((a, b) => score(b) - score(a));
+  const best = uniq[0];
+  if (!best || score(best) < 12) return "";
+  return best;
+}
+
+/**
+ * Erome album pages can expose direct media via script JSON/escaped URLs while <video src> may be blob: at runtime.
+ * Parse HTML for likely CDN stream URLs and prefer highest-quality candidates.
+ */
+function parseEromeMediaFromHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  const flat = html.replace(/\\\//g, "/");
+  const candidates = [];
+  const re = /https?:\/\/[^\s"'<>]+?\.(?:mp4|webm|m4v|m3u8|mpd)(?:\?[^\s"'<>]*)?/gi;
+  let m;
+  while ((m = re.exec(flat)) !== null) {
+    const u = String(m[0] || "").replace(/&amp;/g, "&");
+    if (!/^https?:\/\//i.test(u)) continue;
+    candidates.push(u);
+  }
+  const uniq = [...new Set(candidates)];
+  const score = (u) => {
+    const s = String(u || "").toLowerCase();
+    let sc = 0;
+    if (s.includes("erome")) sc += 38;
+    if (s.includes(".m3u8")) sc += 55;
+    if (s.includes(".mpd")) sc += 52;
+    if (s.includes(".mp4")) sc += 42;
+    if (s.includes("full")) sc += 18;
+    if (s.includes("1080") || s.includes("2160") || s.includes("4k")) sc += 16;
+    if (s.includes("720")) sc += 8;
+    if (s.includes("thumb") || s.includes("poster") || s.includes("preview") || s.includes("sprite")) sc -= 60;
+    return sc;
+  };
+  uniq.sort((a, b) => score(b) - score(a));
+  const best = uniq[0] || "";
+  if (!best || score(best) < 10) return "";
+  return best;
 }
 
 /** Prefer direct video URL on ?full pages, then full-size image. */
@@ -501,26 +737,45 @@ async function fetchMotherlessHtml(detailUrl) {
 
 /** Generic same-origin gallery detail page (no ?full — used for nudogram-style /photo/… links). */
 async function fetchDetailPageHtml(detailUrl) {
-  const u = detailUrl.trim();
-  const cookieHeader = await mergeCookiesForUrls([u]);
-  const headers = {
-    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  };
   try {
-    const uo = new URL(u);
-    headers.Referer = `${uo.protocol}//${uo.hostname}/`;
-  } catch (_) {}
-  if (cookieHeader) headers.Cookie = cookieHeader;
-  const res = await fetch(u, { method: "GET", credentials: "omit", headers });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.text();
+    const u = detailUrl.trim();
+    const cookieHeader = await mergeCookiesForUrls([u]);
+    const headers = {
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    };
+    try {
+      const uo = new URL(u);
+      headers.Referer = `${uo.protocol}//${uo.hostname}/`;
+    } catch (_) {}
+    if (cookieHeader) headers.Cookie = cookieHeader;
+    const res = await fetch(u, { method: "GET", credentials: "omit", headers });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch (_) {
+    return null;
+  }
 }
 
 function blobNameAndTypeForUrl(url) {
   try {
     const path = new URL(url).pathname.toLowerCase();
+    const att = path.match(/-(jpe?g|jpg|png|gif|webp|avif|bmp|mp4|webm|mov|m4v|mkv)\.\d+\/?$/i);
+    if (att && att[1]) {
+      const ext = att[1].toLowerCase() === "jpeg" ? "jpg" : att[1].toLowerCase();
+      if (ext === "jpg") return { name: "media.jpg", type: "image/jpeg" };
+      if (ext === "png") return { name: "media.png", type: "image/png" };
+      if (ext === "gif") return { name: "media.gif", type: "image/gif" };
+      if (ext === "webp") return { name: "media.webp", type: "image/webp" };
+      if (ext === "avif") return { name: "media.avif", type: "image/avif" };
+      if (ext === "bmp") return { name: "media.bmp", type: "image/bmp" };
+      if (ext === "mp4") return { name: "media.mp4", type: "video/mp4" };
+      if (ext === "webm") return { name: "media.webm", type: "video/webm" };
+      if (ext === "mov") return { name: "media.mov", type: "video/quicktime" };
+      if (ext === "m4v") return { name: "media.m4v", type: "video/x-m4v" };
+      if (ext === "mkv") return { name: "media.mkv", type: "video/x-matroska" };
+    }
     if (path.endsWith(".mp4") || path.endsWith(".m4v")) return { name: "media.mp4", type: "video/mp4" };
     if (path.endsWith(".webm")) return { name: "media.webm", type: "video/webm" };
     if (path.endsWith(".mov")) return { name: "media.mov", type: "video/quicktime" };
@@ -534,9 +789,9 @@ function blobNameAndTypeForUrl(url) {
   return { name: "media.jpg", type: "application/octet-stream" };
 }
 
-async function importViaExtensionBytes(url, poolId, savedOnly, source, caption) {
+async function importViaExtensionBytes(url, poolId, savedOnly, source, caption, refererPageUrl) {
   url = normalizeTbccMediaUrlForImport(url);
-  const ab = await fetchUrlWithBrowserSession(url);
+  const ab = await fetchUrlWithBrowserSession(url, refererPageUrl);
   const { name, type } = blobNameAndTypeForUrl(url);
   const form = new FormData();
   form.append("file", new Blob([ab], { type }), name);
@@ -600,7 +855,7 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
  */
 const TBCC_TAB_URL_CACHE = new Map();
 /** Media gallery pages can load many photo CDN requests; keep a larger cap for OnlyFans. */
-const TBCC_NET_MEDIA_MAX = 192;
+const TBCC_NET_MEDIA_MAX = 400;
 const TBCC_NET_MANIFEST_MAX = 48;
 
 function tbccTabPageLooksLikeOnlyfans(url) {
@@ -608,6 +863,31 @@ function tbccTabPageLooksLikeOnlyfans(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
     return h === "onlyfans.com" || h.endsWith(".onlyfans.com");
+  } catch (_) {
+    return false;
+  }
+}
+
+/** X / Twitter: feed video is often MSE/blob in DOM; real progressive/HLS URLs load from video.twimg.com (sniff via webRequest). */
+function tbccTabPageLooksLikeTwitterX(url) {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return /(^|\.)x\.com$/i.test(h) || /(^|\.)twitter\.com$/i.test(h);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Only full container / manifest URLs — avoid flooding storage with per-segment .m4s/.ts requests. */
+function tbccWebRequestUrlLooksLikeTwitterCdnVideo(url) {
+  if (!url || typeof url !== "string") return false;
+  if (url.length > 8000) return false;
+  try {
+    const u = new URL(url);
+    if (u.hostname.toLowerCase() !== "video.twimg.com") return false;
+    const path = u.pathname.toLowerCase();
+    return /\.(mp4|webm|m4v|m3u8|mpd)(\?|$)/i.test(path);
   } catch (_) {
     return false;
   }
@@ -738,6 +1018,9 @@ try {
           if (!tbccIsInjectableHttpUrl(pageUrl)) return;
           if (tbccTabPageLooksLikeOnlyfans(pageUrl)) {
             if (looksVideo || tbccWebRequestUrlLooksLikeOnlyfansImage(u)) void tbccAppendObservedMediaUrl(details.tabId, u);
+          } else if (tbccTabPageLooksLikeTwitterX(pageUrl)) {
+            /** Do not use generic `looksVideo` here — twimg serves many `.m4s` segments we must not log. */
+            if (tbccWebRequestUrlLooksLikeTwitterCdnVideo(u)) void tbccAppendObservedMediaUrl(details.tabId, u);
           }
           if (isManifest) void tbccAppendObservedManifestUrl(details.tabId, u);
         })
@@ -749,7 +1032,55 @@ try {
   console.warn("TBCC: webRequest listener failed", e);
 }
 
+const TBCC_THUMB_PROXY_MAX_BYTES = Math.floor(2.75 * 1024 * 1024);
+
+function tbccArrayBufferToDataUrl(ab) {
+  const bytes = new Uint8Array(ab);
+  let mime = "image/jpeg";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) mime = "image/jpeg";
+  else if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) mime = "image/png";
+  else if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) mime = "image/gif";
+  else if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) mime = "image/webp";
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.action === "tbcc-proxy-thumb") {
+    (async () => {
+      const url = normalizeTbccMediaUrlForImport(msg.url);
+      if (!url || !/^https?:\/\//i.test(url)) {
+        sendResponse({ ok: false });
+        return;
+      }
+      let pathLow = "";
+      try {
+        pathLow = new URL(url).pathname.toLowerCase();
+      } catch (_) {
+        sendResponse({ ok: false });
+        return;
+      }
+      if (/\.(mp4|webm|m4v|m3u8|mpd|mov)(\?|$)/i.test(pathLow)) {
+        sendResponse({ ok: false });
+        return;
+      }
+      try {
+        const ab = await fetchUrlWithBrowserSession(url, "");
+        if (!ab || ab.byteLength < 24 || ab.byteLength > TBCC_THUMB_PROXY_MAX_BYTES) {
+          sendResponse({ ok: false });
+          return;
+        }
+        sendResponse({ ok: true, dataUrl: tbccArrayBufferToDataUrl(ab) });
+      } catch (_) {
+        sendResponse({ ok: false });
+      }
+    })();
+    return true;
+  }
   if (msg.action === "tbcc-import-bytes-session") {
     (async () => {
       try {
@@ -758,7 +1089,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           msg.poolId ?? 1,
           !!msg.savedOnly,
           msg.source || "extension:gallery-session",
-          msg.caption
+          msg.caption,
+          msg.refererPageUrl || ""
         );
         sendResponse(data);
       } catch (e) {
@@ -787,7 +1119,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-content-fetch-bytes") {
     (async () => {
       try {
-        const buffer = await fetchUrlWithBrowserSession(normalizeTbccMediaUrlForImport(msg.url));
+        const buffer = await fetchUrlWithBrowserSession(
+          normalizeTbccMediaUrlForImport(msg.url),
+          msg.refererPageUrl || ""
+        );
         sendResponse({ ok: true, buffer });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
@@ -855,7 +1190,29 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           chunk.map(async (du) => {
             try {
               const html = await fetchDetailPageHtml(du);
-              const media = parseMotherlessMediaFromHtml(html);
+              if (!html) return;
+              let media = "";
+              try {
+                const uo = new URL(du);
+                const host = (uo.hostname || "").toLowerCase();
+                const path = uo.pathname || "";
+                if (host === "fetlife.com" || host.endsWith(".fetlife.com")) {
+                  if (/\/pictures\/\d/i.test(path)) {
+                    media =
+                      parseDetailPagePrimaryImageFromHtml(html) ||
+                      parseMotherlessMediaFromHtml(html) ||
+                      parseFetlifeStreamFromHtml(html);
+                  } else {
+                    media = parseFetlifeStreamFromHtml(html) || parseMotherlessMediaFromHtml(html);
+                  }
+                } else if (host === "erome.com" || host.endsWith(".erome.com")) {
+                  media = parseEromeMediaFromHtml(html) || parseMotherlessMediaFromHtml(html);
+                } else {
+                  media = parseMotherlessMediaFromHtml(html);
+                }
+              } catch (_) {
+                media = parseMotherlessMediaFromHtml(html);
+              }
               if (media) map[du] = media;
             } catch (e) {
               console.warn("tbcc-resolve-detail-page", du, e);
@@ -874,7 +1231,12 @@ function installContextMenus() {
   /** Toolbar icon opens/closes the gallery side panel (no default_popup — popup would block this). */
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   chrome.contextMenus.removeAll(() => {
-    const mac = chrome.contextMenus.create.bind(chrome.contextMenus);
+    const mac = (props) => {
+      chrome.contextMenus.create(props, () => {
+        const err = chrome.runtime.lastError;
+        if (err) console.warn("TBCC contextMenus.create", props && props.id, err.message);
+      });
+    };
     mac({ id: "sendToTBCC", title: "TBCC: Save to pool", contexts: ["image", "video", "link"] });
     mac({ id: "sendToSaved", title: "TBCC: Saved Messages", contexts: ["image", "video", "link"] });
     mac({ id: "sendPageToTBCC", title: "TBCC: Save to pool (this tab URL)", contexts: ["page", "frame"] });
@@ -912,29 +1274,75 @@ async function addModelSearchContextMenus(mac) {
   const enabled = data[STORAGE_MODEL_SEARCH_ENABLED] || {};
   const sites = (cfg.sites || []).filter((s) => enabled[s.id] !== false);
   if (!sites.length) return;
+  const onlyfansSites = sites.filter((s) => normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_ONLYFANS);
+  const livecamSites = sites.filter((s) => normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_LIVECAMS);
   mac({
     id: "tbccModelSearchRoot",
     title: "TBCC: Look up username",
-    contexts: ["selection"],
+    contexts: ["selection", "link", "page"],
   });
   mac({
-    id: "tbccms_all",
+    id: "tbccms_all_onlyfans",
     parentId: "tbccModelSearchRoot",
-    title: "Search all enabled sites",
-    contexts: ["selection"],
+    title: "Open all enabled OnlyFans sources",
+    contexts: ["selection", "link", "page"],
   });
   mac({
-    id: "tbccms_sep",
+    id: "tbccms_all_livecams",
+    parentId: "tbccModelSearchRoot",
+    title: "Open all enabled live cam sources",
+    contexts: ["selection", "link", "page"],
+  });
+  mac({
+    id: "tbccms_sep_clip",
     parentId: "tbccModelSearchRoot",
     type: "separator",
-    contexts: ["selection"],
+    contexts: ["selection", "link", "page"],
   });
-  for (const s of sites) {
+  mac({
+    id: "tbccms_clip_onlyfans",
+    parentId: "tbccModelSearchRoot",
+    title: "Search copied username (OnlyFans sources)",
+    contexts: ["selection", "link", "page"],
+  });
+  mac({
+    id: "tbccms_clip_livecams",
+    parentId: "tbccModelSearchRoot",
+    title: "Search copied username (live cam sources)",
+    contexts: ["selection", "link", "page"],
+  });
+  mac({
+    id: "tbccms_sep0",
+    parentId: "tbccModelSearchRoot",
+    type: "separator",
+    contexts: ["selection", "link", "page"],
+  });
+  mac({
+    id: "tbccms_group_onlyfans",
+    parentId: "tbccModelSearchRoot",
+    title: "OnlyFans sources",
+    contexts: ["selection", "link", "page"],
+  });
+  for (const s of onlyfansSites) {
     mac({
       id: tbccMenuIdForSite(s.id),
-      parentId: "tbccModelSearchRoot",
+      parentId: "tbccms_group_onlyfans",
       title: String(s.name || s.id).slice(0, 120),
-      contexts: ["selection"],
+      contexts: ["selection", "link", "page"],
+    });
+  }
+  mac({
+    id: "tbccms_group_livecams",
+    parentId: "tbccModelSearchRoot",
+    title: "Live cam sources",
+    contexts: ["selection", "link", "page"],
+  });
+  for (const s of livecamSites) {
+    mac({
+      id: tbccMenuIdForSite(s.id),
+      parentId: "tbccms_group_livecams",
+      title: String(s.name || s.id).slice(0, 120),
+      contexts: ["selection", "link", "page"],
     });
   }
 }
@@ -957,17 +1365,51 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-// 1x1 transparent PNG as data URL (avoids "Unable to download" with file icons in Brave)
-const NOTIFY_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQHwAEBgIApD5fRAAAAABJRU5ErkJggg==";
+/** Gallery closed: disable on-page overlay so checkboxes do not linger on tabs. */
+async function clearPageOverlayModeForClosedGallery() {
+  try {
+    const { tbccOverlayMode } = await chrome.storage.local.get("tbccOverlayMode");
+    if (!tbccOverlayMode) return;
+    await chrome.storage.local.set({ tbccOverlayMode: false });
+  } catch (_) {}
+}
 
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "tbcc-gallery-sidepanel") return;
+  port.onDisconnect.addListener(() => {
+    void clearPageOverlayModeForClosedGallery();
+  });
+});
+
+try {
+  const sp = chrome.sidePanel;
+  if (sp && typeof sp.onClosed?.addListener === "function") {
+    sp.onClosed.addListener(() => {
+      void clearPageOverlayModeForClosedGallery();
+    });
+  }
+} catch (_) {}
+
+/**
+ * Packaged PNG only — data: URLs and tiny/decoding edge cases often throw
+ * "Unable to download all specified images" (extensions::notifications) in Brave/Chromium MV3.
+ */
 function notify(title, message) {
   try {
-    chrome.notifications.create("tbcc-" + Date.now(), {
-      type: "basic",
-      iconUrl: NOTIFY_ICON,
-      title: title || "TBCC",
-      message: message || "",
-    });
+    const iconUrl = chrome.runtime.getURL("icons/icon16.png");
+    chrome.notifications.create(
+      "tbcc-" + Date.now(),
+      {
+        type: "basic",
+        iconUrl,
+        title: title || "TBCC",
+        message: message || "",
+      },
+      () => {
+        const err = chrome.runtime.lastError;
+        if (err) console.warn("TBCC notification:", err.message);
+      }
+    );
   } catch (e) {
     console.log("TBCC:", title, message, e);
   }
@@ -994,39 +1436,38 @@ function resolveUrlFromContextClick(info, tab) {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const id = String(info.menuItemId || "");
 
-  if (id === "tbccms_all") {
-    const raw = (info.selectionText || "").trim();
-    if (!raw) {
-      notify("TBCC", "Select a username first.");
+  if (id === "tbccms_clip_onlyfans" || id === "tbccms_clip_livecams") {
+    const data = await chrome.storage.local.get(STORAGE_LAST_COPIED_USERNAME);
+    const username = usernameFromText(data && data[STORAGE_LAST_COPIED_USERNAME] ? data[STORAGE_LAST_COPIED_USERNAME] : "");
+    if (!username) {
+      notify("TBCC", "No copied username found yet. Copy a username first (Ctrl+C).");
       return;
     }
-    if (raw.length > 200) {
-      notify("TBCC", "Selection is too long for model search.");
+    const category =
+      id === "tbccms_clip_livecams" ? MODEL_SEARCH_CATEGORY_LIVECAMS : MODEL_SEARCH_CATEGORY_ONLYFANS;
+    await launchModelSearch(username, null, category);
+    return;
+  }
+
+  if (id === "tbccms_all_onlyfans" || id === "tbccms_all_livecams") {
+    const username = await resolveModelSearchUsernameFromContext(info, tab);
+    if (!username) {
+      notify("TBCC", "Could not detect a username. Try right-clicking directly on @username.");
       return;
     }
-    if (/^https?:\/\//i.test(raw)) {
-      notify("TBCC", "Model search expects a username, not a URL.");
-      return;
-    }
-    await launchModelSearch(raw, null);
+    const category =
+      id === "tbccms_all_livecams" ? MODEL_SEARCH_CATEGORY_LIVECAMS : MODEL_SEARCH_CATEGORY_ONLYFANS;
+    await launchModelSearch(username, null, category);
     return;
   }
   if (String(id).startsWith("tbccmsi_")) {
-    const raw = (info.selectionText || "").trim();
-    if (!raw) {
-      notify("TBCC", "Select a username first.");
-      return;
-    }
-    if (raw.length > 200) {
-      notify("TBCC", "Selection is too long for model search.");
-      return;
-    }
-    if (/^https?:\/\//i.test(raw)) {
-      notify("TBCC", "Model search expects a username, not a URL.");
+    const username = await resolveModelSearchUsernameFromContext(info, tab);
+    if (!username) {
+      notify("TBCC", "Could not detect a username. Try right-clicking directly on @username.");
       return;
     }
     const sid = tbccSiteIdFromMenuId(id);
-    if (sid) await launchModelSearch(raw, sid);
+    if (sid) await launchModelSearch(username, sid);
     return;
   }
 

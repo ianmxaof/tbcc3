@@ -47,10 +47,14 @@
     if (s.indexOf("720") >= 0) sc += 18;
     if (s.indexOf("540") >= 0) sc += 8;
     if (s.indexOf("thumbnail-hq") >= 0) sc -= 8;
+    /** X / Twitter: prefer progressive MP4 tiles in the grid over HLS when both appear. */
+    if (s.indexOf("video.twimg.com") >= 0 && /\.mp4(\?|$)/i.test(s)) sc += 42;
     if (s.indexOf("thumb") >= 0 || s.indexOf("thumbnail") >= 0) sc -= 38;
     if (s.indexOf("preview") >= 0 || s.indexOf("teaser") >= 0) sc -= 35;
     if (s.indexOf("sample") >= 0) sc -= 15;
     if (s.indexOf("snippet") >= 0 || s.indexOf("clip") >= 0) sc -= 25;
+    /** Prefer real video containers over .webp (often poster/animated preview in <video> sources). */
+    if (/\.webp(\?|$)/i.test(s)) sc -= 120;
     if (/x240|_240_|\/240\/|\b240p\b/i.test(s)) sc -= 75;
     if (/\b360p\b|x360|_360_/i.test(s)) sc -= 55;
     if (/\b480p\b/i.test(s)) sc -= 35;

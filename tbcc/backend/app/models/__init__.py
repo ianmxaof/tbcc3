@@ -9,8 +9,10 @@ from .external_payment_order import ExternalPaymentOrder
 from .channel import Channel
 from .scheduled_text_post import ScheduledTextPost
 from .growth_settings import GrowthSettings
+from .payment_bot_settings import PaymentBotSettings
 from .tbcc_tag import TbccTag, MediaTagLink
 from .post_outbound_event import PostOutboundEvent
+from .link_resolver_request import LinkResolverRequest
 
 __all__ = [
     "Base",
@@ -24,7 +26,9 @@ __all__ = [
     "Channel",
     "ScheduledTextPost",
     "GrowthSettings",
+    "PaymentBotSettings",
     "TbccTag",
     "MediaTagLink",
     "PostOutboundEvent",
+    "LinkResolverRequest",
 ]

@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { MediaLibrary } from "./panels/MediaLibrary";
 import { Sources } from "./panels/Sources";
 import { Scheduler } from "./panels/Scheduler";
@@ -17,7 +18,33 @@ const nav = [
   { to: "/bots", label: "System" },
 ];
 
+const DASHBOARD_THEME_KEY = "tbccDashboardThemePreset";
+type DashboardTheme = "dark" | "chatgpt" | "github" | "obsidian" | "cursor";
+
+function normalizeDashboardTheme(value: unknown): DashboardTheme {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "chatgpt" || v === "github" || v === "obsidian" || v === "cursor") return v;
+  return "dark";
+}
+
 function App() {
+  const [themePreset, setThemePreset] = useState<DashboardTheme>(() => {
+    try {
+      return normalizeDashboardTheme(window.localStorage.getItem(DASHBOARD_THEME_KEY));
+    } catch {
+      return "dark";
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-dashboard-theme", themePreset);
+    try {
+      window.localStorage.setItem(DASHBOARD_THEME_KEY, themePreset);
+    } catch {
+      // Ignore storage write errors.
+    }
+  }, [themePreset]);
+
   return (
     <BrowserRouter>
       <div className="min-h-screen flex flex-col">
@@ -35,6 +62,21 @@ function App() {
               {label}
             </NavLink>
           ))}
+          <label className="ml-auto flex items-center gap-2 text-xs text-slate-300">
+            Theme
+            <select
+              value={themePreset}
+              onChange={(e) => setThemePreset(normalizeDashboardTheme(e.target.value))}
+              className="bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-100"
+              title="Dashboard color preset"
+            >
+              <option value="dark">Dark</option>
+              <option value="chatgpt">ChatGPT</option>
+              <option value="github">GitHub</option>
+              <option value="obsidian">Obsidian</option>
+              <option value="cursor">Cursor</option>
+            </select>
+          </label>
         </nav>
         {/* min-w-0 prevents flex children from collapsing to 0 width (blank main content) */}
         <main className="flex-1 min-w-0 p-6">
