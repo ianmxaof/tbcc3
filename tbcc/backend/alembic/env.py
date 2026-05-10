@@ -15,6 +15,8 @@ load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 from app.models.base import Base
 from app.models import Media, Source, ContentPool, Bot, Subscription, SubscriptionPlan
+import app.models.loot  # noqa: F401 — loot_* tables on Base.metadata
+import app.models.loot_bot_settings  # noqa: F401
 from app.models.growth_settings import GrowthSettings  # noqa: F401 — metadata
 
 config = context.config

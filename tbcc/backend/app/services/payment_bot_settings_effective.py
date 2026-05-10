@@ -31,6 +31,23 @@ ALLOWED_MENU_ACTIONS = {
     "menu_status",
 }
 
+DEFAULT_VIDEO_FINDER_SOURCES: list[dict[str, str]] = [
+    {
+        "id": "bestcamvideos",
+        "name": "BestCamVideos",
+        "url": "https://bestcamvideos.com/?s={username}",
+        "result_link_must_include": ["/video/", "/videos/"],
+        "result_link_deny_include": ["/tag/", "/category/", "/search/"],
+    },
+    {
+        "id": "camwhores",
+        "name": "CamWhores",
+        "url": "https://www.camwhores.tv/search/{username}/",
+        "result_link_must_include": ["/videos/", "/video/"],
+        "result_link_deny_include": ["/search/", "/categories/"],
+    },
+]
+
 
 def _row(db: Session) -> PaymentBotSettings | None:
     return db.query(PaymentBotSettings).filter(PaymentBotSettings.id == ROW_ID).first()
@@ -80,6 +97,39 @@ def _normalize_main_menu(raw_json: str | None) -> list[list[dict[str, str]]]:
 
 def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
     r = _row(db)
+    raw_video_sources = getattr(r, "video_finder_sources_json", None) if r else None
+    video_sources = DEFAULT_VIDEO_FINDER_SOURCES
+    if isinstance(raw_video_sources, str) and raw_video_sources.strip():
+        try:
+            parsed = json.loads(raw_video_sources)
+            if isinstance(parsed, list):
+                out: list[dict[str, str]] = []
+                for item in parsed[:60]:
+                    if not isinstance(item, dict):
+                        continue
+                    sid = str(item.get("id") or "").strip()[:64]
+                    name = str(item.get("name") or "").strip()[:128]
+                    url = str(item.get("url") or "").strip()[:1024]
+                    if sid and name and "{username}" in url and url.startswith(("http://", "https://")):
+                        row: dict[str, Any] = {"id": sid, "name": name, "url": url}
+                        rx = str(item.get("result_link_regex") or "").strip()[:512]
+                        if rx:
+                            row["result_link_regex"] = rx
+                        mi = item.get("result_link_must_include")
+                        if isinstance(mi, list):
+                            vals = [str(x).strip()[:128] for x in mi if str(x).strip()]
+                            if vals:
+                                row["result_link_must_include"] = vals[:20]
+                        di = item.get("result_link_deny_include")
+                        if isinstance(di, list):
+                            vals = [str(x).strip()[:128] for x in di if str(x).strip()]
+                            if vals:
+                                row["result_link_deny_include"] = vals[:20]
+                        out.append(row)
+                if out:
+                    video_sources = out
+        except Exception:
+            video_sources = DEFAULT_VIDEO_FINDER_SOURCES
     return {
         "main_menu": _normalize_main_menu(getattr(r, "main_menu_json", None) if r else None),
         "welcome_html": _str_or_default(
@@ -140,4 +190,19 @@ def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
             "",
         )
         or None,
+        "video_finder_enabled": bool(
+            _int_or_default(
+                getattr(r, "video_finder_enabled", None) if r else 1,
+                1,
+                min_v=0,
+                max_v=1,
+            )
+        ),
+        "video_finder_sources": video_sources,
+        "video_finder_max_links_per_source": _int_or_default(
+            getattr(r, "video_finder_max_links_per_source", None) if r else 8,
+            8,
+            min_v=1,
+            max_v=30,
+        ),
     }

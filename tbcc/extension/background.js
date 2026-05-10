@@ -3,6 +3,7 @@ importScripts("model-search-shared.js");
 const API_URL = "http://localhost:8000/import/url";
 const API_BYTES = "http://localhost:8000/import/bytes";
 const API_SAVED_BATCH = "http://localhost:8000/import/saved-batch";
+const API_MEDIA_BULK_TAGS = "http://localhost:8000/media/bulk/tags";
 const SAVED_ALBUM_CHUNK = 10;
 /** Match capture.js: overlap session fetches before sequential /import/saved-batch POSTs. */
 const TBCC_FETCH_CONCURRENCY = 3;
@@ -32,9 +33,30 @@ const STORAGE_MODEL_SEARCH_ENABLED = "tbccModelSearchEnabledSites";
 const STORAGE_MODEL_SEARCH_MODE = "tbccModelSearchOpenMode";
 const STORAGE_LAST_COPIED_USERNAME = "tbccLastCopiedUsername";
 const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
+const STORAGE_PAYMENT_BOT_USERNAME = "tbccPaymentBotUsername";
 const STORAGE_REVERSE_IMAGE_ENABLED = "tbccReverseImageEnabledSites";
 const STORAGE_REVERSE_IMAGE_MODE = "tbccReverseImageOpenMode";
 const STORAGE_MODEL_SEARCH_LAST_SUMMARY = "tbccModelSearchLastSummary";
+const STORAGE_AUTO_TAG_ON_EXPORT = "tbccAutoTagOnExport";
+let tbccRedgifsTempToken = "";
+let tbccRedgifsTempTokenExpiresAt = 0;
+
+const TBCC_AUTOTAG_STOPWORDS = new Set([
+  "www",
+  "com",
+  "net",
+  "org",
+  "image",
+  "images",
+  "video",
+  "videos",
+  "media",
+  "thumb",
+  "thumbnail",
+  "photo",
+  "post",
+  "posts",
+]);
 
 /**
  * Fan out username search across enabled sites (config JSON + options).
@@ -551,6 +573,116 @@ function parseDetailPagePrimaryImageFromHtml(html) {
     if (/motherless|motherlessmedia|cdn/i.test(u2)) return u2.startsWith("//") ? "https:" + u2 : u2;
   }
   return "";
+}
+
+function redgifsIdFromDetailUrl(detailUrl) {
+  try {
+    const u = new URL(detailUrl);
+    if (!/(^|\.)redgifs\.com$/i.test(u.hostname)) return "";
+    const m = (u.pathname || "").match(/^\/(?:watch|ifr|gifs)\/([^/?#]+)/i);
+    return m && m[1] ? String(m[1]).trim() : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+function redgifsIdFromAnyUrl(rawUrl) {
+  try {
+    const s = String(rawUrl || "");
+    const m = s.match(/(?:\/(?:watch|ifr|gifs)\/)([a-z0-9]+)/i);
+    if (m && m[1]) return String(m[1]).trim();
+    try {
+      const u = new URL(s);
+      const base = (u.pathname.split("/").pop() || "").trim();
+      if (base) {
+        const b = base.split("?")[0].split("#")[0];
+        const p1 = b.match(/^([a-z0-9]+)-(?:mobile|poster|thumb|thumbnail|small|large)\.(?:jpe?g|png|webp|avif)$/i);
+        if (p1 && p1[1]) return String(p1[1]).trim();
+        const p2 = b.match(/^([a-z0-9]+)\.(?:jpe?g|png|webp|avif|gif|mp4|webm)$/i);
+        if (p2 && p2[1]) return String(p2[1]).trim();
+      }
+    } catch (_) {}
+  } catch (_) {}
+  return "";
+}
+
+/**
+ * RedGIF pages often include stream URLs in escaped JSON blobs.
+ * Prefer direct MP4 over posters (.webp/.jpg), and prefer HD when available.
+ */
+function parseRedgifsMediaFromHtml(html) {
+  if (!html || typeof html !== "string") return "";
+  const flat = html.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+  const candidates = [];
+  const re = /https?:\/\/[^\s"'<>]+?\.(?:mp4|webm|m4v|m3u8|mpd)(?:\?[^\s"'<>]*)?/gi;
+  let m;
+  while ((m = re.exec(flat)) !== null) {
+    const u = String(m[0] || "").trim();
+    if (!/^https?:\/\//i.test(u)) continue;
+    candidates.push(u);
+  }
+  const uniq = [...new Set(candidates)];
+  const score = (u) => {
+    const s = String(u || "").toLowerCase();
+    let sc = 0;
+    if (s.includes("redgifs")) sc += 50;
+    if (s.includes(".mp4")) sc += 52;
+    if (s.includes(".webm")) sc += 30;
+    if (s.includes(".m3u8")) sc += 22;
+    if (s.includes("/hd.") || s.includes("-hd.") || s.includes("hd.mp4")) sc += 30;
+    if (s.includes("/sd.") || s.includes("-sd.") || s.includes("sd.mp4")) sc += 18;
+    if (s.includes("1080") || s.includes("2160") || s.includes("4k")) sc += 14;
+    if (s.includes("poster") || s.includes("thumb") || s.includes("preview") || s.includes("sprite")) sc -= 80;
+    if (s.includes(".webp") || s.includes(".jpg") || s.includes(".jpeg") || s.includes(".png")) sc -= 120;
+    return sc;
+  };
+  uniq.sort((a, b) => score(b) - score(a));
+  const best = uniq[0] || "";
+  if (best && score(best) >= 16) return best;
+  return "";
+}
+
+async function fetchRedgifsTemporaryToken() {
+  const now = Date.now();
+  if (tbccRedgifsTempToken && tbccRedgifsTempTokenExpiresAt > now + 15000) return tbccRedgifsTempToken;
+  const res = await fetch("https://api.redgifs.com/v2/auth/temporary", {
+    method: "GET",
+    credentials: "omit",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`RedGIF token HTTP ${res.status}`);
+  const data = await res.json();
+  const token = data && data.token ? String(data.token) : "";
+  if (!token) throw new Error("RedGIF token missing");
+  tbccRedgifsTempToken = token;
+  tbccRedgifsTempTokenExpiresAt = now + 5 * 60 * 1000;
+  return token;
+}
+
+async function fetchRedgifsMediaViaApi(detailUrl) {
+  const gifId = redgifsIdFromDetailUrl(detailUrl) || redgifsIdFromAnyUrl(detailUrl);
+  if (!gifId) return "";
+  try {
+    const token = await fetchRedgifsTemporaryToken();
+    const res = await fetch(`https://api.redgifs.com/v2/gifs/${encodeURIComponent(gifId)}`, {
+      method: "GET",
+      credentials: "omit",
+      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return "";
+    const data = await res.json();
+    const gif = data && data.gif ? data.gif : {};
+    const urls = gif && gif.urls ? gif.urls : {};
+    const picks = [urls.hd, urls.sd, urls.gif, urls.vthumbnail, urls.thumbnail]
+      .map((u) => (typeof u === "string" ? u.trim() : ""))
+      .filter(Boolean);
+    for (const u of picks) {
+      if (/\.(mp4|webm|m4v|m3u8|mpd)(\?|$)/i.test(u)) return u;
+    }
+    return "";
+  } catch (_) {
+    return "";
+  }
 }
 
 /**
@@ -1207,6 +1339,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                   }
                 } else if (host === "erome.com" || host.endsWith(".erome.com")) {
                   media = parseEromeMediaFromHtml(html) || parseMotherlessMediaFromHtml(html);
+                } else if (host === "redgifs.com" || host.endsWith(".redgifs.com")) {
+                  media =
+                    parseRedgifsMediaFromHtml(html) ||
+                    (await fetchRedgifsMediaViaApi(du)) ||
+                    parseMotherlessMediaFromHtml(html);
                 } else {
                   media = parseMotherlessMediaFromHtml(html);
                 }
@@ -1276,6 +1413,7 @@ async function addModelSearchContextMenus(mac) {
   if (!sites.length) return;
   const onlyfansSites = sites.filter((s) => normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_ONLYFANS);
   const livecamSites = sites.filter((s) => normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_LIVECAMS);
+  const videoSites = sites.filter((s) => normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_VIDEOS);
   mac({
     id: "tbccModelSearchRoot",
     title: "TBCC: Look up username",
@@ -1294,6 +1432,12 @@ async function addModelSearchContextMenus(mac) {
     contexts: ["selection", "link", "page"],
   });
   mac({
+    id: "tbccms_all_videos",
+    parentId: "tbccModelSearchRoot",
+    title: "Open all enabled video sources",
+    contexts: ["selection", "link", "page"],
+  });
+  mac({
     id: "tbccms_sep_clip",
     parentId: "tbccModelSearchRoot",
     type: "separator",
@@ -1309,6 +1453,12 @@ async function addModelSearchContextMenus(mac) {
     id: "tbccms_clip_livecams",
     parentId: "tbccModelSearchRoot",
     title: "Search copied username (live cam sources)",
+    contexts: ["selection", "link", "page"],
+  });
+  mac({
+    id: "tbccms_clip_videos",
+    parentId: "tbccModelSearchRoot",
+    title: "Search copied username (video sources)",
     contexts: ["selection", "link", "page"],
   });
   mac({
@@ -1345,6 +1495,26 @@ async function addModelSearchContextMenus(mac) {
       contexts: ["selection", "link", "page"],
     });
   }
+  mac({
+    id: "tbccms_group_videos",
+    parentId: "tbccModelSearchRoot",
+    title: "Video sources",
+    contexts: ["selection", "link", "page"],
+  });
+  for (const s of videoSites) {
+    mac({
+      id: tbccMenuIdForSite(s.id),
+      parentId: "tbccms_group_videos",
+      title: String(s.name || s.id).slice(0, 120),
+      contexts: ["selection", "link", "page"],
+    });
+  }
+  mac({
+    id: "tbccms_bot_videofind",
+    parentId: "tbccModelSearchRoot",
+    title: "Send /videofind in payment bot",
+    contexts: ["selection", "link", "page"],
+  });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -1419,6 +1589,93 @@ function isSavedMenuId(id) {
   return id === "sendToSaved" || id === "sendPageToSaved" || id === "sendSelectionToSaved";
 }
 
+function tbccNormalizeAutoTagToken(raw) {
+  const s = String(raw || "")
+    .trim()
+    .replace(/^#+/u, "")
+    .replace(/[_\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s || s.length < 2 || s.length > 64) return "";
+  const low = s.toLowerCase();
+  if (TBCC_AUTOTAG_STOPWORDS.has(low)) return "";
+  if (/^\d+$/u.test(s)) return "";
+  return s;
+}
+
+function tbccDisplayTagToHashtag(tag) {
+  const raw = String(tag || "")
+    .trim()
+    .replace(/^#+/u, "");
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/gu, "");
+  if (!compact) return "";
+  const capped = compact.length > 42 ? compact.slice(0, 42) : compact;
+  return "#" + capped;
+}
+
+function tbccCollectAutoTagsFromUrl(rawUrl, outSet, includeHost) {
+  try {
+    const u = new URL(String(rawUrl || "").trim());
+    const host = String(u.hostname || "").replace(/^www\./i, "");
+    if (includeHost) {
+      const hNorm = tbccNormalizeAutoTagToken(host);
+      if (hNorm) outSet.add(hNorm);
+    }
+    host
+      .split(".")
+      .filter(Boolean)
+      .forEach((part) => {
+        const p = tbccNormalizeAutoTagToken(part);
+        if (p) outSet.add(p);
+      });
+    String(u.pathname || "")
+      .split("/")
+      .map((part) => decodeURIComponent(part || "").trim())
+      .filter(Boolean)
+      .forEach((part) => {
+        part
+          .split(/[^a-zA-Z0-9]+/g)
+          .filter(Boolean)
+          .forEach((bit) => {
+            const b = tbccNormalizeAutoTagToken(bit);
+            if (b) outSet.add(b);
+          });
+      });
+  } catch (_) {}
+}
+
+function tbccBuildAutoTagPayload(url, refererPageUrl) {
+  const tags = new Set();
+  const ref = String(refererPageUrl || "").trim();
+  const primary = ref && /^https?:\/\//i.test(ref) ? ref : String(url || "").trim();
+  tbccCollectAutoTagsFromUrl(primary, tags, true);
+  tbccCollectAutoTagsFromUrl(String(url || "").trim(), tags, false);
+  const list = [...tags];
+  const csv = list.join(", ");
+  const hashtags = list.map((t) => tbccDisplayTagToHashtag(t)).filter(Boolean);
+  const caption = hashtags.join(" ").trim().slice(0, 900);
+  return { tagsCsv: csv, caption };
+}
+
+async function tbccApplyTagsToImportedMediaIds(mediaIds, tagsCsv) {
+  const csv = String(tagsCsv || "").trim();
+  if (!csv) return;
+  const ids = [...new Set((mediaIds || []).map((x) => parseInt(x, 10)).filter((x) => Number.isFinite(x)))];
+  if (!ids.length) return;
+  const r = await fetch(API_MEDIA_BULK_TAGS, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids, tags: csv, tags_merge: true }),
+  });
+  const text = await r.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_) {}
+  if (!r.ok || data.error) throw new Error(data.error || data.detail || text || `HTTP ${r.status}`);
+}
+
 function resolveUrlFromContextClick(info, tab) {
   const id = String(info.menuItemId || "");
   if (id === "sendPageToTBCC" || id === "sendPageToSaved") {
@@ -1433,10 +1690,82 @@ function resolveUrlFromContextClick(info, tab) {
   return (info.srcUrl || info.linkUrl || "").trim();
 }
 
+async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagPayload) {
+  const cleanUrl = String(url || "").trim();
+  if (!cleanUrl) return { ok: false, error: "No URL for this action." };
+  if (!/^https?:\/\//i.test(cleanUrl)) return { ok: false, error: "Only http(s) URLs are supported." };
+  if (cleanUrl.startsWith("blob:") || cleanUrl.startsWith("data:")) {
+    return { ok: false, error: "Blob/data URLs cannot be imported. Use a direct link." };
+  }
+  const { tbccPoolId } = await chrome.storage.local.get("tbccPoolId");
+  const poolId = tbccPoolId ?? 1;
+  const autoTagsCsv =
+    autoTagPayload && autoTagPayload.tagsCsv ? String(autoTagPayload.tagsCsv).trim() : "";
+  const autoCaption =
+    autoTagPayload && autoTagPayload.caption ? String(autoTagPayload.caption).trim() : "";
+  const body = { url: cleanUrl, pool_id: poolId };
+  if (savedOnly) body.saved_only = true;
+  let data;
+  if (savedOnly || hostNeedsSessionFetch(cleanUrl)) {
+    data = await importViaExtensionBytes(
+      cleanUrl,
+      poolId,
+      savedOnly,
+      source || "extension:context-menu",
+      autoCaption,
+      refererPageUrl || ""
+    );
+  } else {
+    const resp = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await resp.text();
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {
+      return { ok: false, error: resp.ok ? "Invalid server response." : `Server error ${resp.status}` };
+    }
+    if (data.error && /403|Forbidden|Could not download/i.test(String(data.error))) {
+      try {
+        data = await importViaExtensionBytes(
+          cleanUrl,
+          poolId,
+          savedOnly,
+          (source || "extension:context-menu") + "-fallback",
+          autoCaption,
+          refererPageUrl || ""
+        );
+      } catch (_) {
+        return { ok: false, error: String(data.error || "Import blocked (403)") };
+      }
+    }
+  }
+  if (data && data.error) return { ok: false, error: String(data.error), data };
+  if (!savedOnly && data && data.media_id && autoTagsCsv) {
+    try {
+      await tbccApplyTagsToImportedMediaIds([data.media_id], autoTagsCsv);
+    } catch (e) {
+      return { ok: false, error: "Auto-tag failed: " + String(e && e.message ? e.message : e), data };
+    }
+  }
+  if (!savedOnly && data && data.media_id) {
+    try {
+      chrome.storage.local.get(STORAGE_COLLECTED, (o) => {
+        const arr = Array.isArray(o[STORAGE_COLLECTED]) ? o[STORAGE_COLLECTED] : [];
+        arr.push({ url: cleanUrl, type: "image", addedAt: Date.now(), source: source || "context_menu", media_id: data.media_id });
+        chrome.storage.local.set({ [STORAGE_COLLECTED]: arr.slice(-500) });
+      });
+    } catch (_) {}
+  }
+  return { ok: true, data };
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const id = String(info.menuItemId || "");
 
-  if (id === "tbccms_clip_onlyfans" || id === "tbccms_clip_livecams") {
+  if (id === "tbccms_clip_onlyfans" || id === "tbccms_clip_livecams" || id === "tbccms_clip_videos") {
     const data = await chrome.storage.local.get(STORAGE_LAST_COPIED_USERNAME);
     const username = usernameFromText(data && data[STORAGE_LAST_COPIED_USERNAME] ? data[STORAGE_LAST_COPIED_USERNAME] : "");
     if (!username) {
@@ -1444,20 +1773,45 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       return;
     }
     const category =
-      id === "tbccms_clip_livecams" ? MODEL_SEARCH_CATEGORY_LIVECAMS : MODEL_SEARCH_CATEGORY_ONLYFANS;
+      id === "tbccms_clip_livecams"
+        ? MODEL_SEARCH_CATEGORY_LIVECAMS
+        : id === "tbccms_clip_videos"
+          ? MODEL_SEARCH_CATEGORY_VIDEOS
+          : MODEL_SEARCH_CATEGORY_ONLYFANS;
     await launchModelSearch(username, null, category);
     return;
   }
 
-  if (id === "tbccms_all_onlyfans" || id === "tbccms_all_livecams") {
+  if (id === "tbccms_all_onlyfans" || id === "tbccms_all_livecams" || id === "tbccms_all_videos") {
     const username = await resolveModelSearchUsernameFromContext(info, tab);
     if (!username) {
       notify("TBCC", "Could not detect a username. Try right-clicking directly on @username.");
       return;
     }
     const category =
-      id === "tbccms_all_livecams" ? MODEL_SEARCH_CATEGORY_LIVECAMS : MODEL_SEARCH_CATEGORY_ONLYFANS;
+      id === "tbccms_all_livecams"
+        ? MODEL_SEARCH_CATEGORY_LIVECAMS
+        : id === "tbccms_all_videos"
+          ? MODEL_SEARCH_CATEGORY_VIDEOS
+          : MODEL_SEARCH_CATEGORY_ONLYFANS;
     await launchModelSearch(username, null, category);
+    return;
+  }
+  if (id === "tbccms_bot_videofind") {
+    const username = await resolveModelSearchUsernameFromContext(info, tab);
+    if (!username) {
+      notify("TBCC", "Could not detect a username. Try right-clicking directly on @username.");
+      return;
+    }
+    const data = await chrome.storage.local.get(STORAGE_PAYMENT_BOT_USERNAME);
+    const bot = String((data && data[STORAGE_PAYMENT_BOT_USERNAME]) || "").trim().replace(/^@+/, "");
+    if (!bot) {
+      notify("TBCC", "Set Payment bot username in Extension options first.");
+      return;
+    }
+    const deep = `https://t.me/${encodeURIComponent(bot)}?start=vf_${encodeURIComponent(username)}`;
+    await chrome.tabs.create({ url: deep, active: true });
+    notify("TBCC", `Opened Telegram deep link for /videofind ${username}`);
     return;
   }
   if (String(id).startsWith("tbccmsi_")) {
@@ -1511,62 +1865,30 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     );
     return;
   }
-  if (!/^https?:\/\//i.test(url)) {
-    notify("TBCC", "Only http(s) URLs are supported.");
-    return;
-  }
-  if (url.startsWith("blob:") || url.startsWith("data:")) {
-    notify("TBCC", "Blob/data URLs cannot be imported. Use a direct link.");
-    return;
-  }
-
-  const { tbccPoolId } = await chrome.storage.local.get("tbccPoolId");
-  const poolId = tbccPoolId ?? 1;
-  const body = { url, pool_id: poolId };
-  if (savedOnly) body.saved_only = true;
-
   try {
-    let data;
-    if (hostNeedsSessionFetch(url)) {
-      data = await importViaExtensionBytes(url, poolId, savedOnly, "extension:context-menu");
-    } else {
-      const resp = await fetch(API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const text = await resp.text();
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch (_) {
-        notify("TBCC Import Failed", resp.ok ? "Invalid server response." : `Server error ${resp.status}`);
-        return;
-      }
-      if (data.error && /403|Forbidden|Could not download/i.test(String(data.error))) {
-        try {
-          data = await importViaExtensionBytes(url, poolId, savedOnly, "extension:context-menu-fallback");
-        } catch (e2) {
-          notify(
-            "TBCC Import Failed",
-            String(data.error).length > 280 ? String(data.error).slice(0, 280) + "…" : data.error
-          );
-          return;
-        }
-      }
+    const { [STORAGE_AUTO_TAG_ON_EXPORT]: autoTagOnExport } = await chrome.storage.local.get(STORAGE_AUTO_TAG_ON_EXPORT);
+    const autoTagPayload = autoTagOnExport === false ? null : tbccBuildAutoTagPayload(url, (tab && tab.url) || "");
+    const result = await importUrlViaTbcc(
+      url,
+      savedOnly,
+      "extension:context-menu",
+      (tab && tab.url) || "",
+      autoTagPayload
+    );
+    if (!result.ok) {
+      notify(
+        "TBCC Import Failed",
+        String(result.error || "Import failed").length > 280
+          ? String(result.error || "Import failed").slice(0, 280) + "…"
+          : String(result.error || "Import failed")
+      );
+      return;
     }
-    if (data.error) {
-      notify("TBCC Import Failed", String(data.error).length > 280 ? String(data.error).slice(0, 280) + "…" : data.error);
-    } else if (savedOnly) {
+    const data = result.data || {};
+    if (savedOnly) {
       notify("TBCC", "Saved to Saved Messages");
     } else if (data.media_id) {
       notify("TBCC", `Imported as media #${data.media_id}`);
-      try {
-        chrome.storage.local.get(STORAGE_COLLECTED, (o) => {
-          const arr = Array.isArray(o[STORAGE_COLLECTED]) ? o[STORAGE_COLLECTED] : [];
-          arr.push({ url, type: "image", addedAt: Date.now(), source: "context_menu", media_id: data.media_id });
-          chrome.storage.local.set({ [STORAGE_COLLECTED]: arr.slice(-500) });
-        });
-      } catch (_) {}
     } else if (data.status === "skipped") {
       notify("TBCC", data.reason || "Skipped (duplicate or unsupported)");
     } else {
@@ -1581,4 +1903,95 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         : msg
     );
   }
+});
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.action === "tbcc-download-url-from-page-menu") {
+    (async () => {
+      try {
+        const raw = String(msg.url || "").trim();
+        if (!raw || !/^https?:\/\//i.test(raw)) {
+          sendResponse({ ok: false, error: "Only http(s) URLs can be downloaded." });
+          return;
+        }
+        const finalUrl = normalizeTbccMediaUrlForImport(raw);
+        const preferFull = msg.preferFull !== false;
+        const refererPageUrl = String(msg.refererPageUrl || "").trim();
+        let downloadUrl = finalUrl;
+        try {
+          const u = new URL(finalUrl);
+          const isRedgifs = /(^|\.)redgifs\.com$/i.test(u.hostname || "");
+          const hasRedItem = /^\/(?:watch|ifr|gifs)\/[^/?#]+/i.test(u.pathname || "") || !!redgifsIdFromAnyUrl(finalUrl);
+          if (preferFull && isRedgifs) {
+            const candidate = hasRedItem ? finalUrl : refererPageUrl;
+            const resolved = candidate ? await fetchRedgifsMediaViaApi(candidate) : "";
+            if (resolved && /^https?:\/\//i.test(resolved)) downloadUrl = normalizeTbccMediaUrlForImport(resolved);
+          }
+        } catch (_) {}
+        const path = (() => {
+          try {
+            const u = new URL(downloadUrl);
+            const base = (u.pathname.split("/").pop() || "media").replace(/[^\w.\-]+/g, "_");
+            return base || "media";
+          } catch (_) {
+            return "media";
+          }
+        })();
+        chrome.downloads.download(
+          {
+            url: downloadUrl,
+            filename: path,
+            saveAs: false,
+            conflictAction: "uniquify",
+          },
+          (id) => {
+            const err = chrome.runtime.lastError;
+            if (err || !id) {
+              sendResponse({ ok: false, error: err ? err.message : "Download failed." });
+              return;
+            }
+            notify("TBCC", "Download started.");
+            sendResponse({ ok: true, downloadId: id });
+          }
+        );
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-url-from-page-menu") {
+    (async () => {
+      try {
+        const { [STORAGE_AUTO_TAG_ON_EXPORT]: autoTagOnExport } = await chrome.storage.local.get(
+          STORAGE_AUTO_TAG_ON_EXPORT
+        );
+        const autoTagPayload =
+          autoTagOnExport === false
+            ? null
+            : tbccBuildAutoTagPayload(msg.url, msg.refererPageUrl || "");
+        const result = await importUrlViaTbcc(
+          msg.url,
+          !!msg.savedOnly,
+          "extension:page-media-menu",
+          msg.refererPageUrl || "",
+          autoTagPayload
+        );
+        if (!result.ok) {
+          sendResponse({ ok: false, error: result.error || "Import failed" });
+          return;
+        }
+        const data = result.data || {};
+        if (msg.savedOnly) notify("TBCC", "Saved to Saved Messages");
+        else if (data.media_id) notify("TBCC", `Imported as media #${data.media_id}`);
+        else if (data.status === "skipped") notify("TBCC", data.reason || "Skipped (duplicate or unsupported)");
+        else notify("TBCC", "Added (or duplicate).");
+        sendResponse({ ok: true, data });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+      }
+    })();
+    return true;
+  }
+  return false;
 });

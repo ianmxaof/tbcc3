@@ -34,7 +34,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 # Allow `from app.utils...` when running `python -m bots.payment_bot` from tbcc/backend
 _backend_root = Path(__file__).resolve().parent.parent
@@ -136,6 +136,20 @@ def _runtime_settings_defaults() -> dict:
         "subscribe_title_loot": "🗝 **Loot Room Access**",
         "subscription_catalog_columns": 2,
         "min_subscription_stars": _bot_min_subscription_stars(),
+        "video_finder_enabled": True,
+        "video_finder_sources": [
+            {
+                "id": "bestcamvideos",
+                "name": "BestCamVideos",
+                "url": "https://bestcamvideos.com/?s={username}",
+            },
+            {
+                "id": "camwhores",
+                "name": "CamWhores",
+                "url": "https://www.camwhores.tv/search/{username}/",
+            },
+        ],
+        "video_finder_max_links_per_source": 8,
     }
 
 
@@ -159,6 +173,29 @@ def _normalized_runtime_settings(raw: dict | None) -> dict:
     out["min_subscription_stars"] = max(0, min_stars)
     if not isinstance(out.get("main_menu"), list) or not out["main_menu"]:
         out["main_menu"] = _default_main_menu
+    out["video_finder_enabled"] = bool(out.get("video_finder_enabled", True))
+    try:
+        out["video_finder_max_links_per_source"] = max(
+            1,
+            min(30, int(out.get("video_finder_max_links_per_source") or 8)),
+        )
+    except (TypeError, ValueError):
+        out["video_finder_max_links_per_source"] = 8
+    raw_sources = out.get("video_finder_sources")
+    clean_sources: list[dict[str, str]] = []
+    if isinstance(raw_sources, list):
+        for item in raw_sources[:60]:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            url = str(item.get("url") or "").strip()
+            if not sid or not name or "{username}" not in url:
+                continue
+            if not url.startswith(("http://", "https://")):
+                continue
+            clean_sources.append({"id": sid[:64], "name": name[:128], "url": url[:1024]})
+    out["video_finder_sources"] = clean_sources or _runtime_settings_defaults()["video_finder_sources"]
     return out
 
 
@@ -738,7 +775,8 @@ def welcome_html(settings: dict | None = None) -> str:
         "• /loot — Loot Room section (24-hour key + private group run)\n"
         "• /subscribe — Premium memberships\n"
         "• /packs — Digital packs\n"
-        "• /resolve — Unwrap supported ad/short links (needs API bypass key + Celery worker)\n\n"
+        "• /resolve — Unwrap supported ad/short links (needs API bypass key + Celery worker)\n"
+        "• /videofind — Video-source fanout by username\n\n"
         "📌 <b>Account</b>\n"
         "• /status — Purchases &amp; active access\n"
         "• /referral — Your invite link + rewards\n\n"
@@ -818,6 +856,168 @@ async def cmd_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await status_msg.edit_text(f"❌ Resolve failed: {detail}")
 
 
+def _normalize_video_username(raw: str) -> str:
+    s = (raw or "").strip()
+    if s.startswith("@"):
+        s = s[1:]
+    s = re.sub(r"^[^\w]+|[^\w.-]+$", "", s)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{2,64}", s or ""):
+        return ""
+    return s
+
+
+def _build_video_search_url(template: str, username: str) -> str:
+    return str(template or "").replace("{username}", quote(username, safe=""))
+
+
+def _extract_urls_from_html(
+    html_text: str,
+    page_url: str,
+    source_cfg: dict,
+    username: str,
+    max_links: int,
+) -> list[str]:
+    links: list[str] = []
+    seen: set[str] = set()
+    pattern = str(source_cfg.get("result_link_regex") or "").strip()
+    must_inc = [str(x).strip().lower() for x in (source_cfg.get("result_link_must_include") or []) if str(x).strip()]
+    deny_inc = [str(x).strip().lower() for x in (source_cfg.get("result_link_deny_include") or []) if str(x).strip()]
+    root_host = (urlparse(page_url).hostname or "").lower()
+
+    raw_hits: list[str] = []
+    if pattern:
+        try:
+            rx = re.compile(pattern, re.IGNORECASE)
+            for m in rx.finditer(html_text):
+                if m.groups():
+                    raw_hits.append(m.group(1))
+                else:
+                    raw_hits.append(m.group(0))
+        except re.error:
+            raw_hits = []
+    if not raw_hits:
+        raw_hits = re.findall(r"""href\s*=\s*["']([^"'#]+)["']""", html_text, flags=re.IGNORECASE)
+
+    for raw in raw_hits:
+        if not raw:
+            continue
+        u = html.unescape(str(raw).strip())
+        full = urljoin(page_url, u)
+        if not full.startswith(("http://", "https://")):
+            continue
+        try:
+            pu = urlparse(full)
+        except Exception:
+            continue
+        host = (pu.hostname or "").lower()
+        if root_host and host and host != root_host:
+            continue
+        lower = full.lower()
+        if any(x in lower for x in ("javascript:", "mailto:", "/cdn-cgi/", ".css", ".js")):
+            continue
+        if any(d in lower for d in deny_inc):
+            continue
+        if must_inc and not any(m in lower for m in must_inc):
+            continue
+        if not must_inc:
+            looks_like_video = any(k in lower for k in ("/video", "/videos", "/watch", "/clip", "/movie"))
+            has_username = username.lower() in lower
+            if not (looks_like_video or has_username):
+                continue
+        if full in seen:
+            continue
+        seen.add(full)
+        links.append(full)
+        if len(links) >= max_links:
+            break
+    return links
+
+
+async def _fetch_source_video_links(
+    source_cfg: dict,
+    username: str,
+    max_links: int,
+) -> tuple[list[str], str | None]:
+    search_url = _build_video_search_url(str(source_cfg.get("url") or ""), username)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
+            r = await client.get(search_url, headers=headers)
+        if not r.is_success:
+            return [], f"http_{r.status_code}"
+        links = _extract_urls_from_html(r.text or "", str(r.url), source_cfg, username, max_links)
+        if not links:
+            return [], "no_matches"
+        return links, None
+    except Exception as e:
+        logger.warning("videofind source fetch failed source=%s: %s", source_cfg.get("id"), e)
+        return [], "fetch_failed"
+
+
+async def cmd_videofind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fetch configured video search pages and stream direct result links."""
+    msg = update.effective_message
+    if not msg:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "Usage: /videofind <username>\n\n"
+            "Streams configured video-source searches for a model handle."
+        )
+        return
+    username = _normalize_video_username(" ".join(args))
+    if not username:
+        await msg.reply_text("Please provide a valid username (letters/numbers/._-).")
+        return
+    st = await _get_runtime_settings()
+    if not bool(st.get("video_finder_enabled", True)):
+        await msg.reply_text("Video finder is disabled in payment bot settings.")
+        return
+    sources = st.get("video_finder_sources") or []
+    if not isinstance(sources, list) or not sources:
+        await msg.reply_text("No video finder sources are configured.")
+        return
+
+    await msg.reply_text(
+        f"🔎 Searching video sources for <b>{html.escape(username)}</b>…",
+        parse_mode="HTML",
+    )
+    sent = 0
+    max_per_source = int(st.get("video_finder_max_links_per_source") or 8)
+    for item in sources:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("id") or "source").strip()[:80]
+        template = str(item.get("url") or "").strip()
+        if not template or "{username}" not in template:
+            continue
+        links, err = await _fetch_source_video_links(item, username, max_per_source)
+        search_url = _build_video_search_url(template, username)
+        if links:
+            lines = [f"• {u}" for u in links]
+            body = f"🎬 <b>{html.escape(name)}</b>\n" + "\n".join(lines)
+        else:
+            why = f" ({err})" if err else ""
+            body = (
+                f"🎬 <b>{html.escape(name)}</b>\n"
+                f"No direct video links parsed{why}. Search page:\n"
+                f"• {search_url}"
+            )
+        await msg.reply_text(body, parse_mode="HTML", disable_web_page_preview=True)
+        sent += 1
+    if sent == 0:
+        await msg.reply_text("No valid video finder sources are configured yet.")
+        return
+    await msg.reply_text(f"Done. Streamed {sent} source result pages for @{username}.")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help — same overview as /start (without referral deep-link side effects)."""
     msg = update.effective_message
@@ -833,7 +1033,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except BadRequest as e:
         logger.warning("cmd_help HTML failed: %s", e)
         await msg.reply_text(
-            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status /resolve",
+            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status /resolve /videofind",
             reply_markup=main_menu_keyboard(),
         )
 
@@ -884,6 +1084,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Parse deep link: /start ref_12345
     args = (context.args or [])
     payload = args[0] if args else ""
+
+    if payload.startswith("vf_"):
+        username = _normalize_video_username(payload[3:])
+        if username:
+            context.args = [username]
+            await cmd_videofind(update, context)
+            return
 
     if payload.startswith("ref_"):
         referrer_id = await resolve_referrer_id_from_start_payload(payload)
@@ -1909,6 +2116,8 @@ async def _post_init(app: Application) -> None:
         BotCommand("packs", "Digital packs"),
         BotCommand("referral", "Your code, link & rewards"),
         BotCommand("status", "Your subscription & purchases"),
+        BotCommand("resolve", "Unwrap supported ad/short links"),
+        BotCommand("videofind", "Find video sources by username"),
     ]
     try:
         await app.bot.set_my_commands(commands)
@@ -1933,6 +2142,7 @@ async def _post_init(app: Application) -> None:
         "• /packs — digital packs\n"
         "• /status — your purchases & access\n"
         "• /resolve — unwrap supported ad/short links\n"
+        "• /videofind — video finder by username\n"
         "• /referral — your invite link + rewards\n\n"
         "Payments: Stars in Telegram + Wallet/crypto options."
     )
@@ -1990,6 +2200,7 @@ def main() -> None:
     app.add_handler(CommandHandler("referral", cmd_referral))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
+    app.add_handler(CommandHandler("videofind", cmd_videofind))
     # Handle /subscribe in channels (CommandHandler only matches message, not channel_post)
     app.add_handler(
         MessageHandler(
@@ -2033,7 +2244,7 @@ def main() -> None:
     )
 
     print(
-        "Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status, /resolve"
+        "Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status, /resolve, /videofind"
     )
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 

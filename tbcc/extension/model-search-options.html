@@ -35,6 +35,7 @@
     <label class="row2"><input type="checkbox" id="captureSettingClearSelectionOnOpen" /> Clear selected gallery items when the side panel opens</label>
     <label class="row2"><input type="checkbox" id="captureSettingHardRefresh" /> Full refresh (↻ / <strong>R</strong>): reload pools, channels, forum topics, and embedded panels (Collected / Tools / this Options page), then rescan the tab — same as closing and reopening the side panel</label>
     <label class="row2"><input type="checkbox" id="captureSettingResourceTiming" /> More resource-timing images (non–OnlyFans)</label>
+    <label class="row2"><input type="checkbox" id="captureSettingPageMediaMenu" /> In-page TBCC media right-click menu (auto on hostile sites like RedGIF; elsewhere use <strong>Alt + Right-click</strong> to open without replacing native TBCC menu)</label>
     <label class="row2">Lazy-load delay before scan (ms, 0–3000)
       <input type="number" id="captureSettingLazyDelay" min="0" max="3000" value="0" style="width:72px" />
     </label>
@@ -154,9 +155,22 @@
         <select id="customSiteCat" class="tbcc-input" style="min-width:180px;max-width:260px">
           <option value="onlyfans">OnlyFans search</option>
           <option value="livecams">Live cam search</option>
+          <option value="videos">Video search</option>
         </select>
       </label>
       <button type="button" id="btnAddCustomSite" class="tbcc-btn-primary">Add source</button>
+    </fieldset>
+
+    <h2>Telegram relay</h2>
+    <fieldset>
+      <legend>Send video searches to bot</legend>
+      <p class="sub" style="margin:0 0 10px">
+        Context menu item <strong>Send /videofind in payment bot</strong> opens a deep link with the selected username.
+      </p>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:120px">Payment bot username</span>
+        <input type="text" id="tbccPaymentBotUsername" class="tbcc-input" placeholder="aofsubscriptions_bot" style="min-width:240px" />
+      </label>
     </fieldset>
 
     <h2>Sources</h2>

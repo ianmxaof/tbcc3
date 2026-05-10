@@ -3,12 +3,14 @@
 (function () {
   const STORAGE_SETTINGS = "tbcc_gallery_settings";
   const STORAGE_COLLECTED = "tbcc_collected";
+  const STORAGE_PAGE_MEDIA_MENU = "tbccPageMediaMenuEnabled";
 
   const elFormat = document.getElementById("captureSettingFormat");
   const elAuto = document.getElementById("captureSettingAutoRefresh");
   const elHard = document.getElementById("captureSettingHardRefresh");
   const elRt = document.getElementById("captureSettingResourceTiming");
   const elLazy = document.getElementById("captureSettingLazyDelay");
+  const elPageMediaMenu = document.getElementById("captureSettingPageMediaMenu");
   const elClearSelOnOpen = document.getElementById("captureSettingClearSelectionOnOpen");
   const elNotifySystem = document.getElementById("captureSettingNotifySystem");
   const elNotifyZip = document.getElementById("captureSettingNotifyZip");
@@ -29,7 +31,7 @@
   }
 
   async function load() {
-    const o = await new Promise((r) => chrome.storage.local.get(STORAGE_SETTINGS, r));
+    const o = await new Promise((r) => chrome.storage.local.get([STORAGE_SETTINGS, STORAGE_PAGE_MEDIA_MENU], r));
     const s = o[STORAGE_SETTINGS] || {};
     if (elFormat) elFormat.value = s.format === "jpeg" ? "jpeg" : "original";
     if (elAuto) elAuto.checked = s.autoRefresh !== false;
@@ -41,6 +43,7 @@
     if (elNotifySendTbcc) elNotifySendTbcc.checked = s.notifyOnSendTbccComplete !== false;
     if (elNotifySendSaved) elNotifySendSaved.checked = s.notifyOnSendSavedComplete !== false;
     if (elNotifySendChannel) elNotifySendChannel.checked = s.notifyOnSendChannelComplete !== false;
+    if (elPageMediaMenu) elPageMediaMenu.checked = o[STORAGE_PAGE_MEDIA_MENU] !== false;
     if (elLazy) {
       const d = parseInt(String(s.captureLazyDelayMs || 0), 10);
       elLazy.value = String(isNaN(d) ? 0 : Math.max(0, Math.min(3000, d)));
@@ -73,6 +76,10 @@
       if (isNaN(d)) d = 0;
       mergeSave({ captureLazyDelayMs: Math.max(0, Math.min(3000, d)) });
     });
+  if (elPageMediaMenu)
+    elPageMediaMenu.addEventListener("change", () =>
+      chrome.storage.local.set({ [STORAGE_PAGE_MEDIA_MENU]: !!elPageMediaMenu.checked })
+    );
   if (btnClear)
     btnClear.addEventListener("click", async () => {
       if (!confirm("Clear collected media cache in the gallery?")) return;
@@ -84,7 +91,8 @@
     });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes[STORAGE_SETTINGS]) load();
+    if (area !== "local") return;
+    if (changes[STORAGE_SETTINGS] || changes[STORAGE_PAGE_MEDIA_MENU]) load();
   });
 
   async function pingApi() {

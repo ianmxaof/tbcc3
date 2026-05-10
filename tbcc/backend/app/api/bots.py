@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.database.session import get_db
 from app.schemas.common import orm_to_dict
 from app.services.payment_bot_settings_effective import get_effective_payment_bot_settings
+from app.services.loot_bot_settings_effective import get_effective_loot_bot_settings
 
 router = APIRouter()
 _LOCAL_PROCS: dict[str, subprocess.Popen] = {}
@@ -46,8 +47,28 @@ def _runtime_adapter(db: Session) -> str:
     return v if v in ("local", "command") else "local"
 
 
-def _run_command(action: str, db: Session) -> dict:
-    cfg = _runtime_cfg(db)
+def _loot_runtime_cfg(db: Session) -> dict:
+    try:
+        eff = get_effective_loot_bot_settings(db)
+    except Exception:
+        eff = {}
+    return {
+        "adapter": (eff.get("runtime_adapter") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or "local").strip().lower(),
+        "start": (eff.get("runtime_cmd_start") or os.getenv("TBCC_LOOT_BOT_CMD_START") or "").strip(),
+        "stop": (eff.get("runtime_cmd_stop") or os.getenv("TBCC_LOOT_BOT_CMD_STOP") or "").strip(),
+        "restart": (eff.get("runtime_cmd_restart") or os.getenv("TBCC_LOOT_BOT_CMD_RESTART") or "").strip(),
+        "reload": (eff.get("runtime_cmd_reload") or os.getenv("TBCC_LOOT_BOT_CMD_RELOAD") or "").strip(),
+        "status": (eff.get("runtime_cmd_status") or os.getenv("TBCC_LOOT_BOT_CMD_STATUS") or "").strip(),
+    }
+
+
+def _loot_runtime_adapter(db: Session) -> str:
+    v = _loot_runtime_cfg(db)["adapter"]
+    return v if v in ("local", "command") else "local"
+
+
+def _run_command(action: str, db: Session, cfg: dict | None = None) -> dict:
+    cfg = cfg if cfg is not None else _runtime_cfg(db)
     cmd = str(cfg.get(action) or "").strip()
     if not cmd:
         raise HTTPException(status_code=400, detail=f"No command configured for action '{action}'.")
@@ -75,12 +96,13 @@ def _bot_runtime_status_local(name: str) -> dict:
 
 
 def _bot_runtime_status(name: str, db: Session) -> dict:
-    adapter = _runtime_adapter(db)
+    adapter = _loot_runtime_adapter(db) if name == "loot_bot" else _runtime_adapter(db)
     if adapter == "local":
         return _bot_runtime_status_local(name)
-    status_cmd = _runtime_cfg(db).get("status") or ""
+    cfg = _loot_runtime_cfg(db) if name == "loot_bot" else _runtime_cfg(db)
+    status_cmd = cfg.get("status") or ""
     if status_cmd:
-        r = _run_command("status", db)
+        r = _run_command("status", db, cfg)
         msg = str(r.get("message") or "").lower()
         status = "running" if any(x in msg for x in ("running", "active", "up")) else "unknown"
         if any(x in msg for x in ("stopped", "inactive", "down")):
@@ -116,6 +138,33 @@ def _stop_payment_bot(db: Session) -> dict:
     return {"ok": True, "status": "stopped", "pid": None}
 
 
+def _start_loot_bot(db: Session) -> dict:
+    if _loot_runtime_adapter(db) == "command":
+        return _run_command("start", db, _loot_runtime_cfg(db))
+    if _proc_alive("loot_bot"):
+        p = _LOCAL_PROCS["loot_bot"]
+        return {"ok": True, "status": "running", "pid": p.pid, "message": "already running"}
+    cwd = _backend_root()
+    args = [sys.executable, "-m", "bots.loot_bot"]
+    p = subprocess.Popen(args, cwd=str(cwd))
+    _LOCAL_PROCS["loot_bot"] = p
+    return {"ok": True, "status": "running", "pid": p.pid}
+
+
+def _stop_loot_bot(db: Session) -> dict:
+    if _loot_runtime_adapter(db) == "command":
+        return _run_command("stop", db, _loot_runtime_cfg(db))
+    p = _LOCAL_PROCS.get("loot_bot")
+    if not p or p.poll() is not None:
+        return {"ok": True, "status": "stopped", "pid": None, "message": "already stopped"}
+    try:
+        p.terminate()
+        p.wait(timeout=8)
+    except Exception:
+        p.kill()
+    return {"ok": True, "status": "stopped", "pid": None}
+
+
 @router.get("/")
 def list_bots(db: Session = Depends(get_db)):
     from app.models.bot import Bot
@@ -133,6 +182,19 @@ def list_bots(db: Session = Depends(get_db)):
                 "adapter": runtime.get("adapter"),
             }
         )
+    loot_rt = _bot_runtime_status("loot_bot", db)
+    if not any(str(r.get("name") or "").lower() == "loot_bot" for r in rows):
+        rows.append(
+            {
+                "id": "runtime:loot_bot",
+                "name": "loot_bot",
+                "role": "loot_overseer",
+                "status": loot_rt["status"],
+                "last_seen": None,
+                "pid": loot_rt.get("pid"),
+                "adapter": loot_rt.get("adapter"),
+            }
+        )
     return rows
 
 
@@ -148,8 +210,8 @@ def get_bot(bot_id: int, db: Session = Depends(get_db)):
 @router.get("/runtime/{bot_key}")
 def get_bot_runtime(bot_key: str, db: Session = Depends(get_db)):
     key = (bot_key or "").strip().lower()
-    if key != "payment_bot":
-        raise HTTPException(status_code=404, detail="Only payment_bot runtime controls are wired in this step.")
+    if key not in ("payment_bot", "loot_bot"):
+        raise HTTPException(status_code=404, detail="Unknown bot_key; use payment_bot or loot_bot.")
     return _bot_runtime_status(key, db)
 
 
@@ -157,26 +219,51 @@ def get_bot_runtime(bot_key: str, db: Session = Depends(get_db)):
 def control_bot_runtime(bot_key: str, action: str, db: Session = Depends(get_db)):
     key = (bot_key or "").strip().lower()
     act = (action or "").strip().lower()
-    if key != "payment_bot":
-        raise HTTPException(status_code=404, detail="Only payment_bot runtime controls are wired in this step.")
+    if key not in ("payment_bot", "loot_bot"):
+        raise HTTPException(status_code=404, detail="Unknown bot_key; use payment_bot or loot_bot.")
+    if key == "payment_bot":
+        if act == "start":
+            return _start_payment_bot(db)
+        if act == "stop":
+            return _stop_payment_bot(db)
+        if act == "restart":
+            if _runtime_adapter(db) == "command":
+                cmd = (_runtime_cfg(db).get("restart") or "").strip()
+                if cmd:
+                    return _run_command("restart", db)
+            _stop_payment_bot(db)
+            return _start_payment_bot(db)
+        if act == "reload":
+            if _runtime_adapter(db) == "command":
+                cmd = (_runtime_cfg(db).get("reload") or "").strip()
+                if cmd:
+                    return _run_command("reload", db)
+            if _proc_alive("payment_bot"):
+                p = _LOCAL_PROCS["payment_bot"]
+                return {"ok": True, "status": "running", "pid": p.pid, "message": "config auto-refreshes every ~30s"}
+            return {"ok": True, "status": "stopped", "pid": None, "message": "bot is stopped; start it to apply config"}
+        raise HTTPException(status_code=400, detail="Action must be one of: start, stop, restart, reload")
+
     if act == "start":
-        return _start_payment_bot(db)
+        return _start_loot_bot(db)
     if act == "stop":
-        return _stop_payment_bot(db)
+        return _stop_loot_bot(db)
     if act == "restart":
-        if _runtime_adapter(db) == "command":
-            cmd = (_runtime_cfg(db).get("restart") or "").strip()
+        if _loot_runtime_adapter(db) == "command":
+            lcfg = _loot_runtime_cfg(db)
+            cmd = (lcfg.get("restart") or "").strip()
             if cmd:
-                return _run_command("restart", db)
-        _stop_payment_bot(db)
-        return _start_payment_bot(db)
+                return _run_command("restart", db, lcfg)
+        _stop_loot_bot(db)
+        return _start_loot_bot(db)
     if act == "reload":
-        if _runtime_adapter(db) == "command":
-            cmd = (_runtime_cfg(db).get("reload") or "").strip()
+        if _loot_runtime_adapter(db) == "command":
+            lcfg = _loot_runtime_cfg(db)
+            cmd = (lcfg.get("reload") or "").strip()
             if cmd:
-                return _run_command("reload", db)
-        if _proc_alive("payment_bot"):
-            p = _LOCAL_PROCS["payment_bot"]
-            return {"ok": True, "status": "running", "pid": p.pid, "message": "config auto-refreshes every ~30s"}
+                return _run_command("reload", db, lcfg)
+        if _proc_alive("loot_bot"):
+            p = _LOCAL_PROCS["loot_bot"]
+            return {"ok": True, "status": "running", "pid": p.pid, "message": "config auto-refreshes from TBCC API"}
         return {"ok": True, "status": "stopped", "pid": None, "message": "bot is stopped; start it to apply config"}
     raise HTTPException(status_code=400, detail="Action must be one of: start, stop, restart, reload")

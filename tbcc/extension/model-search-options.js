@@ -15,6 +15,7 @@ const STORAGE_REVERSE_MODE = "tbccReverseImageOpenMode";
 const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
 const STORAGE_CUSTOM_ADAPTERS = "tbccCustomGalleryAdapters";
 const STORAGE_THEME = "tbccThemePreset";
+const STORAGE_PAYMENT_BOT_USERNAME = "tbccPaymentBotUsername";
 
 /** Legacy "dashboard" single-tab aggregator removed — map to foreground tabs. */
 function normalizeOpenMode(stored) {
@@ -361,6 +362,7 @@ function renderMergedModelSearchSources(cfg, customSites, enabledMap) {
   const builtinByCat = {
     [MODEL_SEARCH_CATEGORY_ONLYFANS]: [],
     [MODEL_SEARCH_CATEGORY_LIVECAMS]: [],
+    [MODEL_SEARCH_CATEGORY_VIDEOS]: [],
   };
   for (const s of cfg.sites || []) {
     const c = normalizeModelSearchCategory(s.category);
@@ -369,12 +371,13 @@ function renderMergedModelSearchSources(cfg, customSites, enabledMap) {
   const customByCat = {
     [MODEL_SEARCH_CATEGORY_ONLYFANS]: [],
     [MODEL_SEARCH_CATEGORY_LIVECAMS]: [],
+    [MODEL_SEARCH_CATEGORY_VIDEOS]: [],
   };
   for (const s of customSites) {
     customByCat[normalizeModelSearchCategory(s.category)].push(s);
   }
 
-  for (const cat of [MODEL_SEARCH_CATEGORY_ONLYFANS, MODEL_SEARCH_CATEGORY_LIVECAMS]) {
+  for (const cat of [MODEL_SEARCH_CATEGORY_ONLYFANS, MODEL_SEARCH_CATEGORY_LIVECAMS, MODEL_SEARCH_CATEGORY_VIDEOS]) {
     const fs = document.createElement("fieldset");
     const leg = document.createElement("legend");
     leg.textContent = modelSearchCategoryLabel(cat);
@@ -517,6 +520,21 @@ async function refreshModelSearchUi() {
     });
   });
   await renderModelSearchHistory();
+})();
+
+(function () {
+  const el = document.getElementById("tbccPaymentBotUsername");
+  if (!el) return;
+  chrome.storage.local.get([STORAGE_PAYMENT_BOT_USERNAME], (data) => {
+    el.value = data?.[STORAGE_PAYMENT_BOT_USERNAME] || "";
+  });
+  el.addEventListener("blur", () => {
+    const next = String(el.value || "").trim().replace(/^@+/, "");
+    chrome.storage.local.set({ [STORAGE_PAYMENT_BOT_USERNAME]: next }, () => {
+      setStatus("Saved.");
+      setTimeout(() => setStatus(""), 1600);
+    });
+  });
 })();
 
 if (btnClearHistory) {

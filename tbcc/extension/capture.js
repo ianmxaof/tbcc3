@@ -788,6 +788,62 @@
     }
   }
 
+  function isRedgifsHost() {
+    try {
+      return /(^|\.)redgifs\.com$/i.test(location.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function redgifsDetailPageFromHref(href) {
+    if (!href) return "";
+    try {
+      var u = new URL(href, location.href);
+      if (!/(^|\.)redgifs\.com$/i.test(u.hostname)) return "";
+      var p = (u.pathname || "").toLowerCase();
+      var m = p.match(/^\/(?:watch|ifr|gifs)\/([^/?#]+)/i);
+      if (!m || !m[1]) return "";
+      return "https://www.redgifs.com/watch/" + m[1];
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function findRedgifsMediaLink(el) {
+    if (!isRedgifsHost() || !el) return null;
+    var a = el.closest && el.closest("a[href]");
+    if (a && redgifsDetailPageFromHref(a.href)) return a;
+    var node = el.parentElement;
+    for (var d = 0; d < 14 && node; d++) {
+      var ch = node.children;
+      for (var i = 0; i < ch.length; i++) {
+        var c = ch[i];
+        if (c.tagName === "A" && c.href && redgifsDetailPageFromHref(c.href)) return c;
+        if (c.querySelector) {
+          var inner = c.querySelector("a[href]");
+          if (inner && inner.href && redgifsDetailPageFromHref(inner.href)) return inner;
+        }
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function redgifsDetailUrlIfEligible(el) {
+    if (!isRedgifsHost() || !el) return "";
+    var tag = el.tagName;
+    if (tag !== "IMG" && tag !== "VIDEO") return "";
+    var link = findRedgifsMediaLink(el);
+    if (link && link.href) return redgifsDetailPageFromHref(link.href);
+    try {
+      var cur = new URL(location.href);
+      var m = (cur.pathname || "").match(/^\/(?:watch|ifr|gifs)\/([^/?#]+)/i);
+      if (m && m[1]) return "https://www.redgifs.com/watch/" + m[1];
+    } catch (_) {}
+    return "";
+  }
+
   function eromeCurrentDetailPageUrl() {
     if (!isEromeHost()) return "";
     try {
@@ -1142,8 +1198,12 @@
                 var gdu = genericDetailPageUrlIfEligible(el);
                 if (gdu) extra.detailPageUrl = gdu;
                 else {
-                  var edu = eromeCurrentDetailPageUrl();
-                  if (edu) extra.detailPageUrl = edu;
+                  var rdu = redgifsDetailUrlIfEligible(el);
+                  if (rdu) extra.detailPageUrl = rdu;
+                  else {
+                    var edu = eromeCurrentDetailPageUrl();
+                    if (edu) extra.detailPageUrl = edu;
+                  }
                 }
               }
             }
@@ -1304,8 +1364,12 @@
           var flvv = fetlifeVideoDetailUrlIfEligible(el);
           if (flvv) extra.detailPageUrl = flvv;
           else {
-            var edv = eromeCurrentDetailPageUrl();
-            if (edv) extra.detailPageUrl = edv;
+            var rdv = redgifsDetailUrlIfEligible(el);
+            if (rdv) extra.detailPageUrl = rdv;
+            else {
+              var edv = eromeCurrentDetailPageUrl();
+              if (edv) extra.detailPageUrl = edv;
+            }
           }
         }
       }

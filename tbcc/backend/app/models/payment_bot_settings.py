@@ -27,3 +27,6 @@ class PaymentBotSettings(Base):
     runtime_cmd_restart = Column(Text, nullable=True)
     runtime_cmd_reload = Column(Text, nullable=True)
     runtime_cmd_status = Column(Text, nullable=True)
+    video_finder_enabled = Column(Integer, nullable=True)  # 1/0
+    video_finder_sources_json = Column(Text, nullable=True)
+    video_finder_max_links_per_source = Column(Integer, nullable=True)

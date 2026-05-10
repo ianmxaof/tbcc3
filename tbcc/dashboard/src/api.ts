@@ -57,12 +57,16 @@ function parseFastApiErrorBody(text: string): string {
 async function fetchApi<T>(path: string, options?: ApiFetchOptions): Promise<T> {
   const timeoutMs = options?.timeoutMs ?? FETCH_TIMEOUT_MS;
   const { timeoutMs: _omit, ...fetchInit } = options ?? {};
+  const isFormDataBody = typeof FormData !== "undefined" && fetchInit.body instanceof FormData;
+  const mergedHeaders = isFormDataBody
+    ? { ...(fetchInit.headers ?? {}) }
+    : { "Content-Type": "application/json", ...(fetchInit.headers ?? {}) };
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...fetchInit,
       signal: fetchInit.signal ?? timeoutSignal(timeoutMs),
-      headers: { "Content-Type": "application/json", ...fetchInit.headers },
+      headers: mergedHeaders,
     });
   } catch (e) {
     const msg = isTimedOutFetchError(e)
@@ -126,6 +130,58 @@ export type PaymentBotSettings = {
   runtime_cmd_restart?: string | null;
   runtime_cmd_reload?: string | null;
   runtime_cmd_status?: string | null;
+  video_finder_enabled?: boolean;
+  video_finder_sources?: Array<{ id: string; name: string; url: string }>;
+  video_finder_max_links_per_source?: number;
+};
+
+export type LootBotSettingsEffective = {
+  bot_username: string;
+  primary_loot_room_invite_url: string;
+  primary_loot_room_chat_id: number | null;
+  config_poll_seconds: number;
+  narrative_enabled: boolean;
+  narrative_system_prompt: string | null;
+  drop_spoiler_default: boolean;
+  runtime_adapter: string;
+  runtime_cmd_start?: string | null;
+  runtime_cmd_stop?: string | null;
+  runtime_cmd_restart?: string | null;
+  runtime_cmd_reload?: string | null;
+  runtime_cmd_status?: string | null;
+  operator_notes?: string | null;
+  bot_token_masked: string | null;
+  bot_token_configured: boolean;
+  bot_token_source: string;
+};
+
+export type LootModifier = {
+  id: number;
+  kind: string;
+  label?: string | null;
+  target_url?: string | null;
+  telegram_chat_id?: number | null;
+  weight_base: number;
+  rarity_focus: number;
+  bypass_vip: boolean;
+  active: boolean;
+  source_note?: string | null;
+  created_at?: string | null;
+};
+
+export type LootRollPreview = {
+  ok: boolean;
+  reason?: string;
+  seed?: number;
+  interval_code?: string;
+  interval_seconds?: number;
+  bonus_album_draws?: number;
+  rarity_tier?: number;
+  album_size?: number;
+  modifier_slot_count?: number;
+  eligible_pool_ids?: number[];
+  media?: Array<{ id: number; pool_id: number; media_type?: string; tags?: string | null }>;
+  modifiers?: Array<{ id: number; kind: string; label?: string | null; target_url?: string | null }>;
 };
 
 export const api = {
@@ -533,6 +589,82 @@ export const api = {
         "/payment-bot-settings",
         { method: "PATCH", body: JSON.stringify(body) }
       ),
+  },
+  lootBotSettings: {
+    get: () =>
+      fetchApi<{ effective: LootBotSettingsEffective; overrides: Record<string, unknown> }>("/loot-bot-settings"),
+    patch: (body: Record<string, unknown>) =>
+      fetchApi<{ ok: boolean; effective: LootBotSettingsEffective; overrides: Record<string, unknown> }>(
+        "/loot-bot-settings",
+        { method: "PATCH", body: JSON.stringify(body) }
+      ),
+  },
+  loot: {
+    listModifiers: (includeInactive = true) =>
+      fetchApi<LootModifier[]>(`/loot/modifiers?include_inactive=${includeInactive ? "true" : "false"}`),
+    createModifier: (body: Partial<LootModifier> & { kind: string }) =>
+      fetchApi<LootModifier>("/loot/modifiers", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    patchModifier: (id: number, body: Partial<LootModifier>) =>
+      fetchApi<LootModifier>(`/loot/modifiers/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    deleteModifier: (id: number) =>
+      fetchApi<{ deleted: number }>(`/loot/modifiers/${id}`, {
+        method: "DELETE",
+      }),
+    uploadZipModifier: (args: {
+      file: File;
+      label?: string;
+      weight_base?: number;
+      rarity_focus?: number;
+      active?: boolean;
+      bypass_vip?: boolean;
+      source_note?: string;
+    }) => {
+      const params = new URLSearchParams();
+      if (args.label != null) params.set("label", String(args.label));
+      if (args.weight_base != null) params.set("weight_base", String(args.weight_base));
+      if (args.rarity_focus != null) params.set("rarity_focus", String(args.rarity_focus));
+      if (args.active != null) params.set("active", String(Boolean(args.active)));
+      if (args.bypass_vip != null) params.set("bypass_vip", String(Boolean(args.bypass_vip)));
+      if (args.source_note != null) params.set("source_note", String(args.source_note));
+      const fd = new FormData();
+      fd.append("file", args.file);
+      const q = params.toString();
+      return fetchApi<LootModifier>(`/loot/modifiers/upload-zip${q ? `?${q}` : ""}`, {
+        method: "POST",
+        body: fd,
+      });
+    },
+    rollPreview: (args?: { telegram_user_id?: number; interval_code?: "m15" | "m30" | "m45" | "m60"; seed?: number }) => {
+      const params = new URLSearchParams();
+      if (args?.telegram_user_id != null) params.set("telegram_user_id", String(args.telegram_user_id));
+      if (args?.interval_code) params.set("interval_code", args.interval_code);
+      if (args?.seed != null) params.set("seed", String(args.seed));
+      const q = params.toString();
+      return fetchApi<LootRollPreview>(`/loot/roll-preview${q ? `?${q}` : ""}`);
+    },
+    sendPreviewDm: (args?: {
+      telegram_user_id?: number;
+      interval_code?: "m15" | "m30" | "m45" | "m60";
+      seed?: number;
+      to_telegram_user_id?: number;
+    }) => {
+      const params = new URLSearchParams();
+      if (args?.telegram_user_id != null) params.set("telegram_user_id", String(args.telegram_user_id));
+      if (args?.interval_code) params.set("interval_code", args.interval_code);
+      if (args?.seed != null) params.set("seed", String(args.seed));
+      if (args?.to_telegram_user_id != null) params.set("to_telegram_user_id", String(args.to_telegram_user_id));
+      const q = params.toString();
+      return fetchApi<{ ok: boolean; sent_to: number; preview: LootRollPreview }>(
+        `/loot/send-preview-dm${q ? `?${q}` : ""}`,
+        { method: "POST", body: "{}" }
+      );
+    },
   },
   externalPaymentOrders: {
     listPending: () =>

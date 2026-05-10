@@ -12,12 +12,14 @@ from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, link_resolver
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
 from app.models.link_resolver_request import LinkResolverRequest  # noqa: F401
+from app.models.loot_bot_settings import LootBotSettings  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
+from app.services.bundle_storage import ensure_bundle_dir
 from app.services.nowpayments_client import crypto_auto_checkout_ready
 
 _EXTERNAL_PAY_IMPL = getattr(
@@ -54,7 +56,10 @@ def on_startup():
                     "runtime_cmd_stop TEXT, "
                     "runtime_cmd_restart TEXT, "
                     "runtime_cmd_reload TEXT, "
-                    "runtime_cmd_status TEXT)"
+                    "runtime_cmd_status TEXT, "
+                    "video_finder_enabled INTEGER, "
+                    "video_finder_sources_json TEXT, "
+                    "video_finder_max_links_per_source INTEGER)"
                 )
             )
         try:
@@ -74,6 +79,16 @@ def on_startup():
                         conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_reload TEXT"))
                     if "runtime_cmd_status" not in cols:
                         conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_status TEXT"))
+                    if "video_finder_enabled" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN video_finder_enabled INTEGER"))
+                    if "video_finder_sources_json" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN video_finder_sources_json TEXT"))
+                    if "video_finder_max_links_per_source" not in cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE payment_bot_settings ADD COLUMN video_finder_max_links_per_source INTEGER"
+                            )
+                        )
         except Exception:
             logger.exception("SQLite: failed to patch payment_bot_settings columns")
         # create_all() does not ALTER existing SQLite tables — add columns from newer models if missing.
@@ -304,7 +319,10 @@ def on_startup():
                         "runtime_cmd_stop TEXT, "
                         "runtime_cmd_restart TEXT, "
                         "runtime_cmd_reload TEXT, "
-                        "runtime_cmd_status TEXT)"
+                        "runtime_cmd_status TEXT, "
+                        "video_finder_enabled INTEGER, "
+                        "video_finder_sources_json TEXT, "
+                        "video_finder_max_links_per_source INTEGER)"
                     )
                 )
             logger.info("Startup: ensured payment_bot_settings table exists")
@@ -324,6 +342,16 @@ def on_startup():
                         conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_reload TEXT"))
                     if "runtime_cmd_status" not in cols:
                         conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN runtime_cmd_status TEXT"))
+                    if "video_finder_enabled" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN video_finder_enabled INTEGER"))
+                    if "video_finder_sources_json" not in cols:
+                        conn.execute(text("ALTER TABLE payment_bot_settings ADD COLUMN video_finder_sources_json TEXT"))
+                    if "video_finder_max_links_per_source" not in cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE payment_bot_settings ADD COLUMN video_finder_max_links_per_source INTEGER"
+                            )
+                        )
         except Exception:
             logger.exception("Startup: failed to ensure payment_bot_settings table")
         # Keep Postgres dev/prod resilient when model columns are added before alembic is applied.
@@ -566,6 +594,8 @@ app.include_router(subscriptions.router, prefix="/subscriptions", tags=["subscri
 app.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
 app.include_router(growth_settings.router, prefix="/growth-settings", tags=["growth-settings"])
 app.include_router(payment_bot_settings.router, prefix="/payment-bot-settings", tags=["payment-bot-settings"])
+app.include_router(loot_bot_settings.router, prefix="/loot-bot-settings", tags=["loot-bot-settings"])
+app.include_router(loot.router, prefix="/loot", tags=["loot"])
 app.include_router(external_payment_orders.router, prefix="/external-payment-orders", tags=["external-payment-orders"])
 app.include_router(webhooks_payment.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(subscription_plans.router, prefix="/subscription-plans", tags=["subscription-plans"])
@@ -574,6 +604,7 @@ app.include_router(scheduled_posts.router, prefix="/scheduled-posts", tags=["sch
 app.include_router(internal_launch.router, prefix="/internal", tags=["internal"])
 app.include_router(watch_folder.router, prefix="/watch-folder", tags=["watch-folder"])
 app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
+app.include_router(crawler.router, prefix="/crawler", tags=["crawler"])
 
 
 @app.get("/")
@@ -629,4 +660,12 @@ app.mount(
     "/static/promo",
     StaticFiles(directory=str(_promo_dir)),
     name="promo_uploads",
+)
+
+# Public bundle files (zip modifiers, pack assets) — use public base URL for Telegram clients.
+_bundle_dir = ensure_bundle_dir()
+app.mount(
+    "/static/bundles",
+    StaticFiles(directory=str(_bundle_dir)),
+    name="bundle_uploads",
 )

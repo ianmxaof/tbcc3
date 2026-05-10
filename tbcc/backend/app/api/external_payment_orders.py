@@ -20,6 +20,7 @@ from app.models.external_payment_order import ExternalPaymentOrder
 from app.models.subscription_plan import SubscriptionPlan
 from app.schemas.common import orm_to_dict
 from app.services.external_payment_fulfill import fulfill_external_order
+from app.services.payment_admin_notify import notify_epo_pending
 from app.services.nowpayments_client import (
     can_use_nowpayments_ipn,
     checkout_url_and_hint,
@@ -248,6 +249,12 @@ def create_external_order(
             except Exception as e:
                 logger.warning("NOWPayments checkout not created for %s: %s", code, e)
                 out["crypto_checkout_error"] = str(e)
+        notify_epo_pending(
+            reference_code=code,
+            telegram_user_id=int(telegram_user_id),
+            plan_name=str(plan.name or "Product"),
+            price_stars=int(plan.price_stars or 0),
+        )
         return out
 
     logger.error(

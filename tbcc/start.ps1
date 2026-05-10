@@ -2,7 +2,7 @@
 #   .\start.ps1              — backend + dashboard; opens http://127.0.0.1:5173 in Brave if installed, else default browser
 #   .\start.ps1 -NoOpen      — do not open a browser
 #   .\start.ps1 -Open        — also open http://127.0.0.1:8000/docs (Swagger) in the same browser
-#   .\start.ps1 -Full        — backend + dashboard + Redis + Celery + Beat + payment bot
+#   .\start.ps1 -Full        — backend + dashboard + Redis + Celery + Beat + payment bot + secretary + loot overseer bot
 #   .\start.ps1 -SkipDocker     — skip Postgres/Redis step (use when Docker DBs already running)
 #   .\start.ps1 -SkipMigrations — skip alembic upgrade (rare; only if you manage schema yourself)
 #
@@ -10,7 +10,9 @@
 #   .\start.ps1 -CompactConsole  — smaller cmd windows (88×24 buffer) so they tile more easily
 #   .\start.ps1 -WideConsole     — larger windows (140×40)
 #   .\start.ps1 -WtTabs          — one Windows Terminal window, one tab per service (needs wt.exe / Windows Terminal)
-#   .\start.ps1 -WtTabs -Full    — all five workers (backend, dashboard, celery, beat, payment) as tabs
+#   .\start.ps1 -WtTabs -Full    — eight tabs (backend, dashboard, celery, beat, payment bot, secretary, loot overseer)
+#   .\start.ps1 -WtTabs -LlmChat — add tab TBCC-LlmChatBot (Ollama/OpenAI bridge; see TBCC_LLM_CHAT_BOT_TOKEN in .env)
+#   .\start.ps1 -NoReload        — uvicorn without --reload (less subprocess/socket churn; helps if Windows reports WinError 10055)
 #
 # When Docker is needed, the script starts Docker Desktop if the engine is not up yet (Windows).
 # New windows use cmd.exe /k so they show reliably when run from Cursor / VS Code / ISE.
@@ -25,6 +27,8 @@ $openDocsToo = $args -contains "-Open"
 $wtTabs = ($args -contains "-WtTabs") -or ($args -contains "-WindowsTerminalTabs")
 $compactConsole = $args -contains "-CompactConsole"
 $wideConsole = $args -contains "-WideConsole"
+$noReload = $args -contains "-NoReload"
+$llmChat = $args -contains "-LlmChat"
 
 $consoleCols = 100
 $consoleLines = 28
@@ -178,7 +182,7 @@ function Ensure-DockerDesktopRunning {
 Write-Host "TBCC Launch" -ForegroundColor Cyan
 Write-Host '  Backend:  http://localhost:8000 | Dashboard: http://127.0.0.1:5173' -ForegroundColor Gray
 if ($fullStack) {
-  Write-Host '  Full stack: Postgres+Redis (Docker) + 5 processes (Backend, Dashboard, Celery, Beat, Payment bot)' -ForegroundColor Gray
+  Write-Host '  Full stack: Postgres+Redis (Docker) + 7 worker processes (Backend, Dashboard, Celery, Beat, Payment bot, Secretary, Loot overseer)' -ForegroundColor Gray
 }
 Write-Host ('  Console: ' + $consoleCols + 'x' + $consoleLines + ' - use -CompactConsole / -WideConsole for window size, or -WtTabs for one Windows Terminal with tabs') -ForegroundColor Gray
 Write-Host ""
@@ -250,11 +254,15 @@ if (-not $skipMigrations) {
 }
 
 # Service commands (cmd.exe: use one & between parts - avoids PS7 tokenizing && in scripts)
-$cmdBackend = 'cd /d "' + $backendDir + '" & python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-exclude scripts --reload-delay 1'
+$uvicornReload = if ($noReload) { '' } else { ' --reload --reload-exclude scripts --reload-delay 1' }
+$cmdBackend = 'cd /d "' + $backendDir + '" & python -m uvicorn app.main:app --host 127.0.0.1 --port 8000' + $uvicornReload
 $cmdDashboard = 'cd /d "' + $dashboardDir + '" & npm run dev'
 $cmdCelery = 'cd /d "' + $backendDir + '" & python -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,post,scrape,subscription'
 $cmdBeat = 'cd /d "' + $backendDir + '" & python -m celery -A app.workers.celery_app beat -l info'
 $cmdPay = 'cd /d "' + $backendDir + '" & python -m bots.payment_bot'
+$cmdSecretary = 'cd /d "' + $backendDir + '" & python -m bots.secretary_bot'
+$cmdLoot = 'cd /d "' + $backendDir + '" & python -m bots.loot_bot'
+$cmdLlmChat = 'cd /d "' + $backendDir + '" & python -m bots.llm_chat_bot'
 
 $redisOk = $false
 if ($fullStack) {
@@ -284,10 +292,16 @@ if ($wtTabs) {
   $titles = @('TBCC-Backend', 'TBCC-Dashboard')
   $cmds = @($cmdBackend, $cmdDashboard)
   if ($fullStack -and $redisOk) {
-    $titles += 'TBCC-Celery', 'TBCC-Beat', 'TBCC-PaymentBot'
-    $cmds += $cmdCelery, $cmdBeat, $cmdPay
+    $titles += 'TBCC-Celery', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot'
+    $cmds += $cmdCelery, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot
   } elseif ($fullStack -and -not $redisOk) {
-    Write-Host '  (-WtTabs) Redis unavailable - only Backend + Dashboard tabs (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
+    $titles += 'TBCC-LootBot'
+    $cmds += $cmdLoot
+    Write-Host '  (-WtTabs) Redis unavailable — Backend + Dashboard + Loot overseer (no Celery/Beat/Payment/Secretary).' -ForegroundColor DarkYellow
+  }
+  if ($llmChat) {
+    $titles += 'TBCC-LlmChatBot'
+    $cmds += $cmdLlmChat
   }
   $wtLaunched = Start-TbccWtTabs -Titles $titles -Commands $cmds -Cols $consoleCols -Lines $consoleLines
 }
@@ -336,18 +350,33 @@ if (-not $wtLaunched) {
 
 if ($fullStack) {
   if ($wtLaunched) {
-    Write-Host '[3/6]–[6/6] Full stack already in Terminal tabs (or only Backend+Dashboard if Redis was down).' -ForegroundColor Gray
+    Write-Host '[3/8]–[8/8] Full stack already in Windows Terminal tabs (or Backend+Dashboard+Loot if Redis was down).' -ForegroundColor Gray
   } elseif ($redisOk) {
     Start-Sleep -Seconds 1
-    Write-Host '[4/6] Starting Celery worker (new window)...' -ForegroundColor Yellow
+    Write-Host '[4/8] Starting Celery worker (new window)...' -ForegroundColor Yellow
     Start-TbccCmdWindow -Title "TBCC-Celery" -Command $cmdCelery -Cols $consoleCols -Lines $consoleLines
     Write-Host "  Celery worker started." -ForegroundColor Green
-    Write-Host '[5/6] Starting Celery Beat (new window)...' -ForegroundColor Yellow
+    Write-Host '[5/8] Starting Celery Beat (new window)...' -ForegroundColor Yellow
     Start-TbccCmdWindow -Title "TBCC-Beat" -Command $cmdBeat -Cols $consoleCols -Lines $consoleLines
     Write-Host "  Celery Beat started." -ForegroundColor Green
-    Write-Host '[6/6] Starting payment bot (new window)...' -ForegroundColor Yellow
+    Write-Host '[6/8] Starting payment bot (new window)...' -ForegroundColor Yellow
     Start-TbccCmdWindow -Title "TBCC-PaymentBot" -Command $cmdPay -Cols $consoleCols -Lines $consoleLines
     Write-Host "  Payment bot started." -ForegroundColor Green
+    Write-Host '[7/8] Starting secretary bot (FAQ / Business drafts) (new window)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-SecretaryBot" -Command $cmdSecretary -Cols $consoleCols -Lines $consoleLines
+    Write-Host "  Secretary bot started." -ForegroundColor Green
+    Write-Host '[8/8] Starting loot overseer bot (new window)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-LootBot" -Command $cmdLoot -Cols $consoleCols -Lines $consoleLines
+    Write-Host "  Loot overseer bot started." -ForegroundColor Green
+  } elseif (-not $redisOk) {
+    Write-Host '[3/4] Redis down — starting loot overseer only (needs API, not Redis)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-LootBot" -Command $cmdLoot -Cols $consoleCols -Lines $consoleLines
+    Write-Host "  Loot overseer bot started." -ForegroundColor Green
+  }
+  if ($llmChat -and -not $wtLaunched) {
+    Write-Host 'Starting LLM chat bot (new window)...' -ForegroundColor Yellow
+    Start-TbccCmdWindow -Title "TBCC-LlmChatBot" -Command $cmdLlmChat -Cols $consoleCols -Lines $consoleLines
+    Write-Host "  LLM chat bot started." -ForegroundColor Green
   }
 }
 

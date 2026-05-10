@@ -41,6 +41,21 @@
   const tracked = [];
   let tbccLastContextUsername = "";
   const STORAGE_LAST_COPIED_USERNAME = "tbccLastCopiedUsername";
+  const TBCC_PAGE_MENU_ID = "tbcc-page-media-menu";
+  let tbccPageMenu = null;
+  let tbccPageMenuUrl = "";
+  let tbccPageMenuFrameUrl = "";
+  let tbccPageMenuEl = null;
+  let tbccPageMenuOpenedAt = 0;
+  let pageMediaMenuEnabled = true;
+  let rightClickFallbackCtx = null;
+  const tbccIsRedgifsHost = /(^|\.)redgifs\.com$/i.test(location.hostname || "");
+
+  function shouldUseCustomPageMenuForEvent(e) {
+    if (!pageMediaMenuEnabled) return false;
+    if (tbccIsRedgifsHost) return true;
+    return !!(e && e.altKey);
+  }
 
   function normalizeUsernameCandidate(raw) {
     if (!raw) return "";
@@ -452,8 +467,434 @@
     const s = document.createElement("style");
     s.id = STYLE_ID;
     s.textContent =
-      ".tbcc-page-overlay-cb{position:fixed;z-index:2147483647;width:20px;height:20px;cursor:pointer;accent-color:#89b4fa;pointer-events:auto;box-sizing:border-box;margin:0;padding:0;}";
+      ".tbcc-page-overlay-cb{position:fixed;z-index:2147483647;width:20px;height:20px;cursor:pointer;accent-color:#89b4fa;pointer-events:auto;box-sizing:border-box;margin:0;padding:0;}" +
+      ".tbcc-page-menu{position:fixed;z-index:2147483647;min-width:168px;background:#f4f4f4;color:#1f1f1f;border:1px solid #c8c8c8;border-radius:6px;padding:3px;box-shadow:0 4px 12px rgba(0,0,0,.28);font:12px/1.25 'Segoe UI',Tahoma,sans-serif;}" +
+      ".tbcc-page-menu[hidden]{display:none!important;}" +
+      ".tbcc-page-menu button{display:block;width:100%;text-align:left;background:transparent;border:0;color:inherit;padding:4px 8px;border-radius:4px;cursor:pointer;}" +
+      ".tbcc-page-menu button:hover{background:#dbeafe;}" +
+      ".tbcc-page-menu .tbcc-page-menu-title{opacity:.72;padding:3px 8px 4px 8px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}";
     (document.head || document.documentElement).appendChild(s);
+  }
+
+  function ensurePageMenu() {
+    injectStyles();
+    if (tbccPageMenu && tbccPageMenu.isConnected) return tbccPageMenu;
+    if (!document.body) return null;
+    const root = document.createElement("div");
+    root.id = TBCC_PAGE_MENU_ID;
+    root.className = "tbcc-page-menu";
+    root.hidden = true;
+    root.innerHTML =
+      '<div class="tbcc-page-menu-title">TBCC Media</div>' +
+      '<button type="button" data-act="download-url">Download media</button>' +
+      '<button type="button" data-act="download-frame">Download frame</button>' +
+      '<button type="button" data-act="save-pool">Save to pool</button>' +
+      '<button type="button" data-act="save-saved">Save to Saved Messages</button>' +
+      '<button type="button" data-act="toggle-select">Toggle overlay select</button>' +
+      '<button type="button" data-act="copy-url">Copy media URL</button>' +
+      '<button type="button" data-act="open-url">Open media URL</button>';
+    root.addEventListener("click", (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest("button[data-act]") : null;
+      if (!btn) return;
+      const action = btn.getAttribute("data-act") || "";
+      void handlePageMenuAction(action).catch(() => {});
+    });
+    document.body.appendChild(root);
+    tbccPageMenu = root;
+    return root;
+  }
+
+  function closePageMenu() {
+    if (!tbccPageMenu) return;
+    tbccPageMenu.hidden = true;
+    tbccPageMenuUrl = "";
+    tbccPageMenuFrameUrl = "";
+    tbccPageMenuEl = null;
+  }
+
+  /**
+   * Reddit and other hosts ship a Permissions-Policy that blocks clipboard-write
+   * for embedded/extension contexts. Probing the policy avoids the noisy
+   * "Clipboard API has been blocked" console error before falling back.
+   */
+  function clipboardWriteAllowed() {
+    try {
+      const fp = document.permissionsPolicy || document.featurePolicy;
+      if (fp && typeof fp.allowsFeature === "function") {
+        return !!fp.allowsFeature("clipboard-write");
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  function copyTextViaExecCommand(text) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = String(text == null ? "" : text);
+      ta.setAttribute("readonly", "");
+      ta.style.cssText =
+        "position:fixed;top:-1000px;left:-1000px;width:1px;height:1px;opacity:0;pointer-events:none;";
+      (document.body || document.documentElement).appendChild(ta);
+      const prevActive = document.activeElement;
+      ta.focus();
+      ta.select();
+      try {
+        ta.setSelectionRange(0, ta.value.length);
+      } catch (_) {}
+      let ok = false;
+      try {
+        ok = !!document.execCommand("copy");
+      } catch (_) {}
+      ta.remove();
+      try {
+        if (prevActive && typeof prevActive.focus === "function") prevActive.focus();
+      } catch (_) {}
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function copyTextToClipboard(text) {
+    const s = String(text == null ? "" : text);
+    if (!s) return false;
+    if (
+      clipboardWriteAllowed() &&
+      typeof navigator !== "undefined" &&
+      navigator.clipboard &&
+      typeof navigator.clipboard.writeText === "function"
+    ) {
+      try {
+        await navigator.clipboard.writeText(s);
+        return true;
+      } catch (_) {}
+    }
+    return copyTextViaExecCommand(s);
+  }
+
+  function openPageMenu(x, y, url, el, frameUrl) {
+    const menu = ensurePageMenu();
+    if (!menu || !url) return;
+    tbccPageMenuUrl = url;
+    tbccPageMenuFrameUrl = frameUrl || url;
+    tbccPageMenuEl = el || null;
+    const title = menu.querySelector(".tbcc-page-menu-title");
+    if (title) title.textContent = "TBCC Media: " + String(url).replace(/^https?:\/\//i, "").slice(0, 80);
+    menu.hidden = false;
+    menu.style.left = "0px";
+    menu.style.top = "0px";
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const r = menu.getBoundingClientRect();
+    const pad = 8;
+    const left = Math.max(pad, Math.min(Math.round(x), Math.max(pad, vw - r.width - pad)));
+    const top = Math.max(pad, Math.min(Math.round(y), Math.max(pad, vh - r.height - pad)));
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+    tbccPageMenuOpenedAt = Date.now();
+  }
+
+  async function handlePageMenuAction(action) {
+    const url = tbccPageMenuUrl;
+    const frameUrl = tbccPageMenuFrameUrl || tbccPageMenuUrl;
+    const el = tbccPageMenuEl;
+    closePageMenu();
+    if (!url) return;
+    if (action === "copy-url") {
+      await copyTextToClipboard(url);
+      return;
+    }
+    if (action === "open-url") {
+      try {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } catch (_) {}
+      return;
+    }
+    if (action === "toggle-select") {
+      if (el) await toggleUrl(url, el);
+      return;
+    }
+    if (action === "download-url") {
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-download-url-from-page-menu",
+              url,
+              preferFull: true,
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "download-frame") {
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-download-url-from-page-menu",
+              url: frameUrl,
+              preferFull: false,
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "save-pool" || action === "save-saved") {
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-import-url-from-page-menu",
+              url,
+              savedOnly: action === "save-saved",
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+    }
+  }
+
+  function nearestMediaElementFromTarget(target) {
+    if (!target) return null;
+    let el = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+    if (!el) return null;
+    if (el.closest) {
+      const direct = el.closest("img,video,source");
+      if (direct) return direct;
+    }
+    let node = el;
+    for (let d = 0; d < 8 && node; d++) {
+      if (node.querySelector) {
+        const found = node.querySelector("video, img, source");
+        if (found) return found;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function redgifsWatchUrlFromHref(href) {
+    if (!href) return "";
+    try {
+      const u = new URL(href, location.href);
+      if (!/(^|\.)redgifs\.com$/i.test(u.hostname)) return "";
+      const m = (u.pathname || "").match(/^\/(?:watch|ifr|gifs)\/([^/?#]+)/i);
+      if (!m || !m[1]) return "";
+      return "https://www.redgifs.com/watch/" + m[1];
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function redgifsWatchUrlFromAnyText(raw) {
+    if (!raw) return "";
+    const s = String(raw);
+    const m = s.match(/(?:https?:\/\/(?:www\.)?redgifs\.com)?\/(?:watch|ifr|gifs)\/([a-z0-9]+)/i);
+    if (!m || !m[1]) return "";
+    return "https://www.redgifs.com/watch/" + m[1];
+  }
+
+  function bestLinkUrlFromTarget(target) {
+    let el = target && target.nodeType === Node.ELEMENT_NODE ? target : target && target.parentElement;
+    if (!el) return "";
+    if (el.closest) {
+      const a0 = el.closest("a[href]");
+      if (a0 && a0.href) return String(a0.href).split("#")[0];
+    }
+    let node = el;
+    for (let d = 0; d < 8 && node; d++) {
+      if (node.getAttribute) {
+        const dataHref = node.getAttribute("data-href") || node.getAttribute("data-url");
+        if (dataHref) {
+          try {
+            return new URL(dataHref, location.href).href.split("#")[0];
+          } catch (_) {}
+        }
+      }
+      if (node.querySelector) {
+        const a = node.querySelector("a[href]");
+        if (a && a.href) return String(a.href).split("#")[0];
+      }
+      node = node.parentElement;
+    }
+    return "";
+  }
+
+  function bestRedgifsItemUrlFromTarget(target) {
+    let el = target && target.nodeType === Node.ELEMENT_NODE ? target : target && target.parentElement;
+    if (!el) return "";
+    const cands = [];
+    const push = (v) => {
+      if (!v) return;
+      const s = String(v).trim();
+      if (!s) return;
+      cands.push(s);
+    };
+    let node = el;
+    for (let d = 0; d < 9 && node; d++) {
+      try {
+        push(node.getAttribute && node.getAttribute("href"));
+        push(node.getAttribute && node.getAttribute("src"));
+        push(node.getAttribute && node.getAttribute("poster"));
+        push(node.getAttribute && node.getAttribute("data-href"));
+        push(node.getAttribute && node.getAttribute("data-url"));
+        push(node.getAttribute && node.getAttribute("data-src"));
+        push(node.getAttribute && node.getAttribute("data-gif-id"));
+        push(node.getAttribute && node.getAttribute("data-id"));
+        push(node.getAttribute && node.getAttribute("data-video-id"));
+      } catch (_) {}
+      if (node.querySelectorAll) {
+        const picks = node.querySelectorAll("a[href], video[src], video[poster], source[src], img[src]");
+        for (let i = 0; i < picks.length && i < 24; i++) {
+          const p = picks[i];
+          push(p.getAttribute && p.getAttribute("href"));
+          push(p.getAttribute && p.getAttribute("src"));
+          push(p.getAttribute && p.getAttribute("poster"));
+        }
+      }
+      node = node.parentElement;
+    }
+    for (const c of cands) {
+      const w = redgifsWatchUrlFromAnyText(c);
+      if (w) return w;
+    }
+    return "";
+  }
+
+  function mediaContextFromTarget(target) {
+    const mediaEl = nearestMediaElementFromTarget(target);
+    const mediaUrl = mediaEl ? mediaUrlFromElement(mediaEl) : "";
+    if (mediaUrl && /^https?:\/\//i.test(mediaUrl)) return { el: mediaEl, url: mediaUrl };
+    if (/(^|\.)redgifs\.com$/i.test(location.hostname || "")) {
+      const redItem = bestRedgifsItemUrlFromTarget(target);
+      if (redItem) return { el: mediaEl, url: redItem };
+    }
+    const linked = bestLinkUrlFromTarget(target);
+    if (linked) {
+      const red = redgifsWatchUrlFromHref(linked);
+      if (red) return { el: mediaEl, url: red };
+      if (/^https?:\/\//i.test(linked) && !/redgifs\.com\/users\//i.test(linked)) return { el: mediaEl, url: linked };
+    }
+    return { el: mediaEl || null, url: "" };
+  }
+
+  function mediaContextFromPoint(x, y, fallbackTarget) {
+    const seen = new Set();
+    const candidates = [];
+    if (fallbackTarget) candidates.push(fallbackTarget);
+    try {
+      const stack = document.elementsFromPoint ? document.elementsFromPoint(x || 0, y || 0) : [];
+      for (const el of stack || []) {
+        if (!el || seen.has(el)) continue;
+        seen.add(el);
+        candidates.push(el);
+      }
+    } catch (_) {}
+    for (const c of candidates) {
+      const ctx = mediaContextFromTarget(c);
+      if (ctx && ctx.url && /^https?:\/\//i.test(ctx.url)) return ctx;
+    }
+    return { el: null, url: "" };
+  }
+
+  function redgifsBestGuessUrlFromPoint(x, y) {
+    const seen = new Set();
+    const pull = (raw) => {
+      const w = redgifsWatchUrlFromAnyText(raw || "");
+      if (w) return w;
+      const s = String(raw || "").trim();
+      if (!s || !/^https?:\/\//i.test(s)) return "";
+      if (/redgifs\.com\/users\//i.test(s)) return "";
+      return s.split("#")[0];
+    };
+    try {
+      const stack = document.elementsFromPoint ? document.elementsFromPoint(x || 0, y || 0) : [];
+      for (const el of stack || []) {
+        if (!el || seen.has(el)) continue;
+        seen.add(el);
+        let n = el;
+        for (let d = 0; d < 8 && n; d++) {
+          const attrs = [
+            n.getAttribute && n.getAttribute("href"),
+            n.getAttribute && n.getAttribute("src"),
+            n.getAttribute && n.getAttribute("poster"),
+            n.getAttribute && n.getAttribute("data-href"),
+            n.getAttribute && n.getAttribute("data-url"),
+            n.getAttribute && n.getAttribute("data-src"),
+            n.getAttribute && n.getAttribute("data-gif-id"),
+            n.getAttribute && n.getAttribute("data-id"),
+            n.getAttribute && n.getAttribute("data-video-id"),
+          ];
+          for (const a of attrs) {
+            const u = pull(a);
+            if (u) return u;
+          }
+          n = n.parentElement;
+        }
+      }
+    } catch (_) {}
+    try {
+      const vids = document.querySelectorAll("video");
+      let best = "";
+      let area = 0;
+      for (const v of vids) {
+        let r;
+        try {
+          r = v.getBoundingClientRect();
+        } catch (_) {
+          continue;
+        }
+        const a = Math.max(0, r.width) * Math.max(0, r.height);
+        if (a < 64 * 64) continue;
+        const src = v.currentSrc || v.src || "";
+        const u = pull(src);
+        if (u && a > area) {
+          area = a;
+          best = u;
+        }
+      }
+      if (best) return best;
+    } catch (_) {}
+    try {
+      const links = document.querySelectorAll("a[href*='/watch/'],a[href*='/ifr/'],a[href*='/gifs/']");
+      for (const a of links) {
+        const u = pull(a.href || "");
+        if (u) return u;
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  function tryOpenTbccMenuFromEvent(e) {
+    tbccLastContextUsername = resolveContextUsername(e.target) || "";
+    if (!shouldUseCustomPageMenuForEvent(e)) return false;
+    const x = e.clientX || 0;
+    const y = e.clientY || 0;
+    const ctx = mediaContextFromPoint(x, y, e.target);
+    const mediaEl = ctx.el;
+    let mediaUrl = ctx.url;
+    let frameUrl = ctx.url;
+    if (tbccIsRedgifsHost) {
+      const redFull = redgifsBestGuessUrlFromPoint(x, y) || "";
+      if (redFull && /^https?:\/\//i.test(redFull)) mediaUrl = redFull;
+    }
+    if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+      if (!tbccIsRedgifsHost) return false;
+      mediaUrl = String(location.href || "").split("#")[0];
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    openPageMenu(x + 2, y + 2, mediaUrl, mediaEl, frameUrl);
+    return true;
   }
 
   function ensureRoot() {
@@ -577,8 +1018,12 @@
       tearDown();
       return;
     }
-    const { tbccOverlayMode } = await storageLocalGet("tbccOverlayMode");
+    const { tbccOverlayMode, tbccPageMediaMenuEnabled } = await storageLocalGet([
+      "tbccOverlayMode",
+      "tbccPageMediaMenuEnabled",
+    ]);
     overlayMode = !!tbccOverlayMode;
+    pageMediaMenuEnabled = tbccIsRedgifsHost ? true : tbccPageMediaMenuEnabled !== false;
     if (overlayMode) await buildOverlay();
     else tearDown();
   }
@@ -593,6 +1038,10 @@
     }
     if (changes.tbccSelectionUrls && overlayMode) {
       void syncChecksFromStorage().catch(() => {});
+    }
+    if (changes.tbccPageMediaMenuEnabled) {
+      pageMediaMenuEnabled = tbccIsRedgifsHost ? true : changes.tbccPageMediaMenuEnabled.newValue !== false;
+      if (!pageMediaMenuEnabled) closePageMenu();
     }
   });
 
@@ -646,20 +1095,84 @@
   });
 
   function boot() {
+    injectStyles();
     document.addEventListener("copy", () => {
       const selected = window.getSelection ? String(window.getSelection() || "").trim() : "";
       const picked = extractUsernameFromText(selected);
       if (picked) void storeLastCopiedUsername(picked);
     });
+    window.addEventListener(
+      "contextmenu",
+      (e) => {
+        tryOpenTbccMenuFromEvent(e);
+      },
+      true
+    );
     document.addEventListener(
       "contextmenu",
       (e) => {
-        tbccLastContextUsername = resolveContextUsername(e.target) || "";
+        tryOpenTbccMenuFromEvent(e);
+      },
+      true
+    );
+    window.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (!shouldUseCustomPageMenuForEvent(e)) {
+          rightClickFallbackCtx = null;
+          return;
+        }
+        if (e.button !== 2) return;
+        const ctx = mediaContextFromPoint(e.clientX || 0, e.clientY || 0, e.target);
+        if (!ctx || !ctx.url || !/^https?:\/\//i.test(ctx.url)) {
+          rightClickFallbackCtx = null;
+          return;
+        }
+        rightClickFallbackCtx = { x: e.clientX || 0, y: e.clientY || 0, ctx };
+      },
+      true
+    );
+    window.addEventListener(
+      "mouseup",
+      (e) => {
+        if (!shouldUseCustomPageMenuForEvent(e)) return;
+        if (e.button !== 2) return;
+        if (!rightClickFallbackCtx) return;
+        if (tbccPageMenu && !tbccPageMenu.hidden) return;
+        const data = rightClickFallbackCtx;
+        rightClickFallbackCtx = null;
+        e.preventDefault();
+        e.stopPropagation();
+        const frameUrl = data && data.ctx ? data.ctx.url : "";
+        let mediaUrl = frameUrl;
+        if (tbccIsRedgifsHost) {
+          const redFull = redgifsBestGuessUrlFromPoint(data.x || 0, data.y || 0) || "";
+          if (redFull && /^https?:\/\//i.test(redFull)) mediaUrl = redFull;
+        }
+        if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) mediaUrl = String(location.href || "").split("#")[0];
+        openPageMenu(data.x + 2, data.y + 2, mediaUrl, data.ctx.el, frameUrl);
+      },
+      true
+    );
+    document.addEventListener(
+      "click",
+      (e) => {
+        if (!tbccPageMenu || tbccPageMenu.hidden) return;
+        if (typeof e.button === "number" && e.button !== 0) return;
+        if (Date.now() - tbccPageMenuOpenedAt < 250) return;
+        if (tbccPageMenu.contains(e.target)) return;
+        closePageMenu();
+      },
+      true
+    );
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        if (e.key === "Escape") closePageMenu();
       },
       true
     );
     void applyModeFromStorage().catch(() => tearDown());
   }
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
-  else boot();
+  boot();
 })();

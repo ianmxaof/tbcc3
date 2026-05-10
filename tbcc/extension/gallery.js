@@ -29,7 +29,13 @@ function normalizeTbccMediaUrlForImport(url) {
 function hostNeedsGalleryThumbProxy(url) {
   try {
     const h = (new URL(url).hostname || "").toLowerCase();
-    return h.includes("fetlife") || h === "onlyfans.com" || h.endsWith(".onlyfans.com");
+    return (
+      h.includes("fetlife") ||
+      h === "onlyfans.com" ||
+      h.endsWith(".onlyfans.com") ||
+      h === "erome.com" ||
+      h.endsWith(".erome.com")
+    );
   } catch (_) {
     return false;
   }
@@ -76,6 +82,7 @@ const STORAGE_SELECTION = "tbccSelectionUrls";
 const STORAGE_UI_STATE = "tbcc_gallery_ui_state";
 /** Comma-free list of tag display names to merge onto media after pool Send */
 const STORAGE_SEND_TAGS = "tbccGallerySendTags";
+const STORAGE_AUTO_TAG_ON_EXPORT = "tbccAutoTagOnExport";
 /** Per-URL manual crop, blur regions, text overlays (gallery session). */
 const STORAGE_IMAGE_EDITS = "tbcc_gallery_image_edits";
 /** TBCC Lite: max items per send batch (Pro = unlimited). */
@@ -156,6 +163,10 @@ function noteThumbLoadResult(url, ok) {
 const tabCurrentBtn = document.getElementById("tabCurrent");
 const tabAllBtn = document.getElementById("tabAll");
 const btnRefresh = document.getElementById("btnRefresh");
+const crawlerUrlInput = document.getElementById("crawlerUrl");
+const btnCrawlerUseCurrent = document.getElementById("btnCrawlerUseCurrent");
+const btnCrawlerDeploy = document.getElementById("btnCrawlerDeploy");
+const crawlerStatus = document.getElementById("crawlerStatus");
 const btnFilterToggle = document.getElementById("btnFilterToggle");
 const filterOverlay = document.getElementById("filterOverlay");
 const btnFilterReset = document.getElementById("btnFilterReset");
@@ -182,6 +193,7 @@ const btnAddFilesOverflow = document.getElementById("btnAddFilesOverflow");
 const toastContainer = document.getElementById("toastContainer");
 const poolSelect = document.getElementById("poolSelect");
 const forumPostEnabled = document.getElementById("forumPostEnabled");
+const autoTagOnExport = document.getElementById("autoTagOnExport");
 const postDestMode = document.getElementById("postDestMode");
 const forumChannelSelect = document.getElementById("forumChannelSelect");
 const forumTopicSelect = document.getElementById("forumTopicSelect");
@@ -189,6 +201,7 @@ const forumTopicRow = document.getElementById("forumTopicRow");
 const forumAlbumCaption = document.getElementById("forumAlbumCaption");
 const btnAutoCap = document.getElementById("btnAutoCap");
 const forumPostEnabledLabel = document.getElementById("forumPostEnabledLabel");
+const autoTagOnExportLabel = document.getElementById("autoTagOnExportLabel");
 const btnForumTopicsRefresh = document.getElementById("btnForumTopicsRefresh");
 const telegramPostBody = document.getElementById("telegramPostBody");
 const btnSend = document.getElementById("btnSend");
@@ -645,6 +658,297 @@ async function suggestTagsFromPage() {
     if (gallerySendTags.length > before) n++;
   }
   showToast(n ? `Added ${n} suggestion(s). Remove chips you don't need.` : "No new tags (already listed or skipped).", n ? "success" : "info");
+}
+
+const AUTO_TAG_STOPWORDS = new Set([
+  "www",
+  "com",
+  "net",
+  "org",
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "this",
+  "that",
+  "photo",
+  "image",
+  "images",
+  "video",
+  "videos",
+  "media",
+  "thumb",
+  "thumbnail",
+  "gallery",
+  "post",
+  "posts",
+]);
+
+function normalizeAutoTagCandidate(raw) {
+  const s = String(raw || "")
+    .trim()
+    .replace(/^#+/u, "")
+    .replace(/[_\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s || s.length < 2 || s.length > 64) return "";
+  const low = s.toLowerCase();
+  if (AUTO_TAG_STOPWORDS.has(low)) return "";
+  if (/^\d+$/u.test(s)) return "";
+  return s;
+}
+
+function buildTagCatalogLookup() {
+  const lookup = new Map();
+  for (const t of tagCatalog || []) {
+    const name = t && t.name != null ? String(t.name).trim() : "";
+    const slug = t && t.slug != null ? String(t.slug).trim() : "";
+    if (name) lookup.set(name.toLowerCase(), name);
+    if (slug) lookup.set(slug.toLowerCase(), name || slug);
+  }
+  return lookup;
+}
+
+function addAutoTagToSet(set, lookup, raw, skipUnknownDomains) {
+  const normalized = normalizeAutoTagCandidate(raw);
+  if (!normalized) return;
+  const low = normalized.toLowerCase();
+  if (skipUnknownDomains && looksLikeBareDomain(normalized) && !lookup.has(low)) return;
+  set.add(lookup.get(low) || normalized);
+}
+
+/** Always tag imported media with the capture / page hostname (not CDN-only hosts). */
+function addMandatorySiteTag(set, lookup, hostname) {
+  const raw = String(hostname || "")
+    .trim()
+    .replace(/^www\./i, "");
+  if (!raw || !raw.includes(".")) return;
+  const normalized = normalizeAutoTagCandidate(raw);
+  if (!normalized) return;
+  const low = normalized.toLowerCase();
+  set.add(lookup.get(low) || normalized);
+}
+
+function normTabId(x) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function fetchTagHintsInTab(tabId) {
+  const tid = normTabId(tabId);
+  if (tid == null) return [];
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tid }, files: ["media-url-guards.js", "capture.js"] });
+    const exec = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: () => (typeof window.__tbccCollectTagHints === "function" ? window.__tbccCollectTagHints() : []),
+    });
+    const hints = (exec && exec[0] && exec[0].result) || [];
+    return Array.isArray(hints) ? hints : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function extractAutoTagsFromUrl(rawUrl, lookup, set) {
+  try {
+    const u = new URL(String(rawUrl || ""));
+    const host = String(u.hostname || "").replace(/^www\./i, "");
+    addAutoTagToSet(set, lookup, host, true);
+    host
+      .split(".")
+      .filter(Boolean)
+      .forEach((part) => addAutoTagToSet(set, lookup, part, false));
+    const pathParts = String(u.pathname || "")
+      .split("/")
+      .map((part) => decodeURIComponent(part || "").trim())
+      .filter(Boolean);
+    pathParts.forEach((part) => {
+      part
+        .split(/[^a-zA-Z0-9]+/g)
+        .filter(Boolean)
+        .forEach((bit) => addAutoTagToSet(set, lookup, bit, false));
+    });
+  } catch (_) {}
+}
+
+function collectPerItemAutoTags(item, lookup, resolvedSourcePage) {
+  const out = new Set();
+  const pageFromCapture =
+    (item && item.tbccSourcePageUrl && String(item.tbccSourcePageUrl)) ||
+    (item && item.pageUrl && String(item.pageUrl)) ||
+    (resolvedSourcePage && String(resolvedSourcePage)) ||
+    "";
+  if (item) {
+    addAutoTagToSet(out, lookup, item.pageHost || "", true);
+    extractAutoTagsFromUrl(pageFromCapture, lookup, out);
+    extractAutoTagsFromUrl(item.url, lookup, out);
+  } else if (pageFromCapture) {
+    extractAutoTagsFromUrl(pageFromCapture, lookup, out);
+  }
+  return out;
+}
+
+async function collectPageHintsByTabId(tabIds) {
+  const out = new Map();
+  const list = [...new Set((tabIds || []).map(normTabId).filter((x) => x != null))];
+  for (const tabId of list) {
+    out.set(tabId, await fetchTagHintsInTab(tabId));
+  }
+  return out;
+}
+
+function csvForTagSet(tags) {
+  return [...tags].map((x) => String(x).trim()).filter(Boolean).join(", ");
+}
+
+function normalizeSourcePageKey(url) {
+  try {
+    const u = new URL(String(url).trim().split("#")[0]);
+    const path = (u.pathname || "").replace(/\/+$/, "") || "/";
+    return u.origin + path;
+  } catch (_) {
+    return String(url || "").trim().split("#")[0];
+  }
+}
+
+async function findTabIdForSourcePageUrl(sourcePageUrl) {
+  const clean = String(sourcePageUrl || "").trim().split("#")[0];
+  if (!clean || !/^https?:\/\//i.test(clean)) return null;
+  let wantHost = "";
+  let wantPath = "";
+  try {
+    const u = new URL(clean);
+    wantHost = u.hostname.toLowerCase();
+    wantPath = (u.pathname || "").replace(/\/+$/, "") || "/";
+  } catch (_) {
+    return null;
+  }
+  const tabs = await chrome.tabs.query({});
+  let sameHostId = null;
+  let pathMatchId = null;
+  for (const t of tabs) {
+    if (t.id == null || !t.url || !/^https?:\/\//i.test(t.url)) continue;
+    try {
+      const u = new URL(String(t.url).split("#")[0]);
+      if (u.hostname.toLowerCase() !== wantHost) continue;
+      if (sameHostId == null) sameHostId = t.id;
+      const p = (u.pathname || "").replace(/\/+$/, "") || "/";
+      if (wantPath && (p === wantPath || p.startsWith(wantPath + "/"))) {
+        pathMatchId = t.id;
+        break;
+      }
+    } catch (_) {}
+  }
+  return pathMatchId != null ? pathMatchId : sameHostId;
+}
+
+async function collectPageHintsBySourcePageUrls(sourceUrls) {
+  const out = new Map();
+  const uniq = [...new Set((sourceUrls || []).filter(Boolean))];
+  for (const sp of uniq) {
+    const key = normalizeSourcePageKey(sp);
+    if (out.has(key)) continue;
+    const tabId = await findTabIdForSourcePageUrl(sp);
+    if (tabId == null) {
+      out.set(key, []);
+      continue;
+    }
+    out.set(key, await fetchTagHintsInTab(tabId));
+  }
+  return out;
+}
+
+async function resolveSourcePageUrlForAutoTagRecord(rec) {
+  const it = rec && rec.item;
+  if (it && it.tbccSourcePageUrl && /^https?:\/\//i.test(String(it.tbccSourcePageUrl))) {
+    return String(it.tbccSourcePageUrl).split("#")[0];
+  }
+  if (it && it.pageUrl && /^https?:\/\//i.test(String(it.pageUrl))) {
+    return String(it.pageUrl).split("#")[0];
+  }
+  const ref = it ? await tbccRefererPageForItem(it) : "";
+  if (ref && /^https?:\/\//i.test(ref)) return ref.split("#")[0];
+  const tid = normTabId(rec && rec.tabId);
+  if (tid != null) {
+    try {
+      const tab = await chrome.tabs.get(tid);
+      if (tab && tab.url && /^https?:\/\//i.test(tab.url)) return String(tab.url).split("#")[0];
+    } catch (_) {}
+  }
+  return "";
+}
+
+async function applyAutoTaggingForImportedMedia(importedRecords) {
+  const rows = Array.isArray(importedRecords) ? importedRecords : [];
+  if (!rows.length) return;
+  const lookup = buildTagCatalogLookup();
+  const byId = new Map();
+  for (const row of rows) {
+    if (!row || !Number.isFinite(row.mediaId)) continue;
+    byId.set(row.mediaId, row);
+  }
+  const records = [...byId.values()];
+  if (!records.length) return;
+
+  const baseSendTags = new Set();
+  for (const t of gallerySendTags || []) {
+    addAutoTagToSet(baseSendTags, lookup, t, false);
+  }
+
+  const enriched = await Promise.all(
+    records.map(async (rec) => ({
+      ...rec,
+      sourcePage: await resolveSourcePageUrlForAutoTagRecord(rec),
+    }))
+  );
+
+  const uniqueSources = [...new Set(enriched.map((r) => r.sourcePage).filter(Boolean))];
+  const hintsBySourcePage = await collectPageHintsBySourcePageUrls(uniqueSources);
+  const tabIdsForFallback = [...new Set(enriched.map((r) => normTabId(r.tabId)).filter((x) => x != null))];
+  const pageHintsByTab = await collectPageHintsByTabId(tabIdsForFallback);
+
+  const csvToIds = new Map();
+  for (const rec of enriched) {
+    const tags = new Set(baseSendTags);
+    const srcKey = rec.sourcePage ? normalizeSourcePageKey(rec.sourcePage) : "";
+    let pageHints =
+      srcKey && hintsBySourcePage.has(srcKey) ? hintsBySourcePage.get(srcKey) : null;
+    if (!pageHints || !pageHints.length) {
+      const tid = normTabId(rec.tabId);
+      pageHints = tid != null ? pageHintsByTab.get(tid) || [] : [];
+    }
+    pageHints.forEach((h) => addAutoTagToSet(tags, lookup, h, true));
+    const perItem = collectPerItemAutoTags(rec.item || null, lookup, rec.sourcePage);
+    perItem.forEach((t) => tags.add(t));
+    if (rec.sourcePage) {
+      try {
+        const host = new URL(rec.sourcePage).hostname.replace(/^www\./i, "");
+        addMandatorySiteTag(tags, lookup, host);
+      } catch (_) {}
+    }
+    const csv = csvForTagSet(tags);
+    if (!csv) continue;
+    if (!csvToIds.has(csv)) csvToIds.set(csv, []);
+    csvToIds.get(csv).push(rec.mediaId);
+  }
+
+  for (const [csv, idsRaw] of csvToIds.entries()) {
+    const ids = [...new Set((idsRaw || []).filter((x) => Number.isFinite(x)))];
+    if (!ids.length) continue;
+    const r = await fetch(`${API_BASE}/media/bulk/tags`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, tags: csv, tags_merge: true }),
+    });
+    const text = await r.text();
+    let j = {};
+    try {
+      j = text ? JSON.parse(text) : {};
+    } catch (_) {}
+    if (!r.ok || j.error) throw new Error(j.error || j.detail || text || `HTTP ${r.status}`);
+  }
 }
 
 const TBCC_TELEGRAM_CAPTION_MAX = 1024;
@@ -1333,6 +1637,14 @@ function updateForumCheckboxLabel() {
     : "After import to the pool above, also post to Telegram (see destination)";
 }
 
+function updateAutoTagCheckboxLabel() {
+  if (!autoTagOnExportLabel) return;
+  const savedMode = postDestMode && postDestMode.value === "saved";
+  autoTagOnExportLabel.textContent = savedMode
+    ? "Auto-tag on export (disabled for Saved-only sends)"
+    : "Auto-tag on export (page + per-item hints)";
+}
+
 function updateSendButtonLabel() {
   if (!btnSend) return;
   const savedMode = postDestMode && postDestMode.value === "saved";
@@ -1358,6 +1670,7 @@ function updateTelegramPostControls() {
   if (forumTopicSelect) forumTopicSelect.disabled = !on || !ch || !forumMode;
   if (btnForumTopicsRefresh) btnForumTopicsRefresh.disabled = !on || !ch || !forumMode;
   updateForumCheckboxLabel();
+  updateAutoTagCheckboxLabel();
   updateSendButtonLabel();
   updateActionBarSubtitle();
 }
@@ -2184,6 +2497,92 @@ function addLocalFiles(files) {
   renderGrid();
 }
 
+function setCrawlerStatus(text, kind) {
+  if (!crawlerStatus) return;
+  crawlerStatus.textContent = text || "";
+  crawlerStatus.style.color =
+    kind === "error" ? "var(--tbcc-error)" : kind === "success" ? "var(--tbcc-success)" : "var(--tbcc-text-muted)";
+}
+
+async function fillCrawlerUrlFromCurrentTab() {
+  if (!crawlerUrlInput) return "";
+  const u = await getCurrentTabUrl();
+  if (u) crawlerUrlInput.value = u;
+  return u;
+}
+
+function crawlerItemToGalleryItem(item, sourceUrl, adapter) {
+  const url = item && item.url ? String(item.url) : "";
+  const mediaType = item && item.media_type === "video" ? "video" : guessMediaType(url);
+  const row = {
+    url,
+    mediaType,
+    tagName: mediaType === "video" ? "video" : "img",
+    tabId: currentTabId,
+    name: (item && item.filename) || filenameFromUrl(url),
+    tbccSourcePageUrl: sourceUrl || "",
+    tbccCaptureSource: "crawler:" + (adapter || "auto"),
+  };
+  if (item && item.thumbnail_url) {
+    row.thumbUrl = item.thumbnail_url;
+    row.posterUrl = item.thumbnail_url;
+  }
+  return row;
+}
+
+async function deployCrawlerFromSidebar() {
+  if (!crawlerUrlInput || !btnCrawlerDeploy) return;
+  let url = crawlerUrlInput.value.trim();
+  if (!url) url = await fillCrawlerUrlFromCurrentTab();
+  if (!url || !/^https?:\/\//i.test(url)) {
+    setCrawlerStatus("Enter a URL", "error");
+    showToast("Enter a crawler URL or open a normal https page tab.", "info");
+    return;
+  }
+  btnCrawlerDeploy.disabled = true;
+  setCrawlerStatus("Crawling...", "info");
+  try {
+    const r = await fetch(API_BASE + "/crawler/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, adapter: "auto", limit: 500 }),
+    });
+    const text = await r.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {}
+    if (!r.ok) throw new Error((data && data.detail) || text || r.statusText);
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      const warning = Array.isArray(data.warnings) && data.warnings.length ? data.warnings[0] : "No media found.";
+      throw new Error(warning);
+    }
+    const sourceUrl = data.source_url || url;
+    const have = new Set(imageList.map((i) => i && i.url).filter(Boolean));
+    const added = [];
+    for (const item of items) {
+      if (!item || !item.url || have.has(item.url)) continue;
+      const row = crawlerItemToGalleryItem(item, sourceUrl, data.adapter);
+      imageList.push(row);
+      selectedUrls.add(row.url);
+      have.add(row.url);
+      added.push(row);
+    }
+    await persistSelection();
+    if (settings.subtabEnabled && activeGalleryTabId != null) snapshotCurrentStateIntoActiveSubtab();
+    renderGrid();
+    setCrawlerStatus(added.length + " added", "success");
+    showToast(`Crawler added ${added.length} media item(s). Use Dest, Send, ZIP, or Download next.`, "success");
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    setCrawlerStatus("Failed", "error");
+    showToast("Crawler failed: " + msg, "error");
+  } finally {
+    btnCrawlerDeploy.disabled = false;
+  }
+}
+
 function formatDimsLabel(item) {
   const w = item.naturalWidth || item.width || 0;
   const h = item.naturalHeight || item.height || 0;
@@ -2683,8 +3082,19 @@ function galleryCtxMenuIgnoresTarget(target) {
   return false;
 }
 
+/** Chromium blocks aria-hidden while a descendant has focus; clear focus first. */
+function releaseFocusFromContainer(container) {
+  if (!container) return;
+  const ae = document.activeElement;
+  if (!ae || !container.contains(ae)) return;
+  try {
+    ae.blur();
+  } catch (_) {}
+}
+
 function closeGalleryContextMenu() {
   if (!galleryCtxMenu) return;
+  releaseFocusFromContainer(galleryCtxMenu);
   galleryCtxMenu.hidden = true;
   galleryCtxMenu.setAttribute("aria-hidden", "true");
 }
@@ -3570,6 +3980,12 @@ function setTelegramSheetOpen(open) {
 
 function setFilterOverlayOpen(open) {
   if (!filterOverlay) return;
+  if (!open && filterOverlay.contains(document.activeElement)) {
+    try {
+      if (btnFilterToggle) btnFilterToggle.focus();
+      else document.activeElement?.blur?.();
+    } catch (_) {}
+  }
   filterOverlay.classList.toggle("visible", !!open);
   filterOverlay.setAttribute("aria-hidden", open ? "false" : "true");
   if (open && filterMinW) {
@@ -3878,6 +4294,15 @@ async function downloadSelected() {
 btnDownload && btnDownload.addEventListener("click", () => downloadSelected());
 btnDownloadZip && btnDownloadZip.addEventListener("click", () => downloadSelectedAsZip());
 btnCopyJd && btnCopyJd.addEventListener("click", () => copySelectedUrlsForJDownloader());
+btnCrawlerUseCurrent && btnCrawlerUseCurrent.addEventListener("click", () => void fillCrawlerUrlFromCurrentTab());
+btnCrawlerDeploy && btnCrawlerDeploy.addEventListener("click", () => void deployCrawlerFromSidebar());
+crawlerUrlInput &&
+  crawlerUrlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void deployCrawlerFromSidebar();
+    }
+  });
 
 selectAllCb && selectAllCb.addEventListener("change", () => {
   const list = getFilteredList();
@@ -4048,6 +4473,11 @@ forumPostEnabled &&
     updateTelegramPostControls();
     if (forumPostEnabled.checked && forumChannelSelect && forumChannelSelect.value && postDestMode && postDestMode.value === "forum")
       await loadForumTopics(parseInt(forumChannelSelect.value, 10));
+  });
+autoTagOnExport &&
+  autoTagOnExport.addEventListener("change", async () => {
+    await chrome.storage.local.set({ [STORAGE_AUTO_TAG_ON_EXPORT]: !!autoTagOnExport.checked });
+    updateTelegramPostControls();
   });
 postDestMode &&
   postDestMode.addEventListener("change", async () => {
@@ -4649,6 +5079,22 @@ async function fetchAndUploadViaTab(tabId, urls, poolId, savedOnly) {
   return merged;
 }
 
+function trackImportedMediaRecord(target, mediaId, item, tabIdHint, urlHint) {
+  const id = parseInt(mediaId, 10);
+  if (!Number.isFinite(id)) return;
+  target.push({
+    mediaId: id,
+    tabId: Number.isFinite(Number((item && item.tabId) || tabIdHint)) ? Number((item && item.tabId) || tabIdHint) : null,
+    item: item
+      ? item
+      : {
+          url: urlHint || "",
+          pageUrl: "",
+          pageHost: "",
+        },
+  });
+}
+
 async function runSendBatch(savedOnly) {
   const list = getFilteredList();
   const selected = list.filter((i) => selectedUrls.has(i.url));
@@ -4662,6 +5108,7 @@ async function runSendBatch(savedOnly) {
   }
   const poolId = await getPoolId();
   const importedMediaIds = [];
+  const importedMediaRecords = [];
   let telegramPostAttempted = false;
   let telegramPostHadError = false;
   if (btnSend) btnSend.disabled = true;
@@ -4759,6 +5206,7 @@ async function runSendBatch(savedOnly) {
         await addToCollected({ url: it.url, type: it.type || "image", addedAt: Date.now(), to_saved: true });
       } else if (!savedOnly && data.status === "imported" && data.media_id) {
         importedMediaIds.push(data.media_id);
+        trackImportedMediaRecord(importedMediaRecords, data.media_id, it, it.tabId, it.url);
         await addToCollected({ url: it.url, type: it.type || "image", addedAt: Date.now(), media_id: data.media_id });
       } else if (data.error) appendErr(data.error);
     } catch (e) {
@@ -4787,6 +5235,7 @@ async function runSendBatch(savedOnly) {
               await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
             else if (!savedOnly && data.media_id) {
               importedMediaIds.push(data.media_id);
+              trackImportedMediaRecord(importedMediaRecords, data.media_id, it, it.tabId, it.url);
               await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), media_id: data.media_id });
             }
             bump();
@@ -4813,7 +5262,10 @@ async function runSendBatch(savedOnly) {
             await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
           else if (!savedOnly && data.media_id)
             await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), media_id: data.media_id });
-          if (!savedOnly && data.media_id) importedMediaIds.push(data.media_id);
+          if (!savedOnly && data.media_id) {
+            importedMediaIds.push(data.media_id);
+            trackImportedMediaRecord(importedMediaRecords, data.media_id, it, it.tabId, it.url);
+          }
           bump();
           continue;
         }
@@ -4840,6 +5292,7 @@ async function runSendBatch(savedOnly) {
         await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
       else if (!savedOnly && data.media_id) {
         importedMediaIds.push(data.media_id);
+        trackImportedMediaRecord(importedMediaRecords, data.media_id, it, it.tabId, it.url);
         await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), media_id: data.media_id });
       }
       bump();
@@ -4886,6 +5339,7 @@ async function runSendBatch(savedOnly) {
                 await addToCollected({ url, type: "image", addedAt: Date.now(), to_saved: true });
               else if (!savedOnly && data.media_id) {
                 importedMediaIds.push(data.media_id);
+                trackImportedMediaRecord(importedMediaRecords, data.media_id, it, tabId, url);
                 await addToCollected({ url, type: "image", addedAt: Date.now(), media_id: data.media_id });
               }
               bump();
@@ -4914,6 +5368,7 @@ async function runSendBatch(savedOnly) {
               await addToCollected({ url, type: "image", addedAt: Date.now(), to_saved: true });
             else if (!savedOnly && data.media_id) {
               importedMediaIds.push(data.media_id);
+              trackImportedMediaRecord(importedMediaRecords, data.media_id, it, tabId, url);
               await addToCollected({ url, type: "image", addedAt: Date.now(), media_id: data.media_id });
             }
             bump();
@@ -4931,7 +5386,13 @@ async function runSendBatch(savedOnly) {
     try {
       const batch = await fetchAndUploadViaTab(tabId, forTab, poolId, savedOnly);
       if (batch.error) appendErr(batch.error);
-      if (!savedOnly) (batch.media_ids || []).forEach((id) => importedMediaIds.push(id));
+      if (!savedOnly)
+        (batch.media_ids || []).forEach((id, idx) => {
+          importedMediaIds.push(id);
+          const url = forTab[idx] || forTab[0] || "";
+          const it = urlToItem.get(url) || null;
+          trackImportedMediaRecord(importedMediaRecords, id, it, tabId, url);
+        });
       (batch.errors || []).forEach((e) => appendErr(e.error || String(e)));
       if (savedOnly) {
         forTab.forEach((url) => addToCollected({ url, type: "image", addedAt: Date.now(), to_saved: true }));
@@ -4945,14 +5406,13 @@ async function runSendBatch(savedOnly) {
   }
 
   if (!savedOnly && importedMediaIds.length) {
-    const csv = getSendTagsCsv().trim();
-    if (csv) {
-      if (progressTitle) progressTitle.textContent = "Applying tags…";
-      try {
-        await applySendTagsToImportedMedia(importedMediaIds);
-      } catch (e) {
-        appendErr("Tags: " + (e.message || String(e)));
-      }
+    const useAutoTag = !!(autoTagOnExport && autoTagOnExport.checked);
+    if (progressTitle) progressTitle.textContent = useAutoTag ? "Auto-tagging…" : "Applying tags…";
+    try {
+      if (useAutoTag) await applyAutoTaggingForImportedMedia(importedMediaRecords);
+      else await applySendTagsToImportedMedia(importedMediaIds);
+    } catch (e) {
+      appendErr("Tags: " + (e.message || String(e)));
     }
   }
 
@@ -5303,6 +5763,7 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
         "tbccForumAlbumCaption",
         "tbccPostDestMode",
         "tbccTelegramPostSectionOpen",
+        STORAGE_AUTO_TAG_ON_EXPORT,
       ],
       (o) => r(o)
     )
@@ -5310,6 +5771,7 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
   if (forumPostEnabled) forumPostEnabled.checked = !!forumStored.tbccForumPostEnabled;
   if (forumAlbumCaption && typeof forumStored.tbccForumAlbumCaption === "string")
     forumAlbumCaption.value = forumStored.tbccForumAlbumCaption;
+  if (autoTagOnExport) autoTagOnExport.checked = forumStored[STORAGE_AUTO_TAG_ON_EXPORT] !== false;
   let destMode = forumStored.tbccPostDestMode;
   if (!destMode) destMode = forumStored.tbccForumTopicId != null ? "forum" : "channel";
   if (postDestMode) postDestMode.value = destMode;

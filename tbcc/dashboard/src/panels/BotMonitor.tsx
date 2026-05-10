@@ -19,11 +19,23 @@ export function BotMonitor() {
     queryFn: () => api.bots.runtime("payment_bot"),
     refetchInterval: 8000,
   });
+  const lootRuntimeQ = useQuery({
+    queryKey: ["bot-runtime", "loot_bot"],
+    queryFn: () => api.bots.runtime("loot_bot"),
+    refetchInterval: 8000,
+  });
   const control = useMutation({
     mutationFn: (action: "start" | "stop" | "restart" | "reload") => api.bots.control("payment_bot", action),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["bots"] });
       qc.invalidateQueries({ queryKey: ["bot-runtime", "payment_bot"] });
+    },
+  });
+  const lootControl = useMutation({
+    mutationFn: (action: "start" | "stop" | "restart" | "reload") => api.bots.control("loot_bot", action),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["bots"] });
+      qc.invalidateQueries({ queryKey: ["bot-runtime", "loot_bot"] });
     },
   });
 
@@ -90,6 +102,66 @@ export function BotMonitor() {
           <p className="text-xs text-cyan-200 mt-2">{control.data.message}</p>
         ) : null}
       </div>
+
+      <div className="mb-5 border border-slate-700 rounded-lg p-4 bg-slate-900/30">
+        <h2 className="text-sm font-semibold text-slate-200 mb-2">Loot overseer runtime (`loot_bot`)</h2>
+        <p className="text-xs text-slate-400 mb-3">
+          Runs <code className="text-slate-300">python -m bots.loot_bot</code> (@aof_lootgod_bot). Configure token,
+          invite link, and Docker commands under Bots → <strong>Loot overseer</strong>.
+        </p>
+        <div className="flex flex-wrap items-center gap-2 mb-2">
+          <button
+            type="button"
+            onClick={() => lootControl.mutate("start")}
+            disabled={lootControl.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-emerald-700/80 text-emerald-50 hover:bg-emerald-600 disabled:opacity-50"
+          >
+            Start
+          </button>
+          <button
+            type="button"
+            onClick={() => lootControl.mutate("stop")}
+            disabled={lootControl.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-red-800/70 text-red-50 hover:bg-red-700 disabled:opacity-50"
+          >
+            Stop
+          </button>
+          <button
+            type="button"
+            onClick={() => lootControl.mutate("restart")}
+            disabled={lootControl.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
+          >
+            Restart
+          </button>
+          <button
+            type="button"
+            onClick={() => lootControl.mutate("reload")}
+            disabled={lootControl.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-slate-700 text-slate-100 hover:bg-slate-600 disabled:opacity-50"
+          >
+            Reload config
+          </button>
+        </div>
+        <p className="text-xs text-slate-400">
+          Runtime:{" "}
+          <span className={lootRuntimeQ.data?.status === "running" ? "text-emerald-300" : "text-slate-300"}>
+            {lootRuntimeQ.data?.status ?? "unknown"}
+          </span>
+          {lootRuntimeQ.data?.pid ? ` · PID ${lootRuntimeQ.data.pid}` : ""}
+          {lootRuntimeQ.data && (lootRuntimeQ.data as Record<string, unknown>).adapter
+            ? ` · adapter ${String((lootRuntimeQ.data as Record<string, unknown>).adapter)}`
+            : ""}
+        </p>
+        {lootRuntimeQ.data && (lootRuntimeQ.data as Record<string, unknown>).message ? (
+          <p className="text-xs text-slate-500 mt-1">{String((lootRuntimeQ.data as Record<string, unknown>).message)}</p>
+        ) : null}
+        {lootControl.isError ? <p className="text-xs text-red-300 mt-2">{(lootControl.error as Error).message}</p> : null}
+        {lootControl.isSuccess && lootControl.data?.message ? (
+          <p className="text-xs text-cyan-200 mt-2">{lootControl.data.message}</p>
+        ) : null}
+      </div>
+
       {isError && (
         <QueryErrorBanner
           title="Could not load bots"

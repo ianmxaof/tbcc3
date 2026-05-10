@@ -13,6 +13,18 @@ from .payment_bot_settings import PaymentBotSettings
 from .tbcc_tag import TbccTag, MediaTagLink
 from .post_outbound_event import PostOutboundEvent
 from .link_resolver_request import LinkResolverRequest
+from .loot_bot_settings import LootBotSettings
+from .loot import (
+    LootDropEvent,
+    LootGameConfig,
+    LootIntervalTier,
+    LootModifier,
+    LootModifierTagWeight,
+    LootPlayerMediaSeen,
+    LootPlayerModifierSeen,
+    LootPoolEligibility,
+    LootSession,
+)
 
 __all__ = [
     "Base",
@@ -31,4 +43,14 @@ __all__ = [
     "MediaTagLink",
     "PostOutboundEvent",
     "LinkResolverRequest",
+    "LootDropEvent",
+    "LootGameConfig",
+    "LootIntervalTier",
+    "LootModifier",
+    "LootModifierTagWeight",
+    "LootPlayerMediaSeen",
+    "LootPlayerModifierSeen",
+    "LootPoolEligibility",
+    "LootSession",
+    "LootBotSettings",
 ]

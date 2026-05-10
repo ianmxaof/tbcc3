@@ -161,6 +161,33 @@ body {
   border-bottom: 1px solid var(--tbcc-bg-elevated);
   min-height: var(--tbcc-min-touch);
 }
+.crawler-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 6px;
+}
+.crawler-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--tbcc-bg-elevated);
+  border-radius: var(--tbcc-radius-sm);
+  background: var(--tbcc-bg-surface);
+  color: var(--tbcc-text-primary);
+  font: inherit;
+  font-size: var(--tbcc-font-caption);
+}
+.crawler-status {
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tbcc-text-muted);
+  font-size: var(--tbcc-font-caption);
+}
 
 /* Slim scan indicator while late network/DOM URLs are merged into the gallery */
 .gallery-scan-strip {

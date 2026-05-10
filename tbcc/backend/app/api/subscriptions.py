@@ -9,6 +9,7 @@ from app.models.subscription import Subscription
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.subscription_metrics import active_subscription_subscriber_count
 from app.services.bundle_parts import bundle_parts_for_api
+from app.services.payment_admin_notify import notify_sale_fulfilled
 
 router = APIRouter()
 
@@ -176,6 +177,13 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         from app.workers.milestone_worker import broadcast_progress
 
         broadcast_progress.delay()
+
+    notify_sale_fulfilled(
+        telegram_user_id=int(telegram_user_id),
+        plan_name=str(plan.name or "Product"),
+        product_type=str(plan.product_type or ""),
+        payment_method=str(payment_method or ""),
+    )
 
     return _build_subscription_api_result(
         db,

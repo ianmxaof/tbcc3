@@ -34,6 +34,9 @@ class PaymentBotSettingsPatch(BaseModel):
     runtime_cmd_restart: str | None = None
     runtime_cmd_reload: str | None = None
     runtime_cmd_status: str | None = None
+    video_finder_enabled: bool | None = None
+    video_finder_sources: list[dict[str, str]] | None = None
+    video_finder_max_links_per_source: int | None = Field(None, ge=1, le=30)
 
 
 def _ensure_row(db: Session) -> PaymentBotSettings:
@@ -75,11 +78,17 @@ def _validate_menu(menu: list[list[dict[str, str]]]) -> list[list[dict[str, str]
 
 def _row_overrides_dict(r: PaymentBotSettings) -> dict[str, Any]:
     menu = None
+    video_sources = None
     if r.main_menu_json:
         try:
             menu = json.loads(r.main_menu_json)
         except Exception:
             menu = None
+    if r.video_finder_sources_json:
+        try:
+            video_sources = json.loads(r.video_finder_sources_json)
+        except Exception:
+            video_sources = None
     return {
         "main_menu": menu,
         "welcome_html": r.welcome_html,
@@ -94,6 +103,9 @@ def _row_overrides_dict(r: PaymentBotSettings) -> dict[str, Any]:
         "runtime_cmd_restart": r.runtime_cmd_restart,
         "runtime_cmd_reload": r.runtime_cmd_reload,
         "runtime_cmd_status": r.runtime_cmd_status,
+        "video_finder_enabled": None if r.video_finder_enabled is None else bool(r.video_finder_enabled),
+        "video_finder_sources": video_sources,
+        "video_finder_max_links_per_source": r.video_finder_max_links_per_source,
     }
 
 
@@ -126,6 +138,43 @@ def patch_payment_bot_settings(body: PaymentBotSettingsPatch, db: Session = Depe
                 if v not in ("local", "command"):
                     raise HTTPException(status_code=400, detail="runtime_adapter must be local or command")
                 r.runtime_adapter = v
+            continue
+        if key == "video_finder_enabled":
+            if val is None:
+                r.video_finder_enabled = None
+            else:
+                r.video_finder_enabled = 1 if bool(val) else 0
+            continue
+        if key == "video_finder_sources":
+            if val is None:
+                r.video_finder_sources_json = None
+            else:
+                out: list[dict[str, str]] = []
+                for item in val[:60]:
+                    if not isinstance(item, dict):
+                        raise HTTPException(status_code=400, detail="video_finder_sources must be an array of objects")
+                    sid = str(item.get("id") or "").strip()
+                    name = str(item.get("name") or "").strip()
+                    url = str(item.get("url") or "").strip()
+                    if not sid or not name or not url:
+                        raise HTTPException(status_code=400, detail="Each video source needs id, name, url")
+                    if "{username}" not in url or not url.startswith(("http://", "https://")):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Each video source url must be http(s) and include {username}",
+                        )
+                    row: dict[str, Any] = {"id": sid[:64], "name": name[:128], "url": url[:1024]}
+                    rx = str(item.get("result_link_regex") or "").strip()
+                    if rx:
+                        row["result_link_regex"] = rx[:512]
+                    for key in ("result_link_must_include", "result_link_deny_include"):
+                        raw = item.get(key)
+                        if isinstance(raw, list):
+                            vals = [str(x).strip()[:128] for x in raw if str(x).strip()]
+                            if vals:
+                                row[key] = vals[:20]
+                    out.append(row)
+                r.video_finder_sources_json = json.dumps(out) if out else None
             continue
         if not hasattr(r, key):
             continue

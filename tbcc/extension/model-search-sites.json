@@ -24,6 +24,18 @@
       "name": "BestCamVideos",
       "category": "livecams",
       "url": "https://bestcamvideos.com/?s={username}"
+    },
+    {
+      "id": "camwhores_videos",
+      "name": "CamWhores Videos",
+      "category": "videos",
+      "url": "https://www.camwhores.tv/search/{username}/"
+    },
+    {
+      "id": "xhomealone_videos",
+      "name": "Xhomealone Videos",
+      "category": "videos",
+      "url": "https://xhomealone.com/search/{username}/"
     }
   ]
 }

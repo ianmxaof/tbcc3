@@ -42,6 +42,12 @@
             <button type="button" id="btnOpenCaptureSettings" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Capture and extension options">⚙</button>
           </div>
         </div>
+        <div class="crawler-bar" aria-label="Crawler deploy">
+          <input type="url" id="crawlerUrl" placeholder="Crawler URL (Erome album, more adapters coming)" autocomplete="off" />
+          <button type="button" id="btnCrawlerUseCurrent" class="tbcc-btn-secondary tbcc-btn--compact" title="Use current tab URL">Tab</button>
+          <button type="button" id="btnCrawlerDeploy" class="tbcc-btn-secondary tbcc-btn--compact" title="Resolve media with a site crawler">Crawl</button>
+          <span id="crawlerStatus" class="crawler-status" aria-live="polite"></span>
+        </div>
       </header>
 
       <div id="filterOverlay" class="filter-overlay" aria-hidden="true">
@@ -300,6 +306,7 @@
             </div>
             <p class="sheet-section-label">Telegram</p>
             <label class="forum-check"><input type="checkbox" id="forumPostEnabled" /> <span id="forumPostEnabledLabel">After import, also post to Telegram</span></label>
+            <label class="forum-check"><input type="checkbox" id="autoTagOnExport" /> <span id="autoTagOnExportLabel">Auto-tag on export (page + per-item hints)</span></label>
             <div class="telegram-dest-row">
               <span class="dest-label">Where</span>
               <select id="postDestMode" title="Where media goes on Telegram" disabled>

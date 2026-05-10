@@ -3,6 +3,7 @@
 const STORAGE_MODEL_SEARCH_CUSTOM_SITES = "tbccModelSearchCustomSites";
 const MODEL_SEARCH_CATEGORY_ONLYFANS = "onlyfans";
 const MODEL_SEARCH_CATEGORY_LIVECAMS = "livecams";
+const MODEL_SEARCH_CATEGORY_VIDEOS = "videos";
 
 function normalizeModelSearchCategory(raw) {
   const s = String(raw || "").trim().toLowerCase();
@@ -12,11 +13,15 @@ function normalizeModelSearchCategory(raw) {
   if (s === "cam" || s === "cams" || s === "livecams" || s === "live_cams") {
     return MODEL_SEARCH_CATEGORY_LIVECAMS;
   }
+  if (s === "video" || s === "videos" || s === "video_search" || s === "clips") {
+    return MODEL_SEARCH_CATEGORY_VIDEOS;
+  }
   return MODEL_SEARCH_CATEGORY_ONLYFANS;
 }
 
 function modelSearchCategoryLabel(cat) {
   const c = normalizeModelSearchCategory(cat);
+  if (c === MODEL_SEARCH_CATEGORY_VIDEOS) return "Video search";
   return c === MODEL_SEARCH_CATEGORY_LIVECAMS ? "Live cam search" : "OnlyFans search";
 }
 

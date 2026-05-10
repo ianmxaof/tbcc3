@@ -26,6 +26,7 @@ if ($apiOk) {
 } else {
   Write-Host "  [FAIL] Nothing on port 8000 — backend not running." -ForegroundColor Red
   Write-Host "         Start: cd backend ; python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-exclude scripts --reload-delay 1" -ForegroundColor Yellow
+  Write-Host "         If uvicorn dies with WinError 10055, omit --reload or run: .\start.ps1 -NoReload" -ForegroundColor DarkYellow
   Write-Host "         Or:    .\start.ps1   (opens TBCC-Backend window)" -ForegroundColor Yellow
 }
 
