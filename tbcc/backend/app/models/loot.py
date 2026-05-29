@@ -75,6 +75,7 @@ class LootModifier(Base):
     telegram_chat_id = Column(BigInteger, nullable=True)
     weight_base = Column(Float, nullable=False, default=1.0)
     rarity_focus = Column(Float, nullable=False, default=1.0)
+    min_rarity_tier = Column(Integer, nullable=True)  # NULL = any; zip packs often 7+
     bypass_vip = Column(Boolean, nullable=False, default=False)
     active = Column(Boolean, nullable=False, default=True)
     source_note = Column(Text, nullable=True)
@@ -127,6 +128,31 @@ class LootDropEvent(Base):
     tag_bias_snapshot_json = Column(Text, nullable=True)
     delivery_status = Column(String(16), nullable=False, default="pending")  # pending | sent | failed
     telegram_message_ids_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LootPlayerStats(Base):
+    """Lifetime roll counter per Telegram user (preview + live)."""
+
+    __tablename__ = "loot_player_stats"
+
+    telegram_user_id = Column(BigInteger, primary_key=True)
+    roll_count = Column(Integer, nullable=False, default=0)
+    free_pulls_used = Column(Integer, nullable=False, default=0)
+    bonus_free_pulls = Column(Integer, nullable=False, default=0)
+    first_roll_at = Column(DateTime, nullable=True)
+    last_roll_at = Column(DateTime, nullable=True)
+
+
+class LootReferralTracking(Base):
+    """Loot-game referral: referrer earns bonus free pulls when referred user uses a pull."""
+
+    __tablename__ = "loot_referral_tracking"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    referred_user_id = Column(BigInteger, nullable=False, unique=True)
+    referrer_user_id = Column(BigInteger, nullable=False, index=True)
+    credited = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

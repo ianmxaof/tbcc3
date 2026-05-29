@@ -1,0 +1,138 @@
+"""Rewrite scheduled post captions via OpenAI while preserving URLs and meaning."""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+from typing import Any
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+_URL_PATTERN = re.compile(
+    r"https?://[^\s<>\"']+|(?:t\.me|telegram\.me)/[^\s<>\"']+",
+    re.IGNORECASE,
+)
+
+
+def caption_rewrite_llm_globally_enabled() -> bool:
+    return (os.environ.get("TBCC_CAPTION_LLM_REWRITE_ENABLED") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _openai_key() -> str:
+    return (os.environ.get("TBCC_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+
+
+def _model() -> str:
+    return (
+        os.environ.get("TBCC_CAPTION_LLM_REWRITE_MODEL")
+        or os.environ.get("TBCC_LLM_MODEL")
+        or "gpt-4o-mini"
+    ).strip()
+
+
+def _max_tokens() -> int:
+    raw = (os.environ.get("TBCC_CAPTION_LLM_REWRITE_MAX_TOKENS") or "1200").strip()
+    try:
+        return max(128, min(4096, int(raw)))
+    except ValueError:
+        return 1200
+
+
+def extract_urls(text: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in _URL_PATTERN.finditer(text or ""):
+        u = m.group(0).rstrip(".,);]")
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _urls_preserved(original: str, rewritten: str, urls: list[str]) -> bool:
+    if not urls:
+        return True
+    rw = rewritten or ""
+    for u in urls:
+        if u not in rw:
+            return False
+    return True
+
+
+def rewrite_caption_llm_sync(original_html: str) -> str:
+    """
+    Return a rephrased caption (Telegram HTML OK). Raises on missing API key or hard failure.
+    Falls back to original if model output drops required URLs.
+    """
+    key = _openai_key()
+    if not key:
+        raise RuntimeError("TBCC_OPENAI_API_KEY is not set")
+
+    src = (original_html or "").strip()
+    if not src:
+        return src
+
+    urls = extract_urls(src)
+    url_block = "\n".join(f"- {u}" for u in urls) if urls else "(none — do not invent links)"
+
+    system = (
+        "You rewrite social media captions for an adult content brand (AOF). "
+        "Keep the same meaning, announcements, channel names, emojis style, and ALL facts. "
+        "Rephrase sentences so the post feels fresh but is not misleading. "
+        "Output Telegram-compatible HTML only: <b>, <i>, <a href=\"...\">, line breaks. "
+        "Every URL from the required list MUST appear verbatim at least once in your output. "
+        "Do not add new URLs. Do not wrap the answer in markdown code fences."
+    )
+    user = (
+        f"Required URLs (include each exactly as written):\n{url_block}\n\n"
+        f"Original caption:\n{src}\n\n"
+        "Rewritten caption:"
+    )
+
+    payload: dict[str, Any] = {
+        "model": _model(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": _max_tokens(),
+        "temperature": 0.75,
+    }
+
+    with httpx.Client(timeout=90.0) as client:
+        r = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=payload,
+        )
+    if not r.is_success:
+        logger.warning("caption LLM HTTP %s: %s", r.status_code, (r.text or "")[:400])
+        raise RuntimeError(f"OpenAI error {r.status_code}")
+
+    data = r.json()
+    text = (
+        ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    ).strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    if not text:
+        raise RuntimeError("Empty LLM rewrite")
+
+    if not _urls_preserved(src, text, urls):
+        logger.warning("caption LLM rewrite dropped URLs; using original (%s urls)", len(urls))
+        return src
+
+    return text

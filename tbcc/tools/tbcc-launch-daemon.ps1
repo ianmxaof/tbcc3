@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $toolsDir = $PSScriptRoot
 $tbccDir = Split-Path -Parent $toolsDir
 $startPs1 = Join-Path $tbccDir "start.ps1"
+$supervisorPs1 = Join-Path $toolsDir "tbcc-supervisor.ps1"
 $prefix = "http://127.0.0.1:8765/"
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add($prefix)
@@ -34,7 +35,37 @@ function Send-CorsJson {
   $Response.OutputStream.Write($buf, 0, $buf.Length)
 }
 
+function Test-TbccSupervisorProcessRunning {
+  try {
+    $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object { $_.CommandLine -and ($_.CommandLine -match 'tbcc-supervisor\.ps1') })
+    return ($procs.Count -gt 0)
+  } catch {
+    return $false
+  }
+}
+
 $script:lastLaunch = [DateTime]::MinValue
+$script:lastSupervisorLaunch = [DateTime]::MinValue
+
+function Invoke-SupervisorLaunch {
+  if (-not (Test-Path -LiteralPath $supervisorPs1)) {
+    return @{ ok = $false; error = "missing_script"; path = $supervisorPs1 }
+  }
+  $now = [DateTime]::UtcNow
+  if (($now - $script:lastSupervisorLaunch).TotalSeconds -lt 4) {
+    return @{ ok = $false; error = "debounced"; detail = "Supervisor launch ignored (wait a few seconds)." }
+  }
+  $script:lastSupervisorLaunch = $now
+  if (Test-TbccSupervisorProcessRunning) {
+    return @{ ok = $true; via = "daemon"; already_running = $true; detail = "Tray supervisor already running." }
+  }
+  Start-Process -FilePath "powershell.exe" -ArgumentList @(
+    "-NoProfile", "-Sta", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", $supervisorPs1
+  ) -WorkingDirectory $toolsDir -WindowStyle Hidden
+  return @{ ok = $true; via = "daemon"; path = $supervisorPs1; already_running = $false }
+}
+
 function Invoke-FullLaunch {
   $now = [DateTime]::UtcNow
   if (($now - $script:lastLaunch).TotalSeconds -lt 4) {
@@ -42,7 +73,7 @@ function Invoke-FullLaunch {
   }
   $script:lastLaunch = $now
   Start-Process -FilePath "powershell.exe" -ArgumentList @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $startPs1, "-Full"
+    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $startPs1, "-Full", "-WtTabs", "-NoOpen"
   ) -WorkingDirectory $tbccDir -WindowStyle Normal
   return @{ ok = $true; via = "daemon"; path = $startPs1 }
 }
@@ -50,14 +81,15 @@ function Invoke-FullLaunch {
 try {
   $listener.Start()
 } catch {
-  Write-Host "Failed to bind $prefix — port 8765 may be in use or URL ACL missing." -ForegroundColor Red
+  Write-Host "Failed to bind $prefix - port 8765 may be in use or URL ACL missing." -ForegroundColor Red
   Write-Host $_
   exit 1
 }
 
 Write-Host "TBCC launch daemon on $prefix" -ForegroundColor Cyan
-Write-Host "  POST /launch-full  -> start.ps1 -Full" -ForegroundColor Gray
-Write-Host "  GET  /health       -> status JSON" -ForegroundColor Gray
+Write-Host "  POST /launch-full       -> start.ps1 -Full -WtTabs -NoOpen (cold start)" -ForegroundColor Gray
+Write-Host "  POST /launch-supervisor -> tbcc-supervisor.ps1 (tray icon)" -ForegroundColor Gray
+Write-Host "  GET  /health            -> status JSON" -ForegroundColor Gray
 Write-Host "Press Ctrl+C to stop." -ForegroundColor Gray
 Write-Host ""
 
@@ -81,7 +113,13 @@ while ($listener.IsListening) {
       $res.ContentLength64 = 0
     }
     elseif ($req.HttpMethod -eq "GET" -and ($path -eq "/health" -or $path -eq "/")) {
-      Send-CorsJson -Response $res -Body ('{"ok":true,"service":"tbcc-launch-daemon"}')
+      $body = @{
+        ok = $true
+        service = "tbcc-launch-daemon"
+        supervisor_running = (Test-TbccSupervisorProcessRunning)
+        endpoints = @("POST /launch-full", "POST /launch-supervisor")
+      } | ConvertTo-Json -Compress
+      Send-CorsJson -Response $res -Body $body
     }
     elseif ($req.HttpMethod -eq "POST" -and $path -eq "/launch-full") {
       $result = Invoke-FullLaunch
@@ -90,6 +128,16 @@ while ($listener.IsListening) {
         Send-CorsJson -Response $res -Body $json
       } else {
         Send-CorsJson -Response $res -Status 429 -Body $json
+      }
+    }
+    elseif ($req.HttpMethod -eq "POST" -and $path -eq "/launch-supervisor") {
+      $result = Invoke-SupervisorLaunch
+      $json = $result | ConvertTo-Json -Compress -Depth 5
+      if ($result.ok) {
+        Send-CorsJson -Response $res -Body $json
+      } else {
+        $status = if ($result.error -eq "debounced") { 429 } else { 404 }
+        Send-CorsJson -Response $res -Status $status -Body $json
       }
     }
     else {

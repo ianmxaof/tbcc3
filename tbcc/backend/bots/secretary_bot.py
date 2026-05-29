@@ -31,11 +31,20 @@ _env = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env.exists():
     load_dotenv(_env, override=True)
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.error import NetworkError
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from app.services.secretary_llm import (
+    REDO_STYLE_HINTS,
     complete_secretary_chat,
     default_system_prompt,
     fetch_subscription_catalog_snippet,
@@ -53,6 +62,7 @@ API_BASE = (os.getenv("TBCC_SECRETARY_API_URL") or os.getenv("TBCC_API_URL") or 
 # (user_id, deque of monotonic timestamps)
 _rate_log: dict[int, deque[float]] = {}
 _pending_drafts: dict[str, dict[str, object]] = {}
+_business_msg_seen: dict[str, float] = {}
 
 
 def _secretary_token() -> str:
@@ -155,6 +165,118 @@ def _can_manage_drafts(update: Update) -> bool:
     return False
 
 
+def _is_owner_message(user_id: int) -> bool:
+    admin_uid = _admin_user_id()
+    return admin_uid is not None and user_id == admin_uid
+
+
+def _business_msg_dedupe_key(bc_id: str, user_id: int, message_id: int) -> str:
+    return f"{bc_id}:{user_id}:{message_id}"
+
+
+def _already_processed_business_msg(bc_id: str, user_id: int, message_id: int) -> bool:
+    key = _business_msg_dedupe_key(bc_id, user_id, message_id)
+    now = time.monotonic()
+    prev = _business_msg_seen.get(key)
+    if prev is not None and now - prev < 45.0:
+        return True
+    _business_msg_seen[key] = now
+    if len(_business_msg_seen) > 500:
+        cutoff = now - 120.0
+        for k, t in list(_business_msg_seen.items()):
+            if t < cutoff:
+                _business_msg_seen.pop(k, None)
+    return False
+
+
+def _draft_keyboard(draft_id: str, reply_plain: str) -> InlineKeyboardMarkup:
+    copy_text = reply_plain[:256] if len(reply_plain) > 256 else reply_plain
+    row0: list[InlineKeyboardButton] = [
+        InlineKeyboardButton("✓ Send", callback_data=f"sec:ap:{draft_id}"),
+        InlineKeyboardButton("✗ Drop", callback_data=f"sec:rj:{draft_id}"),
+    ]
+    try:
+        row0.insert(
+            0,
+            InlineKeyboardButton("📋 Copy", copy_text=CopyTextButton(text=copy_text)),
+        )
+    except TypeError:
+        pass
+    row1 = [
+        InlineKeyboardButton("↻ Pro", callback_data=f"sec:rd:{draft_id}:pro"),
+        InlineKeyboardButton("↻ Casual", callback_data=f"sec:rd:{draft_id}:casual"),
+        InlineKeyboardButton("↻ Short", callback_data=f"sec:rd:{draft_id}:short"),
+    ]
+    return InlineKeyboardMarkup([row0, row1])
+
+
+def _format_draft_card(
+    draft_id: str,
+    *,
+    who: str,
+    user_id: int,
+    customer_line: str,
+    reply_plain: str,
+) -> str:
+    who_disp = f"@{html.escape(who)}" if who and who != "no_username" else "no @"
+    cust = html.escape(customer_line[:500])
+    reply = html.escape(reply_plain[:2800])
+    return (
+        f"<b>━━ {draft_id} ━━</b>\n"
+        f"👤 {who_disp} · <code>{user_id}</code>\n"
+        f"📩 {cust}\n\n"
+        f"💬 <b>Suggested</b> (Copy button or edit, then /approve)\n"
+        f"<pre>{reply}</pre>\n"
+        f"<code>/approve {draft_id}</code> · <code>/reject {draft_id}</code> · "
+        f"<code>/redo {draft_id} pro|casual|short</code>"
+    )
+
+
+async def _send_draft_to_admin(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    draft_id: str,
+    who: str,
+    user_id: int,
+    customer_line: str,
+    reply_plain: str,
+) -> None:
+    admin_id = _admin_notify_chat_id()
+    if admin_id is None:
+        return
+    body = _format_draft_card(
+        draft_id,
+        who=who,
+        user_id=user_id,
+        customer_line=customer_line,
+        reply_plain=reply_plain,
+    )
+    await context.bot.send_message(
+        chat_id=admin_id,
+        text=body,
+        parse_mode="HTML",
+        reply_markup=_draft_keyboard(draft_id, reply_plain),
+    )
+
+
+async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_id: str) -> tuple[bool, str]:
+    item = _pending_drafts.get(draft_id)
+    if not item:
+        return False, f"Draft {draft_id} not found."
+    chat_id = int(item["chat_id"])
+    bc_id = str(item["business_connection_id"])
+    text = str(item["reply"])
+    try:
+        await context.bot.send_message(chat_id=chat_id, text=text[:4096], business_connection_id=bc_id)
+    except TypeError:
+        await context.bot.send_message(chat_id=chat_id, text=text[:4096])
+    except Exception as e:
+        logger.exception("approve failed draft=%s chat=%s bc=%s: %s", draft_id, chat_id, bc_id, e)
+        return False, f"Could not send: {e}"
+    _pending_drafts.pop(draft_id, None)
+    return True, f"Sent {draft_id}."
+
+
 async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg:
@@ -166,24 +288,8 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.reply_text("Usage: /approve <draft_id>")
         return
     draft_id = str(context.args[0]).strip().upper()
-    item = _pending_drafts.get(draft_id)
-    if not item:
-        await msg.reply_text(f"Draft {draft_id} not found (maybe already sent/expired).")
-        return
-    chat_id = int(item["chat_id"])
-    bc_id = str(item["business_connection_id"])
-    text = str(item["reply"])
-    try:
-        await context.bot.send_message(chat_id=chat_id, text=text[:4096], business_connection_id=bc_id)
-    except TypeError:
-        # Backward compatibility across PTB versions.
-        await context.bot.send_message(chat_id=chat_id, text=text[:4096])
-    except Exception as e:
-        logger.exception("approve failed draft=%s chat=%s bc=%s: %s", draft_id, chat_id, bc_id, e)
-        await msg.reply_text(f"Could not send draft {draft_id}: {e}")
-        return
-    _pending_drafts.pop(draft_id, None)
-    await msg.reply_text(f"Sent draft {draft_id}.")
+    ok, detail = await _deliver_draft_to_customer(context, draft_id)
+    await msg.reply_text(detail)
 
 
 async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -202,6 +308,107 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text(f"Rejected draft {draft_id}.")
     else:
         await msg.reply_text(f"Draft {draft_id} not found.")
+
+
+async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _can_manage_drafts(update):
+        await msg.reply_text("Admin only.")
+        return
+    if not context.args:
+        await msg.reply_text("Usage: /redo <draft_id> [pro|casual|short|custom …instruction…]")
+        return
+    if not openai_configured():
+        await msg.reply_text("OpenAI not configured.")
+        return
+    draft_id = str(context.args[0]).strip().upper()
+    item = _pending_drafts.get(draft_id)
+    if not item:
+        await msg.reply_text(f"Draft {draft_id} not found.")
+        return
+    style = (context.args[1].strip().lower() if len(context.args) > 1 else "pro")
+    custom = " ".join(context.args[2:]).strip() if len(context.args) > 2 else ""
+    llm_messages = item.get("llm_messages")
+    if not isinstance(llm_messages, list):
+        await msg.reply_text("No LLM context stored for this draft — reject and wait for a new customer message.")
+        return
+    suffix = REDO_STYLE_HINTS.get(style, "")
+    if style == "custom" and custom:
+        suffix = f"Rewrite the assistant reply with this instruction: {custom}"
+    elif not suffix:
+        suffix = REDO_STYLE_HINTS["pro"]
+    try:
+        reply = await complete_secretary_chat(llm_messages, extra_system_suffix=suffix)
+    except Exception as e:
+        await msg.reply_text(f"Redo failed: {e}")
+        return
+    item["reply"] = reply[:3500]
+    who = str(item.get("who") or "no_username")
+    uid = int(item.get("user_id") or 0)
+    cust = str(item.get("customer_preview") or "")
+    await _send_draft_to_admin(
+        context,
+        draft_id=draft_id,
+        who=who,
+        user_id=uid,
+        customer_line=cust,
+        reply_plain=reply[:3500],
+    )
+    await msg.reply_text(f"↻ {draft_id} — new suggestion above.")
+
+
+async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    if not _can_manage_drafts(update):
+        await query.answer("Admin only.", show_alert=True)
+        return
+    parts = query.data.split(":")
+    if len(parts) < 3 or parts[0] != "sec":
+        return
+    action = parts[1]
+    draft_id = parts[2].upper()
+    await query.answer()
+    if action == "ap":
+        ok, detail = await _deliver_draft_to_customer(context, draft_id)
+        if query.message:
+            await query.message.reply_text(detail)
+        return
+    if action == "rj":
+        if draft_id in _pending_drafts:
+            _pending_drafts.pop(draft_id, None)
+            if query.message:
+                await query.message.reply_text(f"Dropped {draft_id}.")
+        return
+    if action == "rd" and len(parts) >= 4:
+        style = parts[3].lower()
+        item = _pending_drafts.get(draft_id)
+        if not item or not isinstance(item.get("llm_messages"), list):
+            await query.answer("Draft expired.", show_alert=True)
+            return
+        suffix = REDO_STYLE_HINTS.get(style, REDO_STYLE_HINTS["pro"])
+        try:
+            reply = await complete_secretary_chat(item["llm_messages"], extra_system_suffix=suffix)
+        except Exception as e:
+            await query.answer(f"Redo failed: {e}", show_alert=True)
+            return
+        item["reply"] = reply[:3500]
+        who = str(item.get("who") or "no_username")
+        uid = int(item.get("user_id") or 0)
+        cust = str(item.get("customer_preview") or "")
+        await _send_draft_to_admin(
+            context,
+            draft_id=draft_id,
+            who=who,
+            user_id=uid,
+            customer_line=cust,
+            reply_plain=reply[:3500],
+        )
+        if query.message:
+            await query.message.reply_text(f"↻ {draft_id} ({style})")
 
 
 async def cmd_drafts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -347,6 +554,13 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if msg.chat.type != "private":
         return
 
+    bc_id = getattr(msg, "business_connection_id", None)
+    if bc_id is not None:
+        if _is_owner_message(user.id):
+            return
+        if msg.message_id and _already_processed_business_msg(str(bc_id), user.id, int(msg.message_id)):
+            return
+
     if not _allow_rate_limit(user.id):
         await msg.reply_text(
             "You're sending messages a bit fast — please wait a minute and try again.",
@@ -366,7 +580,6 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not user_text:
         return
 
-    bc_id = getattr(msg, "business_connection_id", None)
     is_business = bc_id is not None
     auto_reply_business = _auto_reply_in_business()
     suggest_only_business = is_business and not auto_reply_business
@@ -440,30 +653,27 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         admin_id = _admin_notify_chat_id()
         if admin_id is not None:
             draft_id = secrets.token_hex(3).upper()
+            who = (user.username or "").strip() or "no_username"
+            safe_reply = reply[:3500]
             _pending_drafts[draft_id] = {
                 "chat_id": msg.chat_id,
                 "business_connection_id": str(bc_id),
-                "reply": reply[:3500],
+                "reply": safe_reply,
                 "user_id": user.id,
-                "who": (user.username or "").strip() or "no_username",
+                "who": who,
+                "customer_preview": user_text[:500],
+                "llm_messages": [dict(m) for m in messages],
                 "created_at": int(time.time()),
             }
-            who = (user.username or "").strip() or "no_username"
-            safe_reply = reply[:3500]
-            admin_body = (
-                "<b>FAQ draft</b> (not sent to customer)\n"
-                f"Draft ID: <code>{draft_id}</code>\n"
-                f"From: @{html.escape(who)} id <code>{user.id}</code>\n"
-                f"Connection: <code>{html.escape(str(bc_id))}</code>\n\n"
-                f"<b>Their message</b>\n{html.escape(user_text[:2000])}\n\n"
-                f"<b>Suggested reply</b>\n{html.escape(safe_reply)}\n\n"
-                f"<b>Commands</b>\n"
-                f"<code>/approve {draft_id}</code> to send this reply\n"
-                f"<code>/reject {draft_id}</code> to discard\n\n"
-                "<i>Server: TBCC_SECRETARY_AUTO_REPLY unset/0 → suggest. Set to 1 for in-thread replies.</i>"
-            )
             try:
-                await context.bot.send_message(chat_id=admin_id, text=admin_body, parse_mode="HTML")
+                await _send_draft_to_admin(
+                    context,
+                    draft_id=draft_id,
+                    who=who,
+                    user_id=user.id,
+                    customer_line=user_text,
+                    reply_plain=safe_reply,
+                )
             except Exception as e:
                 logger.exception("secretary: could not DM admin %s: %s", admin_id, e)
         else:
@@ -496,6 +706,15 @@ async def on_unsupported_private(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Avoid huge tracebacks for transient DNS / TLS blips; python-telegram-bot retries polling."""
+    err = context.error
+    if isinstance(err, NetworkError):
+        logger.warning("Telegram NetworkError (usually transient DNS/connectivity): %s", err)
+        return
+    logger.error("Secretary bot unhandled error", exc_info=err)
+
+
 async def post_init(app: Application) -> None:
     me = await app.bot.get_me()
     logger.info("Secretary bot online @%s id=%s", me.username, me.id)
@@ -508,11 +727,28 @@ async def post_init(app: Application) -> None:
         BotCommand("approve", "Send a pending draft to customer"),
         BotCommand("reject", "Discard a pending draft"),
         BotCommand("drafts", "List pending draft IDs"),
+        BotCommand("redo", "Regenerate a draft (pro/casual/short)"),
     ]
     try:
         await app.bot.set_my_commands(commands)
     except Exception as e:
         logger.warning("set_my_commands: %s", e)
+
+
+def _telegram_http_timeout_seconds() -> float:
+    raw = os.getenv("TELEGRAM_HTTP_TIMEOUT", "30").strip()
+    try:
+        return max(5.0, min(120.0, float(raw)))
+    except ValueError:
+        return 30.0
+
+
+def _telegram_bootstrap_retries() -> int:
+    raw = os.getenv("TELEGRAM_BOOTSTRAP_RETRIES", "5").strip()
+    try:
+        return int(raw)
+    except ValueError:
+        return 5
 
 
 def main() -> None:
@@ -521,11 +757,30 @@ def main() -> None:
         print("Set TBCC_SECRETARY_BOT_TOKEN (or SECRETARY_BOT_TOKEN) in tbcc/.env — see .env.example")
         return
 
-    app = (
+    t = _telegram_http_timeout_seconds()
+    br = _telegram_bootstrap_retries()
+    b = (
         Application.builder()
         .token(token)
         .post_init(post_init)
-        .build()
+        .connect_timeout(t)
+        .read_timeout(t)
+        .write_timeout(t)
+        .pool_timeout(t)
+        .get_updates_connect_timeout(t)
+        .get_updates_read_timeout(t)
+        .get_updates_write_timeout(t)
+        .get_updates_pool_timeout(t)
+    )
+    proxy = os.getenv("TELEGRAM_PROXY", "").strip()
+    if proxy:
+        b = b.proxy(proxy)
+    app = b.build()
+    logger.info(
+        "Telegram HTTP timeouts: %.1fs (TELEGRAM_HTTP_TIMEOUT); bootstrap_retries=%s%s",
+        t,
+        br,
+        f", proxy={proxy}" if proxy else "",
     )
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -535,11 +790,14 @@ def main() -> None:
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("drafts", cmd_drafts))
+    app.add_handler(CommandHandler("redo", cmd_redo))
+    app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.TEXT), on_unsupported_private))
+    app.add_error_handler(_on_app_error)
 
     print("Secretary bot running. Commands: /start /help /subscribe /shop /reset /approve /reject /drafts")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 
 
 if __name__ == "__main__":

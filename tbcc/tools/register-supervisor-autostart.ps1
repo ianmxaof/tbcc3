@@ -1,0 +1,38 @@
+# Add TBCC Supervisor to the current user's Windows logon Startup folder.
+#   cd tbcc\tools
+#   .\register-supervisor-autostart.ps1
+#   .\register-supervisor-autostart.ps1 -Unregister
+
+param([switch]$Unregister)
+
+$toolsDir = $PSScriptRoot
+$supervisor = Join-Path $toolsDir "tbcc-supervisor.ps1"
+$startupDir = [Environment]::GetFolderPath("Startup")
+$shortcutPath = Join-Path $startupDir "TBCC Supervisor.lnk"
+
+if (-not (Test-Path -LiteralPath $supervisor)) {
+  Write-Host "Missing: $supervisor" -ForegroundColor Red
+  exit 1
+}
+
+if ($Unregister) {
+  if (Test-Path -LiteralPath $shortcutPath) {
+    Remove-Item -LiteralPath $shortcutPath -Force
+    Write-Host "Removed: $shortcutPath" -ForegroundColor Green
+  } else {
+    Write-Host "No shortcut at: $shortcutPath" -ForegroundColor Gray
+  }
+  exit 0
+}
+
+$wsh = New-Object -ComObject WScript.Shell
+$sc = $wsh.CreateShortcut($shortcutPath)
+$sc.TargetPath = "powershell.exe"
+$sc.Arguments = '-NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $supervisor + '"'
+$sc.WorkingDirectory = $toolsDir
+$sc.Description = "TBCC tray - cold start and service restarts"
+$sc.Save()
+
+Write-Host "Created Startup shortcut:" -ForegroundColor Green
+Write-Host "  $shortcutPath" -ForegroundColor Gray
+Write-Host "Log off/on or reboot to auto-start. For extension cold launch, also run tbcc-launch-daemon.ps1 (or add it to Startup)." -ForegroundColor Gray

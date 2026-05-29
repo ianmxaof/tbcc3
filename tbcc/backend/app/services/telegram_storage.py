@@ -213,6 +213,29 @@ class TelegramStorage:
         )
         return await self.store_from_bytes(data, hint, source, pool_id, db)
 
+    def is_duplicate_message(self, message, pool_id: int, db: Session) -> bool:
+        """True if this message media is already indexed in the pool."""
+        media = message.media
+        if media is None:
+            return False
+        file_unique_id = None
+        if isinstance(media, MessageMediaPhoto):
+            file_unique_id = str(media.photo.id)
+        elif isinstance(media, MessageMediaDocument):
+            file_unique_id = str(media.document.id)
+        elif isinstance(media, MessageMediaWebPage):
+            wp = media.webpage
+            if wp and getattr(wp, "photo", None):
+                file_unique_id = str(wp.photo.id)
+            elif wp and getattr(wp, "document", None):
+                file_unique_id = str(wp.document.id)
+        if not file_unique_id:
+            return False
+        existing = db.query(Media).filter(
+            Media.file_unique_id == file_unique_id, Media.pool_id == pool_id
+        ).first()
+        return existing is not None
+
     async def _index_message(self, msg, source: str, pool_id: int, db: Session):
         media = msg.media
         if media is None:
@@ -257,9 +280,9 @@ class TelegramStorage:
             from app.services.media_tagging import apply_auto_tags_for_new_media
 
             apply_auto_tags_for_new_media(db, record.id)
-            from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
+            from app.services.auto_tag_enrich import enqueue_auto_tag_enrich_if_enabled
 
-            enqueue_auto_tag_llm_if_enabled(record.id)
+            enqueue_auto_tag_enrich_if_enabled(record.id)
         except Exception:
             logger.exception("auto-tag failed for media id=%s", getattr(record, "id", "?"))
         return record

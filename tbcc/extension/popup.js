@@ -79,6 +79,23 @@ document.getElementById("openGallery").addEventListener("click", (e) => {
   });
 });
 
+const popOutBtn = document.getElementById("openGalleryPopOut");
+if (popOutBtn) {
+  popOutBtn.addEventListener("click", () => {
+    if (inGalleryPanel) {
+      window.parent.postMessage({ type: "tbcc-open-gallery-popout" }, "*");
+      return;
+    }
+    chrome.windows.create({
+      url: chrome.runtime.getURL("gallery.html"),
+      type: "popup",
+      width: 560,
+      height: 920,
+      focused: true,
+    });
+  });
+}
+
 document.getElementById("openExtensionOptions").addEventListener("click", (e) => {
   if (inGalleryPanel) {
     e.preventDefault();
@@ -122,6 +139,8 @@ document.getElementById("btnCaptureReverse").addEventListener("click", async () 
     const blob = await res.blob();
     const type = blob.type || "image/png";
     await navigator.clipboard.write([new ClipboardItem({ [type]: blob })]);
+    const clip = globalThis.TbccClipboard;
+    if (clip && clip.showCopied) clip.showCopied();
   } catch (e) {
     st.className = "err";
     st.textContent = "Could not copy to clipboard: " + String(e.message || e);
@@ -150,6 +169,20 @@ if (liteCb) {
   });
   liteCb.addEventListener("change", () => {
     chrome.storage.local.set({ tbccLiteMode: !!liteCb.checked });
+  });
+}
+
+const btnLaunchFull = document.getElementById("btnLaunchFullStack");
+if (btnLaunchFull && typeof globalThis.tbccLaunchFullStack === "function") {
+  btnLaunchFull.addEventListener("click", () => {
+    globalThis.tbccLaunchFullStack();
+  });
+}
+
+const btnLaunchSup = document.getElementById("btnLaunchSupervisor");
+if (btnLaunchSup && typeof globalThis.tbccLaunchSupervisor === "function") {
+  btnLaunchSup.addEventListener("click", () => {
+    globalThis.tbccLaunchSupervisor();
   });
 }
 

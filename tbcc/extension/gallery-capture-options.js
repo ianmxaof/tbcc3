@@ -14,6 +14,7 @@
   const elClearSelOnOpen = document.getElementById("captureSettingClearSelectionOnOpen");
   const elNotifySystem = document.getElementById("captureSettingNotifySystem");
   const elNotifyZip = document.getElementById("captureSettingNotifyZip");
+  const elZipPromo = document.getElementById("captureSettingZipPromo");
   const elNotifySendTbcc = document.getElementById("captureSettingNotifySendTbcc");
   const elNotifySendSaved = document.getElementById("captureSettingNotifySendSaved");
   const elNotifySendChannel = document.getElementById("captureSettingNotifySendChannel");
@@ -40,6 +41,8 @@
     if (elClearSelOnOpen) elClearSelOnOpen.checked = s.clearSelectionOnOpen === true;
     if (elNotifySystem) elNotifySystem.checked = s.notifyUseSystem !== false;
     if (elNotifyZip) elNotifyZip.checked = s.notifyOnZipComplete !== false;
+    const zipPromo = await new Promise((r) => chrome.storage.local.get(["tbccZipPromoInGallery"], r));
+    if (elZipPromo) elZipPromo.checked = zipPromo.tbccZipPromoInGallery !== false;
     if (elNotifySendTbcc) elNotifySendTbcc.checked = s.notifyOnSendTbccComplete !== false;
     if (elNotifySendSaved) elNotifySendSaved.checked = s.notifyOnSendSavedComplete !== false;
     if (elNotifySendChannel) elNotifySendChannel.checked = s.notifyOnSendChannelComplete !== false;
@@ -64,6 +67,10 @@
     elNotifySystem.addEventListener("change", () => mergeSave({ notifyUseSystem: !!elNotifySystem.checked }));
   if (elNotifyZip)
     elNotifyZip.addEventListener("change", () => mergeSave({ notifyOnZipComplete: !!elNotifyZip.checked }));
+  if (elZipPromo)
+    elZipPromo.addEventListener("change", () =>
+      chrome.storage.local.set({ tbccZipPromoInGallery: !!elZipPromo.checked })
+    );
   if (elNotifySendTbcc)
     elNotifySendTbcc.addEventListener("change", () => mergeSave({ notifyOnSendTbccComplete: !!elNotifySendTbcc.checked }));
   if (elNotifySendSaved)

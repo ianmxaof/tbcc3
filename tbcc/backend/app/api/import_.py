@@ -6,20 +6,24 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 from app.database.session import get_db
-from app.services.telegram_admin import get_telegram_storage, import_lock
+from app.services.telegram_admin import friendly_telegram_error, run_telegram_io
 from app.services.hls_import import hls_or_dash_url_to_mp4_bytes
 from app.services.media_sniff import maybe_remux_mp4_for_playback, sniff_media_kind, telegram_media_type_from_sniff
 from app.services.tbcc_media_url import sanitize_import_source_url
 from telethon.errors.rpcerrorlist import ImageProcessFailedError
 
 router = APIRouter()
+
+from app.api import import_jobs as import_jobs_api  # noqa: E402
+
+router.include_router(import_jobs_api.router)
 
 SAVED_BATCH_MAX_FILES = 100
 
@@ -112,7 +116,7 @@ def _erome_referrer_chain(url: str) -> list[str]:
                 album = parts[-2]
                 if album.isdigit() and len(parts) >= 3:
                     album = parts[-3]
-                if album and not album.isdigit():
+                if album:
                     out.append(f"https://www.erome.com/a/{album}")
         out.append("https://www.erome.com/")
         seen: set[str] = set()
@@ -312,13 +316,14 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
             "error": f"Could not download any of {len(url_errors)} URL(s). First: {url_errors[0]['error']}",
         }
 
-    async with import_lock():
-        storage = await get_telegram_storage()
-        try:
-            await storage.save_batch_to_saved_only(items, caption=caption)
-        except ImageProcessFailedError as e:
-            logger.warning("Telegram rejected saved-batch-urls err=%s", e)
-            return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
+    try:
+        await run_telegram_io(lambda storage: storage.save_batch_to_saved_only(items, caption=caption))
+    except ImageProcessFailedError as e:
+        logger.warning("Telegram rejected saved-batch-urls err=%s", e)
+        return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
+    except Exception as e:
+        logger.warning("saved-batch-urls Telegram err=%s", e, exc_info=True)
+        return {"error": friendly_telegram_error(e)}
 
     out: dict = {
         "status": "saved_only",
@@ -353,6 +358,7 @@ async def import_from_url(data: dict, db: Session = Depends(get_db)):
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         return {"error": "Telegram API not configured"}
 
+    logger.info("import/url: saved_only=%s url=%s", saved_only, url[:160])
     url_l = url.lower()
     is_large_media = any(url_l.split("?", 1)[0].endswith(ext) for ext in (".mp4", ".webm", ".mov", ".m4v", ".mkv"))
     timeout = 300.0 if is_large_media else 60.0
@@ -365,27 +371,45 @@ async def import_from_url(data: dict, db: Session = Depends(get_db)):
     file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
     media_type = _guess_media_type(url, content_type)
     cap = _caption_from_body(data)
-    async with import_lock():
-        storage = await get_telegram_storage()
+    try:
         if saved_only:
-            await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
+
+            async def _saved(storage):
+                await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
+
+            await run_telegram_io(_saved)
+            logger.info("saved_only: sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
             return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
-        record = await storage.store_from_bytes(file_bytes, media_type, sanitize_import_source_url(url), pool_id, db)
+
+        async def _store(storage):
+            return await storage.store_from_bytes(
+                file_bytes, media_type, sanitize_import_source_url(url), pool_id, db
+            )
+
+        record = await run_telegram_io(_store)
         if record:
             logger.info("Imported media id=%s pool_id=%s", record.id, pool_id)
             return {"status": "imported", "media_id": record.id}
         logger.warning("Import skipped (duplicate or unsupported format) url=%s", url[:80])
         return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
+    except ImageProcessFailedError as e:
+        logger.warning("Telegram rejected import/url err=%s", e)
+        return {"error": f"Telegram rejected this file (corrupt or unsupported): {e}"}
+    except Exception as e:
+        logger.warning("import/url Telegram err=%s", e, exc_info=True)
+        return {"error": friendly_telegram_error(e)}
 
 
 @router.post("/bytes")
 async def import_from_bytes(
     file: UploadFile = File(...),
     pool_id: int = Form(1),
-    saved_only: bool = Form(False),
+    saved_only: str = Form("false"),
     source: str = Form("extension:bytes"),
     caption: str = Form(""),
+    sync: str = Form("false", description="Force synchronous Telegram upload (TBCC_FAST_IMPORT=0 behavior)"),
     db: Session = Depends(get_db),
+    x_tbcc_extension_job_id: str | None = Header(None, alias="X-TBCC-Extension-Job-Id"),
 ):
     """
     Import media from raw bytes (e.g. from extension after in-page fetch).
@@ -396,10 +420,16 @@ async def import_from_bytes(
         return {"error": "Telegram API not configured"}
 
     file_bytes = await file.read()
+    saved_only_flag = str(saved_only or "").strip().lower() in ("true", "1", "yes", "on")
+    logger.info(
+        "import/bytes: saved_only=%s source=%s filename=%s size=%s",
+        saved_only_flag,
+        (source or "")[:80],
+        (file.filename or "")[:120],
+        len(file_bytes),
+    )
     if not file_bytes:
         return {"error": "Empty file"}
-
-    file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
 
     content_type = file.content_type or ""
     fn = (file.filename or "").lower()
@@ -415,20 +445,65 @@ async def import_from_bytes(
     media_type = _refine_media_type_from_bytes(file_bytes, media_type)
     cap = (caption or "").strip() or None
 
-    async with import_lock():
-        storage = await get_telegram_storage()
+    force_sync = str(sync or "").strip().lower() in ("true", "1", "yes", "on")
+    from app.services.import_pipeline import (
+        create_staged_import_job,
+        enqueue_import_job_processing,
+        fast_import_enabled,
+        update_job,
+        job_to_public_dict,
+    )
+
+    if fast_import_enabled() and not force_sync:
         try:
-            if saved_only:
+            job = create_staged_import_job(
+                db,
+                file_bytes=file_bytes,
+                pool_id=int(pool_id),
+                saved_only=saved_only_flag,
+                source=source or "extension:bytes",
+                caption=cap,
+                filename=file.filename,
+                media_type=media_type,
+                extension_job_id=x_tbcc_extension_job_id,
+            )
+            task_id = enqueue_import_job_processing(job.id)
+            if task_id:
+                update_job(db, job, celery_task_id=task_id)
+            body = job_to_public_dict(job)
+            body["poll_url"] = f"/import/jobs/{job.id}"
+            logger.info("import/bytes queued job_id=%s size=%s", job.id, job.byte_size)
+            return body
+        except ValueError as e:
+            return {"error": str(e)}
+
+    file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
+
+    try:
+        async def _do(storage):
+            if saved_only_flag:
                 await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
-                return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
-            record = await storage.store_from_bytes(file_bytes, media_type, sanitize_import_source_url(source), pool_id, db)
-            if record:
-                logger.info("Imported media id=%s pool_id=%s (bytes upload)", record.id, pool_id)
-                return {"status": "imported", "media_id": record.id}
-            return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
-        except ImageProcessFailedError as e:
-            logger.warning("Telegram rejected bytes import err=%s", e)
-            return {"error": f"Telegram rejected this file (corrupt or unsupported): {e}"}
+                return "saved_only"
+            record = await storage.store_from_bytes(
+                file_bytes, media_type, sanitize_import_source_url(source), pool_id, db
+            )
+            return record
+
+        result = await run_telegram_io(_do)
+        if result == "saved_only":
+            logger.info("saved_only (bytes): sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
+            return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+        record = result
+        if record:
+            logger.info("Imported media id=%s pool_id=%s (bytes upload)", record.id, pool_id)
+            return {"status": "imported", "media_id": record.id}
+        return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
+    except ImageProcessFailedError as e:
+        logger.warning("Telegram rejected bytes import err=%s", e)
+        return {"error": f"Telegram rejected this file (corrupt or unsupported): {e}"}
+    except Exception as e:
+        logger.warning("import/bytes Telegram err=%s", e, exc_info=True)
+        return {"error": friendly_telegram_error(e)}
 
 
 @router.post("/hls-url")
@@ -461,20 +536,29 @@ async def import_hls_manifest_url(body: HlsManifestUrlBody, db: Session = Depend
     file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
     media_type = _refine_media_type_from_bytes(file_bytes, "video")
     src = sanitize_import_source_url(body.source or "import:hls-url")
-    async with import_lock():
-        storage = await get_telegram_storage()
-        try:
-            if body.saved_only:
+    try:
+        if body.saved_only:
+
+            async def _saved(storage):
                 await storage.save_to_saved_only(file_bytes, media_type, caption=None)
-                return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
-            record = await storage.store_from_bytes(file_bytes, media_type, src, body.pool_id, db)
-            if record:
-                logger.info("Imported HLS media id=%s pool_id=%s", record.id, body.pool_id)
-                return {"status": "imported", "media_id": record.id}
-            return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
-        except ImageProcessFailedError as e:
-            logger.warning("Telegram rejected HLS import err=%s", e)
-            return {"error": f"Telegram rejected this file: {e}"}
+
+            await run_telegram_io(_saved)
+            return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+
+        async def _store(storage):
+            return await storage.store_from_bytes(file_bytes, media_type, src, body.pool_id, db)
+
+        record = await run_telegram_io(_store)
+        if record:
+            logger.info("Imported HLS media id=%s pool_id=%s", record.id, body.pool_id)
+            return {"status": "imported", "media_id": record.id}
+        return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
+    except ImageProcessFailedError as e:
+        logger.warning("Telegram rejected HLS import err=%s", e)
+        return {"error": f"Telegram rejected this file: {e}"}
+    except Exception as e:
+        logger.warning("import/hls-url Telegram err=%s", e, exc_info=True)
+        return {"error": friendly_telegram_error(e)}
 
 
 @router.post("/saved-batch")
@@ -515,13 +599,14 @@ async def import_saved_batch(
         return {"error": "No usable file bytes"}
 
     cap = (caption or "").strip() or None
-    async with import_lock():
-        storage = await get_telegram_storage()
-        try:
-            await storage.save_batch_to_saved_only(items, caption=cap)
-        except ImageProcessFailedError as e:
-            logger.warning("Telegram rejected saved-batch err=%s", e)
-            return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
+    try:
+        await run_telegram_io(lambda storage: storage.save_batch_to_saved_only(items, caption=cap))
+    except ImageProcessFailedError as e:
+        logger.warning("Telegram rejected saved-batch err=%s", e)
+        return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
+    except Exception as e:
+        logger.warning("saved-batch Telegram err=%s", e, exc_info=True)
+        return {"error": friendly_telegram_error(e)}
 
     return {
         "status": "saved_only",
@@ -557,11 +642,13 @@ async def import_from_saved_messages(data: dict, db: Session = Depends(get_db)):
     limit = min(max(limit, 1), 200)
     source = (data.get("source") or "telegram:saved_messages").strip() or "telegram:saved_messages"
 
-    async with import_lock():
-        storage = await get_telegram_storage()
-        try:
-            result = await storage.index_from_saved_messages(pool_id, source, db, limit=limit)
-        except Exception as e:
-            logger.exception("import/from-saved failed: %s", e)
-            return {"error": str(e)}
+    try:
+
+        async def _index(storage):
+            return await storage.index_from_saved_messages(pool_id, source, db, limit=limit)
+
+        result = await run_telegram_io(_index)
+    except Exception as e:
+        logger.exception("import/from-saved failed: %s", e)
+        return {"error": friendly_telegram_error(e)}
     return {"status": "ok", **result}

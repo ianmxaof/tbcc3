@@ -1,0 +1,56 @@
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+
+from .base import Base
+
+
+class ListeningRelaySettings(Base):
+    """
+    Single-row settings: relay music / manual “now playing” events to a Telegram channel.
+
+    Last.fm aggregates Spotify, SoundCloud (when linked), and more. YouTube and others can use
+    the webhook + IFTTT or similar.
+    """
+
+    __tablename__ = "listening_relay_settings"
+
+    id = Column(Integer, primary_key=True, autoincrement=False, default=1)
+    enabled = Column(Boolean, nullable=False, default=False)
+    channel_id = Column(Integer, nullable=True)
+    message_thread_id = Column(Integer, nullable=True)
+    lastfm_username = Column(String(256), nullable=True)
+    lastfm_api_key = Column(String(128), nullable=True)
+    poll_interval_minutes = Column(Integer, nullable=False, default=3)
+    last_poll_at = Column(DateTime, nullable=True)
+    last_lastfm_signature = Column(String(512), nullable=True)
+    message_template_html = Column(Text, nullable=True)
+    # JSON list of HTML templates with same placeholders as message_template_html; when 2+ entries, rotate per send.
+    message_template_variations = Column(Text, nullable=True)
+    message_template_rotation_index = Column(Integer, nullable=True)
+    # Appended below formatted Last.fm/webhook body (Telegram HTML). No placeholders — paste URLs or copy as-is.
+    message_footer_html = Column(Text, nullable=True)
+    # JSON list parallel to non-empty template variations; empty strings OK (no footer for that slot).
+    message_footer_variations = Column(Text, nullable=True)
+    # JSON list parallel to template slots: tap-to-copy <pre> block sent as a second message under the preview card.
+    message_copy_block_variations = Column(Text, nullable=True)
+    # sequential | random — how template/footer/copy slots are chosen per scrobble
+    template_rotation_mode = Column(String(16), nullable=False, default="sequential")
+    # JSON list parallel to template slots: copy-panel media, buttons, promo URLs (scheduler parity)
+    message_slot_extras_json = Column(Text, nullable=True)
+    ascii_art_enabled = Column(Boolean, nullable=False, default=False)
+    ascii_art_min_interval = Column(Integer, nullable=False, default=3)
+    ascii_art_max_interval = Column(Integer, nullable=False, default=6)
+    ascii_art_scrobble_counter = Column(Integer, nullable=False, default=0)
+    ascii_art_next_threshold = Column(Integer, nullable=True)
+    ascii_art_library_json = Column(Text, nullable=True)
+    tryptych_enabled = Column(Boolean, nullable=False, default=False)
+    # When True, ASCII cadence posts 3 chained copy panels instead of one
+    tryptych_on_ascii_beat = Column(Boolean, nullable=False, default=True)
+    webhook_secret = Column(String(128), nullable=True)
+    last_webhook_signature = Column(String(512), nullable=True)
+    send_silent = Column(Boolean, nullable=False, default=True)
+    buffer_relay_enabled = Column(Boolean, nullable=False, default=False)
+    buffer_relay_min_interval_minutes = Column(Integer, nullable=False, default=360)
+    buffer_relay_max_per_day_utc = Column(Integer, nullable=False, default=5)
+    buffer_relay_utc_day = Column(String(10), nullable=True)
+    buffer_relay_posts_today = Column(Integer, nullable=False, default=0)
+    buffer_relay_last_post_at = Column(DateTime, nullable=True)

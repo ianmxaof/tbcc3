@@ -1,21 +1,26 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { MediaLibrary } from "./panels/MediaLibrary";
-import { Sources } from "./panels/Sources";
-import { Scheduler } from "./panels/Scheduler";
+import { AutomationPanel } from "./panels/AutomationPanel";
 import { Subscriptions } from "./panels/Subscriptions";
 import { BotsPanel } from "./panels/BotsPanel";
 import { TagsPanel } from "./panels/TagsPanel";
 import { Analytics } from "./panels/Analytics";
+import { MiscPanel } from "./panels/MiscPanel";
+import { MasterArchivePanel } from "./panels/MasterArchivePanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SystemHealthBanner } from "./components/SystemHealthBanner";
+import { ScrapeRunBanner } from "./components/ScrapeRunBanner";
+import { TbccClipboardInit } from "./components/TbccClipboardInit";
 
 const nav = [
   { to: "/", label: "Media" },
-  { to: "/scheduler", label: "Scheduler" },
+  { to: "/scheduler", label: "Automation" },
   { to: "/subscriptions", label: "Commerce" },
-  { to: "/sources", label: "Sources" },
   { to: "/analytics", label: "Analytics" },
   { to: "/bots", label: "System" },
+  { to: "/misc", label: "Misc" },
+  { to: "/archive", label: "Archive" },
 ];
 
 const DASHBOARD_THEME_KEY = "tbccDashboardThemePreset";
@@ -47,7 +52,10 @@ function App() {
 
   return (
     <BrowserRouter>
+      <TbccClipboardInit />
       <div className="min-h-screen flex flex-col">
+        <SystemHealthBanner />
+        <ScrapeRunBanner />
         <nav className="bg-slate-800 border-b border-slate-700 px-4 py-3 flex gap-4">
           <span className="font-bold text-slate-200 mr-4">TBCC</span>
           {nav.map(({ to, label }) => (
@@ -78,7 +86,6 @@ function App() {
             </select>
           </label>
         </nav>
-        {/* min-w-0 prevents flex children from collapsing to 0 width (blank main content) */}
         <main className="flex-1 min-w-0 p-6">
           <Routes>
             <Route
@@ -105,25 +112,21 @@ function App() {
                 </ErrorBoundary>
               }
             />
+            <Route path="/pools" element={<Navigate to="/" replace />} />
+            <Route path="/sources" element={<Navigate to="/scheduler/ingest" replace />} />
             <Route
-              path="/pools"
+              path="/scheduler"
               element={
-                <Navigate to="/" replace />
-              }
-            />
-            <Route
-              path="/sources"
-              element={
-                <ErrorBoundary name="Sources">
-                  <Sources />
+                <ErrorBoundary name="Automation">
+                  <AutomationPanel />
                 </ErrorBoundary>
               }
             />
             <Route
-              path="/scheduler"
+              path="/scheduler/ingest"
               element={
-                <ErrorBoundary name="Scheduler">
-                  <Scheduler />
+                <ErrorBoundary name="Automation">
+                  <AutomationPanel />
                 </ErrorBoundary>
               }
             />
@@ -135,17 +138,38 @@ function App() {
                 </ErrorBoundary>
               }
             />
-            <Route
-              path="/growth"
-              element={
-                <Navigate to="/bots" replace />
-              }
-            />
+            <Route path="/growth" element={<Navigate to="/bots" replace />} />
             <Route
               path="/bots"
               element={
                 <ErrorBoundary name="Bots">
                   <BotsPanel />
+                </ErrorBoundary>
+              }
+            />
+            <Route path="/emoji-factory" element={<Navigate to="/misc/emoji" replace />} />
+            <Route path="/emoji-factory/*" element={<Navigate to="/misc/emoji" replace />} />
+            <Route
+              path="/misc"
+              element={
+                <ErrorBoundary name="Misc">
+                  <MiscPanel />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/misc/emoji"
+              element={
+                <ErrorBoundary name="Misc">
+                  <MiscPanel initialTab="emoji" />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/archive"
+              element={
+                <ErrorBoundary name="Archive">
+                  <MasterArchivePanel />
                 </ErrorBoundary>
               }
             />

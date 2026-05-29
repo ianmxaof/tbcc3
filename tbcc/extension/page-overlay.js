@@ -133,6 +133,9 @@
       [STORAGE_LAST_COPIED_USERNAME]: clean,
       tbccLastCopiedUsernameAt: Date.now(),
     });
+    try {
+      chrome.runtime.sendMessage({ action: "tbcc-record-username-archive", username: clean });
+    } catch (_) {}
   }
 
   function absUrl(u) {
@@ -301,8 +304,38 @@
     }
   }
 
+  function isPerchanceHost() {
+    try {
+      return /(^|\.)perchance\.org$/i.test(location.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function mediaUrlFromCanvas(el) {
+    if (!el || el.tagName !== "CANVAS") return "";
+    const w = el.width || 0;
+    const h = el.height || 0;
+    if (w < 48 || h < 48) return "";
+    try {
+      const cr = el.getBoundingClientRect();
+      if (cr.width < 24 && cr.height < 24) return "";
+    } catch (_) {}
+    try {
+      let dataUrl = isPerchanceHost() ? el.toDataURL("image/png") : el.toDataURL("image/jpeg", 0.9);
+      if (!dataUrl || dataUrl.length < 200) return "";
+      if (dataUrl.length > 14000000) dataUrl = el.toDataURL("image/jpeg", 0.82);
+      return dataUrl;
+    } catch (_) {
+      return "";
+    }
+  }
+
   function mediaUrlFromElement(el) {
     const tag = (el.tagName || "").toUpperCase();
+    if (tag === "CANVAS") {
+      return mediaUrlFromCanvas(el);
+    }
     if (tag === "IMG") {
       const cands = [];
       pushImageCandidates(el, cands);
@@ -399,6 +432,19 @@
           meta.naturalHeight = h;
         }
       } catch (_) {}
+    } else if (tag === "CANVAS") {
+      meta.mediaType = "image";
+      meta.tagName = "canvas";
+      try {
+        const w = el.width || 0;
+        const h = el.height || 0;
+        if (w > 0 && h > 0) {
+          meta.width = w;
+          meta.height = h;
+          meta.naturalWidth = w;
+          meta.naturalHeight = h;
+        }
+      } catch (_) {}
     } else if (tag === "IMG") {
       meta.mediaType = "image";
       meta.tagName = "img";
@@ -416,17 +462,25 @@
     return meta;
   }
 
+  function metaStorageKey(url) {
+    const u = String(url || "");
+    if (u.startsWith("data:")) return "data:" + u.length + ":" + u.slice(12, 56);
+    if (u.length > 480) return u.slice(0, 480);
+    return u;
+  }
+
   async function storeOverlayMetaForUrl(url, meta) {
     if (!url || !meta) return;
     try {
       const { tbccSelectionMeta = {} } = await storageLocalGet("tbccSelectionMeta");
       const map = tbccSelectionMeta && typeof tbccSelectionMeta === "object" ? { ...tbccSelectionMeta } : {};
-      map[url] = meta;
+      const key = metaStorageKey(url);
+      map[key] = { ...meta, url: meta.url || url.slice(0, 120) };
       const keys = Object.keys(map);
-      if (keys.length > 400) {
+      if (keys.length > 120) {
         keys
           .sort((a, b) => (map[a].capturedAt || 0) - (map[b].capturedAt || 0))
-          .slice(0, keys.length - 400)
+          .slice(0, keys.length - 120)
           .forEach((k) => delete map[k]);
       }
       await storageLocalSet({ tbccSelectionMeta: map });
@@ -437,8 +491,13 @@
     const seen = new Set();
     const out = [];
     function add(el, url) {
-      if (!url || url.length > 8000) return;
-      if (url.startsWith("data:") && url.length > 50000) return;
+      if (!url) return;
+      if (!url.startsWith("data:") && url.length > 8000) return;
+      if (url.startsWith("data:")) {
+        const isImgData = /^data:image\/(png|jpe?g|webp|gif);/i.test(url);
+        const maxLen = isImgData ? 15000000 : 50000;
+        if (url.length > maxLen) return;
+      }
       const key = url.slice(0, 200);
       if (seen.has(key)) return;
       seen.add(key);
@@ -451,7 +510,11 @@
         try {
           r = el.getBoundingClientRect();
         } catch (_) {}
-        if (r.width < 64 && r.height < 64) return;
+        const minSide = isPerchanceHost() ? 40 : 64;
+        if (r.width < minSide && r.height < minSide) return;
+        const u = mediaUrlFromElement(el);
+        if (u) add(el, u);
+      } else if (t === "CANVAS") {
         const u = mediaUrlFromElement(el);
         if (u) add(el, u);
       } else if (t === "VIDEO") {
@@ -601,7 +664,34 @@
     closePageMenu();
     if (!url) return;
     if (action === "copy-url") {
-      await copyTextToClipboard(url);
+      let copyUrl = url;
+      try {
+        const resolved = await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-resolve-copy-media-url",
+              url,
+              pageUrl: location.href.split("#")[0],
+            },
+            (r) => {
+              if (chrome.runtime.lastError) resolve(url);
+              else resolve((r && r.url) || url);
+            }
+          );
+        });
+        if (resolved) copyUrl = resolved;
+      } catch (_) {}
+      const ok = await copyTextToClipboard(copyUrl);
+      if (ok) {
+        const clip = globalThis.TbccClipboard;
+        if (clip && clip.showCopied) {
+          if (copyUrl !== url && /\.(m3u8|mpd|mp4|webm)(\?|$)/i.test(copyUrl)) {
+            clip.showCopied({ message: "Copied stream URL" });
+          } else {
+            clip.showCopied();
+          }
+        }
+      }
       return;
     }
     if (action === "open-url") {

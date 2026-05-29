@@ -285,8 +285,20 @@ def run_auto_tag_llm_for_media(media_id: int) -> dict[str, Any]:
         m = db2.query(Media).filter(Media.id == media_id).first()
         if m:
             m.nsfw_tier = nt
-            if extras:
-                m.classification_json = json.dumps(extras, ensure_ascii=False)
+            preserved: dict[str, Any] = {}
+            raw_cj = getattr(m, "classification_json", None)
+            if raw_cj:
+                try:
+                    existing = json.loads(raw_cj)
+                    if isinstance(existing, dict):
+                        gc = existing.get("tbcc_gallery_capture")
+                        if isinstance(gc, dict) and gc:
+                            preserved["tbcc_gallery_capture"] = gc
+                except Exception:
+                    pass
+            merged: dict[str, Any] = {**preserved, **extras}
+            if merged:
+                m.classification_json = json.dumps(merged, ensure_ascii=False)
             else:
                 m.classification_json = None
             route_out = try_assign_pool_from_tags(db2, media_id)

@@ -1,0 +1,1 @@
+powershell -NoProfile -ExecutionPolicy Bypass -File "c:\Powercore-repo-main\telegram_bot2\tbcc\tools\install-tbcc-supervisor-shortcut.ps1" -AlsoDesktop

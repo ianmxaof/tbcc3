@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { tbccCopyText } from "../utils/clipboardToast";
 
 export function MediaLlmSuggestModal({
   mediaId,
@@ -145,13 +146,7 @@ export function MediaLlmSuggestModal({
             </button>
             <button
               type="button"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(caption);
-                } catch {
-                  /* ignore */
-                }
-              }}
+              onClick={(e) => void tbccCopyText(caption, { anchor: e.currentTarget })}
               disabled={!caption.trim()}
               className="px-3 py-2 rounded bg-slate-600 text-slate-200 text-sm hover:bg-slate-500 disabled:opacity-50"
             >

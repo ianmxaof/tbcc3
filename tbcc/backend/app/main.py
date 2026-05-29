@@ -5,20 +5,31 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=True)
 
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, archive
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
 from app.models.link_resolver_request import LinkResolverRequest  # noqa: F401
 from app.models.loot_bot_settings import LootBotSettings  # noqa: F401
+from app.models.caption_snippet import CaptionSnippet  # noqa: F401
+from app.models.emoji_factory_sketch import EmojiFactorySketchPage  # noqa: F401
+from app.models.listening_relay_settings import ListeningRelaySettings  # noqa: F401
+from app.models.zip_bundle_settings import ZipBundleSettings  # noqa: F401
+from app.models.promo_affiliate_link import PromoAffiliateLink  # noqa: F401
+from app.models.capture_archive_entry import CaptureArchiveEntry  # noqa: F401
+from app.models.import_job import ImportJob  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
+from app.services.zip_promo_storage import ensure_zip_promo_dir
+from app.services.send_promo_storage import ensure_send_promo_dir
 from app.services.bundle_storage import ensure_bundle_dir
 from app.services.nowpayments_client import crypto_auto_checkout_ready
 
@@ -34,8 +45,28 @@ app = FastAPI(title="Telegram Bot Command Center")
 @app.on_event("startup")
 def on_startup():
     from app.services.bundle_storage import ensure_bundle_dir
+    from app.services.system_health import auto_remediate_on_startup
+    from app.utils.telethon_session import (
+        admin_session_stem,
+        poster_session_stem,
+        telethon_sessions_share_file,
+    )
 
+    auto_remediate_on_startup()
     ensure_bundle_dir()
+    if telethon_sessions_share_file():
+        logger.warning(
+            "Telethon admin and poster sessions share one file (%s.session). "
+            "Set TBCC_POSTER_TELEGRAM_SESSION=admin_poster and TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1 "
+            "in tbcc/.env to avoid 'database is locked' during sends.",
+            Path(admin_session_stem()).name,
+        )
+    else:
+        logger.info(
+            "Telethon sessions: admin=%s.session poster=%s.session",
+            Path(admin_session_stem()).name,
+            Path(poster_session_stem()).name,
+        )
     url = str(engine.url)
     if "sqlite" in url:
         Base.metadata.create_all(bind=engine)
@@ -278,6 +309,151 @@ def on_startup():
                             )
                         )
                         logger.info("SQLite: added scheduled_text_posts.posting_auto_pause_reason (dev migration)")
+                    if "buffer_mirror_enabled" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN buffer_mirror_enabled BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.buffer_mirror_enabled (dev migration)")
+                    if "buffer_x_queue_json" not in st_cols:
+                        conn.execute(
+                            text("ALTER TABLE scheduled_text_posts ADD COLUMN buffer_x_queue_json TEXT")
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.buffer_x_queue_json (dev migration)")
+                    if "buffer_publish_now" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN buffer_publish_now BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info("SQLite: added scheduled_text_posts.buffer_publish_now (dev migration)")
+                    for col, ddl in (
+                        ("caption_llm_rewrite_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("caption_llm_rewrite_mode", "VARCHAR(16)"),
+                        ("caption_llm_rewrite_interval", "INTEGER"),
+                        ("caption_llm_rewrite_probability", "REAL"),
+                        ("caption_llm_send_count", "INTEGER NOT NULL DEFAULT 0"),
+                        ("last_sent_caption_html", "TEXT"),
+                    ):
+                        if col not in st_cols:
+                            conn.execute(
+                                text(f"ALTER TABLE scheduled_text_posts ADD COLUMN {col} {ddl}")
+                            )
+                            logger.info("SQLite: added scheduled_text_posts.%s (dev migration)", col)
+            if "listening_relay_settings" in inspector.get_table_names():
+                lr_cols = {c["name"] for c in inspector.get_columns("listening_relay_settings")}
+                with engine.begin() as conn:
+                    if "message_template_variations" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_template_variations TEXT"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.message_template_variations (dev migration)"
+                        )
+                    if "message_template_rotation_index" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_template_rotation_index INTEGER"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.message_template_rotation_index (dev migration)"
+                        )
+                    if "message_footer_html" not in lr_cols:
+                        conn.execute(text("ALTER TABLE listening_relay_settings ADD COLUMN message_footer_html TEXT"))
+                        logger.info("SQLite: added listening_relay_settings.message_footer_html (dev migration)")
+                    if "message_footer_variations" not in lr_cols:
+                        conn.execute(
+                            text("ALTER TABLE listening_relay_settings ADD COLUMN message_footer_variations TEXT")
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.message_footer_variations (dev migration)"
+                        )
+                    if "message_copy_block_variations" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_copy_block_variations TEXT"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.message_copy_block_variations (dev migration)"
+                        )
+                    if "buffer_relay_enabled" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_enabled BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info("SQLite: added listening_relay_settings.buffer_relay_enabled (dev migration)")
+                    if "buffer_relay_min_interval_minutes" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_min_interval_minutes INTEGER NOT NULL DEFAULT 360"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.buffer_relay_min_interval_minutes (dev migration)"
+                        )
+                    if "buffer_relay_max_per_day_utc" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_max_per_day_utc INTEGER NOT NULL DEFAULT 5"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.buffer_relay_max_per_day_utc (dev migration)"
+                        )
+                    if "buffer_relay_utc_day" not in lr_cols:
+                        conn.execute(
+                            text("ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_utc_day VARCHAR(10)")
+                        )
+                        logger.info("SQLite: added listening_relay_settings.buffer_relay_utc_day (dev migration)")
+                    if "buffer_relay_posts_today" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_posts_today INTEGER NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.buffer_relay_posts_today (dev migration)"
+                        )
+                    if "buffer_relay_last_post_at" not in lr_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_last_post_at DATETIME"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.buffer_relay_last_post_at (dev migration)"
+                        )
+                    for col, ddl in (
+                        ("template_rotation_mode", "VARCHAR(16) NOT NULL DEFAULT 'sequential'"),
+                        ("message_slot_extras_json", "TEXT"),
+                        ("ascii_art_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("ascii_art_min_interval", "INTEGER NOT NULL DEFAULT 3"),
+                        ("ascii_art_max_interval", "INTEGER NOT NULL DEFAULT 6"),
+                        ("ascii_art_scrobble_counter", "INTEGER NOT NULL DEFAULT 0"),
+                        ("ascii_art_next_threshold", "INTEGER"),
+                        ("ascii_art_library_json", "TEXT"),
+                        ("tryptych_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("tryptych_on_ascii_beat", "BOOLEAN NOT NULL DEFAULT 1"),
+                    ):
+                        if col not in lr_cols:
+                            conn.execute(
+                                text(f"ALTER TABLE listening_relay_settings ADD COLUMN {col} {ddl}")
+                            )
+                            logger.info(
+                                "SQLite: added listening_relay_settings.%s (dev migration)", col
+                            )
+            if "promo_affiliate_links" in inspector.get_table_names():
+                pa_cols = {c["name"] for c in inspector.get_columns("promo_affiliate_links")}
+                if "short_url" not in pa_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE promo_affiliate_links ADD COLUMN short_url TEXT"))
+                    logger.info("SQLite: added promo_affiliate_links.short_url (dev migration)")
             if "subscriptions" in inspector.get_table_names():
                 sub_cols = {c["name"] for c in inspector.get_columns("subscriptions")}
                 if "telegram_payment_charge_id" not in sub_cols:
@@ -294,6 +470,32 @@ def on_startup():
                             )
                         )
                     logger.info("SQLite: added subscriptions.telegram_payment_charge_id (dev migration)")
+            if "loot_bot_settings" in inspector.get_table_names():
+                lb_cols = {c["name"] for c in inspector.get_columns("loot_bot_settings")}
+                with engine.begin() as conn:
+                    for col, ddl in (
+                        ("aof_group_chat_id", "BIGINT"),
+                        ("aof_group_message_thread_id", "INTEGER"),
+                        ("daily_promo_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("daily_promo_hour_utc", "INTEGER"),
+                        ("daily_promo_intro_html", "TEXT"),
+                        ("buffer_mirror_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("buffer_publish_now", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("buffer_x_queue_json", "TEXT"),
+                    ):
+                        if col not in lb_cols:
+                            conn.execute(text(f"ALTER TABLE loot_bot_settings ADD COLUMN {col} {ddl}"))
+                            logger.info("SQLite: added loot_bot_settings.%s (dev migration)", col)
+            if "loot_player_stats" in inspector.get_table_names():
+                ps_cols = {c["name"] for c in inspector.get_columns("loot_player_stats")}
+                if "free_pulls_used" not in ps_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE loot_player_stats ADD COLUMN free_pulls_used INTEGER NOT NULL DEFAULT 0"
+                            )
+                        )
+                    logger.info("SQLite: added loot_player_stats.free_pulls_used (dev migration)")
         except Exception:
             logger.exception("SQLite column patch failed; run: cd backend && alembic upgrade head")
     else:
@@ -354,6 +556,42 @@ def on_startup():
                         )
         except Exception:
             logger.exception("Startup: failed to ensure payment_bot_settings table")
+        # Alembic 044 — many deployments pull code before running upgrade head.
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS promo_affiliate_links (
+                            id SERIAL PRIMARY KEY,
+                            label VARCHAR(512) NOT NULL,
+                            url TEXT NOT NULL,
+                            short_url TEXT,
+                            payout_kind VARCHAR(16) NOT NULL DEFAULT 'other',
+                            payout_detail VARCHAR(64),
+                            priority_tier INTEGER NOT NULL DEFAULT 10,
+                            expires_at TIMESTAMP WITHOUT TIME ZONE,
+                            active BOOLEAN NOT NULL DEFAULT TRUE,
+                            created_at TIMESTAMP WITHOUT TIME ZONE
+                        )
+                        """
+                    )
+                )
+            logger.info("Startup: ensured promo_affiliate_links table exists (PostgreSQL)")
+        except Exception:
+            logger.exception(
+                "Startup: failed to ensure promo_affiliate_links — run: cd backend && python -m alembic upgrade head"
+            )
+        try:
+            inspector = inspect(engine)
+            if "promo_affiliate_links" in inspector.get_table_names():
+                pa_cols = {c["name"] for c in inspector.get_columns("promo_affiliate_links")}
+                if "short_url" not in pa_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE promo_affiliate_links ADD COLUMN short_url TEXT"))
+                    logger.info("PostgreSQL: added promo_affiliate_links.short_url (startup migration)")
+        except Exception:
+            logger.exception("Startup: failed to ensure promo_affiliate_links.short_url")
         # Keep Postgres dev/prod resilient when model columns are added before alembic is applied.
         try:
             inspector = inspect(engine)
@@ -553,11 +791,198 @@ def on_startup():
                     logger.info(
                         "PostgreSQL: added scheduled_text_posts.posting_auto_pause_reason (startup migration)"
                     )
+                if "buffer_mirror_enabled" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN buffer_mirror_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.buffer_mirror_enabled (startup migration)"
+                    )
+                if "buffer_x_queue_json" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("ALTER TABLE scheduled_text_posts ADD COLUMN buffer_x_queue_json TEXT")
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.buffer_x_queue_json (startup migration)"
+                    )
+                if "buffer_publish_now" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN buffer_publish_now BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.buffer_publish_now (startup migration)"
+                    )
+                for col, ddl in (
+                    ("caption_llm_rewrite_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                    ("caption_llm_rewrite_mode", "VARCHAR(16)"),
+                    ("caption_llm_rewrite_interval", "INTEGER"),
+                    ("caption_llm_rewrite_probability", "DOUBLE PRECISION"),
+                    ("caption_llm_send_count", "INTEGER NOT NULL DEFAULT 0"),
+                    ("last_sent_caption_html", "TEXT"),
+                ):
+                    if col not in st_cols:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(f"ALTER TABLE scheduled_text_posts ADD COLUMN {col} {ddl}")
+                            )
+                        logger.info(
+                            "PostgreSQL: added scheduled_text_posts.%s (startup migration)", col
+                        )
+            if "listening_relay_settings" in inspector.get_table_names():
+                lr_cols = {c["name"] for c in inspector.get_columns("listening_relay_settings")}
+                if "message_template_variations" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_template_variations TEXT"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.message_template_variations (startup migration)"
+                    )
+                if "message_template_rotation_index" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_template_rotation_index INTEGER"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.message_template_rotation_index (startup migration)"
+                    )
+                if "message_footer_html" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text("ALTER TABLE listening_relay_settings ADD COLUMN message_footer_html TEXT")
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.message_footer_html (startup migration)"
+                    )
+                if "message_footer_variations" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_footer_variations TEXT"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.message_footer_variations (startup migration)"
+                    )
+                if "message_copy_block_variations" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN message_copy_block_variations TEXT"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.message_copy_block_variations (startup migration)"
+                    )
+                if "buffer_relay_enabled" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_enabled BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_relay_enabled (startup migration)"
+                    )
+                if "buffer_relay_min_interval_minutes" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_min_interval_minutes INTEGER NOT NULL DEFAULT 360"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_relay_min_interval_minutes (startup migration)"
+                    )
+                if "buffer_relay_max_per_day_utc" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_max_per_day_utc INTEGER NOT NULL DEFAULT 5"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_relay_max_per_day_utc (startup migration)"
+                    )
+                if "buffer_relay_utc_day" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_utc_day VARCHAR(10)"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_relay_utc_day (startup migration)"
+                    )
+                if "buffer_relay_posts_today" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_posts_today INTEGER NOT NULL DEFAULT 0"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_relay_posts_today (startup migration)"
+                    )
+                if "buffer_relay_last_post_at" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_relay_last_post_at TIMESTAMP"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_relay_last_post_at (startup migration)"
+                    )
+                for col, ddl in (
+                    ("template_rotation_mode", "VARCHAR(16) NOT NULL DEFAULT 'sequential'"),
+                    ("message_slot_extras_json", "TEXT"),
+                    ("ascii_art_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                    ("ascii_art_min_interval", "INTEGER NOT NULL DEFAULT 3"),
+                    ("ascii_art_max_interval", "INTEGER NOT NULL DEFAULT 6"),
+                    ("ascii_art_scrobble_counter", "INTEGER NOT NULL DEFAULT 0"),
+                    ("ascii_art_next_threshold", "INTEGER"),
+                    ("ascii_art_library_json", "TEXT"),
+                    ("tryptych_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                    ("tryptych_on_ascii_beat", "BOOLEAN NOT NULL DEFAULT TRUE"),
+                ):
+                    if col not in lr_cols:
+                        with engine.begin() as conn:
+                            conn.execute(
+                                text(f"ALTER TABLE listening_relay_settings ADD COLUMN {col} {ddl}")
+                            )
+                        logger.info(
+                            "PostgreSQL: added listening_relay_settings.%s (startup migration)",
+                            col,
+                        )
         except Exception:
             logger.exception(
-                "PostgreSQL: could not add scheduled_text_posts columns — run: "
+                "PostgreSQL: could not add scheduled_text_posts / listening_relay_settings columns — run: "
                 "cd backend && alembic upgrade head"
             )
+
+    try:
+        from app.database.session import SessionLocal
+        from app.services.seed_aof_x_promo_defaults import seed_aof_x_promo_defaults
+
+        db = SessionLocal()
+        try:
+            seed_aof_x_promo_defaults(db)
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Could not seed default AOF X promo captions (caption library / relay copy blocks)")
 
     logger.info(
         "TBCC API ready: main_py=%s external_payment_orders_impl=%s",
@@ -605,6 +1030,16 @@ app.include_router(internal_launch.router, prefix="/internal", tags=["internal"]
 app.include_router(watch_folder.router, prefix="/watch-folder", tags=["watch-folder"])
 app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
 app.include_router(crawler.router, prefix="/crawler", tags=["crawler"])
+app.include_router(jdownloader.router, prefix="/jd", tags=["jdownloader"])
+app.include_router(caption_snippets.router, prefix="/caption-snippets", tags=["caption-snippets"])
+app.include_router(telegram_custom_emoji.router, prefix="/telegram-custom-emoji", tags=["telegram-custom-emoji"])
+app.include_router(emoji_factory.router, prefix="/emoji-factory", tags=["emoji-factory"])
+app.include_router(promo_affiliate_links.router, prefix="/promo-affiliate-links", tags=["promo-affiliate-links"])
+app.include_router(listening_relay_settings.router, prefix="/listening-relay-settings", tags=["listening-relay-settings"])
+app.include_router(zip_bundle_settings.router, prefix="/zip-bundle-settings", tags=["zip-bundle-settings"])
+app.include_router(gallery_send_promo.router, prefix="/gallery-send-promo", tags=["gallery-send-promo"])
+app.include_router(archive.router, tags=["archive"])
+app.include_router(listening_relay_settings.webhook_router, tags=["listening-relay"])
 
 
 @app.get("/")
@@ -622,6 +1057,22 @@ def root():
     }
 
 
+@app.get("/health/telegram")
+async def health_telegram():
+    """Telethon admin session (Saved Messages / imports). Requires API_ID + logged-in admin.session."""
+    from app.services.telegram_admin import check_admin_telegram_session
+
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "Telegram API not configured (API_ID/API_HASH)"},
+            headers={"Cache-Control": "no-store"},
+        )
+    body = await check_admin_telegram_session()
+    status = 200 if body.get("ok") else 503
+    return JSONResponse(content=body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/health")
 def health():
     # no-store: browsers were caching {"status":"ok"} and hiding new fields during dev
@@ -633,6 +1084,42 @@ def health():
         },
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
+
+
+@app.get("/health/system")
+def health_system():
+    """Infra, port conflicts, Telethon session risks, active import jobs."""
+    from app.services.system_health import collect_system_health
+
+    body = collect_system_health()
+    status = 200 if body.get("ok") else 503
+    return JSONResponse(content=body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/health/system/cleanup-uvicorn-orphans")
+def health_cleanup_uvicorn_orphans():
+    """Kill stale uvicorn --reload child processes (Windows local dev)."""
+    from app.services.system_health import remediate_system_issues
+
+    body = remediate_system_issues(["uvicorn_orphans", "api_port_duplicate"])
+    return JSONResponse(content=body, headers={"Cache-Control": "no-store"})
+
+
+class HealthRemediateBody(BaseModel):
+    codes: list[str] | None = None
+
+
+@app.post("/health/system/remediate")
+def health_system_remediate(body: HealthRemediateBody | None = None):
+    """
+    One-click fixes for issues shown in the dashboard banner.
+    Optional JSON body: { "codes": ["uvicorn_orphans", "redis_down"] } — omit to fix all current issues.
+    """
+    from app.services.system_health import remediate_system_issues
+
+    codes = body.codes if body else None
+    result = remediate_system_issues(codes)
+    return JSONResponse(content=result, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health/db")
@@ -668,4 +1155,18 @@ app.mount(
     "/static/bundles",
     StaticFiles(directory=str(_bundle_dir)),
     name="bundle_uploads",
+)
+
+_zip_promo_dir = ensure_zip_promo_dir()
+app.mount(
+    "/static/zip-promo",
+    StaticFiles(directory=str(_zip_promo_dir)),
+    name="zip_promo_uploads",
+)
+
+_send_promo_dir = ensure_send_promo_dir()
+app.mount(
+    "/static/send-promo",
+    StaticFiles(directory=str(_send_promo_dir)),
+    name="send_promo_uploads",
 )

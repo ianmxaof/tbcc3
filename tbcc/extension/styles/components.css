@@ -27,6 +27,28 @@ body.tbcc-options-page .sub {
   color: var(--tbcc-text-muted);
 }
 
+.tbcc-archive-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 11px;
+  color: var(--tbcc-text-secondary);
+}
+.tbcc-archive-pager__label {
+  min-width: 140px;
+  text-align: center;
+}
+.master-archive-list .saved-url-inbox-row {
+  border-bottom: 1px solid var(--tbcc-border, #313244);
+  padding: 8px 4px;
+}
+.master-archive-list .saved-url-inbox-url {
+  color: var(--tbcc-accent-hover, #b4befe);
+}
+
 body.tbcc-options-page h2 {
   margin: 22px 0 10px;
   font-size: 13px;

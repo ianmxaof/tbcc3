@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <title>TBCC Gallery</title>
+  <link rel="icon" href="icons/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="128x128" href="icons/icon128.png" />
+  <link rel="icon" type="image/png" sizes="48x48" href="icons/icon48.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/icon32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/icon16.png" />
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles/gallery.css" />
 </head>
@@ -17,9 +22,14 @@
         <span class="sep">·</span>
         <a href="#" id="linkGalleryView" data-panel="collected">Collected</a>
         <span class="sep">·</span>
+        <a href="#" id="linkModelLookup" data-panel="lookup" title="Macro model search and results report">Lookup</a>
+        <span class="sep">·</span>
         <a href="#" id="linkPopupTools" data-panel="tools">Tools</a>
         <span class="sep">·</span>
         <a href="http://127.0.0.1:5173/" target="_blank" rel="noopener" id="linkDashboard">Dashboard</a>
+      </div>
+      <div class="tbcc-brand-lockup" title="Powercore · TBCC">
+        <span class="tbcc-brand-powercore">Powercore</span><span class="tbcc-brand-sep">·</span><span class="tbcc-brand-tbcc">TBCC</span>
       </div>
     </header>
     <div id="view-main" class="panel-view gallery-main">
@@ -28,8 +38,11 @@
           <div class="gallery-transport-inner gallery-transport-inner--top">
             <div class="segmented">
               <button type="button" id="tabCurrent" class="active">Current</button>
+              <button type="button" id="tabGroup" title="Only tabs in the same Chrome tab group as the active tab (other tabs are not scanned)">Group</button>
               <button type="button" id="tabAll">All tabs</button>
             </div>
+            <button type="button" id="btnGalleryPopOut" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Open gallery in a separate window (keeps running if you close the side panel; downloads already handed to Chrome continue)">⎘</button>
+            <button type="button" id="btnGalleryDock" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Dock to this tab: leaving the tab closes the side panel; long tasks keep running with system notifications (see ⚙)" aria-pressed="false">⚓</button>
             <div id="galleryScanStrip" class="gallery-scan-strip" hidden aria-hidden="true">
               <span class="gallery-scan-strip__label" id="galleryScanLabel">Scanning page</span>
               <div class="gallery-scan-strip__track" title="Extra media URLs may appear as the page finishes loading">
@@ -43,10 +56,29 @@
           </div>
         </div>
         <div class="crawler-bar" aria-label="Crawler deploy">
-          <input type="url" id="crawlerUrl" placeholder="Crawler URL (Erome album, more adapters coming)" autocomplete="off" />
-          <button type="button" id="btnCrawlerUseCurrent" class="tbcc-btn-secondary tbcc-btn--compact" title="Use current tab URL">Tab</button>
-          <button type="button" id="btnCrawlerDeploy" class="tbcc-btn-secondary tbcc-btn--compact" title="Resolve media with a site crawler">Crawl</button>
+          <span id="galleryDockBanner" class="gallery-dock-banner" hidden title="Gallery is pinned to this browser tab">Docked</span>
+          <button type="button" id="btnCrawlTab" class="tbcc-btn-secondary tbcc-btn--compact" title="Crawl the active browser tab (cookies auto when needed)">Crawl tab</button>
+          <span id="crawlerTabUrl" class="crawler-tab-url" title="Active tab URL"></span>
           <span id="crawlerStatus" class="crawler-status" aria-live="polite"></span>
+        </div>
+        <div id="tbccApiOfflineBanner" class="tbcc-api-offline-banner" hidden aria-live="polite">
+          <span id="tbccApiOfflineBannerText">TBCC API offline — start the backend on localhost:8000.</span>
+          <span class="tbcc-api-offline-banner__actions">
+            <button type="button" id="btnTbccLaunchApiFromGallery" class="tbcc-btn-secondary tbcc-btn--compact">Launch full stack</button>
+            <button type="button" id="btnTbccRetryApiFromGallery" class="tbcc-btn-secondary tbcc-btn--compact">Retry connection</button>
+          </span>
+        </div>
+        <div id="tbccSystemHealthHint" class="tbcc-system-health-hint" hidden aria-live="polite"></div>
+        <div id="tbccActiveJobsBar" class="tbcc-active-jobs-bar" hidden aria-live="polite">
+          <div class="tbcc-active-jobs-bar__head">
+            <strong>Running tasks</strong>
+            <span id="tbccQueueDepthHint" class="tbcc-queue-depth-hint" hidden title="Celery telegram queue + DB import jobs"></span>
+            <div class="tbcc-active-jobs-bar__actions">
+              <button type="button" id="btnPauseImportQueue" class="tbcc-btn-secondary tbcc-btn--compact" title="Stop starting new fast-import uploads (in-flight jobs continue)">Pause queue</button>
+              <button type="button" id="btnClearStaleJobs" class="tbcc-btn-secondary tbcc-btn--compact" title="Remove finished or jobs older than 15 minutes">Clear stale</button>
+            </div>
+          </div>
+          <ul id="tbccActiveJobsList" class="tbcc-active-jobs-list"></ul>
         </div>
       </header>
 
@@ -161,6 +193,19 @@
             </div>
           </div>
           <div id="grid" class="grid"></div>
+          <div id="sendPromoStripWrap" class="send-promo-strip-wrap" hidden>
+            <div class="send-promo-strip-head">
+              <strong class="send-promo-strip-head__title">Send promo</strong>
+              <span class="send-promo-strip-head__hint">Appended last on batch send (Saved / channel / topic)</span>
+              <label class="send-promo-strip-head__check" title="Add active promo tile after your selection">
+                <input type="checkbox" id="sendPromoOnSend" checked />
+                Append
+              </label>
+              <button type="button" id="btnSendPromoUpload" class="tbcc-btn-secondary tbcc-btn--compact">+ Upload</button>
+              <input type="file" id="sendPromoFileInput" accept="image/jpeg,image/png,image/webp" hidden />
+            </div>
+            <div id="sendPromoStrip" class="send-promo-strip" role="list" aria-label="Send promo images"></div>
+          </div>
         </div>
       </div>
 
@@ -179,7 +224,7 @@
         <div class="gallery-transport-inner gallery-transport-inner--tools" role="toolbar" aria-label="Gallery tools">
           <button type="button" id="btnDownload" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Download selected">⬇</button>
           <button type="button" id="btnDownloadZip" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="ZIP selected">📦</button>
-          <button type="button" id="btnCopyJd" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Copy URLs for JDownloader">🔗</button>
+          <button type="button" id="btnCopyJd" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Send selection to JDownloader LinkGrabber">🔗</button>
           <button type="button" id="btnToggleOverlay" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Toggle on-page selection boxes">☑</button>
           <button type="button" id="btnSelectAllOnPage" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Select all on tab (page overlay)">⊞</button>
           <button type="button" id="btnToggleFoldVariants" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Fold duplicate video resolutions into one tile">⧉</button>
@@ -188,11 +233,27 @@
           <button
             type="button"
             id="btnSelectAnchorToggle"
-            class="tbcc-btn-icon tbcc-btn-icon--tool tbcc-transport-tool-trailing"
+            class="tbcc-btn-icon tbcc-btn-icon--tool"
             disabled
             title="Toggle selection on anchor tile (last clicked row)"
           >
             ⊡
+          </button>
+          <button
+            type="button"
+            id="btnToggleSendPromoStrip"
+            class="tbcc-btn-icon tbcc-btn-icon--tool"
+            title="Show send promo tiles (append logo/card at end of batch)"
+          >
+            ★
+          </button>
+          <button
+            type="button"
+            id="btnSavedUrlInboxOpenToolbar"
+            class="tbcc-btn-icon tbcc-btn-icon--tool tbcc-transport-tool-trailing"
+            title="URL inbox — import queue (always available)"
+          >
+            📥
           </button>
         </div>
       </div>
@@ -201,10 +262,9 @@
         <div class="gallery-transport-shell">
           <div class="gallery-transport-inner gallery-transport-inner--bottom">
             <div class="action-bar-row">
-              <select id="poolSelect" class="pool-select-compact" title="Pool"></select>
               <button type="button" id="btnSend" class="primary action-send" disabled>Send to TBCC</button>
-              <button type="button" id="btnTelegramSheetOpen" class="ghost tbcc-btn--compact" title="Tags on send, Telegram destination, caption">Dest ▾</button>
-              <span id="actionBarSubtitle" class="action-sub"></span>
+              <button type="button" id="btnTelegramSheetOpen" class="ghost tbcc-btn--compact" title="Destination, caption, tags before Send">Send settings ▾</button>
+              <button type="button" id="btnSavedUrlInboxOpen" class="ghost tbcc-btn--compact" title="Queued URLs — assign content pools and import without using the sidebar byte pipeline">Inbox</button>
             </div>
           </div>
         </div>
@@ -278,62 +338,313 @@
         <div class="telegram-sheet-backdrop" id="telegramSheetBackdrop"></div>
         <div class="telegram-sheet-panel">
           <div class="telegram-sheet-header">
-            <span>Destination &amp; tags</span>
+            <span>Send settings</span>
             <button type="button" id="btnTelegramSheetDone">Done</button>
           </div>
-          <div class="telegram-post-body" id="telegramPostBody">
-            <div id="tagSendPanel" class="tag-send-panel tag-send-panel--sheet" title="Applied after pool import (merge with auto type/source tags)">
-              <div class="tag-send-toolbar">
-                <span class="tag-send-label">Tags</span>
-                <button type="button" id="btnTagSuggest" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Suggest</button>
-                <button type="button" id="btnTagsCatalogReload" class="tbcc-btn-icon tbcc-btn-icon--sheet-compact" title="Reload tag list from TBCC">&#x21bb;</button>
+          <div class="telegram-post-body import-sheet-flow" id="telegramPostBody">
+            <p class="import-sheet-flow-lead">
+              Select tiles in the gallery, then <strong>Send</strong>. Set destination first — caption and tags follow that choice.
+            </p>
+
+            <section class="import-sheet-step" aria-labelledby="importStepDestTitle">
+              <header class="import-sheet-step__head">
+                <span class="import-sheet-step__num" aria-hidden="true">1</span>
+                <h3 class="import-sheet-step__title" id="importStepDestTitle">Destination</h3>
+              </header>
+              <div class="tbcc-dest-macro-bar" role="group" aria-label="Where media goes">
+                <button type="button" id="btnDestMacroPool" class="tbcc-dest-macro tbcc-btn-secondary tbcc-btn--sheet-compact" title="Import into TBCC library only">
+                  Library
+                </button>
+                <button type="button" id="btnDestMacroSaved" class="tbcc-dest-macro tbcc-btn-secondary tbcc-btn--sheet-compact" title="Telegram Saved Messages only">
+                  Saved
+                </button>
+                <button type="button" id="btnDestMacroForum" class="tbcc-dest-macro tbcc-btn-secondary tbcc-btn--sheet-compact" title="Library import, then post to a forum topic">
+                  Topic
+                </button>
+                <button type="button" id="btnDestMacroChannel" class="tbcc-dest-macro tbcc-btn-secondary tbcc-btn--sheet-compact" title="Library import, then post to channel">
+                  Channel
+                </button>
               </div>
-              <div id="tagChipRow" class="tag-chip-row" aria-label="Tags to apply"></div>
-              <div class="tag-send-catalog">
-                <div class="tag-catalog-row tag-catalog-row--pick">
-                  <select id="tagCatalogSelect" class="tag-catalog-select" title="Add a tag from your TBCC catalog" aria-label="Pick tag from catalog">
-                    <option value="">Pick from catalog…</option>
+              <p id="telegramDestSummary" class="import-sheet-outcome" aria-live="polite"></p>
+              <input type="checkbox" id="forumPostEnabled" hidden />
+              <select id="postDestMode" title="Destination mode" hidden aria-hidden="true">
+                <option value="channel">channel</option>
+                <option value="forum">forum</option>
+                <option value="saved">saved</option>
+              </select>
+              <div id="telegramPoolSection" class="import-sheet-step__block">
+                <div class="telegram-dest-row telegram-pool-row" id="telegramPoolRow">
+                  <span class="dest-label">Library pool</span>
+                  <select id="poolSelectSheet" class="pool-select-compact telegram-pool-select" title="TBCC content pool (Dashboard → Pools)"></select>
+                </div>
+                <p class="import-sheet-hint import-sheet-hint--tight">Content pools are library buckets (e.g. LOOT ROOM). Loot tiers use pools from Dashboard → Loot.</p>
+              </div>
+              <div id="telegramDestDetailShell" class="telegram-dest-detail-shell import-sheet-step__block">
+                <div class="telegram-dest-row">
+                  <span class="dest-label">Channel</span>
+                  <select id="forumChannelSelect" title="Channel" disabled>
+                    <option value="">— channel —</option>
                   </select>
                 </div>
-                <div class="tag-catalog-row tag-catalog-row--create">
-                  <input type="text" id="tagNewName" placeholder="New tag" maxlength="128" />
-                  <input type="text" id="tagNewCategory" placeholder="Cat (opt)" maxlength="64" />
-                  <button type="button" id="btnTagCreate" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Create</button>
-                  <button type="button" id="btnTagsClear" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Clear</button>
+                <div class="forum-topic-wrap" id="forumTopicRow">
+                  <span class="dest-label">Topic</span>
+                  <select id="forumTopicSelect" title="Group topic" disabled>
+                    <option value="">— topic —</option>
+                  </select>
+                  <button type="button" id="btnForumTopicsRefresh" class="tbcc-btn-icon tbcc-btn-icon--sheet-compact" disabled title="Reload topics">↻</button>
+                </div>
+                <label class="forum-check send-silent-row" id="sendSilentRow" hidden>
+                  <input type="checkbox" id="sendSilent" />
+                  <span>Silent post</span>
+                </label>
+              </div>
+              <p id="telegramDestHint" class="import-sheet-hint"></p>
+              <div class="import-sheet-step__block send-promo-sheet-block">
+                <label class="forum-check send-promo-sheet-check">
+                  <input type="checkbox" id="sendPromoOnSendSheet" checked />
+                  <span>Append send promo tile at end of batch</span>
+                </label>
+                <p class="import-sheet-hint import-sheet-hint--tight">
+                  Like a closing logo on Fapello batches. Manage tiles with ★ in the gallery toolbar or Dashboard → Misc → Send promo.
+                </p>
+              </div>
+            </section>
+
+            <section id="importSheetCaptionSection" class="import-sheet-step" aria-labelledby="importStepCapTitle">
+              <header class="import-sheet-step__head">
+                <span class="import-sheet-step__num" aria-hidden="true">2</span>
+                <h3 class="import-sheet-step__title" id="importStepCapTitle">Caption</h3>
+              </header>
+              <p id="importSheetCaptionOutcome" class="import-sheet-outcome"></p>
+              <div class="telegram-caption-block">
+                <div class="telegram-caption-toolbar telegram-caption-toolbar--wrap">
+                  <label for="forumAlbumCaption">Message text</label>
+                  <div class="telegram-caption-toolbar__actions">
+                    <button type="button" id="btnCaptionLibraryOpen" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Insert from saved captions">
+                      Library…
+                    </button>
+                    <button type="button" id="btnAutoCap" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Fill from page title + description + tag hashtags">
+                      Auto cap
+                    </button>
+                  </div>
+                </div>
+                <textarea id="forumAlbumCaption" placeholder="Write caption here, or use Library / Auto cap" rows="3"></textarea>
+              </div>
+              <div class="tbcc-always-include">
+                <div class="tbcc-always-include__head">
+                  <button
+                    type="button"
+                    id="btnAlwaysIncludeToggle"
+                    class="tbcc-btn-secondary tbcc-btn--sheet-compact"
+                    title="Append channel / promo links below caption text"
+                    aria-expanded="false"
+                    aria-controls="alwaysIncludePopover"
+                  >
+                    Append links ▴
+                  </button>
+                </div>
+                <div id="alwaysIncludePopover" class="tbcc-always-include__popover" hidden role="region" aria-label="Links to append">
+                  <p class="tbcc-always-include__subtitle">TBCC channels</p>
+                  <div id="alwaysIncludeChannelList" class="tbcc-always-include__list" role="group" aria-label="Channel links"></div>
+                  <p class="tbcc-always-include__subtitle">Custom URLs</p>
+                  <div id="alwaysIncludeCustomList" class="tbcc-always-include__list"></div>
+                  <div class="tbcc-always-include__add">
+                    <input type="text" id="alwaysIncludeCustomLabel" placeholder="Label" maxlength="80" />
+                    <input type="url" id="alwaysIncludeCustomUrl" placeholder="https://…" />
+                    <button type="button" id="btnAlwaysIncludeCustomAdd" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Add</button>
+                  </div>
                 </div>
               </div>
-              <p class="tag-send-hint">Pool: merged as manual tags. Saved-only: no tagging.</p>
-            </div>
-            <p class="sheet-section-label">Telegram</p>
-            <label class="forum-check"><input type="checkbox" id="forumPostEnabled" /> <span id="forumPostEnabledLabel">After import, also post to Telegram</span></label>
-            <label class="forum-check"><input type="checkbox" id="autoTagOnExport" /> <span id="autoTagOnExportLabel">Auto-tag on export (page + per-item hints)</span></label>
-            <div class="telegram-dest-row">
-              <span class="dest-label">Where</span>
-              <select id="postDestMode" title="Where media goes on Telegram" disabled>
-                <option value="channel">Channel or group</option>
-                <option value="forum">Forum topic</option>
-                <option value="saved">Saved Messages only</option>
-              </select>
-              <select id="forumChannelSelect" title="Channel" disabled>
-                <option value="">— channel —</option>
-              </select>
-            </div>
-            <div class="forum-topic-wrap" id="forumTopicRow">
-              <span class="dest-label">Topic</span>
-              <select id="forumTopicSelect" title="Forum subtopic" disabled>
-                <option value="">— topic —</option>
-              </select>
-              <button type="button" id="btnForumTopicsRefresh" class="tbcc-btn-icon tbcc-btn-icon--sheet-compact" disabled title="Reload topics">↻</button>
-            </div>
-            <p class="forum-hint" id="telegramDestHint">Saved Messages skips TBCC pool. Channel/forum posts after pool import.</p>
-            <div class="telegram-caption-block">
-              <div class="telegram-caption-toolbar">
-                <label for="forumAlbumCaption">Caption (optional)</label>
-                <button type="button" id="btnAutoCap" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Page title/description + Tags on Send and page hints as #hashtags — edit after">Auto cap</button>
+            </section>
+
+            <section id="importSheetTagsSection" class="import-sheet-step" aria-labelledby="importStepTagsTitle">
+              <header class="import-sheet-step__head">
+                <span class="import-sheet-step__num" aria-hidden="true">3</span>
+                <h3 class="import-sheet-step__title" id="importStepTagsTitle">Tags</h3>
+              </header>
+              <p id="importSheetTagsOutcome" class="import-sheet-outcome" aria-live="polite"></p>
+              <label class="forum-check import-sheet-auto-tag">
+                <input type="checkbox" id="autoTagOnExport" />
+                <span id="autoTagOnExportLabel">Auto-fill from page tab, site name, and URL paths</span>
+              </label>
+              <div id="tagSendPanel" class="tag-send-panel tag-send-panel--sheet">
+                <div class="tag-send-toolbar">
+                  <span class="tag-send-label">Your tags</span>
+                  <button type="button" id="btnTagSuggest" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Hashtags from open page">Suggest</button>
+                  <button type="button" id="btnTagsClear" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Clear</button>
+                  <button type="button" id="btnTagsCatalogReload" class="tbcc-btn-icon tbcc-btn-icon--sheet-compact" title="Reload tag catalog">↻</button>
+                </div>
+                <div id="tagChipRow" class="tag-chip-row" aria-label="Tags to apply"></div>
+                <div class="tag-send-catalog">
+                  <div class="tag-catalog-row tag-catalog-row--pick">
+                    <div id="tagCatalogComboboxMount" class="tag-catalog-combobox-mount" aria-label="Add tag from catalog"></div>
+                    <p id="tagCatalogFilterNote" class="tag-catalog-filter-note" hidden>Hex/junk slugs hidden in picker.</p>
+                  </div>
+                  <details class="tag-catalog-create-details">
+                    <summary class="tag-catalog-create-summary">Create new catalog tag</summary>
+                    <div class="tag-catalog-row tag-catalog-row--create">
+                      <input type="text" id="tagNewName" placeholder="Name" maxlength="128" />
+                      <input type="text" id="tagNewSlug" placeholder="Slug (opt)" maxlength="64" />
+                      <input type="text" id="tagNewCategory" placeholder="Group (opt)" maxlength="64" />
+                      <button type="button" id="btnTagCreate" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Create</button>
+                    </div>
+                  </details>
+                </div>
               </div>
-              <textarea id="forumAlbumCaption" placeholder="Caption for albums or files" rows="2"></textarea>
-            </div>
+            </section>
           </div>
+        </div>
+      </div>
+
+      <div id="savedUrlInboxSheet" class="telegram-sheet saved-url-inbox-sheet" aria-hidden="true">
+        <div class="telegram-sheet-backdrop" id="savedUrlInboxBackdrop"></div>
+        <div class="telegram-sheet-panel saved-url-inbox-panel">
+          <div class="telegram-sheet-header">
+            <span>URL inbox</span>
+            <button type="button" id="btnSavedUrlInboxDone">Done</button>
+          </div>
+          <p class="sheet-intro-hint">
+            Queue links (context menu: <strong>Add URL to TBCC inbox</strong>). Choose <strong>content pool</strong> (media import,
+            <strong>background</strong>) or <strong>Loot modifier</strong> (batched link-only, or <strong>Zip pack</strong> to download → zip → tier 9–10). Then <strong>Import checked</strong>.
+            Pool imports use <strong>Auto-fill tags</strong> from Send settings (step 3).
+          </p>
+          <div class="saved-url-inbox-toolbar">
+            <label class="saved-url-inbox-default-pool">
+              Default destination
+              <select id="savedUrlInboxDefaultDest" class="pool-select-compact" title="Pool = download + Media Library; Loot modifier = link only">
+                <option value="pool">Content pool (media)</option>
+                <option value="loot_modifier">Loot modifier (URL only)</option>
+              </select>
+            </label>
+            <label class="saved-url-inbox-default-pool" id="savedUrlInboxDefaultPoolWrap">
+              Pool
+              <select id="savedUrlInboxDefaultPool" class="pool-select-compact"></select>
+            </label>
+            <input type="url" id="savedUrlInboxManualUrl" class="tbcc-input" placeholder="https://…" />
+            <button type="button" id="btnSavedUrlInboxAdd" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Add URL</button>
+            <button type="button" id="btnSavedUrlInboxImportSel" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Import checked</button>
+            <button type="button" id="btnSavedUrlInboxRemoveSel" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Remove checked</button>
+            <button type="button" id="btnSavedUrlInboxClearImported" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Clear imported</button>
+            <button type="button" id="btnSavedUrlInboxSelectAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Check all queued rows">Select all</button>
+            <button type="button" id="btnSavedUrlInboxDeselectAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Uncheck all rows">Deselect all</button>
+            <button type="button" id="btnSavedUrlInboxExport" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Download inbox as JSON">Export inbox</button>
+            <button type="button" id="btnSavedUrlInboxImport" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Import URLs from file or clipboard">Import…</button>
+            <button type="button" id="btnSavedUrlInboxCopyAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Copy every URL currently in the inbox queue">Copy all URLs</button>
+            <button type="button" id="btnSavedUrlInboxMaster" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="All URLs and usernames ever captured">Master archive</button>
+          </div>
+          <input type="file" id="savedUrlInboxImportFile" accept=".json,.csv,.txt,text/plain,application/json" hidden />
+          <p id="savedUrlInboxStatus" class="saved-url-inbox-status" aria-live="polite"></p>
+          <p class="sheet-intro-hint sheet-intro-hint--tight">
+            <strong>Import checked</strong> sends rows to your TBCC server (content pool download or loot modifier URL). The
+            <strong>master archive</strong> keeps every URL/username locally and is not cleared when you clear imported inbox rows.
+          </p>
+          <div id="savedUrlInboxList" class="saved-url-inbox-list" role="list"></div>
+        </div>
+      </div>
+
+      <div id="masterArchiveSheet" class="telegram-sheet master-archive-sheet" aria-hidden="true">
+        <div class="telegram-sheet-backdrop" id="masterArchiveBackdrop"></div>
+        <div class="telegram-sheet-panel master-archive-panel">
+          <div class="telegram-sheet-header">
+            <span>Master archive</span>
+            <button type="button" id="btnMasterArchiveDone">Done</button>
+          </div>
+          <p class="sheet-intro-hint">
+            Permanent local list of URLs and usernames from inbox, context menu, model search, and copy-media. Backed up in
+            <code>chrome.storage.local</code> (survives most updates). Syncs to the TBCC API when running — view merged history in
+            <strong>Dashboard → Archive</strong>. <strong>100 entries per page</strong>; export for the full list. Copy URLs uses checked rows on this page only.
+          </p>
+          <div class="master-archive-paste-row">
+            <textarea
+              id="masterArchivePaste"
+              class="tbcc-input master-archive-paste"
+              rows="2"
+              placeholder="Paste URLs here (one per line)…"
+            ></textarea>
+            <button type="button" id="btnMasterPasteImport" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Add pasted</button>
+            <button type="button" id="btnMasterSyncServer" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Merge server archive into this local list">Sync server</button>
+          </div>
+          <div class="master-archive-toolbar">
+            <input type="search" id="masterArchiveFilter" class="tbcc-input" placeholder="Filter…" />
+            <select id="masterArchiveKind" class="pool-select-compact" title="Entry type">
+              <option value="">All types</option>
+              <option value="url">URLs only</option>
+              <option value="username">Usernames only</option>
+            </select>
+          </div>
+          <div class="master-archive-sort-row" title="Sort order applies to the full filtered list before paging">
+            <label class="master-archive-sort-label">Sort</label>
+            <select id="masterArchiveSort1" class="pool-select-compact" title="Primary sort">
+              <option value="addedAt">Date added</option>
+              <option value="value">URL / username</option>
+              <option value="host">Site (host)</option>
+              <option value="source">Source</option>
+              <option value="kind">Type</option>
+              <option value="summary">Title</option>
+            </select>
+            <select id="masterArchiveSort1Dir" class="pool-select-compact" title="Primary direction">
+              <option value="desc">Newest / Z-A</option>
+              <option value="asc">Oldest / A-Z</option>
+            </select>
+            <span class="master-archive-sort-label">then</span>
+            <select id="masterArchiveSort2" class="pool-select-compact" title="Secondary sort">
+              <option value="">—</option>
+              <option value="addedAt">Date added</option>
+              <option value="value">URL / username</option>
+              <option value="host">Site (host)</option>
+              <option value="source">Source</option>
+              <option value="kind">Type</option>
+              <option value="summary">Title</option>
+            </select>
+            <select id="masterArchiveSort2Dir" class="pool-select-compact" title="Secondary direction">
+              <option value="asc">A-Z / oldest</option>
+              <option value="desc">Z-A / newest</option>
+            </select>
+          </div>
+          <div class="master-archive-toolbar master-archive-toolbar--actions">
+            <button type="button" id="btnMasterExportJson" class="tbcc-btn-secondary tbcc-btn--sheet-compact">JSON</button>
+            <button type="button" id="btnMasterExportCsv" class="tbcc-btn-secondary tbcc-btn--sheet-compact">CSV</button>
+            <button type="button" id="btnMasterExportTxt" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Plain text</button>
+            <button type="button" id="btnMasterImport" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Import…</button>
+            <button type="button" id="btnMasterSelectAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Select all</button>
+            <button type="button" id="btnMasterDeselectAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Deselect all</button>
+            <button type="button" id="btnMasterCopyUrls" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Copy checked URLs on this page only (max 100)">Copy URLs</button>
+            <button type="button" id="btnMasterAddToInbox" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Add checked URL rows to inbox">→ Inbox</button>
+            <button type="button" id="btnMasterClear" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Clears local archive only">Clear local</button>
+          </div>
+          <input type="file" id="masterArchiveImportFile" accept=".json,.csv,.txt,text/plain,application/json" hidden />
+          <p id="masterArchiveStatus" class="saved-url-inbox-status" aria-live="polite"></p>
+          <div id="masterArchivePager" class="tbcc-archive-pager" hidden></div>
+          <div id="masterArchiveList" class="master-archive-list" role="list"></div>
+        </div>
+      </div>
+
+      <div
+        id="captionLibraryModal"
+        class="tbcc-caption-lib-modal"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="captionLibModalTitle"
+      >
+        <div class="tbcc-caption-lib-modal__backdrop" id="captionLibraryBackdrop"></div>
+        <div class="tbcc-caption-lib-modal__panel">
+          <div class="tbcc-caption-lib-modal__header">
+            <h2 id="captionLibModalTitle" class="tbcc-caption-lib-modal__title">Caption library</h2>
+            <button type="button" id="captionLibraryClose" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Close</button>
+          </div>
+          <p class="tbcc-caption-lib-modal__note">Stored on the TBCC server — same library as the dashboard. Tap <strong>Insert</strong> on any row to append into the caption field behind this modal.</p>
+          <div class="tbcc-caption-lib-modal__form">
+            <label class="tbcc-caption-lib-modal__label"
+              >Label <span class="tbcc-caption-lib-modal__opt">(optional)</span></label
+            >
+            <input type="text" id="captionLibTitle" placeholder="e.g. AOF promo" maxlength="256" />
+            <label class="tbcc-caption-lib-modal__label">Text</label>
+            <textarea id="captionLibBody" placeholder="Caption (links, hashtags, line breaks)…" rows="5"></textarea>
+            <button type="button" id="btnCaptionLibSave" class="tbcc-btn-secondary">Save to library</button>
+          </div>
+          <h3 class="tbcc-caption-lib-modal__saved-title">Saved</h3>
+          <ul id="captionLibList" class="tbcc-caption-lib-modal__list"></ul>
         </div>
       </div>
 
@@ -356,14 +667,15 @@
           <hr class="tbcc-gallery-ctx-menu__sep" />
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="download">Download selected</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="zip">ZIP selected</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="copyJd">Copy URLs (JDownloader)</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="copyJd">Send to JDownloader</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="send">Send to TBCC</button>
           <hr class="tbcc-gallery-ctx-menu__sep" />
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="filter">Filter…</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="fold">Toggle fold video variants</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="crop">Crop &amp; watermarks</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="addFiles">Add local files</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="telegram">Destination &amp; tags…</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="telegram">Send settings…</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="inbox">URL inbox…</button>
           <hr class="tbcc-gallery-ctx-menu__sep" />
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="options">Capture &amp; extension options</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="help">Keyboard shortcuts</button>
@@ -385,6 +697,9 @@
     <div id="view-collected" class="panel-view panel-view--iframe" hidden>
       <iframe id="iframe-collected" title="Collected media"></iframe>
     </div>
+    <div id="view-lookup" class="panel-view panel-view--iframe" hidden>
+      <iframe id="iframe-lookup" title="Model lookup"></iframe>
+    </div>
     <div id="view-tools" class="panel-view panel-view--iframe" hidden>
       <iframe id="iframe-tools" title="Quick tools"></iframe>
     </div>
@@ -397,6 +712,14 @@
   <script src="media-url-guards.js"></script>
   <script src="launch-full-stack.js"></script>
   <script src="adapters/gallery-resolve.js"></script>
+  <script src="tbcc-master-archive.js"></script>
+  <script src="tbcc-archive-list-ui.js"></script>
+  <script src="saved-url-inbox.js"></script>
+  <script src="tag-catalog-combobox.js"></script>
+  <script src="auto-tag-utils.js"></script>
+  <script src="tbcc-clipboard-toast.js"></script>
+  <script src="gallery-send-promo.js"></script>
+  <script src="tbcc-import-pipeline.js"></script>
   <script src="gallery.js"></script>
   <script src="gallery-panel.js"></script>
 </body>

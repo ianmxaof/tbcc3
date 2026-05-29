@@ -1,0 +1,7 @@
+# TBCC pins for NSFW_Detection_API on Python 3.13 (TF 2.20+ only on this Python)
+# - setuptools<81: tensorflow-hub needs pkg_resources
+# - tf-keras: load legacy nsfw_model.h5 with hub.KerasLayer (set TF_USE_LEGACY_KERAS=1 in run_nsfw_detect.py)
+setuptools>=70,<81
+tf-keras>=2.20.0
+tensorflow>=2.20.0
+tensorflow-hub>=0.16.0

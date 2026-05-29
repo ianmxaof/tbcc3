@@ -137,6 +137,31 @@
         var refPage = "";
         try {
           refPage = String(location.href || "").split("#")[0];
+          var eh = "";
+          try {
+            eh = new URL(url, location.href).hostname.toLowerCase();
+          } catch (_) {}
+          var onErome =
+            eh === "erome.com" || (eh && eh.endsWith && eh.endsWith(".erome.com"));
+          if (onErome) {
+            var pageErome = false;
+            try {
+              var ph = new URL(refPage || location.href).hostname.toLowerCase();
+              pageErome = ph === "erome.com" || ph.endsWith(".erome.com");
+            } catch (_) {}
+            if (!pageErome) {
+              var parts = new URL(url, location.href).pathname.split("/").filter(Boolean);
+              if (parts.length >= 2) {
+                var last = parts[parts.length - 1].toLowerCase();
+                if (/\.(mp4|webm|mov|m4v|mkv|jpe?g|png|gif|webp)$/i.test(last)) {
+                  var album = parts[parts.length - 2];
+                  if (/^\d+$/.test(album) && parts.length >= 3) album = parts[parts.length - 3];
+                  if (album) refPage = "https://www.erome.com/a/" + encodeURIComponent(album);
+                }
+              }
+              if (!refPage || refPage.indexOf("erome.com/a/") < 0) refPage = "";
+            }
+          }
         } catch (_) {}
         chrome.runtime.sendMessage(
           { action: "tbcc-content-fetch-bytes", url: url, refererPageUrl: refPage },
@@ -245,9 +270,19 @@
     return best || "";
   }
 
+  function isPerchanceHost() {
+    try {
+      return /(^|\.)perchance\.org$/i.test(location.hostname);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /** Prefer URLs that look like full-size; penalize common thumb/preview paths. */
   function scoreImageUrl(u) {
-    if (!u || u.indexOf("data:") === 0) return -1000;
+    if (!u) return -99999;
+    if (isPerchanceHost()) return scoreImageUrlPerchance(u);
+    if (u.indexOf("data:") === 0) return -1000;
     var s = u.toLowerCase();
     var score = 0;
     if (s.indexOf("thumb") >= 0) score -= 35;
@@ -259,6 +294,160 @@
     if (/_\d+px\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(s)) score -= 55;
     score += Math.min(s.length, 240) / 12;
     return score;
+  }
+
+  /**
+   * perchance.org generators often expose grid thumbs (https) beside blob:/canvas full outputs.
+   * Prefer in-document blob/data exports over small CDN thumbs.
+   */
+  function scoreImageUrlPerchance(u) {
+    var s = String(u || "").toLowerCase();
+    if (s.indexOf("data:image/") === 0) {
+      return 140 + Math.min(String(u).length / 8000, 90);
+    }
+    if (s.indexOf("blob:") === 0) return 130;
+    var sc = 0;
+    if (s.indexOf("thumb") >= 0) sc -= 35;
+    if (s.indexOf("/small/") >= 0 || s.indexOf("_small") >= 0) sc -= 30;
+    if (s.indexOf("preview") >= 0 || s.indexOf("/mini/") >= 0) sc -= 25;
+    if (/_s\.(jpe?g|png|gif|webp)/i.test(s)) sc -= 20;
+    if (s.indexOf("avatar") >= 0 || s.indexOf("icon") >= 0) sc -= 15;
+    if (/_\d+px\.(jpe?g|png|webp|gif|avif)(\?|#|$)/i.test(s)) sc -= 55;
+    sc += Math.min(s.length, 240) / 12;
+    if (/_\d+px\.|(?:[?&](?:w|width|maxwidth)=)\d{2,4}\b|\/thumb|thumbnail|preview|\/small\/|_small\./i.test(s)) sc -= 70;
+    return sc;
+  }
+
+  function perchancePixelArea(row) {
+    if (!row) return 0;
+    var w = row.naturalWidth || row.width || 0;
+    var h = row.naturalHeight || row.height || 0;
+    return w > 0 && h > 0 ? w * h : 0;
+  }
+
+  function perchanceSlotKeyForElement(el) {
+    if (!el || el.nodeType !== 1) return "";
+    try {
+      var root =
+        (el.closest &&
+          el.closest(
+            "[class*='gallery'],[class*='output'],[class*='result'],[class*='image'],[class*='thumb'],[class*='tile'],[class*='card'],[id*='gallery'],[id*='output']"
+          )) ||
+        el.parentElement;
+      if (!root) root = el;
+      var r = root.getBoundingClientRect();
+      if (!r || (r.width < 8 && r.height < 8)) return "";
+      return (
+        Math.round(r.left / 24) +
+        ":" +
+        Math.round(r.top / 24) +
+        ":" +
+        Math.round(r.width / 24) +
+        "x" +
+        Math.round(r.height / 24)
+      );
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function perchanceFindBestCanvasNear(el) {
+    if (!el || !isPerchanceHost()) return null;
+    var best = null;
+    var bestArea = 0;
+    function consider(canvas) {
+      if (!canvas || canvas.tagName !== "CANVAS") return;
+      var w = canvas.width || 0;
+      var h = canvas.height || 0;
+      if (w < 96 || h < 96) return;
+      try {
+        var cr = canvas.getBoundingClientRect();
+        if (cr.width < 32 && cr.height < 32) return;
+      } catch (_) {}
+      var area = w * h;
+      if (area > bestArea) {
+        bestArea = area;
+        best = canvas;
+      }
+    }
+    try {
+      var root =
+        (el.closest &&
+          el.closest(
+            "[class*='gallery'],[class*='output'],[class*='result'],[class*='image'],[class*='thumb'],[class*='tile'],[class*='card']"
+          )) ||
+        el.parentElement;
+      if (root && root.querySelectorAll) {
+        var local = root.querySelectorAll("canvas");
+        for (var li = 0; li < local.length; li++) consider(local[li]);
+      }
+    } catch (_) {}
+    if (!best) {
+      walkElements(document.documentElement, function (node) {
+        if (node.tagName === "CANVAS") consider(node);
+      });
+    }
+    return best;
+  }
+
+  function perchanceExportCanvas(el, extraBase) {
+    if (!el || el.tagName !== "CANVAS") return;
+    var w = el.width || 0;
+    var h = el.height || 0;
+    if (w < 48 || h < 48) return;
+    var extra = extraBase && typeof extraBase === "object" ? extraBase : {};
+    try {
+      var dataUrl = el.toDataURL("image/png");
+      if (!dataUrl || dataUrl.length < 200) {
+        dataUrl = el.toDataURL("image/jpeg", 0.95);
+      }
+      if (!dataUrl || dataUrl.length < 200) return;
+      if (dataUrl.length > 14000000) {
+        dataUrl = el.toDataURL("image/jpeg", 0.88);
+      }
+      extra.tbccCaptureSource = extra.tbccCaptureSource || "perchance-canvas";
+      add(dataUrl, w, h, "canvas", w, h, extra);
+    } catch (_) {}
+  }
+
+  function collapsePerchanceDuplicateStills(arr) {
+    if (!isPerchanceHost() || !arr || !arr.length) return;
+    var buckets = new Map();
+    var dropIdx = new Set();
+    for (var i = 0; i < arr.length; i++) {
+      var row = arr[i];
+      if (!row || !row.url) continue;
+      var slot = row.tbccPerchanceSlot;
+      if (!slot) continue;
+      if (!buckets.has(slot)) buckets.set(slot, i);
+      else {
+        var j = buckets.get(slot);
+        var aj = perchancePixelArea(arr[j]);
+        var ai = perchancePixelArea(arr[i]);
+        var uj = String(arr[j].url || "");
+        var ui = String(arr[i].url || "");
+        var jBlobData = uj.indexOf("blob:") === 0 || uj.indexOf("data:image/") === 0;
+        var iBlobData = ui.indexOf("blob:") === 0 || ui.indexOf("data:image/") === 0;
+        if (iBlobData && !jBlobData) {
+          dropIdx.add(j);
+          buckets.set(slot, i);
+        } else if (jBlobData && !iBlobData) {
+          dropIdx.add(i);
+        } else if (ai > aj) {
+          dropIdx.add(j);
+          buckets.set(slot, i);
+        } else {
+          dropIdx.add(i);
+        }
+      }
+    }
+    if (!dropIdx.size) return;
+    var sortedDrop = Array.from(dropIdx).sort(function (a, b) {
+      return b - a;
+    });
+    for (var di = 0; di < sortedDrop.length; di++) {
+      arr.splice(sortedDrop[di], 1);
+    }
   }
 
   /** Heuristic URL variants (thumbs → full path segments). Safe no-ops when not applicable. */
@@ -1225,6 +1414,12 @@
       var src = bestUrlFromCandidates(cands);
       if (!src) return;
       var abs = absUrl(src);
+      if (
+        typeof tbccIsPerchanceBadHttpUrl === "function" &&
+        tbccIsPerchanceBadHttpUrl(abs)
+      ) {
+        return;
+      }
       var upPx = upgradePixelWidthThumbPath(abs);
       if (upPx && upPx !== abs) abs = upPx;
       if (isOnlyfansHost()) {
@@ -1248,6 +1443,21 @@
         }
       }
       var extra = buildImgExtra(el);
+      if (isPerchanceHost()) {
+        var slotI = perchanceSlotKeyForElement(el);
+        if (slotI) extra.tbccPerchanceSlot = slotI;
+        var nearCanvas = perchanceFindBestCanvasNear(el);
+        if (nearCanvas) {
+          var cw = nearCanvas.width || 0;
+          var ch = nearCanvas.height || 0;
+          var iw = el.naturalWidth || el.width || 0;
+          var ih = el.naturalHeight || el.height || 0;
+          if (cw * ch > iw * ih * 1.15) {
+            perchanceExportCanvas(nearCanvas, extra);
+            return;
+          }
+        }
+      }
       var fapFull = isFapelloHost() ? fapelloFullImageUrlFromThumb(abs) : "";
       if (fapFull && fapFull !== abs) {
         var cpF = coomerPostDetailUrlIfEligible(el);
@@ -1274,13 +1484,20 @@
         var cr = el.getBoundingClientRect();
         if (cr.width < 24 && cr.height < 24) return;
       } catch (_) {}
+      var extraC = {};
+      if (isPerchanceHost()) {
+        var slotC = perchanceSlotKeyForElement(el);
+        if (slotC) extraC.tbccPerchanceSlot = slotC;
+        perchanceExportCanvas(el, extraC);
+        return;
+      }
       try {
         var dataUrl = el.toDataURL("image/jpeg", 0.88);
         if (!dataUrl || dataUrl.length < 200) return;
         if (dataUrl.length > 14000000) {
           dataUrl = el.toDataURL("image/jpeg", 0.72);
         }
-        add(dataUrl, w, h, "canvas", w, h, {});
+        add(dataUrl, w, h, "canvas", w, h, extraC);
       } catch (_) {}
     }
     function processVideo(el) {
@@ -1726,8 +1943,10 @@
         if (typeof performance === "undefined" || !performance.getEntriesByType) return;
         var h2 = (location.hostname || "").toLowerCase();
         if (h2 === "onlyfans.com" || h2.endsWith(".onlyfans.com")) return;
-        var wantAll = typeof window.__tbccResourceTimingAllImages !== "undefined" && window.__tbccResourceTimingAllImages;
-        var maxImg = wantAll ? 80 : 28;
+        var wantAll =
+          isPerchanceHost() ||
+          (typeof window.__tbccResourceTimingAllImages !== "undefined" && window.__tbccResourceTimingAllImages);
+        var maxImg = wantAll ? (isPerchanceHost() ? 120 : 80) : 28;
         var entries2 = performance.getEntriesByType("resource");
         var uniq2 = {};
         var list2 = [];
@@ -1810,6 +2029,7 @@
     mergeBackgroundImageUrls();
     onlyfansCollapseDuplicateStills(out);
     onlyfansUpgradePosterOnlyVideos(out);
+    collapsePerchanceDuplicateStills(out);
     return out;
   }
 
@@ -1853,9 +2073,20 @@
    * Fetch each URL with up to FETCH_CONCURRENCY in flight; preserves input order in the result array.
    * Single-threaded scheduling: each slot grabs the next index, so downloads overlap without unbounded RAM.
    */
+  function fetchConcurrencyForUrlList(urls) {
+    for (var ei = 0; ei < urls.length; ei++) {
+      try {
+        var eh = new URL(urls[ei], location.href).hostname.toLowerCase();
+        if (eh === "erome.com" || eh.endsWith(".erome.com")) return 1;
+      } catch (_) {}
+    }
+    return FETCH_CONCURRENCY;
+  }
+
   function fetchUrlsOrderedConcurrently(urls) {
     var n = urls.length;
     var results = new Array(n);
+    var workers = fetchConcurrencyForUrlList(urls);
     return new Promise(function (resolve, reject) {
       if (n === 0) {
         resolve(results);
@@ -1891,7 +2122,7 @@
         }
         run();
       }
-      var initial = Math.min(FETCH_CONCURRENCY, n);
+      var initial = Math.min(workers, n);
       for (var w = 0; w < initial; w++) worker();
     });
   }
@@ -1959,6 +2190,7 @@
               } catch (_) {}
               if (data.status === "saved_only" && !data.error) {
                 results.skipped += chunk.length;
+                results.saved = (results.saved || 0) + chunk.length;
               } else {
                 results.errors.push({ error: data.error || "saved-batch failed" });
               }
@@ -2014,10 +2246,28 @@
   function collectTagHints() {
     var out = [];
     var seen = Object.create(null);
+    function looksLikeJunkTagHint(s) {
+      if (typeof TbccAutoTagUtils !== "undefined" && TbccAutoTagUtils.isJunkAutoTagToken) {
+        return TbccAutoTagUtils.isJunkAutoTagToken(s);
+      }
+      if (!s || typeof s !== "string") return true;
+      var c = s.trim().replace(/^#+/, "").replace(/[\s_\-]/g, "");
+      if (c.length < 2) return true;
+      if (c.length <= 4 && /^[0-9a-f]+$/.test(c)) return true;
+      if (c.length >= 8 && /^[0-9a-f]+$/.test(c)) return true;
+      var alnum = c.replace(/[^a-z0-9]/gi, "");
+      if (alnum.length >= 12) {
+        var hex = (alnum.match(/[0-9a-f]/gi) || []).length;
+        if (hex / alnum.length >= 0.82) return true;
+        if (!/[aeiou]/i.test(alnum)) return true;
+      }
+      return false;
+    }
     function add(s) {
       if (!s || typeof s !== "string") return;
       s = s.trim();
       if (s.length < 2 || s.length > 64) return;
+      if (looksLikeJunkTagHint(s)) return;
       var k = s.toLowerCase();
       if (seen[k]) return;
       seen[k] = 1;
@@ -2058,6 +2308,89 @@
   }
   window.__tbccCollectTagHints = collectTagHints;
 
+  function urlPathLooksLikeDirectVideoFile(url) {
+    if (!url || typeof url !== "string") return false;
+    if (!/^https?:\/\//i.test(url)) return false;
+    try {
+      var path = new URL(url, location.href).pathname.toLowerCase();
+      return /\.(mp4|webm|mov|m4v|mkv|m3u8|mpd|ogv)(\?|$)/i.test(path);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function urlLooksLikeVideoSegment(url) {
+    if (!url || typeof url !== "string") return false;
+    try {
+      var path = new URL(url, location.href).pathname.toLowerCase();
+      return /\.(m4s|ts|aac)(\?|$)/i.test(path);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Bunkr-style harvest: direct video URLs on this document (DOM + anchors).
+   * Used by context menu "Save all video URLs to inbox". Merges frames in background.
+   */
+  function collectVideoUrlsForInbox() {
+    var byUrl = Object.create(null);
+    function consider(raw) {
+      if (!raw || typeof raw !== "string") return;
+      var u = String(raw).trim();
+      if (!/^https?:\/\//i.test(u)) return;
+      if (u.startsWith("blob:") || u.startsWith("data:")) return;
+      if (urlLooksLikeVideoSegment(u)) return;
+      if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(u, location.href)) return;
+      var abs;
+      try {
+        abs = absUrl(u);
+      } catch (_) {
+        abs = u;
+      }
+      if (!/^https?:\/\//i.test(abs)) return;
+      if (urlLooksLikeVideoSegment(abs)) return;
+      if (typeof tbccIsLikelyHtmlPageUrl === "function" && tbccIsLikelyHtmlPageUrl(abs, location.href)) return;
+      var sc =
+        typeof tbccScoreVideoUrl === "function"
+          ? tbccScoreVideoUrl(abs)
+          : urlPathLooksLikeDirectVideoFile(abs)
+            ? 10
+            : 0;
+      if (sc < 0) return;
+      if (byUrl[abs] == null || sc > byUrl[abs]) byUrl[abs] = sc;
+    }
+    try {
+      var list = getImageList();
+      for (var i = 0; i < list.length; i++) {
+        var row = list[i];
+        if (!row || !row.url) continue;
+        if (row.mediaType === "video" || String(row.tagName || "").toLowerCase() === "video") {
+          consider(row.url);
+        }
+      }
+    } catch (_) {}
+    try {
+      var anchors = document.querySelectorAll("a[href]");
+      for (var ai = 0; ai < anchors.length; ai++) {
+        var href = anchors[ai].href;
+        if (urlPathLooksLikeDirectVideoFile(href)) consider(href);
+      }
+    } catch (_) {}
+    try {
+      var vids = document.querySelectorAll("video[src], video source[src], video[currentSrc]");
+      for (var vi = 0; vi < vids.length; vi++) {
+        var el = vids[vi];
+        if (el.src) consider(el.src);
+        if (el.currentSrc) consider(el.currentSrc);
+      }
+    } catch (_) {}
+    return Object.keys(byUrl).sort(function (a, b) {
+      return (byUrl[b] || 0) - (byUrl[a] || 0);
+    });
+  }
+  window.__tbccCollectVideoUrlsForInbox = collectVideoUrlsForInbox;
+
   /** Title + meta description for Telegram album caption (read-only). */
   function getCaptionTitleLine() {
     try {
@@ -2087,6 +2420,11 @@
   }
   window.__tbccGetCaptionBundle = getCaptionBundle;
 
+  /**
+   * OnlyFans /api2/v2 harvest lives in of-harvest.js (separate file with its
+   * own load guard). Companion page-world hook is of-api-hook.js.
+   */
+
   chrome.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {
     if (msg.action === "tbcc-analyze-gallery-adapter") {
       try {
@@ -2101,6 +2439,14 @@
         sendResponse({ list: getImageList() });
       } catch (e) {
         sendResponse({ error: String(e.message || e) });
+      }
+      return true;
+    }
+    if (msg.action === "tbcc-collectVideoUrlsForInbox") {
+      try {
+        sendResponse({ urls: collectVideoUrlsForInbox() });
+      } catch (e) {
+        sendResponse({ error: String(e.message || e), urls: [] });
       }
       return true;
     }

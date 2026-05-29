@@ -8,8 +8,18 @@ import { SchedulePromoSlots } from "../components/SchedulePromoSlots";
 import { ApprovedMediaPickerStrip } from "../components/ApprovedMediaPickerStrip";
 import { formatUtcForDashboard, formatUtcWithLocalHint } from "../utils/formatUtc";
 import { CaptionSnippetInsertSelect, CaptionSnippetLibraryManageButton } from "../components/CaptionSnippetLibrary";
+import { CustomEmojiInsertSelect, CustomEmojiLibraryManageButton } from "../components/CustomEmojiLibrary";
 import { CaptionTelegramHtmlField } from "../components/CaptionTelegramHtmlField";
+import { ChannelInviteLinkButtons } from "../components/ChannelInviteLinkButtons";
+import { PromoAffiliateLinksPopover } from "../components/PromoAffiliateLinksPopover";
 import { InfoDisclosure } from "../components/InfoDisclosure";
+import { SchedulerBufferPanel } from "../components/SchedulerBufferPanel";
+import { CaptionLlmRewriteFields } from "../components/CaptionLlmRewriteFields";
+import {
+  SilentTelegramSendOption,
+  readSendSilentPreference,
+  writeSendSilentPreference,
+} from "../components/SilentTelegramSendOption";
 
 const INTERVAL_OPTIONS = [15, 30, 60, 120, 180, 240, 360, 720];
 
@@ -21,7 +31,7 @@ function padAlbumVariants(v: AlbumVariant[], n: number): AlbumVariant[] {
   return out.slice(0, n);
 }
 
-export function Scheduler() {
+export function Scheduler({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient();
   const [calendarScheduleModalOpen, setCalendarScheduleModalOpen] = useState(false);
   const [name, setName] = useState("");
@@ -45,8 +55,14 @@ export function Scheduler() {
     { attachment_urls: [], media_ids: [] },
   ]);
   const [scheduleAlbumOrderMode, setScheduleAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
-  const [scheduleSendSilent, setScheduleSendSilent] = useState(false);
+  const [scheduleSendSilent, setScheduleSendSilent] = useState(readSendSilentPreference);
   const [schedulePinAfterSend, setSchedulePinAfterSend] = useState(false);
+  const [scheduleBufferMirror, setScheduleBufferMirror] = useState(false);
+  const [scheduleBufferPublishNow, setScheduleBufferPublishNow] = useState(false);
+  const [scheduleLlmRewrite, setScheduleLlmRewrite] = useState(false);
+  const [scheduleLlmMode, setScheduleLlmMode] = useState<"" | "random" | "interval">("interval");
+  const [scheduleLlmInterval, setScheduleLlmInterval] = useState(3);
+  const [scheduleLlmProb, setScheduleLlmProb] = useState(0.25);
   const [scheduleCheckoutStars, setScheduleCheckoutStars] = useState(false);
   const [scheduleCheckoutPlanId, setScheduleCheckoutPlanId] = useState(0);
   const [scheduleCheckoutButtonLabel, setScheduleCheckoutButtonLabel] = useState("");
@@ -147,6 +163,14 @@ export function Scheduler() {
           : {}),
         send_silent: scheduleSendSilent,
         pin_after_send: schedulePinAfterSend,
+        buffer_mirror_enabled: scheduleBufferMirror,
+        buffer_publish_now: scheduleBufferMirror && scheduleBufferPublishNow,
+        caption_llm_rewrite_enabled: scheduleLlmRewrite,
+        caption_llm_rewrite_mode: scheduleLlmRewrite && scheduleLlmMode ? scheduleLlmMode : null,
+        caption_llm_rewrite_interval:
+          scheduleLlmRewrite && scheduleLlmMode === "interval" ? scheduleLlmInterval : null,
+        caption_llm_rewrite_probability:
+          scheduleLlmRewrite && scheduleLlmMode === "random" ? scheduleLlmProb : null,
         checkout_stars_enabled: scheduleCheckoutStars,
         checkout_stars_plan_id:
           scheduleCheckoutStars && scheduleCheckoutPlanId > 0 ? scheduleCheckoutPlanId : null,
@@ -175,6 +199,12 @@ export function Scheduler() {
       setScheduleAlbumOrderMode("static");
       setScheduleSendSilent(false);
       setSchedulePinAfterSend(false);
+      setScheduleBufferMirror(false);
+      setScheduleBufferPublishNow(false);
+      setScheduleLlmRewrite(false);
+      setScheduleLlmMode("interval");
+      setScheduleLlmInterval(3);
+      setScheduleLlmProb(0.25);
       setScheduleCheckoutStars(false);
       setScheduleCheckoutPlanId(0);
       setScheduleCheckoutButtonLabel("");
@@ -296,6 +326,45 @@ export function Scheduler() {
                 ))}
               </div>
             </div>
+            <div className="border border-sky-800/50 rounded-lg p-3 bg-sky-950/20 mt-2">
+              <span className="text-slate-300 text-sm font-medium block mb-2">Social destinations</span>
+              <p className="text-slate-500 text-xs mb-2">
+                Telegram uses the channels above. Optional Buffer mirror queues the same caption to X (see panel below).
+              </p>
+              <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={scheduleBufferMirror}
+                  onChange={(e) => {
+                    setScheduleBufferMirror(e.target.checked);
+                    if (!e.target.checked) setScheduleBufferPublishNow(false);
+                  }}
+                />
+                <span>
+                  <strong className="text-sky-300">Buffer → X</strong> after each successful Telegram send
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    Shown in the scheduled posts list when enabled. Needs public https image URLs for promo art.
+                  </span>
+                </span>
+              </label>
+              {scheduleBufferMirror ? (
+                <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer ml-6 mt-2">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={scheduleBufferPublishNow}
+                    onChange={(e) => setScheduleBufferPublishNow(e.target.checked)}
+                  />
+                  <span>
+                    <strong className="text-emerald-300">Publish now</strong> (Buffer <code className="text-xs">shareNow</code>)
+                    <span className="block text-xs text-slate-500 mt-0.5">
+                      Off = add to Buffer queue. On = post to X as soon as Telegram sends.
+                    </span>
+                  </span>
+                </label>
+              ) : null}
+            </div>
             {selectedChannelIds.length > 1 && (
               <p className="text-slate-500 text-xs">
                 Forum topic picker is available when exactly one channel is selected; with multiple channels, leave topic
@@ -368,7 +437,11 @@ export function Scheduler() {
                 <span className="text-slate-400 text-sm">
                   Caption{captionVariations.length > 1 ? "s (rotate in order)" : ""}
                 </span>
-                <CaptionSnippetLibraryManageButton />
+                <div className="flex flex-wrap items-center gap-2 justify-end">
+                  <PromoAffiliateLinksPopover />
+                  <CaptionSnippetLibraryManageButton />
+                  <CustomEmojiLibraryManageButton />
+                </div>
               </div>
               {captionVariations.map((line, i) => (
                 <CaptionTelegramHtmlField
@@ -382,6 +455,13 @@ export function Scheduler() {
                     <CaptionSnippetInsertSelect
                       onInsert={(t) =>
                         setCaptionVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
+                      }
+                    />
+                    <CustomEmojiInsertSelect
+                      onInsert={(chunk) =>
+                        setCaptionVariations((prev) =>
+                          prev.map((p, j) => (j === i ? (p ? `${chunk}\n\n${p}` : chunk) : p))
+                        )
                       }
                     />
                     {captionVariations.length > 1 && (
@@ -406,30 +486,18 @@ export function Scheduler() {
                 + Add caption variation (enables rotation when 2+ are filled)
               </button>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <span className="text-slate-500 text-xs w-full">Quick insert (channel invite links) → first caption:</span>
-              {(channels as Array<Record<string, unknown>>).map((c) =>
-                c.invite_link ? (
-                  <button
-                    key={String(c.id)}
-                    type="button"
-                    onClick={() => {
-                      const link = String(c.invite_link || "").trim();
-                      if (!link) return;
-                      setCaptionVariations((prev) => {
-                        const next = [...prev];
-                        const cur = next[0] || "";
-                        next[0] = cur.trim() ? `${cur.trim()}\n\n${link}` : link;
-                        return next;
-                      });
-                    }}
-                    className="px-2 py-1 rounded bg-slate-700 border border-slate-600 text-xs text-cyan-300 hover:bg-slate-600"
-                  >
-                    + {String(c.name || c.identifier || c.id)} link
-                  </button>
-                ) : null
-              )}
-            </div>
+            <ChannelInviteLinkButtons
+              channels={channels as Array<Record<string, unknown>>}
+              summaryPrefix="Quick insert — channel invite links → first caption"
+              onInsertLink={(link) => {
+                setCaptionVariations((prev) => {
+                  const next = [...prev];
+                  const cur = next[0] || "";
+                  next[0] = cur.trim() ? `${cur.trim()}\n\n${link}` : link;
+                  return next;
+                });
+              }}
+            />
             <div>
               <span className="text-slate-400 text-sm block mb-1">Inline buttons (text + URL)</span>
               <p className="text-slate-500 text-xs mb-2">
@@ -530,14 +598,13 @@ export function Scheduler() {
                 )}
               </div>
               <div className="flex flex-col gap-2 pt-2 border-t border-slate-600/60 mt-2">
-                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={scheduleSendSilent}
-                    onChange={(e) => setScheduleSendSilent(e.target.checked)}
-                  />
-                  Silent send (no notification sound for subscribers)
-                </label>
+                <SilentTelegramSendOption
+                  checked={scheduleSendSilent}
+                  onChange={(v) => {
+                    setScheduleSendSilent(v);
+                    writeSendSilentPreference(v);
+                  }}
+                />
                 <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
                   <input
                     type="checkbox"
@@ -546,6 +613,17 @@ export function Scheduler() {
                   />
                   Pin this post after send (needs pin rights; pins first album message)
                 </label>
+                <CaptionLlmRewriteFields
+                  enabled={scheduleLlmRewrite}
+                  onEnabledChange={setScheduleLlmRewrite}
+                  mode={scheduleLlmMode}
+                  onModeChange={setScheduleLlmMode}
+                  interval={scheduleLlmInterval}
+                  onIntervalChange={setScheduleLlmInterval}
+                  probability={scheduleLlmProb}
+                  onProbabilityChange={setScheduleLlmProb}
+                  disabled={createScheduledPost.isPending}
+                />
               </div>
             </div>
           </div>
@@ -710,18 +788,20 @@ export function Scheduler() {
 
   return (
     <div>
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Scheduler</h1>
-          <p className="text-slate-400 text-sm mt-1">
-            One-time + recurring posting with captions, media, links, and campaign fan-out.
-          </p>
+      {!embedded ? (
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">Scheduler</h1>
+            <p className="text-slate-400 text-sm mt-1">
+              One-time + recurring posting with captions, media, links, and campaign fan-out.
+            </p>
+          </div>
+          <InfoDisclosure>
+            For forum supergroups, choose a topic to post into that subtopic. Timing strategy: test 2-3 windows, compare
+            results, and stagger channels by 5-15 minutes to reduce notification overlap.
+          </InfoDisclosure>
         </div>
-        <InfoDisclosure>
-          For forum supergroups, choose a topic to post into that subtopic. Timing strategy: test 2-3 windows, compare
-          results, and stagger channels by 5-15 minutes to reduce notification overlap.
-        </InfoDisclosure>
-      </div>
+      ) : null}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-8 items-stretch">
         <div className="bg-slate-800 rounded-lg p-4 xl:col-span-1">
@@ -909,9 +989,12 @@ export function Scheduler() {
         )}
       </div>
 
+      <SchedulerBufferPanel />
+
       <h2 className="text-xl font-semibold mb-2">Scheduled posts</h2>
       <p className="text-slate-400 text-sm mb-4">
-        Click a row to edit captions (including rotating variations), posting interval, or pool album options.
+        Click a row to edit captions, interval, pool albums, or <strong className="text-slate-300">Buffer → X</strong> per job.
+        The <strong className="text-slate-300">Destinations</strong> column shows Telegram + social mirror when enabled.
       </p>
       <ScheduledPostsList />
     </div>

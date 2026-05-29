@@ -77,6 +77,14 @@ async def fetch_subscription_catalog_snippet(api_base: str, *, max_plans: int = 
     return "Current subscription SKUs (Stars, channel access):\n" + "\n".join(lines)
 
 
+REDO_STYLE_HINTS: dict[str, str] = {
+    "pro": "Rewrite the assistant reply in a more professional, calm tone. Same facts; shorter if possible.",
+    "casual": "Rewrite in a warmer, casual tone. Same facts; no new promises.",
+    "short": "Rewrite to half the length. Keep payment-bot pointers if any.",
+    "custom": "",  # filled from user instruction
+}
+
+
 async def complete_secretary_chat(
     messages: list[dict[str, str]],
     *,

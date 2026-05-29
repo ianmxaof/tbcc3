@@ -1,6 +1,8 @@
 import { useState } from "react";
-import { useCaptionSnippets } from "../hooks/useCaptionSnippets";
-import { snippetMenuLabel } from "../utils/captionSnippetsStorage";
+import { captionSnippetMenuLabel, useCaptionSnippets } from "../hooks/useCaptionSnippets";
+import { insertSnippetAtActiveTarget } from "../utils/snippetInsertBridge";
+import { tbccCopyText } from "../utils/clipboardToast";
+import { CopyToClipboardButton } from "./CopyToClipboardButton";
 
 /** Compact dropdown: pick a saved caption → replaces target field via onInsert. */
 export function CaptionSnippetInsertSelect({
@@ -15,7 +17,10 @@ export function CaptionSnippetInsertSelect({
 
   if (snippets.length === 0) {
     return (
-      <span className="text-[10px] text-slate-600 whitespace-nowrap" title="Save lines in Caption library first">
+      <span
+        className="text-[10px] text-slate-600 whitespace-nowrap"
+        title="Save captions in Caption library (TBCC database) first"
+      >
         —
       </span>
     );
@@ -32,21 +37,22 @@ export function CaptionSnippetInsertSelect({
         const id = e.target.value;
         setValue("");
         if (!id) return;
-        const s = snippets.find((x) => x.id === id);
-        if (s) onInsert(s.body);
+        const s = snippets.find((x) => String(x.id) === id);
+        if (!s) return;
+        if (!insertSnippetAtActiveTarget(s.body)) onInsert(s.body);
       }}
     >
       <option value="">Insert…</option>
       {snippets.map((s) => (
-        <option key={s.id} value={s.id}>
-          {snippetMenuLabel(s)}
+        <option key={s.id} value={String(s.id)}>
+          {captionSnippetMenuLabel(s)}
         </option>
       ))}
     </select>
   );
 }
 
-/** Opens modal to add/delete saved captions (browser local storage). */
+/** Opens modal to add/delete saved captions (TBCC API / DB). */
 export function CaptionSnippetLibraryManageButton({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
   return (
@@ -67,9 +73,11 @@ export function CaptionSnippetLibraryManageButton({ className }: { className?: s
 }
 
 function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { snippets, add, remove } = useCaptionSnippets();
+  const { snippets, add, remove, bulkImport } = useCaptionSnippets();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [bulkJson, setBulkJson] = useState("");
+  const [flash, setFlash] = useState<string | null>(null);
 
   if (!open) return null;
 
@@ -98,8 +106,10 @@ function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose:
           </button>
         </div>
         <p className="text-slate-500 text-xs mb-4">
-          Stored in this browser only (<code className="text-slate-400">localStorage</code>). Use{" "}
-          <strong>Insert…</strong> next to each caption box to paste into cron jobs or edits.
+          Stored in the TBCC database (shared with the gallery extension). If the API was offline, entries may still
+          be in this browser&apos;s <code className="text-slate-400">localStorage</code> until the next successful
+          sync. Use <strong>Insert…</strong> next to each caption or relay template field to paste scheduled posts,
+          listening relay templates, or gallery captions.
         </p>
 
         <div className="border border-slate-600 rounded-lg p-3 mb-4 bg-slate-900/40 space-y-2">
@@ -128,9 +138,10 @@ function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose:
             className="px-3 py-1.5 rounded bg-cyan-800 text-cyan-100 text-sm hover:bg-cyan-700 disabled:opacity-50"
             disabled={!body.trim()}
             onClick={() => {
-              add(title, body);
-              setTitle("");
-              setBody("");
+              void add(title, body).then(() => {
+                setTitle("");
+                setBody("");
+              });
             }}
           >
             Save to library
@@ -149,23 +160,81 @@ function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose:
                   className="flex gap-2 items-start justify-between rounded border border-slate-600/80 bg-slate-900/30 p-2"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="text-slate-200 font-medium truncate">{snippetMenuLabel(s)}</div>
+                    <div className="text-slate-200 font-medium truncate">{captionSnippetMenuLabel(s)}</div>
                     <pre className="text-slate-500 text-[11px] whitespace-pre-wrap break-words max-h-20 overflow-y-auto mt-1">
                       {s.body}
                     </pre>
                   </div>
-                  <button
-                    type="button"
-                    className="shrink-0 text-xs text-red-400 hover:text-red-300 px-2 py-0.5 rounded hover:bg-red-950/40"
-                    onClick={() => remove(s.id)}
-                  >
-                    Delete
-                  </button>
+                  <div className="flex flex-col gap-1 shrink-0 items-end">
+                    <button
+                      type="button"
+                      className="text-xs text-cyan-400 hover:text-cyan-300 px-2 py-0.5 rounded hover:bg-slate-700/50"
+                      title="Paste at caret in the last-focused caption or template field"
+                      onClick={() => {
+                        const ok = insertSnippetAtActiveTarget(s.body);
+                        setFlash(
+                          ok
+                            ? "Inserted at caret."
+                            : "Copied to clipboard — focus the caption/template field and paste, or try again."
+                        );
+                        if (!ok) void tbccCopyText(s.body);
+                        window.setTimeout(() => setFlash(null), 4000);
+                      }}
+                    >
+                      Insert
+                    </button>
+                    <CopyToClipboardButton text={s.body} />
+                    <button
+                      type="button"
+                      className="text-xs text-red-400 hover:text-red-300 px-2 py-0.5 rounded hover:bg-red-950/40"
+                      onClick={() => void remove(s.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </div>
+
+        {flash ? <p className="text-[11px] text-amber-400/95 mt-3">{flash}</p> : null}
+
+        <details className="mt-4 border border-slate-600/80 rounded-lg p-3 bg-slate-900/30">
+          <summary className="text-xs text-slate-400 cursor-pointer select-none">Bulk import captions (JSON)</summary>
+          <p className="text-[11px] text-slate-500 mt-2 mb-2">
+            POST shape:{" "}
+            <code className="text-slate-400">{`{ "items": [ { "title": "optional", "body": "…" } ] }`}</code>
+          </p>
+          <textarea
+            value={bulkJson}
+            onChange={(e) => setBulkJson(e.target.value)}
+            rows={4}
+            placeholder='{"items":[{"title":"Easter MDH","body":"🐣 …"}]}'
+            className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-[11px] font-mono"
+          />
+          <button
+            type="button"
+            className="mt-2 px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-xs hover:bg-slate-600 disabled:opacity-50"
+            disabled={!bulkJson.trim()}
+            onClick={() => {
+              try {
+                const parsed = JSON.parse(bulkJson) as { items?: Array<{ title?: string | null; body?: string }> };
+                const items = Array.isArray(parsed.items) ? parsed.items : [];
+                void bulkImport(items).then((n) => {
+                  setBulkJson("");
+                  setFlash(`Imported ${n} snippet(s).`);
+                  window.setTimeout(() => setFlash(null), 4000);
+                });
+              } catch {
+                setFlash("Invalid JSON.");
+                window.setTimeout(() => setFlash(null), 4000);
+              }
+            }}
+          >
+            Import to library
+          </button>
+        </details>
       </div>
     </div>
   );

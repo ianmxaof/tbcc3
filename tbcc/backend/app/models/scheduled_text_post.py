@@ -1,5 +1,5 @@
 import json
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, Text
+from sqlalchemy import Boolean, Column, Float, Integer, String, DateTime, Text
 
 from .base import Base
 
@@ -51,6 +51,58 @@ class ScheduledTextPost(Base):
     checkout_stars_plan_id = Column(Integer, nullable=True)
     checkout_button_label = Column(String(64), nullable=True)
     checkout_referral_code = Column(String(16), nullable=True)
+    buffer_mirror_enabled = Column(Boolean, nullable=False, default=False)
+    # True = Buffer createPost mode shareNow (publish ASAP); False = addToQueue
+    buffer_publish_now = Column(Boolean, nullable=False, default=False)
+    # JSON list of {"text": "...", "image_url": "https://..."?} — up to 10; consumed FIFO on each Telegram send
+    buffer_x_queue_json = Column(Text, nullable=True)
+    # LLM caption rewrite (requires TBCC_CAPTION_LLM_REWRITE_ENABLED=1)
+    caption_llm_rewrite_enabled = Column(Boolean, nullable=False, default=False)
+    caption_llm_rewrite_mode = Column(String(16), nullable=True)  # random | interval
+    caption_llm_rewrite_interval = Column(Integer, nullable=True)  # every N sends when mode=interval
+    caption_llm_rewrite_probability = Column(Float, nullable=True)  # 0–1 when mode=random
+    caption_llm_send_count = Column(Integer, nullable=False, default=0)
+    last_sent_caption_html = Column(Text, nullable=True)  # actual caption sent (incl. LLM rewrite)
+
+    def get_buffer_x_queue(self) -> list[dict]:
+        if not self.buffer_x_queue_json:
+            return []
+        try:
+            raw = json.loads(self.buffer_x_queue_json)
+            if not isinstance(raw, list):
+                return []
+            out: list[dict] = []
+            for x in raw:
+                if not isinstance(x, dict):
+                    continue
+                t = str(x.get("text") or "").strip()
+                if not t:
+                    continue
+                entry: dict = {"text": t}
+                iu = str(x.get("image_url") or "").strip()
+                if iu.startswith("https://"):
+                    entry["image_url"] = iu
+                out.append(entry)
+                if len(out) >= 10:
+                    break
+            return out
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_buffer_x_queue(self, items: list[dict]) -> None:
+        norm: list[dict] = []
+        for x in items[:10]:
+            if not isinstance(x, dict):
+                continue
+            t = str(x.get("text") or "").strip()
+            if not t:
+                continue
+            entry: dict = {"text": t[:2800]}
+            iu = str(x.get("image_url") or "").strip()
+            if iu.startswith("https://"):
+                entry["image_url"] = iu[:2048]
+            norm.append(entry)
+        self.buffer_x_queue_json = json.dumps(norm) if norm else None
 
     def get_media_ids(self) -> list[int]:
         if not self.media_ids:

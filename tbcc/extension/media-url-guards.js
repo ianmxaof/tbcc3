@@ -28,6 +28,25 @@
   }
   global.tbccIsLikelyHtmlPageUrl = tbccIsLikelyHtmlPageUrl;
 
+  /** Perchance embed pages / hash routes are not direct image files (backend fetch → 403). */
+  function tbccIsPerchanceBadHttpUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    if (!/^https?:\/\//i.test(url)) return false;
+    try {
+      var p = new URL(url);
+      var h = (p.hostname || "").toLowerCase();
+      if (h !== "perchance.org" && !h.endsWith(".perchance.org")) return false;
+      var path = (p.pathname || "").toLowerCase();
+      if (path.indexOf("/embed") >= 0) return true;
+      if (p.hash && p.hash.length > 4) return true;
+      if (!/\.(jpe?g|png|gif|webp|avif|bmp)(\?|$)/i.test(path)) return true;
+      return false;
+    } catch (_) {
+      return true;
+    }
+  }
+  global.tbccIsPerchanceBadHttpUrl = tbccIsPerchanceBadHttpUrl;
+
   /**
    * Prefer full-quality video URLs over preview/progressive tiny MP4s (e.g. OnlyFans player).
    * Used by capture.js (DOM <video>) and gallery-resolve (webRequest merge) — keep in sync.

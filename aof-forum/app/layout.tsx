@@ -1,16 +1,18 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   title: "AOF Hub",
-  description: "Forum scaffold — Vercel + Supabase + Telegram funnel",
+  description:
+    "Doom-scroll media hub: groups, galleries, forum, Stash library, Telegram ingest",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <main>{children}</main>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

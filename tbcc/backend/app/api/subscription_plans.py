@@ -493,6 +493,9 @@ async def upload_bundle_zip(plan_id: int, file: UploadFile = File(...), db: Sess
     ensure_bundle_dir()
     path = bundle_zip_nth_path(plan_id, slot)
     path.write_bytes(raw)
+    from app.services.zip_promo_inject import inject_promo_into_zip_path
+
+    inject_promo_into_zip_path(path, db)
     fn = (file.filename or f"pack_{plan_id}_{slot + 1}.zip").strip()[:500]
     try:
         append_bundle_filename(plan, fn)

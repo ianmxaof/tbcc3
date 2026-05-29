@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { requireSupabaseUrlAndAnonKey } from "@/lib/supabase/env";
 
 /**
  * Refreshes Supabase auth cookies on navigation.
@@ -8,13 +9,15 @@ import { NextResponse, type NextRequest } from "next/server";
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request: { headers: request.headers } });
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) {
+  let url: string;
+  let anonKey: string;
+  try {
+    ({ url, anonKey } = requireSupabaseUrlAndAnonKey());
+  } catch {
     return response;
   }
 
-  const supabase = createServerClient(url, key, {
+  const supabase = createServerClient(url, anonKey, {
     cookies: {
       getAll() {
         return request.cookies.getAll();

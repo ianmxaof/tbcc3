@@ -9,8 +9,8 @@
   <link rel="stylesheet" href="styles/components.css" />
 </head>
 <body class="tbcc-options-page">
-  <nav class="top">
-    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#adapter-lab">Adapter lab</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
+    <nav class="top">
+    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#adapter-lab">Adapter lab</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#saved-videos">Saved videos</a><span class="sep">·</span><a href="#master-archive">Master archive</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
   </nav>
 
   <section id="capture-settings" class="card">
@@ -43,6 +43,7 @@
     <p class="sub" style="margin:0 0 8px">Toast always shows in the side panel; enable system notifications for desktop-level completion alerts.</p>
     <label class="row2"><input type="checkbox" id="captureSettingNotifySystem" /> Enable system notifications (desktop)</label>
     <label class="row2"><input type="checkbox" id="captureSettingNotifyZip" /> Notify when ZIP bundle finishes</label>
+    <label class="row2"><input type="checkbox" id="captureSettingZipPromo" checked /> Include global ZIP promo files (readme + image from dashboard)</label>
     <label class="row2"><input type="checkbox" id="captureSettingNotifySendTbcc" /> Notify when Send to TBCC finishes</label>
     <label class="row2"><input type="checkbox" id="captureSettingNotifySendSaved" /> Notify when Send to Saved Messages finishes</label>
     <label class="row2"><input type="checkbox" id="captureSettingNotifySendChannel" /> Notify when channel/group/forum post finishes</label>
@@ -59,7 +60,7 @@
     <fieldset>
       <legend>Launch from extension</legend>
       <p class="sub" style="margin:0 0 10px; font-size:12px">
-        <strong>Daemon (recommended):</strong> <code>cd tbcc\tools</code> then <code>.\tbcc-launch-daemon.ps1</code> — leave the window open or add a logon task. Then use <strong>Launch full stack</strong> in the gallery footer or Quick tools.
+        <strong>Daemon (recommended):</strong> <code>cd tbcc\tools</code> then <code>.\tbcc-launch-daemon.ps1</code> — leave the window open or add a logon task. In the sidebar <strong>Tools</strong> panel: <strong>Start tray supervisor</strong> and <strong>Launch full stack (cold)</strong>.
       </p>
       <p class="sub" style="margin:0 0 10px; font-size:12px">
         <strong>API fallback:</strong> if the daemon is not running but Uvicorn is on :8000, the extension calls the API. When <code>TBCC_INTERNAL_API_KEY</code> is set in <code>tbcc/.env</code>, paste the same value below.
@@ -116,8 +117,8 @@
   <section id="model" class="card tbcc-options-section">
     <h1>Model search</h1>
     <p class="sub">
-      Highlight a <strong>username</strong>, or right-click a username link / <code>@handle</code> directly → <strong>TBCC — Look up username</strong> → open all enabled sources by category or choose a single source.
-      Default sites ship with the extension; add more below and pick <strong>OnlyFans search</strong> or <strong>Live cam search</strong> so new URLs land in that list (URL must include <code>{username}</code>).
+      Use the sidebar <strong>Lookup</strong> tab for <strong>macro search</strong> (background scan + hits-only report). Right-click a username → <strong>TBCC — Look up username</strong> for tab fan-out (OnlyFans / live cam / video) or <strong>Macro search</strong>.
+      Add sources below; pick <strong>Macro search</strong> for the native engine, or OnlyFans / live cam / video for opening tabs. URL must include <code>{username}</code>.
     </p>
 
     <h2>Open results as</h2>
@@ -153,6 +154,7 @@
       <label class="row" style="flex-wrap:wrap;margin-top:8px">
         <span style="min-width:120px">Category</span>
         <select id="customSiteCat" class="tbcc-input" style="min-width:180px;max-width:260px">
+          <option value="macro">Macro search (native engine)</option>
           <option value="onlyfans">OnlyFans search</option>
           <option value="livecams">Live cam search</option>
           <option value="videos">Video search</option>
@@ -173,6 +175,20 @@
       </label>
     </fieldset>
 
+    <h2 id="saved-videos">URL inbox (quick view)</h2>
+    <p class="sub" style="margin:0 0 10px">
+      Context menu: <strong>TBCC: Add URL to inbox</strong> or <strong>Save all video URLs to inbox</strong> (Bunkr-style page scan).
+      Manage pools and import in <strong>Gallery → Inbox</strong>.
+      New links use your gallery default content pool.
+    </p>
+    <div id="savedVideoUrlsList" class="sub" style="max-height:240px;overflow:auto;border:1px solid var(--tbcc-border,#313244);border-radius:8px;padding:8px 10px;"></div>
+    <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <input type="url" id="savedVideoManualUrl" class="tbcc-input" placeholder="https://…" style="min-width:200px;flex:1;max-width:420px" />
+      <button type="button" id="btnSavedVideoAddManual" class="tbcc-btn-primary">Add URL</button>
+      <button type="button" id="btnSavedVideoCopyAll" class="tbcc-btn-secondary">Copy all</button>
+      <button type="button" id="btnSavedVideoClear" class="tbcc-btn-secondary">Clear list</button>
+    </div>
+
     <h2>Sources</h2>
     <p class="sub" style="margin:0 0 10px">Toggle sources on or off. Only enabled sources appear in the context menu.</p>
     <div id="siteFields"></div>
@@ -183,6 +199,62 @@
     <div style="margin-top:8px">
       <button type="button" id="btnClearModelSearchHistory" class="tbcc-btn-secondary">Clear username history</button>
     </div>
+
+    <h2 id="master-archive">Master archive</h2>
+    <p class="sub" style="margin:0 0 10px">
+      Permanent list of every URL and username captured by TBCC (inbox, copy, model search). Not cleared when you clear the inbox queue.
+      Also open from <strong>Gallery → Inbox → Master archive</strong>. Export JSON/CSV for off-browser backup.
+    </p>
+    <div style="margin:0 0 10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <input type="search" id="masterArchiveFilterOpts" class="tbcc-input" placeholder="Filter…" style="min-width:160px;flex:1;max-width:320px" />
+      <select id="masterArchiveKindOpts" class="tbcc-input" style="max-width:140px">
+        <option value="">All</option>
+        <option value="url">URLs</option>
+        <option value="username">Usernames</option>
+      </select>
+    </div>
+    <div class="master-archive-sort-row" style="margin:0 0 10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+      <span class="master-archive-sort-label" style="font-size:11px;color:var(--tbcc-text-muted,#a6adc8)">Sort</span>
+      <select id="masterArchiveSort1Opts" class="tbcc-input" style="max-width:130px">
+        <option value="addedAt">Date added</option>
+        <option value="value">URL / username</option>
+        <option value="host">Site (host)</option>
+        <option value="source">Source</option>
+        <option value="kind">Type</option>
+        <option value="summary">Title</option>
+      </select>
+      <select id="masterArchiveSort1DirOpts" class="tbcc-input" style="max-width:120px">
+        <option value="desc">Newest / Z-A</option>
+        <option value="asc">Oldest / A-Z</option>
+      </select>
+      <span class="master-archive-sort-label" style="font-size:11px;color:var(--tbcc-text-muted,#a6adc8)">then</span>
+      <select id="masterArchiveSort2Opts" class="tbcc-input" style="max-width:130px">
+        <option value="">—</option>
+        <option value="addedAt">Date added</option>
+        <option value="value">URL / username</option>
+        <option value="host">Site (host)</option>
+        <option value="source">Source</option>
+        <option value="kind">Type</option>
+        <option value="summary">Title</option>
+      </select>
+      <select id="masterArchiveSort2DirOpts" class="tbcc-input" style="max-width:120px">
+        <option value="asc">A-Z / oldest</option>
+        <option value="desc">Z-A / newest</option>
+      </select>
+    </div>
+    <div style="margin:0 0 10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <button type="button" id="btnMasterOptsSelectAll" class="tbcc-btn-secondary">Select all</button>
+      <button type="button" id="btnMasterOptsDeselectAll" class="tbcc-btn-secondary">Deselect all</button>
+      <button type="button" id="btnMasterOptsCopyUrls" class="tbcc-btn-secondary">Copy URLs</button>
+      <button type="button" id="btnMasterOptsExportJson" class="tbcc-btn-secondary">Export JSON</button>
+      <button type="button" id="btnMasterOptsExportCsv" class="tbcc-btn-secondary">Export CSV</button>
+      <button type="button" id="btnMasterOptsImport" class="tbcc-btn-secondary">Import…</button>
+      <a href="http://127.0.0.1:5173/archive" target="_blank" rel="noopener" class="tbcc-btn-secondary" style="display:inline-flex;align-items:center;text-decoration:none">Dashboard archive</a>
+    </div>
+    <input type="file" id="masterArchiveImportFileOpts" accept=".json,.csv,.txt,text/plain,application/json" hidden />
+    <div id="masterArchivePagerOpts" class="tbcc-archive-pager" hidden></div>
+    <div id="masterArchiveListOpts" class="sub master-archive-list" style="max-height:280px;overflow:auto;border:1px solid var(--tbcc-border,#313244);border-radius:8px;padding:8px 10px;"></div>
+    <p id="masterArchiveStatusOpts" class="sub" style="margin:8px 0 0;min-height:1.2em"></p>
 
     <p id="status"></p>
     <p class="footer">
@@ -219,6 +291,9 @@
     </p>
   </section>
 
+  <script src="tbcc-clipboard-toast.js"></script>
+  <script src="tbcc-master-archive.js"></script>
+  <script src="tbcc-archive-list-ui.js"></script>
   <script src="gallery-capture-options.js"></script>
   <script src="model-search-shared.js"></script>
   <script src="model-search-options.js"></script>

@@ -1,9 +1,11 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.17.16",
+  "version": "1.23.0",
   "icons": {
-    "16": "icons/icon16.png"
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "permissions": [
     "contextMenus",
@@ -17,7 +19,8 @@
     "downloads",
     "cookies",
     "clipboardWrite",
-    "webRequest"
+    "webRequest",
+    "alarms"
   ],
   "host_permissions": [
     "http://localhost:8000/*",
@@ -31,7 +34,12 @@
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; frame-src 'self' http://127.0.0.1:5173 http://localhost:5173;"
   },
   "action": {
-    "default_title": "TBCC Importer (click: gallery side panel)"
+    "default_title": "TBCC Importer (click: gallery · right-click: open or dock)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "options_ui": {
     "page": "model-search-options.html",
@@ -46,9 +54,28 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["page-overlay.js"],
+      "js": ["tbcc-clipboard-toast.js", "page-overlay.js"],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": ["*://onlyfans.com/*", "*://*.onlyfans.com/*"],
+      "js": ["of-api-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://onlyfans.com/*", "*://*.onlyfans.com/*"],
+      "js": ["of-harvest.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["of-api-hook.js", "of-harvest.js"],
+      "matches": ["*://onlyfans.com/*", "*://*.onlyfans.com/*"]
     }
   ]
 }

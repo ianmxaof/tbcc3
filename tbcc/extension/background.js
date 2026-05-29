@@ -1,4 +1,10 @@
-importScripts("model-search-shared.js");
+importScripts(
+  "model-search-shared.js",
+  "auto-tag-utils.js",
+  "media-url-guards.js",
+  "tbcc-master-archive.js",
+  "tbcc-import-pipeline.js"
+);
 
 const API_URL = "http://localhost:8000/import/url";
 const API_BYTES = "http://localhost:8000/import/bytes";
@@ -11,7 +17,7 @@ const TBCC_FETCH_CONCURRENCY = 3;
 /**
  * Run fetchFn(url, idx) for each URL with at most TBCC_FETCH_CONCURRENCY in flight; results match urls order.
  */
-async function fetchUrlsWithConcurrency(urls, fetchFn) {
+async function fetchUrlsWithConcurrency(urls, fetchFn, maxConcurrency) {
   const n = urls.length;
   if (n === 0) return [];
   const results = new Array(n);
@@ -23,11 +29,26 @@ async function fetchUrlsWithConcurrency(urls, fetchFn) {
       results[idx] = await fetchFn(urls[idx], idx);
     }
   }
-  const w = Math.min(TBCC_FETCH_CONCURRENCY, n);
+  const cap =
+    maxConcurrency != null && Number.isFinite(Number(maxConcurrency))
+      ? Number(maxConcurrency)
+      : fetchConcurrencyForUrls(urls);
+  const w = Math.min(Math.max(1, cap), n);
   await Promise.all(Array.from({ length: w }, () => worker()));
   return results;
 }
 const STORAGE_LAST_TAB = "tbccLastActiveTabId";
+/** Gallery pinned to a tab — side panel keeps sourcing that tab while you browse elsewhere. */
+const STORAGE_GALLERY_DOCKED_TAB = "tbccGalleryDockedTab";
+/** Active long-running gallery work (survives panel close only when backed by service worker / API). */
+const STORAGE_GALLERY_JOBS = "tbccGalleryActiveJobs";
+/** Set when user leaves the docked tab while jobs run — blocks opening side panel until jobs finish. */
+const STORAGE_GALLERY_DOCK_LOCK = "tbccGalleryDockPanelLock";
+const TBCC_GALLERY_JOB_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+const STORAGE_IMPORT_QUEUE_PAUSED = "tbccImportQueuePaused";
+const TBCC_IMPORT_POLL_ALARM_PREFIX = "tbcc-ipoll:";
+const TBCC_IMPORT_POLL_DELAY_MIN = 0.12;
+const TBCC_IMPORT_API_JOBS = "http://localhost:8000/import/jobs";
 const STORAGE_COLLECTED = "tbcc_collected";
 const STORAGE_MODEL_SEARCH_ENABLED = "tbccModelSearchEnabledSites";
 const STORAGE_MODEL_SEARCH_MODE = "tbccModelSearchOpenMode";
@@ -38,6 +59,9 @@ const STORAGE_REVERSE_IMAGE_ENABLED = "tbccReverseImageEnabledSites";
 const STORAGE_REVERSE_IMAGE_MODE = "tbccReverseImageOpenMode";
 const STORAGE_MODEL_SEARCH_LAST_SUMMARY = "tbccModelSearchLastSummary";
 const STORAGE_AUTO_TAG_ON_EXPORT = "tbccAutoTagOnExport";
+/** Saved from context menu — watch pages or direct media URLs (extension Options). */
+const STORAGE_SAVED_VIDEO_URLS = "tbccSavedVideoUrls";
+const TBCC_SAVED_VIDEO_URLS_CAP = 600;
 let tbccRedgifsTempToken = "";
 let tbccRedgifsTempTokenExpiresAt = 0;
 
@@ -233,40 +257,188 @@ async function recordModelSearchHistory(username) {
   const deduped = arr.filter((x) => x && x.username && String(x.username).toLowerCase() !== clean.toLowerCase());
   const next = [{ username: clean, ts: now }, ...deduped].slice(0, 200);
   await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_HISTORY]: next });
+  if (typeof TbccMasterArchive !== "undefined") {
+    void TbccMasterArchive.recordUsername(clean, { source: "model_search" });
+  }
 }
 
-function guessResultCountFromHtml(html) {
-  if (!html || typeof html !== "string") return null;
-  const m = html.match(/(\d[\d,]*)\s*(results?|entries|posts?|items?|found|hits?)\b/i);
-  if (m) return parseInt(m[1].replace(/,/g, ""), 10) || null;
-  const m2 = html.match(/(?:total|about|count|results?)\s*[:\s]*\s*(\d[\d,]*)/i);
-  if (m2) return parseInt(m2[1].replace(/,/g, ""), 10) || null;
-  return null;
+const MACRO_SEARCH_CONCURRENCY = 8;
+
+async function probeModelSearchSite(site, username) {
+  const url = buildModelSearchUrl(site.url, username);
+  let fetchStatus = "ok";
+  let analysis = { hasResults: false, count: 0, reason: "none" };
+  try {
+    const r = await fetch(url, {
+      credentials: "omit",
+      redirect: "follow",
+      headers: { Accept: "text/html,application/json,*/*;q=0.8" },
+    });
+    const text = await r.text();
+    if (!r.ok) fetchStatus = "http_" + r.status;
+    analysis = analyzeModelSearchHtml(text, r.url || url);
+    if (!r.ok && analysis.reason === "none") analysis = { ...analysis, reason: "http_" + r.status };
+  } catch (_) {
+    fetchStatus = "err";
+    analysis = { hasResults: false, count: 0, reason: "err" };
+  }
+  return {
+    siteId: site.id,
+    name: site.name || site.id,
+    url,
+    count: analysis.count || 0,
+    hasResults: !!analysis.hasResults,
+    fetchStatus,
+    reason: analysis.reason || "none",
+  };
+}
+
+async function fetchUrlsWithConcurrencyItems(items, workerFn, maxConcurrency) {
+  const n = items.length;
+  if (n === 0) return [];
+  const results = new Array(n);
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const idx = nextIndex++;
+      if (idx >= n) return;
+      results[idx] = await workerFn(items[idx], idx);
+    }
+  }
+  const cap = Math.min(Math.max(1, maxConcurrency || MACRO_SEARCH_CONCURRENCY), n);
+  await Promise.all(Array.from({ length: cap }, () => worker()));
+  return results;
+}
+
+/**
+ * Native macro search: probe all enabled macro-category sources; store hits-only report.
+ * Does not open browser tabs (use launchModelSearch for tab fan-out).
+ */
+async function launchMacroModelSearch(username) {
+  const cleanUsername = normalizeUsernameCandidate(username);
+  if (!cleanUsername) {
+    notify("TBCC", "Macro search expects a username.");
+    return { ok: false, error: "invalid_username" };
+  }
+  let cfg;
+  try {
+    cfg = await getMergedModelSearchSites();
+  } catch (_) {
+    notify("TBCC", "Macro search: missing or invalid model-search-sites.json.");
+    return { ok: false, error: "config" };
+  }
+  const data = await chrome.storage.local.get(STORAGE_MODEL_SEARCH_ENABLED);
+  const enabled = data[STORAGE_MODEL_SEARCH_ENABLED] || {};
+  let sites = (cfg.sites || []).filter(
+    (s) => enabled[s.id] !== false && normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_MACRO
+  );
+  const badSites = [];
+  sites = sites.filter((s) => {
+    try {
+      const u = buildModelSearchUrl(s.url, cleanUsername);
+      new URL(u.split("{username}").join("x"));
+      if (!/^https?:\/\//i.test(u)) throw new Error("bad");
+      return true;
+    } catch (_) {
+      badSites.push(s.name || s.id);
+      return false;
+    }
+  });
+  if (!sites.length) {
+    notify(
+      "TBCC",
+      badSites.length
+        ? "No valid macro sources — fix URLs in Lookup tab → Manage sources."
+        : "No macro sources enabled — enable sites under Macro search in extension options."
+    );
+    return { ok: false, error: "no_sites" };
+  }
+
+  const pendingSummary = {
+    query: cleanUsername,
+    ts: Date.now(),
+    mode: "macro",
+    status: "running",
+    scanned: 0,
+    totalSites: sites.length,
+    hits: [],
+    totalCount: 0,
+    rows: [],
+  };
+  await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: pendingSummary });
+
+  const rows = await fetchUrlsWithConcurrencyItems(
+    sites,
+    (site) => probeModelSearchSite(site, cleanUsername),
+    MACRO_SEARCH_CONCURRENCY
+  );
+
+  let scanned = 0;
+  const hits = [];
+  let totalCount = 0;
+  for (const row of rows) {
+    scanned++;
+    if (row.hasResults && row.count > 0) {
+      hits.push({
+        siteId: row.siteId,
+        name: row.name,
+        url: row.url,
+        count: row.count,
+      });
+      totalCount += row.count;
+    }
+  }
+  hits.sort((a, b) => b.count - a.count || String(a.name).localeCompare(String(b.name)));
+
+  const summary = {
+    query: cleanUsername,
+    ts: Date.now(),
+    mode: "macro",
+    status: "done",
+    scanned,
+    totalSites: sites.length,
+    hits,
+    totalCount,
+    rows,
+  };
+  await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: summary });
+  await recordModelSearchHistory(cleanUsername);
+
+  const hitN = hits.length;
+  notify(
+    "TBCC",
+    hitN
+      ? `Macro search: ${hitN} site(s), ~${totalCount} result(s) for ${cleanUsername}`
+      : `Macro search: no hits on ${scanned} site(s) for ${cleanUsername}`
+  );
+  if (badSites.length) {
+    notifyThrottled(
+      "macro-search-bad",
+      "TBCC",
+      `Skipped ${badSites.length} macro source(s) with invalid URLs.`,
+      12000
+    );
+  }
+  return { ok: true, summary };
 }
 
 async function fetchCountsForSites(username, sites) {
-  for (const site of sites) {
-    const url = buildModelSearchUrl(site.url, username);
-    let countHint = null;
-    let fetchStatus = "ok";
-    try {
-      const r = await fetch(url, { credentials: "omit" });
-      const text = await r.text();
-      countHint = guessResultCountFromHtml(text);
-      if (!r.ok) fetchStatus = "http_" + r.status;
-    } catch (_) {
-      fetchStatus = "err";
+  const rows = await fetchUrlsWithConcurrencyItems(
+    sites,
+    (site) => probeModelSearchSite(site, username),
+    MACRO_SEARCH_CONCURRENCY
+  );
+  const data = await chrome.storage.local.get(STORAGE_MODEL_SEARCH_LAST_SUMMARY);
+  const sum = data[STORAGE_MODEL_SEARCH_LAST_SUMMARY];
+  if (!sum || !Array.isArray(sum.rows)) return;
+  for (const row of rows) {
+    const target = sum.rows.find((x) => x.siteId === row.siteId);
+    if (target) {
+      target.countHint = row.hasResults ? row.count : null;
+      target.fetchStatus = row.fetchStatus;
     }
-    const data = await chrome.storage.local.get(STORAGE_MODEL_SEARCH_LAST_SUMMARY);
-    const sum = data[STORAGE_MODEL_SEARCH_LAST_SUMMARY];
-    if (!sum || !Array.isArray(sum.rows)) continue;
-    const row = sum.rows.find((x) => x.siteId === site.id);
-    if (row) {
-      row.countHint = countHint;
-      row.fetchStatus = fetchStatus;
-    }
-    await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: sum });
   }
+  await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: sum });
 }
 
 async function launchModelSearch(username, onlySiteId = null, onlyCategory = null) {
@@ -299,11 +471,43 @@ async function launchModelSearch(username, onlySiteId = null, onlyCategory = nul
   let mode = data[STORAGE_MODEL_SEARCH_MODE] || "foreground";
   if (mode === "dashboard") mode = "foreground";
   const wantActive = mode === "foreground";
+  const badSites = [];
   let first = true;
   for (const s of sites) {
-    const u = buildModelSearchUrl(s.url, cleanUsername);
-    await chrome.tabs.create({ url: u, active: wantActive && first });
+    let u;
+    try {
+      u = buildModelSearchUrl(s.url, cleanUsername);
+      new URL(u.split("{username}").join("x"));
+    } catch (_) {
+      badSites.push(s.name || s.id);
+      continue;
+    }
+    if (!/^https?:\/\//i.test(u)) {
+      badSites.push(s.name || s.id);
+      continue;
+    }
+    try {
+      await chrome.tabs.create({ url: u, active: wantActive && first });
+    } catch (e) {
+      notify("TBCC", `Could not open ${s.name || s.id}: ${String(e.message || e).slice(0, 120)}`);
+      badSites.push(s.name || s.id);
+    }
     first = false;
+  }
+  if (badSites.length && badSites.length === sites.length) {
+    notify(
+      "TBCC",
+      "Model search failed — check custom source URLs in Options (need {username}, valid https URL)."
+    );
+    return;
+  }
+  if (badSites.length) {
+    notifyThrottled(
+      "model-search-bad",
+      "TBCC",
+      `Skipped ${badSites.length} source(s) with invalid URLs: ${badSites.slice(0, 4).join(", ")}${badSites.length > 4 ? "…" : ""}`,
+      15000
+    );
   }
   await recordModelSearchSummary(cleanUsername, sites, onlySiteId);
   await recordModelSearchHistory(cleanUsername);
@@ -330,7 +534,11 @@ function hostNeedsSessionFetch(url) {
       h === "fetlife.com" ||
       h.endsWith(".fetlife.com") ||
       h.includes("fetlife") ||
-      h === "video.twimg.com"
+      h === "video.twimg.com" ||
+      h.includes("bunkr") ||
+      h.includes("bunkrr") ||
+      h.endsWith("scdn.st") ||
+      h.endsWith(".scdn.st")
     );
   } catch (_) {
     return false;
@@ -359,27 +567,173 @@ function normalizeTbccMediaUrlForImport(url) {
   return url;
 }
 
+function isEromeHost(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  return h === "erome.com" || h.endsWith(".erome.com");
+}
+
+function isEromeMediaUrl(url) {
+  try {
+    return isEromeHost(new URL(url).hostname);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** CDN path …/albumId/file.mp4 → https://www.erome.com/a/albumId */
+function eromeAlbumPageFromMediaUrl(url) {
+  try {
+    const u = new URL(url);
+    if (!isEromeHost(u.hostname)) return "";
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return "";
+    const last = parts[parts.length - 1].toLowerCase();
+    if (!/\.(mp4|webm|mov|m4v|mkv|jpe?g|png|gif|webp)$/i.test(last)) return "";
+    let album = parts[parts.length - 2];
+    if (/^\d+$/.test(album) && parts.length >= 3) album = parts[parts.length - 3];
+    if (!album) return "";
+    return `https://www.erome.com/a/${encodeURIComponent(album)}`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function isEromeAlbumPageUrl(pageUrl) {
+  try {
+    const u = new URL(String(pageUrl || "").split("#")[0]);
+    return isEromeHost(u.hostname) && /^\/a\/[^/]+/i.test(u.pathname || "");
+  } catch (_) {
+    return false;
+  }
+}
+
 /** CDN path …/albumId/file.mp4 → album https://www.erome.com/a/albumId */
-function eromeReferrerChain(url) {
+function eromeReferrerChain(url, refererPageUrl) {
   try {
     const u = new URL(url);
     const host = u.hostname.toLowerCase();
-    if (host !== "erome.com" && !host.endsWith(".erome.com")) return null;
+    if (!isEromeHost(host)) return null;
     const chain = [];
-    const parts = u.pathname.split("/").filter(Boolean);
-    if (parts.length >= 2) {
-      const last = parts[parts.length - 1].toLowerCase();
-      if (/\.(mp4|webm|mov|m4v|mkv|jpe?g|png|gif|webp)$/i.test(last)) {
-        let album = parts[parts.length - 2];
-        if (/^\d+$/.test(album) && parts.length >= 3) album = parts[parts.length - 3];
-        if (album && !/^\d+$/.test(album)) chain.push(`https://www.erome.com/a/${album}`);
-      }
-    }
-    chain.push("https://www.erome.com/");
-    return [...new Set(chain)];
+    const pushRef = (s) => {
+      const t = String(s || "").trim().split("#")[0];
+      if (!t || !/^https?:\/\//i.test(t)) return;
+      if (!chain.includes(t)) chain.push(t);
+    };
+    const albumFromCdn = eromeAlbumPageFromMediaUrl(url);
+    if (albumFromCdn) pushRef(albumFromCdn);
+    if (refererPageUrl && isEromeAlbumPageUrl(refererPageUrl)) pushRef(refererPageUrl);
+    else if (refererPageUrl && isEromeHost(new URL(refererPageUrl).hostname)) pushRef(refererPageUrl);
+    pushRef("https://www.erome.com/");
+    return chain.length ? chain : ["https://www.erome.com/"];
   } catch (_) {
     return ["https://www.erome.com/"];
   }
+}
+
+const _eromeWarmAt = new Map();
+let _eromeFetchQueue = Promise.resolve();
+
+function enqueueEromeFetch(task) {
+  const run = _eromeFetchQueue.then(task, task);
+  _eromeFetchQueue = run.catch(() => {});
+  return run;
+}
+
+const _cachedBrowserUa = { at: 0, ua: "" };
+
+async function getBrowserUserAgent(tabId) {
+  if (Date.now() - _cachedBrowserUa.at < 120000 && _cachedBrowserUa.ua) return _cachedBrowserUa.ua;
+  let ua = "";
+  const tryTab = async (id) => {
+    if (id == null || id < 0) return "";
+    try {
+      const inj = await chrome.scripting.executeScript({
+        target: { tabId: id },
+        func: () => navigator.userAgent,
+      });
+      return inj && inj[0] && inj[0].result ? String(inj[0].result) : "";
+    } catch (_) {
+      return "";
+    }
+  };
+  ua = await tryTab(tabId);
+  if (!ua) {
+    try {
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (active && active.id != null) ua = await tryTab(active.id);
+    } catch (_) {}
+  }
+  if (!ua) {
+    ua =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  }
+  _cachedBrowserUa.ua = ua;
+  _cachedBrowserUa.at = Date.now();
+  return ua;
+}
+
+function eromeMediaStemFromUrl(url) {
+  try {
+    const base = (new URL(url).pathname.split("/").pop() || "").split("?")[0];
+    return base.replace(/\.[^.]+$/, "").replace(/_(\d+p|full|hq|hd|sd)$/i, "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function eromeExtractMediaUrlsFromHtml(html) {
+  if (!html || typeof html !== "string") return [];
+  const flat = html.replace(/\\\//g, "/");
+  const out = [];
+  const seen = new Set();
+  const re = /https?:\/\/[^\s"'<>]+?\.(?:mp4|webm|m4v|mkv|mov)(?:\?[^\s"'<>]*)?/gi;
+  let m;
+  while ((m = re.exec(flat)) !== null) {
+    const u = String(m[0] || "").replace(/&amp;/g, "&");
+    if (!/^https?:\/\//i.test(u) || !isEromeMediaUrl(u)) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
+}
+
+function eromeScoreMediaUrl(u, stem) {
+  const s = String(u || "").toLowerCase();
+  const st = String(stem || "").toLowerCase();
+  let sc = 0;
+  if (st && s.includes(st)) sc += 50;
+  else if (st && st.split("_")[0] && s.includes(st.split("_")[0])) sc += 28;
+  if (s.includes("1080") || s.includes("2160") || s.includes("4k")) sc += 18;
+  if (s.includes("720")) sc += 10;
+  if (s.includes("full")) sc += 12;
+  if (s.includes("?")) sc += 6;
+  if (s.includes("thumb") || s.includes("preview")) sc -= 40;
+  return sc;
+}
+
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const ms = Math.max(5000, timeoutMs || 60000);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error(`Fetch timed out after ${Math.round(ms / 1000)}s`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function tbccFetchTimeoutMs(url) {
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    if (/\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(path)) return 180000;
+  } catch (_) {}
+  return 45000;
 }
 
 async function mergeCookiesForUrls(urlList) {
@@ -399,11 +753,486 @@ async function mergeCookiesForUrls(urlList) {
   return pairs.join("; ");
 }
 
-async function fetchUrlWithBrowserSession(url, refererPageUrl) {
-  const eromeChain = eromeReferrerChain(url);
+/** Erome: merge per-URL cookies + all *.erome.com domain cookies + CDN origin. */
+async function mergeEromeCookieHeader(eromeChain, mediaUrl) {
+  const urls = [...(eromeChain || [])];
+  if (mediaUrl) {
+    try {
+      const mu = new URL(mediaUrl);
+      urls.push(mediaUrl, `${mu.protocol}//${mu.hostname}/`);
+    } catch (_) {}
+  }
+  let header = await mergeCookiesForUrls(urls);
+  try {
+    const domainCookies = await chrome.cookies.getAll({ domain: "erome.com" });
+    const seen = new Set();
+    if (header) {
+      for (const part of header.split("; ")) {
+        const n = part.split("=")[0];
+        if (n) seen.add(n);
+      }
+    }
+    const extra = [];
+    for (const c of domainCookies) {
+      if (!seen.has(c.name)) {
+        seen.add(c.name);
+        extra.push(`${c.name}=${c.value}`);
+      }
+    }
+    if (extra.length) header = header ? `${header}; ${extra.join("; ")}` : extra.join("; ");
+  } catch (_) {}
+  return header;
+}
+
+function sessionFetchHeaders(referer, targetUrl, userAgent, opts) {
+  const h = {
+    Accept: "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+  };
+  if (userAgent) h["User-Agent"] = userAgent;
+  if (referer) h.Referer = referer;
+  if (opts && opts.origin) h.Origin = opts.origin;
+  try {
+    const tu = targetUrl ? new URL(targetUrl) : null;
+    const ru = referer ? new URL(referer) : null;
+    h["Sec-Fetch-Dest"] = tu && /\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(tu.pathname) ? "video" : "empty";
+    h["Sec-Fetch-Mode"] = "cors";
+    h["Sec-Fetch-Site"] =
+      tu && ru && tu.hostname !== ru.hostname ? "cross-site" : tu && ru ? "same-origin" : "cross-site";
+  } catch (_) {}
+  return h;
+}
+
+const TBCC_TAB_FETCH_MAX_BYTES = 48 * 1024 * 1024;
+
+/** Resolve blob:/data: context-menu URLs to the https URL the page actually loaded. */
+async function resolveMediaUrlFromTab(tabId, url) {
+  const u = String(url || "").trim();
+  if (!/^blob:|^data:/i.test(u)) return u;
+  if (tabId == null || tabId < 0) return u;
+  try {
+    const inj = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        try {
+          var vids = document.querySelectorAll("video");
+          for (var i = 0; i < vids.length; i++) {
+            var cs = vids[i].currentSrc || vids[i].src || "";
+            if (cs.indexOf("http") === 0) return cs;
+          }
+        } catch (_) {}
+        try {
+          var entries = performance.getEntriesByType("resource");
+          for (var j = entries.length - 1; j >= 0; j--) {
+            var n = entries[j] && entries[j].name;
+            if (n && /\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(n.split("?")[0])) return n;
+          }
+        } catch (_) {}
+        return "";
+      },
+    });
+    const resolved = inj && inj[0] && inj[0].result ? String(inj[0].result).trim() : "";
+    if (resolved && /^https?:\/\//i.test(resolved)) return resolved;
+  } catch (_) {}
+  return u;
+}
+
+/** Prefer HLS/MP4 from network log when DOM only exposes poster/page URLs (e.g. cam sites). */
+async function tbccResolveBestCopyableMediaUrl(tabId, hintUrl) {
+  let hint = String(hintUrl || "").trim();
+  if (/^blob:|^data:/i.test(hint)) {
+    hint = await resolveMediaUrlFromTab(tabId, hint);
+  }
+  const candidates = new Set();
+  if (hint && tbccIsStorableHttpUrl(hint)) candidates.add(hint);
+  if (tabId != null && tabId >= 0) {
+    try {
+      const got = await chrome.storage.session.get([
+        `tbcc_net_media_${tabId}`,
+        `tbcc_net_manifest_${tabId}`,
+      ]);
+      const net = got[`tbcc_net_media_${tabId}`];
+      if (Array.isArray(net)) {
+        for (const u of net) {
+          if (tbccInboxWorthyNetVideoUrl(u)) candidates.add(String(u).trim());
+        }
+      }
+      const mans = got[`tbcc_net_manifest_${tabId}`];
+      if (Array.isArray(mans)) {
+        for (const u of mans) {
+          if (tbccIsStorableHttpUrl(u)) candidates.add(String(u).trim());
+        }
+      }
+    } catch (_) {}
+  }
+  if (!candidates.size) return hint || "";
+  const scoreFn = typeof tbccScoreVideoUrl === "function" ? tbccScoreVideoUrl : () => 0;
+  let best = "";
+  let bestScore = -9999;
+  let hintHost = "";
+  try {
+    hintHost = hint ? new URL(hint).hostname.toLowerCase() : "";
+  } catch (_) {}
+  for (const u of candidates) {
+    let sc = scoreFn(u);
+    try {
+      const h = new URL(u).hostname.toLowerCase();
+      if (hintHost && h === hintHost) sc += 12;
+    } catch (_) {}
+    if (/\.(m3u8|mpd)(\?|$)/i.test(u)) sc += 8;
+    if (sc > bestScore) {
+      bestScore = sc;
+      best = u;
+    }
+  }
+  if (bestScore < 20 && hint && tbccIsStorableHttpUrl(hint)) return hint;
+  return best || hint || "";
+}
+
+async function tbccAfterInboxSave(arr, urlList) {
+  if (typeof TbccMasterArchive === "undefined") return;
+  await TbccMasterArchive.mirrorInboxRows(arr);
+  for (const u of urlList || []) {
+    if (tbccIsStorableHttpUrl(u)) void TbccMasterArchive.recordUrl(u, { source: "inbox" });
+  }
+}
+
+/** Download in the page context (page cookies + referrer) — works on Erome and many CDNs. */
+async function fetchMediaBytesFromTab(tabId, mediaUrl, refererPageUrl) {
+  if (tabId == null || tabId < 0 || !mediaUrl || !/^https?:\/\//i.test(mediaUrl)) return null;
+  const ref = String(refererPageUrl || "").trim().split("#")[0];
+  if (!ref || !/^https?:\/\//i.test(ref)) return null;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url || !tbccIsInjectableHttpUrl(tab.url)) return null;
+    const inj = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (u, pageRef, maxBytes) => {
+        try {
+          let len = 0;
+          try {
+            const head = await fetch(u, {
+              method: "HEAD",
+              credentials: "include",
+              referrer: pageRef,
+              referrerPolicy: "strict-origin-when-cross-origin",
+            });
+            len = parseInt(head.headers.get("content-length") || "0", 10) || 0;
+            if (len > maxBytes) return { skip: true, reason: "too_large", len };
+          } catch (_) {}
+          const r = await fetch(u, {
+            credentials: "include",
+            referrer: pageRef,
+            referrerPolicy: "strict-origin-when-cross-origin",
+          });
+          if (!r.ok) return { ok: false, status: r.status };
+          const buf = await r.arrayBuffer();
+          if (buf.byteLength > maxBytes) return { skip: true, reason: "too_large", len: buf.byteLength };
+          const arr = new Uint8Array(buf);
+          const bytes = new Array(arr.length);
+          for (let i = 0; i < arr.length; i++) bytes[i] = arr[i];
+          return { ok: true, bytes, len: arr.length };
+        } catch (e) {
+          return { ok: false, error: String(e.message || e) };
+        }
+      },
+      args: [mediaUrl, ref, TBCC_TAB_FETCH_MAX_BYTES],
+    });
+    const r = inj && inj[0] && inj[0].result;
+    if (!r || r.skip || !r.ok || !Array.isArray(r.bytes)) return null;
+    return new Uint8Array(r.bytes).buffer;
+  } catch (_) {
+    return null;
+  }
+}
+
+function fetchEromeBytesFromTab(tabId, mediaUrl, albumUrl) {
+  return fetchMediaBytesFromTab(tabId, mediaUrl, albumUrl);
+}
+
+async function tbccOpenEromeAlbumTab(albumUrl) {
+  const album = String(albumUrl || "").trim().split("#")[0];
+  if (!album || !/^https?:\/\//i.test(album)) return;
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (!t.url) continue;
+      try {
+        if (t.url.split("#")[0] === album) {
+          if (t.id != null) await chrome.tabs.update(t.id, { active: true });
+          if (t.windowId != null) await chrome.windows.update(t.windowId, { focused: true });
+          return;
+        }
+      } catch (_) {}
+    }
+    await chrome.tabs.create({ url: album, active: true });
+  } catch (_) {}
+}
+
+/** Same-tab fetch refreshes the browser cookie jar before chrome.cookies reads. */
+async function tbccPrewarmEromeTab(tabId, eromeChain) {
+  if (tabId == null || tabId < 0) return;
+  const album = (eromeChain || []).find((u) => /\/a\/[^/]+/i.test(u));
+  if (!album) return;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url) return;
+    if (!isEromeHost(new URL(tab.url).hostname)) return;
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (albumUrl) => {
+        try {
+          await fetch(albumUrl, { credentials: "include", cache: "no-store" });
+        } catch (_) {}
+      },
+      args: [album],
+    });
+    await new Promise((r) => setTimeout(r, 120));
+  } catch (_) {}
+}
+
+/** Prefer the URL the page actually loaded (query tokens, resource timing) over bare context-menu srcUrl. */
+async function eromeResolveUrlFromActiveTab(tabId, requestedUrl) {
+  const stem = eromeMediaStemFromUrl(requestedUrl);
+  if (tabId == null || tabId < 0 || !stem) return requestedUrl;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url || !isEromeHost(new URL(tab.url).hostname)) return requestedUrl;
+    const inj = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (mediaStem, requested) => {
+        var out = [];
+        var seen = {};
+        function add(u) {
+          if (!u || seen[u]) return;
+          if (u.indexOf("http") !== 0) return;
+          seen[u] = 1;
+          out.push(u);
+        }
+        try {
+          var vids = document.querySelectorAll("video");
+          for (var i = 0; i < vids.length; i++) {
+            if (vids[i].currentSrc) add(vids[i].currentSrc);
+            if (vids[i].src && vids[i].src.indexOf("http") === 0) add(vids[i].src);
+          }
+        } catch (_) {}
+        try {
+          var entries = performance.getEntriesByType("resource");
+          for (var j = 0; j < entries.length; j++) {
+            var n = entries[j] && entries[j].name;
+            if (n && /\.(mp4|webm|m4v|mov)(\?|$)/i.test(n.split("?")[0])) add(n);
+          }
+        } catch (_) {}
+        var stemLo = (mediaStem || "").toLowerCase();
+        var reqLo = (requested || "").toLowerCase();
+        var matches = out.filter(function (u) {
+          var ul = u.toLowerCase();
+          return ul.indexOf(stemLo) >= 0 || (reqLo && ul.split("?")[0] === reqLo.split("?")[0]);
+        });
+        if (!matches.length && stemLo) {
+          var prefix = stemLo.split("_")[0];
+          if (prefix.length >= 4) {
+            matches = out.filter(function (u) {
+              return u.toLowerCase().indexOf(prefix) >= 0;
+            });
+          }
+        }
+        if (!matches.length) return requested;
+        matches.sort(function (a, b) {
+          function score(s) {
+            var x = s.toLowerCase();
+            var sc = 0;
+            if (x.indexOf(stemLo) >= 0) sc += 40;
+            if (x.indexOf("1080") >= 0 || x.indexOf("2160") >= 0) sc += 16;
+            if (x.indexOf("720") >= 0) sc += 8;
+            if (x.indexOf("?") >= 0) sc += 5;
+            return sc;
+          }
+          return score(b) - score(a);
+        });
+        return matches[0];
+      },
+      args: [stem, requestedUrl],
+    });
+    const picked = inj && inj[0] && inj[0].result ? String(inj[0].result).trim() : "";
+    if (picked && /^https?:\/\//i.test(picked) && isEromeMediaUrl(picked)) return picked;
+  } catch (_) {}
+  return requestedUrl;
+}
+
+async function eromeResolveAlternateMediaUrls(primaryUrl, eromeChain, cookieHeader, tabId) {
+  const stem = eromeMediaStemFromUrl(primaryUrl);
+  const out = [];
+  const seen = new Set([primaryUrl]);
+  const push = (u) => {
+    const t = String(u || "").trim();
+    if (!t || !/^https?:\/\//i.test(t) || !isEromeMediaUrl(t) || seen.has(t)) return;
+    seen.add(t);
+    out.push(t);
+  };
+  if (tabId != null) {
+    const fromTab = await eromeResolveUrlFromActiveTab(tabId, primaryUrl);
+    push(fromTab);
+  }
+  const album = (eromeChain || []).find((u) => /\/a\/[^/]+/i.test(u));
+  if (album) {
+    try {
+      const ua = await getBrowserUserAgent(tabId);
+      const base = cookieHeader ? { Cookie: cookieHeader } : {};
+      const res = await fetch(album, {
+        method: "GET",
+        credentials: "omit",
+        headers: {
+          ...base,
+          ...sessionFetchHeaders("https://www.erome.com/", album, ua, {}),
+          Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        },
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const urls = eromeExtractMediaUrlsFromHtml(html);
+        urls.sort((a, b) => eromeScoreMediaUrl(b, stem) - eromeScoreMediaUrl(a, stem));
+        for (const u of urls) push(u);
+        const parsed = parseEromeMediaFromHtml(html);
+        if (parsed) push(parsed);
+      }
+    } catch (_) {}
+  }
+  return out;
+}
+
+/** Refresh album-page cookies before CDN GET (helps after rapid back-to-back imports). */
+async function warmEromeAlbumCookies(chain, cookieHeader, mediaUrl, userAgent) {
+  const album = chain.find((u) => /\/a\/[^/]+/i.test(u));
+  if (!album) return;
+  const now = Date.now();
+  const prev = _eromeWarmAt.get(album);
+  if (prev != null && now - prev < 45000) return;
+  _eromeWarmAt.set(album, now);
+  const base = cookieHeader ? { Cookie: cookieHeader } : {};
+  const warmHeaders = {
+    ...base,
+    ...sessionFetchHeaders("https://www.erome.com/", album, userAgent, {}),
+    Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+  };
+  try {
+    await fetchWithTimeout(album, { method: "GET", credentials: "omit", headers: warmHeaders }, 45000);
+  } catch (_) {}
+}
+
+function fetchConcurrencyForUrls(urls) {
+  if (Array.isArray(urls) && urls.some((u) => isEromeMediaUrl(u))) return 1;
+  return TBCC_FETCH_CONCURRENCY;
+}
+
+async function fetchEromeCdnOnce(targetUrl, eromeChain, cookieHeader, userAgent) {
+  await warmEromeAlbumCookies(eromeChain, cookieHeader, targetUrl, userAgent);
+  const base = cookieHeader ? { Cookie: cookieHeader } : {};
+  const timeoutMs = tbccFetchTimeoutMs(targetUrl);
+  const backoffMs = [0, 800, 2000];
+  let lastStatus = 403;
+  for (let attempt = 0; attempt < backoffMs.length; attempt++) {
+    if (backoffMs[attempt] > 0) await new Promise((r) => setTimeout(r, backoffMs[attempt]));
+    for (const ref of eromeChain) {
+      const hdr = {
+        ...base,
+        ...sessionFetchHeaders(ref, targetUrl, userAgent, {}),
+      };
+      let res = await fetchWithTimeout(
+        targetUrl,
+        { method: "GET", credentials: "omit", headers: hdr },
+        timeoutMs
+      );
+      if (res.ok) return await res.arrayBuffer();
+      lastStatus = res.status;
+      res = await fetchWithTimeout(
+        targetUrl,
+        {
+          method: "GET",
+          credentials: "omit",
+          headers: {
+            ...base,
+            ...sessionFetchHeaders(ref, targetUrl, userAgent, { origin: "https://www.erome.com" }),
+          },
+        },
+        timeoutMs
+      );
+      if (res.ok) return await res.arrayBuffer();
+      lastStatus = res.status;
+    }
+  }
+  return { failed: true, status: lastStatus };
+}
+
+async function fetchEromeCdnWithRetries(url, eromeChain, cookieHeader, refererPageUrl, tabId) {
+  const ua = await getBrowserUserAgent(tabId);
+  await tbccPrewarmEromeTab(tabId, eromeChain);
+  cookieHeader = await mergeEromeCookieHeader(eromeChain, url);
+
+  const album = eromeChain.find((u) => /\/a\/[^/]+/i.test(u));
+  const candidates = [url];
+  let lastStatus = 403;
+
+  for (let pass = 0; pass < 2; pass++) {
+    for (const targetUrl of candidates) {
+      const chain = eromeReferrerChain(targetUrl, refererPageUrl) || eromeChain;
+      const albumForTab = chain.find((u) => /\/a\/[^/]+/i.test(u)) || album;
+      const pageRef = refererPageUrl || albumForTab || "";
+      if (tabId != null && pageRef) {
+        const fromTab = await fetchMediaBytesFromTab(tabId, targetUrl, pageRef);
+        if (fromTab instanceof ArrayBuffer && fromTab.byteLength > 0) return fromTab;
+      }
+      if (tabId != null && albumForTab) {
+        const fromTab = await fetchEromeBytesFromTab(tabId, targetUrl, albumForTab);
+        if (fromTab instanceof ArrayBuffer && fromTab.byteLength > 0) return fromTab;
+      }
+      const cookies = await mergeEromeCookieHeader(chain, targetUrl);
+      const result = await fetchEromeCdnOnce(targetUrl, chain, cookies, ua);
+      if (result instanceof ArrayBuffer) return result;
+      if (result && result.failed && result.status) lastStatus = result.status;
+    }
+    if (pass > 0) break;
+    const alternates = await eromeResolveAlternateMediaUrls(url, eromeChain, cookieHeader, tabId);
+    for (const alt of alternates) {
+      if (!candidates.includes(alt)) candidates.push(alt);
+    }
+    if (candidates.length <= 1) break;
+  }
+
+  if (lastStatus === 403 && album) {
+    await tbccOpenEromeAlbumTab(album);
+  }
+
+  let rateHint =
+    lastStatus === 403
+      ? " Do NOT clear Erome cookies — that removes the 18+ session. Open the album tab, click Enter/18+, play the video, then right-click the video again."
+      : "";
+  if (lastStatus === 403) {
+    rateHint += " If the first video worked and the second failed, wait a few seconds and retry.";
+  }
+  try {
+    const badRef = String(refererPageUrl || "").split("#")[0];
+    if (badRef && /^https?:\/\//i.test(badRef) && !isEromeHost(new URL(badRef).hostname)) {
+      rateHint +=
+        " Your active tab is not Erome — use the album tab TBCC just opened (or already had open).";
+    }
+  } catch (_) {}
+  const albumHint = album ? ` Album: ${album}` : "";
+  throw new Error(
+    "Erome CDN " +
+      lastStatus +
+      " — blocked download." +
+      rateHint +
+      albumHint
+  );
+}
+
+async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId) {
+  const eromeChain = eromeReferrerChain(url, refererPageUrl);
   let cookieHeader = "";
   if (eromeChain) {
-    cookieHeader = await mergeCookiesForUrls(eromeChain);
+    await tbccPrewarmEromeTab(tabId, eromeChain);
+    cookieHeader = await mergeEromeCookieHeader(eromeChain, url);
   } else {
     try {
       const u0 = new URL(url);
@@ -426,18 +1255,8 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl) {
   if (cookieHeader) base.Cookie = cookieHeader;
 
   if (eromeChain) {
-    for (const ref of eromeChain) {
-      let res = await fetch(url, { method: "GET", credentials: "omit", headers: { ...base, Referer: ref } });
-      if (res.ok) return await res.arrayBuffer();
-      res = await fetch(url, {
-        method: "GET",
-        credentials: "omit",
-        headers: { ...base, Referer: ref, Origin: "https://www.erome.com" },
-      });
-      if (res.ok) return await res.arrayBuffer();
-    }
-    throw new Error(
-      "Erome CDN 403 — open the album on www.erome.com in this browser (same profile), then use the menu on the video/link."
+    return enqueueEromeFetch(() =>
+      fetchEromeCdnWithRetries(url, eromeChain, cookieHeader, refererPageUrl, tabId)
     );
   }
 
@@ -921,41 +1740,102 @@ function blobNameAndTypeForUrl(url) {
   return { name: "media.jpg", type: "application/octet-stream" };
 }
 
-async function importViaExtensionBytes(url, poolId, savedOnly, source, caption, refererPageUrl) {
-  url = normalizeTbccMediaUrlForImport(url);
-  const ab = await fetchUrlWithBrowserSession(url, refererPageUrl);
+async function postBytesToTbcc(arrayBuffer, url, poolId, savedOnly, source, caption, galleryJobId) {
   const { name, type } = blobNameAndTypeForUrl(url);
   const form = new FormData();
-  form.append("file", new Blob([ab], { type }), name);
+  form.append("file", new Blob([arrayBuffer], { type }), name);
   form.append("pool_id", String(poolId));
   form.append("saved_only", savedOnly ? "true" : "false");
   form.append("source", source || "extension:session-fetch");
   if (savedOnly && caption && String(caption).trim()) {
     form.append("caption", String(caption).trim());
   }
-  const r = await fetch(API_BYTES, { method: "POST", body: form });
-  const text = await r.text();
-  let data = {};
+  return tbccPostImportForm(form, galleryJobId || null);
+}
+
+function shouldFallbackToSessionFetch(errorMsg) {
+  return /403|forbidden|could not download|cookies|blocked|timeout|timed out|erome cdn/i.test(
+    String(errorMsg || "")
+  );
+}
+
+async function tryBackendSavedImport(body) {
   try {
-    data = text ? JSON.parse(text) : {};
-  } catch (_) {}
-  if (!r.ok && !data.error) data.error = text ? text.slice(0, 200) : `HTTP ${r.status}`;
-  return data;
+    const resp = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const text = await resp.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {
+      return { ok: false, fallback: true, error: resp.ok ? "Invalid server response." : `Server error ${resp.status}` };
+    }
+    if (data.status === "saved_only" && !data.error) return { ok: true, data };
+    if (data.error) {
+      return {
+        ok: false,
+        fallback: shouldFallbackToSessionFetch(data.error),
+        error: String(data.error),
+        data,
+      };
+    }
+    return { ok: false, fallback: true, error: "Unexpected backend response", data };
+  } catch (e) {
+    return { ok: false, fallback: true, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+async function importViaExtensionBytes(
+  url,
+  poolId,
+  savedOnly,
+  source,
+  caption,
+  refererPageUrl,
+  tabId,
+  galleryJobId
+) {
+  url = normalizeTbccMediaUrlForImport(url);
+  const ab = await fetchUrlWithBrowserSession(url, refererPageUrl, tabId);
+  return postBytesToTbcc(ab, url, poolId, savedOnly, source, caption, galleryJobId);
 }
 
 /** Fetch multiple session URLs and POST to /import/saved-batch in chunks (Telegram albums ≤10). */
-async function importViaExtensionBytesSavedBatch(urls) {
-  const parts = await fetchUrlsWithConcurrency(urls, async (url) => {
-    const ab = await fetchUrlWithBrowserSession(normalizeTbccMediaUrlForImport(url));
+async function tbccResolveSessionTabId(sender, msg) {
+  if (sender && sender.tab && sender.tab.id != null) return sender.tab.id;
+  if (msg && msg.tabId != null) return msg.tabId;
+  try {
+    const got = await chrome.storage.local.get([STORAGE_GALLERY_DOCKED_TAB, STORAGE_LAST_TAB]);
+    const dock = got[STORAGE_GALLERY_DOCKED_TAB];
+    if (dock && dock.tabId != null) return dock.tabId;
+    if (got[STORAGE_LAST_TAB] != null) return got[STORAGE_LAST_TAB];
+  } catch (_) {}
+  return null;
+}
+
+async function importViaExtensionBytesSavedBatch(urls, caption, tabId) {
+  const cap = caption && String(caption).trim() ? String(caption).trim() : "";
+  const parts = await fetchUrlsWithConcurrency(
+    urls,
+    async (url) => {
+    let u = normalizeTbccMediaUrlForImport(url);
+    if (isEromeMediaUrl(u) && tabId != null) u = await eromeResolveUrlFromActiveTab(tabId, u);
+    const ab = await fetchUrlWithBrowserSession(u, "", tabId);
     const { name, type } = blobNameAndTypeForUrl(url);
     return { ab, name, type };
-  });
+  },
+    fetchConcurrencyForUrls(urls)
+  );
   for (let i = 0; i < parts.length; i += SAVED_ALBUM_CHUNK) {
     const chunk = parts.slice(i, i + SAVED_ALBUM_CHUNK);
     const form = new FormData();
     chunk.forEach((p, j) => {
       form.append("files", new Blob([p.ab], { type: p.type }), p.name || `media_${j}`);
     });
+    if (cap) form.append("caption", cap);
     const r = await fetch(API_SAVED_BATCH, { method: "POST", body: form });
     const text = await r.text();
     let data = {};
@@ -972,6 +1852,257 @@ function tbccIsInjectableHttpUrl(url) {
   return url && typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+async function tbccReadGalleryJobs() {
+  const data = await chrome.storage.local.get(STORAGE_GALLERY_JOBS);
+  let jobs = Array.isArray(data[STORAGE_GALLERY_JOBS]) ? data[STORAGE_GALLERY_JOBS] : [];
+  const now = Date.now();
+  const pruned = jobs.filter((j) => j && now - (j.startedAt || 0) < TBCC_GALLERY_JOB_MAX_AGE_MS);
+  if (pruned.length !== jobs.length) {
+    await chrome.storage.local.set({ [STORAGE_GALLERY_JOBS]: pruned });
+  }
+  return pruned;
+}
+
+async function tbccWriteGalleryJobs(jobs) {
+  await chrome.storage.local.set({ [STORAGE_GALLERY_JOBS]: jobs });
+  await tbccSyncDockPanelLockFromJobs(jobs);
+}
+
+function tbccImportPollAlarmName(galleryJobId) {
+  return TBCC_IMPORT_POLL_ALARM_PREFIX + String(galleryJobId || "");
+}
+
+function tbccIsBackendImportTerminal(status) {
+  return typeof tbccIsImportTerminal === "function"
+    ? tbccIsImportTerminal(status)
+    : ["done", "failed", "skipped", "cancelled"].includes(String(status || "").toLowerCase());
+}
+
+async function tbccFetchBackendImportJob(backendJobId) {
+  const r = await fetch(`${TBCC_IMPORT_API_JOBS}/${encodeURIComponent(backendJobId)}`, {
+    cache: "no-store",
+  });
+  const text = await r.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_) {
+    data = { error: text ? text.slice(0, 200) : `HTTP ${r.status}` };
+  }
+  if (!r.ok && !data.error) data.error = text ? text.slice(0, 200) : `HTTP ${r.status}`;
+  return data;
+}
+
+async function tbccApplyBackendImportStatusToGalleryJob(galleryJobId, data) {
+  const jobs = await tbccReadGalleryJobs();
+  const j = jobs.find((x) => x && x.id === galleryJobId);
+  if (!j) return { found: false, terminal: true };
+  if (data.job_id) j.backendJobId = String(data.job_id);
+  if (data.status != null) j.status = String(data.status);
+  if (data.stage != null) j.stage = String(data.stage);
+  if (data.error) j.error = String(data.error);
+  j.label =
+    typeof tbccImportStageLabel === "function"
+      ? tbccImportStageLabel(data.stage, data.status || j.status)
+      : data.stage || data.status || j.label;
+  await tbccWriteGalleryJobs(jobs);
+  return { found: true, terminal: tbccIsBackendImportTerminal(data.status) };
+}
+
+async function tbccScheduleImportPollAlarm(galleryJobId, backendJobId) {
+  if (!galleryJobId || !backendJobId) return;
+  const jobs = await tbccReadGalleryJobs();
+  const j = jobs.find((x) => x && x.id === galleryJobId);
+  if (j) {
+    if (!j.backendJobId) j.backendJobId = String(backendJobId);
+    await tbccWriteGalleryJobs(jobs);
+  }
+  try {
+    await chrome.alarms.create(tbccImportPollAlarmName(galleryJobId), {
+      delayInMinutes: TBCC_IMPORT_POLL_DELAY_MIN,
+    });
+  } catch (e) {
+    console.warn("TBCC import poll alarm", e);
+  }
+}
+
+async function tbccClearImportPollAlarm(galleryJobId) {
+  try {
+    await chrome.alarms.clear(tbccImportPollAlarmName(galleryJobId));
+  } catch (_) {}
+}
+
+async function tbccPollImportJobViaAlarm(galleryJobId, backendJobId) {
+  let data = {};
+  try {
+    data = await tbccFetchBackendImportJob(backendJobId);
+  } catch (e) {
+    await chrome.alarms.create(tbccImportPollAlarmName(galleryJobId), {
+      delayInMinutes: 0.25,
+    });
+    return;
+  }
+  if (data.error === "not_found") {
+    await tbccClearImportPollAlarm(galleryJobId);
+    return;
+  }
+  const { terminal } = await tbccApplyBackendImportStatusToGalleryJob(galleryJobId, data);
+  if (terminal) {
+    await tbccClearImportPollAlarm(galleryJobId);
+    return;
+  }
+  await chrome.alarms.create(tbccImportPollAlarmName(galleryJobId), {
+    delayInMinutes: TBCC_IMPORT_POLL_DELAY_MIN,
+  });
+}
+
+async function tbccReattachImportPollAlarms() {
+  const jobs = await tbccReadGalleryJobs();
+  for (const j of jobs) {
+    if (!j || !j.backendJobId) continue;
+    if (tbccIsBackendImportTerminal(j.status)) continue;
+    await tbccScheduleImportPollAlarm(j.id, j.backendJobId);
+  }
+}
+
+async function tbccReconcileGalleryJobsWithServer() {
+  const local = await tbccReadGalleryJobs();
+  let serverJobs = [];
+  try {
+    const r = await fetch(`${TBCC_IMPORT_API_JOBS}?active=true`, { cache: "no-store" });
+    const body = await r.json();
+    serverJobs = Array.isArray(body.jobs) ? body.jobs : [];
+  } catch (_) {
+    serverJobs = [];
+  }
+  let changed = false;
+  const byBackend = new Map(local.filter((j) => j && j.backendJobId).map((j) => [j.backendJobId, j]));
+  const byGalleryId = new Map(local.filter((j) => j && j.id).map((j) => [j.id, j]));
+
+  for (const sj of serverJobs) {
+    const gid = sj.extension_job_id;
+    let j = (gid && byGalleryId.get(gid)) || (sj.job_id && byBackend.get(sj.job_id));
+    if (!j) continue;
+    const prevStatus = j.status;
+    if (sj.job_id) j.backendJobId = String(sj.job_id);
+    if (sj.status != null) j.status = String(sj.status);
+    if (sj.stage != null) j.stage = String(sj.stage);
+    if (sj.error) j.error = String(sj.error);
+    j.label =
+      typeof tbccImportStageLabel === "function"
+        ? tbccImportStageLabel(sj.stage, sj.status)
+        : sj.stage || sj.status || j.label;
+    if (prevStatus !== j.status) changed = true;
+    if (!tbccIsBackendImportTerminal(j.status)) {
+      await tbccScheduleImportPollAlarm(j.id, j.backendJobId);
+    } else {
+      await tbccClearImportPollAlarm(j.id);
+    }
+  }
+
+  for (const j of local) {
+    if (!j || !j.backendJobId || tbccIsBackendImportTerminal(j.status)) continue;
+    const onServer = serverJobs.some((sj) => sj.job_id === j.backendJobId);
+    if (onServer) continue;
+    try {
+      const data = await tbccFetchBackendImportJob(j.backendJobId);
+      if (data.error === "not_found") continue;
+      const prevStatus = j.status;
+      if (data.status != null) j.status = String(data.status);
+      if (data.stage != null) j.stage = String(data.stage);
+      if (data.error) j.error = String(data.error);
+      j.label =
+        typeof tbccImportStageLabel === "function"
+          ? tbccImportStageLabel(data.stage, data.status)
+          : data.stage || data.status || j.label;
+      if (prevStatus !== j.status) changed = true;
+      if (tbccIsBackendImportTerminal(j.status)) await tbccClearImportPollAlarm(j.id);
+      else await tbccScheduleImportPollAlarm(j.id, j.backendJobId);
+    } catch (_) {}
+  }
+
+  await tbccWriteGalleryJobs(local);
+  return { ok: true, jobs: local, serverActive: serverJobs.length, changed };
+}
+
+async function tbccBootstrapImportJobRecovery() {
+  await tbccReconcileGalleryJobsWithServer();
+  await tbccReattachImportPollAlarms();
+}
+
+async function tbccGetDockPanelLock() {
+  const data = await chrome.storage.local.get(STORAGE_GALLERY_DOCK_LOCK);
+  return data[STORAGE_GALLERY_DOCK_LOCK] || null;
+}
+
+async function tbccSyncDockPanelLockFromJobs(jobs) {
+  const lock = await tbccGetDockPanelLock();
+  if (!lock || !lock.locked) {
+    await tbccUpdateGalleryPanelOpenMode();
+    return;
+  }
+  const count = jobs.length;
+  if (count <= 0) {
+    await chrome.storage.local.remove(STORAGE_GALLERY_DOCK_LOCK);
+    await tbccUpdateGalleryPanelOpenMode();
+    return;
+  }
+  await chrome.storage.local.set({
+    [STORAGE_GALLERY_DOCK_LOCK]: { ...lock, jobCount: count, lockedAt: lock.lockedAt || Date.now() },
+  });
+  await tbccUpdateGalleryPanelOpenMode();
+}
+
+async function tbccIsGalleryToolbarLocked() {
+  const lock = await tbccGetDockPanelLock();
+  return !!(lock && lock.locked && (lock.jobCount || 0) > 0);
+}
+
+/** Native instant open when idle; custom handler only while docked work is in flight. */
+async function tbccUpdateGalleryPanelOpenMode() {
+  const locked = await tbccIsGalleryToolbarLocked();
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: !locked });
+  } catch (_) {}
+}
+
+async function tbccCloseGallerySidePanelForDock(dock) {
+  try {
+    const tab = await chrome.tabs.get(dock.tabId);
+    const sp = chrome.sidePanel;
+    if (sp && typeof sp.close === "function" && tab && tab.windowId != null) {
+      await sp.close({ windowId: tab.windowId });
+      return;
+    }
+  } catch (_) {}
+  try {
+    await chrome.runtime.sendMessage({ action: "tbcc-gallery-request-close" });
+  } catch (_) {}
+}
+
+async function tbccOnLeftDockedTab(dock) {
+  const jobs = await tbccReadGalleryJobs();
+  if (jobs.length === 0) return;
+  await tbccCloseGallerySidePanelForDock(dock);
+  await chrome.storage.local.set({
+    [STORAGE_GALLERY_DOCK_LOCK]: {
+      locked: true,
+      dockTabId: dock.tabId,
+      hostname: dock.hostname || "",
+      title: dock.title || "",
+      jobCount: jobs.length,
+      lockedAt: Date.now(),
+    },
+  });
+  await tbccUpdateGalleryPanelOpenMode();
+  notifyThrottled(
+    "dock-panel-closed",
+    "TBCC",
+    `${jobs.length} task(s) still running on ${dock.hostname || dock.title || "docked tab"}. Gallery reopens when finished.`,
+    20000
+  );
+}
+
 /** Track last http(s) tab only — extension/chrome pages must not overwrite (tab capture needs real page id). */
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then((tab) => {
@@ -979,6 +2110,15 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
       chrome.storage.local.set({ [STORAGE_LAST_TAB]: tabId });
     }
   }).catch(() => {});
+  void (async () => {
+    try {
+      const data = await chrome.storage.local.get(STORAGE_GALLERY_DOCKED_TAB);
+      const dock = data[STORAGE_GALLERY_DOCKED_TAB];
+      if (dock && Number(dock.tabId) !== tabId) {
+        await tbccOnLeftDockedTab(dock);
+      }
+    } catch (_) {}
+  })();
 });
 
 /**
@@ -1123,6 +2263,15 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   TBCC_TAB_URL_CACHE.delete(tabId);
   void chrome.storage.session.remove(`tbcc_net_media_${tabId}`);
+  void (async () => {
+    try {
+      const data = await chrome.storage.local.get(STORAGE_GALLERY_DOCKED_TAB);
+      const dock = data[STORAGE_GALLERY_DOCKED_TAB];
+      if (dock && Number(dock.tabId) === tabId) {
+        await chrome.storage.local.remove(STORAGE_GALLERY_DOCKED_TAB);
+      }
+    } catch (_) {}
+  })();
 });
 
 async function tbccSeedTabUrlCache() {
@@ -1153,6 +2302,8 @@ try {
           } else if (tbccTabPageLooksLikeTwitterX(pageUrl)) {
             /** Do not use generic `looksVideo` here — twimg serves many `.m4s` segments we must not log. */
             if (tbccWebRequestUrlLooksLikeTwitterCdnVideo(u)) void tbccAppendObservedMediaUrl(details.tabId, u);
+          } else if (looksVideo && tbccInboxWorthyNetVideoUrl(u)) {
+            void tbccAppendObservedMediaUrl(details.tabId, u);
           }
           if (isManifest) void tbccAppendObservedManifestUrl(details.tabId, u);
         })
@@ -1165,6 +2316,57 @@ try {
 }
 
 const TBCC_THUMB_PROXY_MAX_BYTES = Math.floor(2.75 * 1024 * 1024);
+
+/**
+ * Throttle thumb-proxy fetches. The sidebar can mount 200–500 tiles at once;
+ * if we let every tile's session-fetch fly in parallel, Chrome's per-renderer
+ * socket pool / blob memory budget pops with net::ERR_INSUFFICIENT_RESOURCES
+ * (especially on OF where each "thumb" used to be a 3 MB CDN file).
+ *
+ * Strategy:
+ *   - Hard cap of N in-flight fetches (per service-worker, not per-tab).
+ *   - Excess requests sit in an in-memory FIFO queue.
+ *   - Tiny LRU of completed dataUrls so re-render / re-sort doesn't refetch.
+ *
+ * Cap chosen by feel: 4 keeps OF's CloudFront happy without strangling
+ * smaller batches.
+ */
+const TBCC_THUMB_PROXY_MAX_INFLIGHT = 4;
+const TBCC_THUMB_PROXY_CACHE_LIMIT = 256;
+let _tbccThumbInflight = 0;
+const _tbccThumbQueue = [];
+const _tbccThumbCache = new Map();
+
+function _tbccThumbCachePut(url, dataUrl) {
+  if (_tbccThumbCache.has(url)) _tbccThumbCache.delete(url);
+  _tbccThumbCache.set(url, dataUrl);
+  while (_tbccThumbCache.size > TBCC_THUMB_PROXY_CACHE_LIMIT) {
+    const k = _tbccThumbCache.keys().next().value;
+    _tbccThumbCache.delete(k);
+  }
+}
+
+function _tbccThumbDrainQueue() {
+  while (_tbccThumbInflight < TBCC_THUMB_PROXY_MAX_INFLIGHT && _tbccThumbQueue.length) {
+    const job = _tbccThumbQueue.shift();
+    _tbccThumbInflight++;
+    job().finally(() => {
+      _tbccThumbInflight--;
+      _tbccThumbDrainQueue();
+    });
+  }
+}
+
+function _tbccThumbSchedule(jobFactory) {
+  return new Promise((resolve) => {
+    const job = async () => {
+      try { resolve(await jobFactory()); }
+      catch (_) { resolve({ ok: false }); }
+    };
+    _tbccThumbQueue.push(job);
+    _tbccThumbDrainQueue();
+  });
+}
 
 function tbccArrayBufferToDataUrl(ab) {
   const bytes = new Uint8Array(ab);
@@ -1182,6 +2384,339 @@ function tbccArrayBufferToDataUrl(ab) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.action === "tbcc-notify") {
+    notify(String(msg.title || "TBCC"), String(msg.message || ""), msg.clickAction || null);
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.action === "tbcc-notification-open") {
+    void tbccHandleNotificationClickAction(msg.clickAction).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-job-begin") {
+    (async () => {
+      try {
+        const id = `job-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+        const jobs = await tbccReadGalleryJobs();
+        jobs.push({
+          id,
+          type: String(msg.type || "task"),
+          label: String(msg.label || msg.type || "Gallery task"),
+          stage: "starting",
+          status: "running",
+          tabId: msg.tabId != null ? Number(msg.tabId) : null,
+          startedAt: Date.now(),
+        });
+        await tbccWriteGalleryJobs(jobs);
+        sendResponse({ ok: true, id });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-job-update") {
+    (async () => {
+      try {
+        const jobs = await tbccReadGalleryJobs();
+        const j = jobs.find((x) => x.id === msg.id);
+        if (j) {
+          if (msg.stage != null) j.stage = String(msg.stage);
+          if (msg.status != null) j.status = String(msg.status);
+          if (msg.backendJobId) {
+            j.backendJobId = String(msg.backendJobId);
+            void tbccScheduleImportPollAlarm(j.id, j.backendJobId);
+          }
+          if (msg.error) j.error = String(msg.error);
+          if (msg.label) j.label = String(msg.label);
+          else if (msg.stage) j.label = tbccImportStageLabel(msg.stage, msg.status || j.status);
+          await tbccWriteGalleryJobs(jobs);
+        }
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-health-system") {
+    (async () => {
+      try {
+        const r = await fetch("http://localhost:8000/health/system");
+        const data = await r.json();
+        sendResponse({ ok: r.ok, data });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-job-list") {
+    (async () => {
+      try {
+        const jobs = await tbccReadGalleryJobs();
+        sendResponse({ ok: true, jobs });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e), jobs: [] });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-job-clear-stale") {
+    (async () => {
+      try {
+        const jobs = await tbccReadGalleryJobs();
+        const now = Date.now();
+        const staleMs = 15 * 60 * 1000;
+        const next = jobs.filter((j) => {
+          if (!j) return false;
+          if (now - (j.startedAt || 0) >= staleMs) {
+            void tbccClearImportPollAlarm(j.id);
+            return false;
+          }
+          if (tbccIsBackendImportTerminal(j.status)) {
+            void tbccClearImportPollAlarm(j.id);
+            return false;
+          }
+          return true;
+        });
+        const removed = jobs.length - next.length;
+        await tbccWriteGalleryJobs(next);
+        sendResponse({ ok: true, removed, jobs: next });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-poll-arm") {
+    (async () => {
+      try {
+        await tbccScheduleImportPollAlarm(msg.galleryJobId, msg.backendJobId);
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-reconcile") {
+    (async () => {
+      try {
+        const r = await tbccReconcileGalleryJobsWithServer();
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e), jobs: [] });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-cancel") {
+    (async () => {
+      try {
+        const backendJobId = msg.backendJobId ? String(msg.backendJobId) : "";
+        if (backendJobId && typeof tbccCancelBackendImportJob === "function") {
+          await tbccCancelBackendImportJob(backendJobId);
+        }
+        if (msg.galleryJobId) {
+          await tbccClearImportPollAlarm(msg.galleryJobId);
+          const jobs = await tbccReadGalleryJobs();
+          const j = jobs.find((x) => x && x.id === msg.galleryJobId);
+          if (j) {
+            j.status = "cancelled";
+            j.stage = "cancelled";
+            j.label = "Cancelled";
+            await tbccWriteGalleryJobs(jobs);
+          }
+        }
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-queue-pause-get") {
+    (async () => {
+      try {
+        const data = await chrome.storage.local.get(STORAGE_IMPORT_QUEUE_PAUSED);
+        sendResponse({ ok: true, paused: !!data[STORAGE_IMPORT_QUEUE_PAUSED] });
+      } catch (e) {
+        sendResponse({ ok: false, paused: false });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-queue-pause-set") {
+    (async () => {
+      try {
+        await chrome.storage.local.set({ [STORAGE_IMPORT_QUEUE_PAUSED]: !!msg.paused });
+        sendResponse({ ok: true, paused: !!msg.paused });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-import-queue-status") {
+    (async () => {
+      try {
+        const r = await fetch("http://localhost:8000/import/queue/status", { cache: "no-store" });
+        const data = await r.json();
+        sendResponse({ ok: r.ok, data });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-macro-model-search") {
+    (async () => {
+      try {
+        const r = await launchMacroModelSearch(msg.username || "");
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-launch-model-search-tabs") {
+    (async () => {
+      try {
+        await launchModelSearch(msg.username || "", null, msg.category || null);
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-record-username-archive") {
+    (async () => {
+      try {
+        const clean = normalizeUsernameCandidate(msg.username || "");
+        if (clean && typeof TbccMasterArchive !== "undefined") {
+          await TbccMasterArchive.recordUsername(clean, { source: msg.source || "copy" });
+        }
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-resolve-copy-media-url") {
+    (async () => {
+      try {
+        const tabId = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
+        const resolved = await tbccResolveBestCopyableMediaUrl(tabId, msg.url || "");
+        if (resolved && tbccIsStorableHttpUrl(resolved) && typeof TbccMasterArchive !== "undefined") {
+          void TbccMasterArchive.recordUrl(resolved, {
+            source: "copy_media",
+            ref: msg.pageUrl || "",
+          });
+        }
+        sendResponse({ ok: true, url: resolved || msg.url || "" });
+      } catch (e) {
+        sendResponse({ ok: false, url: msg.url || "", error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-job-end") {
+    (async () => {
+      try {
+        const jobs = await tbccReadGalleryJobs();
+        const job = jobs.find((j) => j.id === msg.id);
+        const next = jobs.filter((j) => j.id !== msg.id);
+        await tbccWriteGalleryJobs(next);
+        const outcome = msg.outcome && typeof msg.outcome === "object" ? msg.outcome : null;
+        if (outcome && outcome.message && outcome.notifySystem) {
+          notifyThrottled(
+            "job-outcome-" + (job && job.type ? job.type : "task"),
+            outcome.title || "TBCC",
+            outcome.message,
+            12000,
+            outcome.clickAction || null
+          );
+        }
+        if (next.length === 0) {
+          const lock = await tbccGetDockPanelLock();
+          if (lock && lock.locked) {
+            await chrome.storage.local.remove(STORAGE_GALLERY_DOCK_LOCK);
+            await tbccUpdateGalleryPanelOpenMode();
+            notifyThrottled(
+              "dock-done",
+              "TBCC",
+              "Docked gallery tasks finished — you can open TBCC again.",
+              30000
+            );
+          }
+        }
+        sendResponse({ ok: true, remaining: next.length });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-dock-get") {
+    (async () => {
+      try {
+        const jobs = await tbccReadGalleryJobs();
+        if (!jobs.length) {
+          await chrome.storage.local.remove(STORAGE_GALLERY_DOCK_LOCK);
+          await tbccUpdateGalleryPanelOpenMode();
+        }
+        const data = await chrome.storage.local.get(STORAGE_GALLERY_DOCKED_TAB);
+        const dock = data[STORAGE_GALLERY_DOCKED_TAB] || null;
+        if (dock && dock.tabId != null) {
+          try {
+            const t = await chrome.tabs.get(dock.tabId);
+            if (!t || !tbccIsInjectableHttpUrl(t.url)) {
+              await chrome.storage.local.remove(STORAGE_GALLERY_DOCKED_TAB);
+              sendResponse({ docked: false, dock: null });
+              return;
+            }
+            sendResponse({ docked: true, dock });
+          } catch (_) {
+            await chrome.storage.local.remove(STORAGE_GALLERY_DOCKED_TAB);
+            sendResponse({ docked: false, dock: null, stale: true });
+          }
+        } else {
+          sendResponse({ docked: false, dock: null });
+        }
+      } catch (e) {
+        sendResponse({ docked: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-dock-set") {
+    (async () => {
+      try {
+        if (msg.clear) {
+          await chrome.storage.local.remove(STORAGE_GALLERY_DOCKED_TAB);
+          await chrome.storage.local.remove(STORAGE_GALLERY_DOCK_LOCK);
+          await tbccUpdateGalleryPanelOpenMode();
+          sendResponse({ ok: true, docked: false });
+          return;
+        }
+        const tabId = msg.tabId;
+        if (tabId == null) {
+          sendResponse({ ok: false, error: "tabId required" });
+          return;
+        }
+        const t = await chrome.tabs.get(tabId);
+        const r = await tbccSetGalleryDockedTab(t);
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
   if (msg.action === "tbcc-proxy-thumb") {
     (async () => {
       const url = normalizeTbccMediaUrlForImport(msg.url);
@@ -1200,29 +2735,41 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: false });
         return;
       }
-      try {
-        const ab = await fetchUrlWithBrowserSession(url, "");
-        if (!ab || ab.byteLength < 24 || ab.byteLength > TBCC_THUMB_PROXY_MAX_BYTES) {
-          sendResponse({ ok: false });
-          return;
-        }
-        sendResponse({ ok: true, dataUrl: tbccArrayBufferToDataUrl(ab) });
-      } catch (_) {
-        sendResponse({ ok: false });
+      const cached = _tbccThumbCache.get(url);
+      if (cached) {
+        sendResponse({ ok: true, dataUrl: cached, cached: true });
+        return;
       }
+      const result = await _tbccThumbSchedule(async () => {
+        try {
+          const ab = await fetchUrlWithBrowserSession(url, "");
+          if (!ab || ab.byteLength < 24 || ab.byteLength > TBCC_THUMB_PROXY_MAX_BYTES) {
+            return { ok: false };
+          }
+          const dataUrl = tbccArrayBufferToDataUrl(ab);
+          _tbccThumbCachePut(url, dataUrl);
+          return { ok: true, dataUrl };
+        } catch (_) {
+          return { ok: false };
+        }
+      });
+      sendResponse(result);
     })();
     return true;
   }
   if (msg.action === "tbcc-import-bytes-session") {
     (async () => {
       try {
+        const sessionTabId = await tbccResolveSessionTabId(_sender, msg);
         const data = await importViaExtensionBytes(
           msg.url,
           msg.poolId ?? 1,
           !!msg.savedOnly,
           msg.source || "extension:gallery-session",
           msg.caption,
-          msg.refererPageUrl || ""
+          msg.refererPageUrl || "",
+          sessionTabId,
+          msg.galleryJobId || null
         );
         sendResponse(data);
       } catch (e) {
@@ -1239,7 +2786,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ error: "No URLs" });
           return;
         }
-        const data = await importViaExtensionBytesSavedBatch(urls, msg.caption);
+        const batchTabId = await tbccResolveSessionTabId(_sender, msg);
+        const data = await importViaExtensionBytesSavedBatch(urls, msg.caption, batchTabId);
         sendResponse(data);
       } catch (e) {
         sendResponse({ error: String(e.message || e) });
@@ -1251,9 +2799,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-content-fetch-bytes") {
     (async () => {
       try {
+        const tabId = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
         const buffer = await fetchUrlWithBrowserSession(
           normalizeTbccMediaUrlForImport(msg.url),
-          msg.refererPageUrl || ""
+          msg.refererPageUrl || "",
+          tabId
         );
         sendResponse({ ok: true, buffer });
       } catch (e) {
@@ -1365,8 +2915,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 function installContextMenus() {
-  /** Toolbar icon opens/closes the gallery side panel (no default_popup — popup would block this). */
-  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+  void tbccUpdateGalleryPanelOpenMode();
   chrome.contextMenus.removeAll(() => {
     const mac = (props) => {
       chrome.contextMenus.create(props, () => {
@@ -1381,6 +2930,16 @@ function installContextMenus() {
     mac({ id: "sendSelectionToTBCC", title: "TBCC: Save to pool (selected URL)", contexts: ["selection"] });
     mac({ id: "sendSelectionToSaved", title: "TBCC: Saved Messages (selected URL)", contexts: ["selection"] });
     mac({
+      id: "tbccAddVideoUrlToList",
+      title: "TBCC: Add URL to inbox",
+      contexts: ["selection", "link", "page", "frame", "video"],
+    });
+    mac({
+      id: "tbccAddAllVideoUrlsToList",
+      title: "TBCC: Save all video URLs to inbox",
+      contexts: ["page", "frame", "video", "link"],
+    });
+    mac({
       id: "tbccReverseImageFanout",
       title: "TBCC: Reverse image search",
       contexts: ["image"],
@@ -1389,6 +2948,17 @@ function installContextMenus() {
       id: "tbccCaptureTabReverse",
       title: "TBCC: Capture tab for reverse search",
       contexts: ["page", "frame"],
+    });
+    mac({
+      id: "tbccDockGallery",
+      title: "TBCC: Dock gallery to this tab",
+      contexts: ["page", "frame"],
+    });
+    mac({ id: "tbccActionOpenGallery", title: "TBCC: Open gallery", contexts: ["action"] });
+    mac({
+      id: "tbccActionDockGallery",
+      title: "TBCC: Open gallery (docked to this tab)",
+      contexts: ["action"],
     });
     void (async () => {
       try {
@@ -1401,6 +2971,7 @@ function installContextMenus() {
 }
 
 async function addModelSearchContextMenus(mac) {
+  const CTX_MS = ["selection", "link", "page", "frame", "video"];
   let cfg;
   try {
     cfg = await getMergedModelSearchSites();
@@ -1417,112 +2988,187 @@ async function addModelSearchContextMenus(mac) {
   mac({
     id: "tbccModelSearchRoot",
     title: "TBCC: Look up username",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_all_onlyfans",
     parentId: "tbccModelSearchRoot",
     title: "Open all enabled OnlyFans sources",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_all_livecams",
     parentId: "tbccModelSearchRoot",
     title: "Open all enabled live cam sources",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_all_videos",
     parentId: "tbccModelSearchRoot",
     title: "Open all enabled video sources",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
+  });
+  mac({
+    id: "tbccms_macro",
+    parentId: "tbccModelSearchRoot",
+    title: "Macro search (native report, all macro sources)",
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_sep_clip",
     parentId: "tbccModelSearchRoot",
     type: "separator",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_clip_onlyfans",
     parentId: "tbccModelSearchRoot",
     title: "Search copied username (OnlyFans sources)",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_clip_livecams",
     parentId: "tbccModelSearchRoot",
     title: "Search copied username (live cam sources)",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_clip_videos",
     parentId: "tbccModelSearchRoot",
     title: "Search copied username (video sources)",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_sep0",
     parentId: "tbccModelSearchRoot",
     type: "separator",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   mac({
     id: "tbccms_group_onlyfans",
     parentId: "tbccModelSearchRoot",
     title: "OnlyFans sources",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   for (const s of onlyfansSites) {
     mac({
       id: tbccMenuIdForSite(s.id),
       parentId: "tbccms_group_onlyfans",
       title: String(s.name || s.id).slice(0, 120),
-      contexts: ["selection", "link", "page"],
+      contexts: CTX_MS,
     });
   }
   mac({
     id: "tbccms_group_livecams",
     parentId: "tbccModelSearchRoot",
     title: "Live cam sources",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   for (const s of livecamSites) {
     mac({
       id: tbccMenuIdForSite(s.id),
       parentId: "tbccms_group_livecams",
       title: String(s.name || s.id).slice(0, 120),
-      contexts: ["selection", "link", "page"],
+      contexts: CTX_MS,
     });
   }
   mac({
     id: "tbccms_group_videos",
     parentId: "tbccModelSearchRoot",
     title: "Video sources",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
   });
   for (const s of videoSites) {
     mac({
       id: tbccMenuIdForSite(s.id),
       parentId: "tbccms_group_videos",
       title: String(s.name || s.id).slice(0, 120),
-      contexts: ["selection", "link", "page"],
+      contexts: CTX_MS,
     });
   }
   mac({
     id: "tbccms_bot_videofind",
     parentId: "tbccModelSearchRoot",
     title: "Send /videofind in payment bot",
-    contexts: ["selection", "link", "page"],
+    contexts: CTX_MS,
+  });
+  mac({
+    id: "tbccms_sep_saved_videos",
+    parentId: "tbccModelSearchRoot",
+    type: "separator",
+    contexts: CTX_MS,
+  });
+  mac({
+    id: "tbccAddVideoUrlToListNested",
+    parentId: "tbccModelSearchRoot",
+    title: "Add URL to TBCC inbox",
+    contexts: CTX_MS,
+  });
+  mac({
+    id: "tbccAddAllVideoUrlsToListNested",
+    parentId: "tbccModelSearchRoot",
+    title: "Save all video URLs to inbox (this page)",
+    contexts: CTX_MS,
   });
 }
 
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm || !alarm.name || !alarm.name.startsWith(TBCC_IMPORT_POLL_ALARM_PREFIX)) return;
+  const galleryJobId = alarm.name.slice(TBCC_IMPORT_POLL_ALARM_PREFIX.length);
+  void (async () => {
+    const jobs = await tbccReadGalleryJobs();
+    const j = jobs.find((x) => x && x.id === galleryJobId);
+    if (!j || !j.backendJobId) {
+      await tbccClearImportPollAlarm(galleryJobId);
+      return;
+    }
+    if (tbccIsBackendImportTerminal(j.status)) {
+      await tbccClearImportPollAlarm(galleryJobId);
+      return;
+    }
+    await tbccPollImportJobViaAlarm(galleryJobId, j.backendJobId);
+  })();
+});
+
 chrome.runtime.onInstalled.addListener(() => {
   installContextMenus();
+  void tbccBootstrapImportJobRecovery();
+  void (async () => {
+    try {
+      if (typeof TbccMasterArchive !== "undefined") {
+        const arch = await TbccMasterArchive.restoreFromBackupIfEmpty();
+        if (arch.restored) {
+          notify("TBCC", `Restored ${arch.count} master archive entries from backup.`);
+        }
+        const inbox = await TbccMasterArchive.restoreInboxFromMirrorIfEmpty(
+          async () => {
+            const data = await chrome.storage.local.get(STORAGE_SAVED_VIDEO_URLS);
+            return Array.isArray(data[STORAGE_SAVED_VIDEO_URLS]) ? data[STORAGE_SAVED_VIDEO_URLS] : [];
+          },
+          async (rows) => {
+            await chrome.storage.local.set({ [STORAGE_SAVED_VIDEO_URLS]: rows.slice(0, TBCC_SAVED_VIDEO_URLS_CAP) });
+          }
+        );
+        if (inbox.restored) {
+          notify("TBCC", `Restored ${inbox.count} URL inbox entries from mirror.`);
+        }
+      }
+    } catch (e) {
+      console.warn("TBCC storage recovery", e);
+    }
+  })();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   installContextMenus();
+  void tbccBootstrapImportJobRecovery();
+  void (async () => {
+    const jobs = await tbccReadGalleryJobs();
+    if (!jobs.length) {
+      await chrome.storage.local.remove(STORAGE_GALLERY_DOCK_LOCK);
+    }
+    await tbccUpdateGalleryPanelOpenMode();
+  })();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -1544,6 +3190,21 @@ async function clearPageOverlayModeForClosedGallery() {
   } catch (_) {}
 }
 
+/** Only runs when dock lock is active (openPanelOnActionClick is false). Normal clicks use native side-panel open. */
+chrome.action.onClicked.addListener((tab) => {
+  void (async () => {
+    const lock = await tbccGetDockPanelLock();
+    if (!lock || !lock.locked || !(lock.jobCount > 0)) return;
+    notifyThrottled(
+      "dock-lock",
+      "TBCC",
+      `${lock.jobCount} task(s) still running on ${lock.hostname || lock.title || "docked tab"}. Wait for the finished notification, or use pop-out (⎘) on that tab.`,
+      15000
+    );
+    void tab;
+  })();
+});
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "tbcc-gallery-sidepanel") return;
   port.onDisconnect.addListener(() => {
@@ -1560,15 +3221,107 @@ try {
   }
 } catch (_) {}
 
+const _tbccNotifyThrottleAt = new Map();
+
+/** System notifications — keep cadence low so alerts stay meaningful. */
+function notifyThrottled(key, title, message, minIntervalMs = 12000, clickAction = null) {
+  const k = String(key || title || "tbcc");
+  const now = Date.now();
+  const last = _tbccNotifyThrottleAt.get(k) || 0;
+  if (now - last < minIntervalMs) return;
+  _tbccNotifyThrottleAt.set(k, now);
+  notify(title, message, clickAction || null);
+}
+
 /**
  * Packaged PNG only — data: URLs and tiny/decoding edge cases often throw
  * "Unable to download all specified images" (extensions::notifications) in Brave/Chromium MV3.
  */
-function notify(title, message) {
+function tbccFormatImportError(msg) {
+  const s = String(msg || "Import failed").trim();
+  if (/telegram session|wrong session id|admin\.session|login_telethon_sessions/i.test(s)) {
+    return s.length > 420 ? s.slice(0, 420) + "…" : s;
+  }
+  if (s.includes("fetch") || s.includes("Failed to fetch")) {
+    return "Cannot reach backend at localhost:8000. Is it running? Check GET /health/telegram for Telethon.";
+  }
+  return s.length > 280 ? s.slice(0, 280) + "…" : s;
+}
+
+const TBCC_NOTIFICATION_ACTIONS_KEY = "tbccNotificationActions";
+
+async function tbccStoreNotificationAction(notificationId, clickAction) {
+  if (!clickAction || typeof clickAction !== "object") return;
+  try {
+    const data = await chrome.storage.session.get(TBCC_NOTIFICATION_ACTIONS_KEY);
+    const map = data[TBCC_NOTIFICATION_ACTIONS_KEY] || {};
+    map[notificationId] = clickAction;
+    await chrome.storage.session.set({ [TBCC_NOTIFICATION_ACTIONS_KEY]: map });
+  } catch (_) {}
+}
+
+async function tbccTakeNotificationAction(notificationId) {
+  try {
+    const data = await chrome.storage.session.get(TBCC_NOTIFICATION_ACTIONS_KEY);
+    const map = data[TBCC_NOTIFICATION_ACTIONS_KEY] || {};
+    const action = map[notificationId] || null;
+    if (action) {
+      delete map[notificationId];
+      await chrome.storage.session.set({ [TBCC_NOTIFICATION_ACTIONS_KEY]: map });
+    }
+    return action;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function tbccOpenTelegramSavedMessages() {
+  let userId = null;
+  let username = "";
+  try {
+    const r = await fetch("http://localhost:8000/health/telegram", { cache: "no-store" });
+    const j = await r.json();
+    if (j && j.ok) {
+      userId = j.user_id != null ? Number(j.user_id) : null;
+      username = String(j.username || "").trim();
+    }
+  } catch (_) {}
+  const urls = [];
+  if (Number.isFinite(userId) && userId > 0) {
+    urls.push("tg://user?id=" + userId);
+    urls.push("https://web.telegram.org/k/#" + userId);
+  }
+  if (username) urls.push("https://t.me/" + encodeURIComponent(username));
+  urls.push("https://web.telegram.org/k/");
+  for (const url of urls) {
+    try {
+      await chrome.tabs.create({ url, active: true });
+      return;
+    } catch (_) {}
+  }
+}
+
+async function tbccHandleNotificationClickAction(clickAction) {
+  if (!clickAction || typeof clickAction !== "object") return;
+  if (clickAction.type === "telegram_saved") {
+    await tbccOpenTelegramSavedMessages();
+    return;
+  }
+  const url = String(clickAction.url || "").trim();
+  if (clickAction.type === "url" && /^https?:\/\//i.test(url)) {
+    try {
+      await chrome.tabs.create({ url, active: true });
+    } catch (_) {}
+  }
+}
+
+function notify(title, message, clickAction) {
   try {
     const iconUrl = chrome.runtime.getURL("icons/icon16.png");
+    const id = "tbcc-" + Date.now();
+    if (clickAction) void tbccStoreNotificationAction(id, clickAction);
     chrome.notifications.create(
-      "tbcc-" + Date.now(),
+      id,
       {
         type: "basic",
         iconUrl,
@@ -1585,11 +3338,23 @@ function notify(title, message) {
   }
 }
 
+chrome.notifications.onClicked.addListener((notificationId) => {
+  void (async () => {
+    const action = await tbccTakeNotificationAction(notificationId);
+    if (action) await tbccHandleNotificationClickAction(action);
+    try {
+      chrome.notifications.clear(notificationId);
+    } catch (_) {}
+  })();
+});
+
 function isSavedMenuId(id) {
   return id === "sendToSaved" || id === "sendPageToSaved" || id === "sendSelectionToSaved";
 }
 
 function tbccNormalizeAutoTagToken(raw) {
+  const u = typeof TbccAutoTagUtils !== "undefined" ? TbccAutoTagUtils : null;
+  if (u && u.normalizeAutoTagCandidate) return u.normalizeAutoTagCandidate(raw);
   const s = String(raw || "")
     .trim()
     .replace(/^#+/u, "")
@@ -1608,49 +3373,28 @@ function tbccDisplayTagToHashtag(tag) {
     .trim()
     .replace(/^#+/u, "");
   if (!raw) return "";
+  const u = typeof TbccAutoTagUtils !== "undefined" ? TbccAutoTagUtils : null;
+  if (u && u.isJunkAutoTagToken && u.isJunkAutoTagToken(raw)) return "";
   const compact = raw.replace(/\s+/gu, "");
   if (!compact) return "";
   const capped = compact.length > 42 ? compact.slice(0, 42) : compact;
   return "#" + capped;
 }
 
-function tbccCollectAutoTagsFromUrl(rawUrl, outSet, includeHost) {
-  try {
-    const u = new URL(String(rawUrl || "").trim());
-    const host = String(u.hostname || "").replace(/^www\./i, "");
-    if (includeHost) {
-      const hNorm = tbccNormalizeAutoTagToken(host);
-      if (hNorm) outSet.add(hNorm);
-    }
-    host
-      .split(".")
-      .filter(Boolean)
-      .forEach((part) => {
-        const p = tbccNormalizeAutoTagToken(part);
-        if (p) outSet.add(p);
-      });
-    String(u.pathname || "")
-      .split("/")
-      .map((part) => decodeURIComponent(part || "").trim())
-      .filter(Boolean)
-      .forEach((part) => {
-        part
-          .split(/[^a-zA-Z0-9]+/g)
-          .filter(Boolean)
-          .forEach((bit) => {
-            const b = tbccNormalizeAutoTagToken(bit);
-            if (b) outSet.add(b);
-          });
-      });
-  } catch (_) {}
+function tbccCollectSemanticTagsFromUrl(rawUrl, outSet) {
+  const u = typeof TbccAutoTagUtils !== "undefined" ? TbccAutoTagUtils : null;
+  if (!u || !u.extractSemanticTagsFromUrl) return;
+  for (const t of u.extractSemanticTagsFromUrl(rawUrl)) {
+    const b = tbccNormalizeAutoTagToken(t);
+    if (b) outSet.add(b);
+  }
 }
 
 function tbccBuildAutoTagPayload(url, refererPageUrl) {
   const tags = new Set();
   const ref = String(refererPageUrl || "").trim();
   const primary = ref && /^https?:\/\//i.test(ref) ? ref : String(url || "").trim();
-  tbccCollectAutoTagsFromUrl(primary, tags, true);
-  tbccCollectAutoTagsFromUrl(String(url || "").trim(), tags, false);
+  tbccCollectSemanticTagsFromUrl(primary, tags);
   const list = [...tags];
   const csv = list.join(", ");
   const hashtags = list.map((t) => tbccDisplayTagToHashtag(t)).filter(Boolean);
@@ -1690,12 +3434,208 @@ function resolveUrlFromContextClick(info, tab) {
   return (info.srcUrl || info.linkUrl || "").trim();
 }
 
-async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagPayload) {
-  const cleanUrl = String(url || "").trim();
+function tbccIsStorableHttpUrl(u) {
+  const s = String(u || "").trim();
+  return s && /^https?:\/\//i.test(s) && !s.startsWith("blob:") && !s.startsWith("data:");
+}
+
+/** Prefer link / watch page over raw media src when several are present. */
+function resolveUrlForSavedVideoList(info, tab) {
+  const link = (info.linkUrl || "").trim();
+  if (tbccIsStorableHttpUrl(link)) return link;
+  const src = (info.srcUrl || "").trim();
+  if (tbccIsStorableHttpUrl(src)) return src;
+  const page = (info.pageUrl || tab?.url || "").trim();
+  if (tbccIsStorableHttpUrl(page) && !/^chrome-extension:/i.test(page)) return page;
+  let t = (info.selectionText || "").trim().replace(/^["'\s]+|["'\s]+$/g, "");
+  const m = t.match(/https?:\/\/[^\s"'<>\])]+/i);
+  if (m) return m[0].replace(/[.,);:]+$/g, "");
+  return "";
+}
+
+/** Skip HLS/DASH segment noise when logging or bulk-saving video URLs. */
+function tbccInboxWorthyNetVideoUrl(url) {
+  if (!tbccIsStorableHttpUrl(url)) return false;
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    if (/\.(m4s|ts|aac)(\?|$)/i.test(path)) return false;
+    return tbccWebRequestUrlLooksLikeMedia(url) || tbccWebRequestUrlLooksLikeHlsManifest(url);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function tbccCollectVideoUrlsFromTab(tabId) {
+  if (tabId == null || tabId < 0) return [];
+  const merged = new Set();
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ["media-url-guards.js", "auto-tag-utils.js", "capture.js"],
+    });
+    const injected = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () =>
+        typeof window.__tbccCollectVideoUrlsForInbox === "function"
+          ? window.__tbccCollectVideoUrlsForInbox()
+          : [],
+    });
+    for (const row of injected || []) {
+      const list = row && row.result;
+      if (!Array.isArray(list)) continue;
+      for (const u of list) {
+        if (tbccIsStorableHttpUrl(u)) merged.add(String(u).trim());
+      }
+    }
+  } catch (e) {
+    console.warn("TBCC collectVideoUrlsFromTab inject", e);
+  }
+  try {
+    const got = await chrome.storage.session.get([
+      `tbcc_net_media_${tabId}`,
+      `tbcc_net_manifest_${tabId}`,
+    ]);
+    const net = got[`tbcc_net_media_${tabId}`];
+    if (Array.isArray(net)) {
+      for (const u of net) {
+        if (tbccInboxWorthyNetVideoUrl(u)) merged.add(String(u).trim());
+      }
+    }
+    const mans = got[`tbcc_net_manifest_${tabId}`];
+    if (Array.isArray(mans)) {
+      for (const u of mans) {
+        if (tbccIsStorableHttpUrl(u)) merged.add(String(u).trim());
+      }
+    }
+  } catch (_) {}
+  return [...merged];
+}
+
+async function tbccAppendSavedVideoUrlsBulk(urls, refPageUrl, opts) {
+  const cleanList = [...new Set(urls.map((u) => String(u || "").trim()).filter((u) => tbccIsStorableHttpUrl(u)))];
+  if (!cleanList.length) return { ok: false, error: "No video URLs found on this page.", added: 0, duplicate: 0 };
+  const data = await chrome.storage.local.get([STORAGE_SAVED_VIDEO_URLS, "tbccPoolId"]);
+  let arr = Array.isArray(data[STORAGE_SAVED_VIDEO_URLS]) ? data[STORAGE_SAVED_VIDEO_URLS] : [];
+  const existing = new Set(arr.map((x) => (x && x.url ? String(x.url).trim() : "")).filter(Boolean));
+  const ref = String(refPageUrl || "").trim();
+  const refOk = ref && tbccIsStorableHttpUrl(ref) && !/^chrome-extension:/i.test(ref) ? ref : undefined;
+  let poolId = opts && opts.poolId != null ? parseInt(opts.poolId, 10) : NaN;
+  if (!Number.isFinite(poolId) || poolId < 1) {
+    const fromStorage = parseInt(data.tbccPoolId, 10);
+    poolId = Number.isFinite(fromStorage) && fromStorage > 0 ? fromStorage : null;
+  } else {
+    poolId = poolId > 0 ? poolId : null;
+  }
+  const tagsCsv = opts && opts.tagsCsv ? String(opts.tagsCsv).trim() : "";
+  const note = opts && opts.note ? String(opts.note).trim() : "";
+  let destType = opts && opts.destType === "loot_modifier" ? "loot_modifier" : "pool";
+  if (!opts || !opts.destType) {
+    const destStored = await chrome.storage.local.get(["tbccInboxDefaultDestV1"]);
+    if (destStored.tbccInboxDefaultDestV1 === "loot_modifier") destType = "loot_modifier";
+  }
+  let added = 0;
+  let duplicate = 0;
+  const newRows = [];
+  const baseTs = Date.now();
+  for (let i = 0; i < cleanList.length; i++) {
+    const url = cleanList[i];
+    if (existing.has(url)) {
+      duplicate++;
+      continue;
+    }
+    existing.add(url);
+    newRows.push({
+      url,
+      addedAt: baseTs - i,
+      ref: refOk,
+      destType,
+      poolId: destType === "pool" ? poolId : null,
+      tagsCsv,
+      note,
+      status: "queued",
+    });
+    added++;
+  }
+  if (!newRows.length) return { ok: true, added: 0, duplicate, total: cleanList.length };
+  arr = [...newRows, ...arr].slice(0, TBCC_SAVED_VIDEO_URLS_CAP);
+  await chrome.storage.local.set({ [STORAGE_SAVED_VIDEO_URLS]: arr });
+  await tbccAfterInboxSave(arr, newRows.map((r) => r.url));
+  return { ok: true, added, duplicate, total: cleanList.length };
+}
+
+async function tbccAppendSavedVideoUrl(url, refPageUrl, opts) {
+  const clean = String(url || "").trim();
+  if (!tbccIsStorableHttpUrl(clean)) return { ok: false, error: "Need an http(s) URL (not blob/data)." };
+  const data = await chrome.storage.local.get([STORAGE_SAVED_VIDEO_URLS, "tbccPoolId"]);
+  let arr = Array.isArray(data[STORAGE_SAVED_VIDEO_URLS]) ? data[STORAGE_SAVED_VIDEO_URLS] : [];
+  const dup = arr.some((x) => x && String(x.url).trim() === clean);
+  if (dup) return { ok: true, duplicate: true };
+  const ref = String(refPageUrl || "").trim();
+  const refOk = ref && tbccIsStorableHttpUrl(ref) && !/^chrome-extension:/i.test(ref) ? ref : undefined;
+  let poolId = opts && opts.poolId != null ? parseInt(opts.poolId, 10) : NaN;
+  if (!Number.isFinite(poolId) || poolId < 1) {
+    const fromStorage = parseInt(data.tbccPoolId, 10);
+    poolId = Number.isFinite(fromStorage) && fromStorage > 0 ? fromStorage : null;
+  } else {
+    poolId = poolId > 0 ? poolId : null;
+  }
+  const tagsCsv = opts && opts.tagsCsv ? String(opts.tagsCsv).trim() : "";
+  const note = opts && opts.note ? String(opts.note).trim() : "";
+  let destType = opts && opts.destType === "loot_modifier" ? "loot_modifier" : "pool";
+  if (!opts || !opts.destType) {
+    const destStored = await chrome.storage.local.get(["tbccInboxDefaultDestV1"]);
+    if (destStored.tbccInboxDefaultDestV1 === "loot_modifier") destType = "loot_modifier";
+  }
+  arr = [
+    {
+      url: clean,
+      addedAt: Date.now(),
+      ref: refOk,
+      destType,
+      poolId: destType === "pool" ? poolId : null,
+      tagsCsv,
+      note,
+      status: "queued",
+    },
+    ...arr,
+  ].slice(0, TBCC_SAVED_VIDEO_URLS_CAP);
+  await chrome.storage.local.set({ [STORAGE_SAVED_VIDEO_URLS]: arr });
+  await tbccAfterInboxSave(arr, [clean]);
+  return { ok: true, duplicate: false };
+}
+
+async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagPayload, tabId) {
+  let cleanUrl = String(url || "").trim();
   if (!cleanUrl) return { ok: false, error: "No URL for this action." };
-  if (!/^https?:\/\//i.test(cleanUrl)) return { ok: false, error: "Only http(s) URLs are supported." };
-  if (cleanUrl.startsWith("blob:") || cleanUrl.startsWith("data:")) {
-    return { ok: false, error: "Blob/data URLs cannot be imported. Use a direct link." };
+  if (tabId != null) {
+    cleanUrl = await resolveMediaUrlFromTab(tabId, cleanUrl);
+  }
+  if (!/^https?:\/\//i.test(cleanUrl)) {
+    if (/^blob:|^data:/i.test(cleanUrl)) {
+      return { ok: false, error: "Blob/data URLs cannot be imported. Play the video on the page, then right-click the video." };
+    }
+    return { ok: false, error: "Only http(s) URLs are supported." };
+  }
+  if (isEromeMediaUrl(cleanUrl) && tabId != null) {
+    cleanUrl = await eromeResolveUrlFromActiveTab(tabId, cleanUrl);
+  }
+  let referer = String(refererPageUrl || "").trim().split("#")[0];
+  if (isEromeMediaUrl(cleanUrl)) {
+    const album = eromeAlbumPageFromMediaUrl(cleanUrl);
+    if (album) referer = album;
+    else if (referer && !isEromeAlbumPageUrl(referer)) {
+      try {
+        if (!isEromeHost(new URL(referer).hostname)) referer = "";
+      } catch (_) {
+        referer = "";
+      }
+    }
+  }
+  if (!referer && tabId != null) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && tab.url && tbccIsInjectableHttpUrl(tab.url)) referer = tab.url.split("#")[0];
+    } catch (_) {}
   }
   const { tbccPoolId } = await chrome.storage.local.get("tbccPoolId");
   const poolId = tbccPoolId ?? 1;
@@ -1705,15 +3645,46 @@ async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagP
     autoTagPayload && autoTagPayload.caption ? String(autoTagPayload.caption).trim() : "";
   const body = { url: cleanUrl, pool_id: poolId };
   if (savedOnly) body.saved_only = true;
+
   let data;
-  if (savedOnly || hostNeedsSessionFetch(cleanUrl)) {
+
+  if (savedOnly) {
+    const backendTry = await tryBackendSavedImport(body);
+    if (backendTry.ok) return { ok: true, data: backendTry.data };
+
+    if (tabId != null && referer) {
+      const tabBytes = await fetchMediaBytesFromTab(tabId, cleanUrl, referer);
+      if (tabBytes instanceof ArrayBuffer && tabBytes.byteLength > 0) {
+        data = await postBytesToTbcc(
+          tabBytes,
+          cleanUrl,
+          poolId,
+          true,
+          (source || "extension:context-menu") + ":tab-fetch",
+          autoCaption
+        );
+        if (data && !data.error && data.status === "saved_only") return { ok: true, data };
+      }
+    }
+
     data = await importViaExtensionBytes(
       cleanUrl,
       poolId,
-      savedOnly,
+      true,
       source || "extension:context-menu",
       autoCaption,
-      refererPageUrl || ""
+      referer,
+      tabId
+    );
+  } else if (hostNeedsSessionFetch(cleanUrl)) {
+    data = await importViaExtensionBytes(
+      cleanUrl,
+      poolId,
+      false,
+      source || "extension:context-menu",
+      autoCaption,
+      referer,
+      tabId
     );
   } else {
     const resp = await fetch(API_URL, {
@@ -1727,15 +3698,16 @@ async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagP
     } catch (_) {
       return { ok: false, error: resp.ok ? "Invalid server response." : `Server error ${resp.status}` };
     }
-    if (data.error && /403|Forbidden|Could not download/i.test(String(data.error))) {
+    if (data.error && shouldFallbackToSessionFetch(data.error)) {
       try {
         data = await importViaExtensionBytes(
           cleanUrl,
           poolId,
-          savedOnly,
+          false,
           (source || "extension:context-menu") + "-fallback",
           autoCaption,
-          refererPageUrl || ""
+          referer,
+          tabId
         );
       } catch (_) {
         return { ok: false, error: String(data.error || "Import blocked (403)") };
@@ -1743,6 +3715,9 @@ async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagP
     }
   }
   if (data && data.error) return { ok: false, error: String(data.error), data };
+  if (savedOnly && (!data || data.status !== "saved_only")) {
+    return { ok: false, error: (data && data.reason) || "Did not save to Saved Messages", data };
+  }
   if (!savedOnly && data && data.media_id && autoTagsCsv) {
     try {
       await tbccApplyTagsToImportedMediaIds([data.media_id], autoTagsCsv);
@@ -1762,8 +3737,154 @@ async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagP
   return { ok: true, data };
 }
 
+async function tbccSetGalleryDockedTab(tab, opts) {
+  const openPanel = !!(opts && opts.openPanel);
+  if (!tab || tab.id == null || !tbccIsInjectableHttpUrl(tab.url)) {
+    return { ok: false, error: "Need an http(s) tab to dock." };
+  }
+  let hostname = "";
+  try {
+    hostname = new URL(tab.url).hostname.replace(/^www\./, "");
+  } catch (_) {}
+  const payload = {
+    tabId: tab.id,
+    url: tab.url || "",
+    hostname,
+    title: (tab.title || hostname || "Tab").slice(0, 120),
+    dockedAt: Date.now(),
+  };
+  await chrome.storage.local.set({ [STORAGE_GALLERY_DOCKED_TAB]: payload });
+  if (openPanel) {
+    try {
+      const sp = chrome.sidePanel;
+      if (sp && tab.windowId != null) {
+        await sp.open({ windowId: tab.windowId });
+        if (sp.setOptions) {
+          await sp.setOptions({ tabId: tab.id, path: "gallery.html", enabled: true });
+        }
+      }
+    } catch (_) {}
+  }
+  return { ok: true, dock: payload };
+}
+
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const id = String(info.menuItemId || "");
+
+  if (id === "tbccActionOpenGallery") {
+    if (await tbccIsGalleryToolbarLocked()) {
+      const lock = await tbccGetDockPanelLock();
+      notifyThrottled(
+        "dock-lock",
+        "TBCC",
+        `${lock?.jobCount || 0} task(s) still running on ${lock?.hostname || lock?.title || "docked tab"}. Wait for the finished notification.`,
+        15000
+      );
+      return;
+    }
+    try {
+      const windowId = tab && tab.windowId != null ? tab.windowId : undefined;
+      if (windowId == null) {
+        const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        if (active && active.windowId != null) {
+          await chrome.sidePanel.open({ windowId: active.windowId });
+          return;
+        }
+        notifyThrottled("open-fail", "TBCC", "No browser window to open the gallery.", 8000);
+        return;
+      }
+      await chrome.sidePanel.open({ windowId });
+    } catch (e) {
+      notifyThrottled("open-fail", "TBCC", String((e && e.message) || e), 8000);
+    }
+    return;
+  }
+
+  if (id === "tbccActionDockGallery" || id === "tbccDockGallery") {
+    let dockTab = tab;
+    if ((!dockTab || dockTab.id == null) && id === "tbccActionDockGallery") {
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      dockTab = active;
+    }
+    if (!dockTab || dockTab.id == null) {
+      notifyThrottled("dock-fail", "TBCC", "No tab to dock — focus an http(s) page first.", 8000);
+      return;
+    }
+    if (!tbccIsInjectableHttpUrl(dockTab.url)) {
+      notifyThrottled(
+        "dock-fail",
+        "TBCC",
+        "Dock needs a normal http(s) page tab (not chrome:// or the extension).",
+        8000
+      );
+      return;
+    }
+    try {
+      const r = await tbccSetGalleryDockedTab(dockTab, { openPanel: true });
+      if (!r.ok) {
+        notifyThrottled("dock-fail", "TBCC", r.error || "Could not dock.", 8000);
+        return;
+      }
+    } catch (e) {
+      notifyThrottled("dock-fail", "TBCC", String(e && e.message ? e.message : e), 8000);
+    }
+    return;
+  }
+
+  if (id === "tbccAddVideoUrlToList" || id === "tbccAddVideoUrlToListNested") {
+    const url = resolveUrlForSavedVideoList(info, tab);
+    if (!url) {
+      notify(
+        "TBCC",
+        "No URL to save. Right-click a link, the page, a video, or select an https URL in text first."
+      );
+      return;
+    }
+    try {
+      const r = await tbccAppendSavedVideoUrl(url, (tab && tab.url) || "");
+      if (!r.ok) {
+        notify("TBCC", r.error || "Could not save.");
+        return;
+      }
+      if (r.duplicate) notify("TBCC", "Already in URL inbox.");
+      else notify("TBCC", "Added to URL inbox (Gallery → Inbox).");
+    } catch (e) {
+      notify("TBCC", String(e && e.message ? e.message : e));
+    }
+    return;
+  }
+
+  if (id === "tbccAddAllVideoUrlsToList" || id === "tbccAddAllVideoUrlsToListNested") {
+    if (!tab || tab.id == null) {
+      notify("TBCC", "No active tab to scan.");
+      return;
+    }
+    if (!tbccIsInjectableHttpUrl(tab.url)) {
+      notify("TBCC", "Open an http(s) page first (not chrome:// or the extension).");
+      return;
+    }
+    try {
+      notify("TBCC", "Scanning page for video URLs…");
+      const urls = await tbccCollectVideoUrlsFromTab(tab.id);
+      const r = await tbccAppendSavedVideoUrlsBulk(urls, tab.url || "");
+      if (!r.ok) {
+        notify("TBCC", r.error || "No video URLs found.");
+        return;
+      }
+      const parts = [];
+      if (r.added) parts.push(`${r.added} added`);
+      if (r.duplicate) parts.push(`${r.duplicate} already in inbox`);
+      notify(
+        "TBCC",
+        parts.length
+          ? parts.join(", ") + " — Gallery → Inbox"
+          : `Found ${r.total || 0} URL(s); all were already in the inbox.`
+      );
+    } catch (e) {
+      notify("TBCC", String(e && e.message ? e.message : e));
+    }
+    return;
+  }
 
   if (id === "tbccms_clip_onlyfans" || id === "tbccms_clip_livecams" || id === "tbccms_clip_videos") {
     const data = await chrome.storage.local.get(STORAGE_LAST_COPIED_USERNAME);
@@ -1779,6 +3900,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
           ? MODEL_SEARCH_CATEGORY_VIDEOS
           : MODEL_SEARCH_CATEGORY_ONLYFANS;
     await launchModelSearch(username, null, category);
+    return;
+  }
+
+  if (id === "tbccms_macro") {
+    const username = await resolveModelSearchUsernameFromContext(info, tab);
+    if (!username) {
+      notify("TBCC", "Could not detect a username. Try right-clicking directly on @username.");
+      return;
+    }
+    await launchMacroModelSearch(username);
     return;
   }
 
@@ -1873,14 +4004,13 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       savedOnly,
       "extension:context-menu",
       (tab && tab.url) || "",
-      autoTagPayload
+      autoTagPayload,
+      tab && tab.id != null ? tab.id : null
     );
     if (!result.ok) {
       notify(
         "TBCC Import Failed",
-        String(result.error || "Import failed").length > 280
-          ? String(result.error || "Import failed").slice(0, 280) + "…"
-          : String(result.error || "Import failed")
+        tbccFormatImportError(result.error || "Import failed")
       );
       return;
     }
@@ -1898,9 +4028,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     const msg = e && e.message ? e.message : "Unknown error";
     notify(
       "TBCC Import Failed",
-      msg.includes("fetch") || msg.includes("Failed")
-        ? "Cannot reach backend at localhost:8000. Is it running?"
-        : msg
+      tbccFormatImportError(msg)
     );
   }
 });
@@ -1975,7 +4103,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           !!msg.savedOnly,
           "extension:page-media-menu",
           msg.refererPageUrl || "",
-          autoTagPayload
+          autoTagPayload,
+          _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null
         );
         if (!result.ok) {
           sendResponse({ ok: false, error: result.error || "Import failed" });

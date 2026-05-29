@@ -1,6 +1,7 @@
 from .base import Base
 from .media import Media
 from .source import Source
+from .scrape_run import ScrapeRun
 from .content_pool import ContentPool
 from .bot import Bot
 from .subscription import Subscription
@@ -14,6 +15,15 @@ from .tbcc_tag import TbccTag, MediaTagLink
 from .post_outbound_event import PostOutboundEvent
 from .link_resolver_request import LinkResolverRequest
 from .loot_bot_settings import LootBotSettings
+from .caption_snippet import CaptionSnippet
+from .custom_emoji_preset import CustomEmojiPreset
+from .emoji_factory_sketch import EmojiFactorySketchPage
+from .listening_relay_settings import ListeningRelaySettings
+from .zip_bundle_settings import ZipBundleSettings
+from .gallery_send_promo_settings import GallerySendPromoSettings
+from .promo_affiliate_link import PromoAffiliateLink
+from .capture_archive_entry import CaptureArchiveEntry
+from .import_job import ImportJob
 from .loot import (
     LootDropEvent,
     LootGameConfig,
@@ -21,6 +31,8 @@ from .loot import (
     LootModifier,
     LootModifierTagWeight,
     LootPlayerMediaSeen,
+    LootPlayerStats,
+    LootReferralTracking,
     LootPlayerModifierSeen,
     LootPoolEligibility,
     LootSession,
@@ -30,6 +42,7 @@ __all__ = [
     "Base",
     "Media",
     "Source",
+    "ScrapeRun",
     "ContentPool",
     "Bot",
     "Subscription",
@@ -49,8 +62,19 @@ __all__ = [
     "LootModifier",
     "LootModifierTagWeight",
     "LootPlayerMediaSeen",
+    "LootPlayerStats",
+    "LootReferralTracking",
     "LootPlayerModifierSeen",
     "LootPoolEligibility",
     "LootSession",
     "LootBotSettings",
+    "CaptionSnippet",
+    "CustomEmojiPreset",
+    "EmojiFactorySketchPage",
+    "ListeningRelaySettings",
+    "ZipBundleSettings",
+    "GallerySendPromoSettings",
+    "PromoAffiliateLink",
+    "CaptureArchiveEntry",
+    "ImportJob",
 ]

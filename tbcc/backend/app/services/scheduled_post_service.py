@@ -27,8 +27,30 @@ from app.models.channel import Channel
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.promo_storage import promo_path_from_public_url
 from app.utils.telegram_peer import normalize_telethon_peer_identifier
+from app.services.telegram_custom_emoji import telethon_message_kwargs
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_telethon_html_to_kwargs(kwargs: dict, html: str | None, *, field: str) -> None:
+    """
+    Merge telethon_message_kwargs into send_message/send_file kwargs.
+    field: 'message' | 'caption'
+    """
+    empty = "(no content)" if field == "message" else ""
+    mk = telethon_message_kwargs(html, empty_fallback=empty)
+    text = mk.get("message", "")
+    if field == "caption":
+        if not text:
+            return
+        kwargs["caption"] = text
+    else:
+        kwargs[field] = text or empty
+    if mk.get("formatting_entities"):
+        kwargs["formatting_entities"] = mk["formatting_entities"]
+        kwargs.pop("parse_mode", None)
+    elif mk.get("parse_mode"):
+        kwargs["parse_mode"] = mk["parse_mode"]
 
 
 def _log_chat_restricted_help(channel_identifier: str) -> None:
@@ -431,90 +453,57 @@ async def _execute_telegram_scheduled_send(
                         send_medias.append(raw)
                 else:
                     send_medias.append(raw)
+            file_kw: dict = {
+                "buttons": reply_markup,
+                "reply_to": reply_to,
+                "force_document": False,
+                **silent_kw,
+            }
+            _apply_telethon_html_to_kwargs(file_kw, caption, field="caption")
             if len(send_medias) == 1 and isinstance(send_medias[0], io.BytesIO):
                 f = send_medias[0]
                 f.seek(0)
                 uploaded = await client.upload_file(f)
-                sent_result = await client.send_file(
-                    channel_identifier,
-                    uploaded,
-                    caption=caption or None,
-                    parse_mode="html",
-                    buttons=reply_markup,
-                    reply_to=reply_to,
-                    force_document=False,
-                    **silent_kw,
-                )
+                sent_result = await client.send_file(channel_identifier, uploaded, **file_kw)
             elif len(send_medias) == 1:
-                sent_result = await client.send_file(
-                    channel_identifier,
-                    send_medias[0],
-                    caption=caption or None,
-                    parse_mode="html",
-                    buttons=reply_markup,
-                    reply_to=reply_to,
-                    force_document=False,
-                    **silent_kw,
-                )
+                sent_result = await client.send_file(channel_identifier, send_medias[0], **file_kw)
             else:
-                sent_result = await client.send_file(
-                    channel_identifier,
-                    send_medias,
-                    caption=caption or None,
-                    parse_mode="html",
-                    buttons=reply_markup,
-                    reply_to=reply_to,
-                    force_document=False,
-                    **silent_kw,
-                )
+                sent_result = await client.send_file(channel_identifier, send_medias, **file_kw)
         else:
-            sent_result = await client.send_message(
-                channel_identifier,
-                caption or "(no content)",
-                parse_mode="html",
-                buttons=reply_markup,
-                reply_to=reply_to,
+            msg_kw: dict = {
+                "buttons": reply_markup,
+                "reply_to": reply_to,
                 **silent_kw,
-            )
+            }
+            _apply_telethon_html_to_kwargs(msg_kw, caption, field="message")
+            sent_result = await client.send_message(channel_identifier, **msg_kw)
     else:
         send_bufs = _promo_buffers_from_urls(promo_ordered)
         if send_bufs:
+            promo_kw: dict = {
+                "buttons": reply_markup,
+                "reply_to": reply_to,
+                "force_document": False,
+                **silent_kw,
+            }
+            _apply_telethon_html_to_kwargs(promo_kw, caption, field="caption")
             if len(send_bufs) == 1:
                 f = send_bufs[0]
                 f.seek(0)
                 uploaded = await client.upload_file(f)
-                sent_result = await client.send_file(
-                    channel_identifier,
-                    uploaded,
-                    caption=caption or None,
-                    parse_mode="html",
-                    buttons=reply_markup,
-                    reply_to=reply_to,
-                    force_document=False,
-                    **silent_kw,
-                )
+                sent_result = await client.send_file(channel_identifier, uploaded, **promo_kw)
             else:
                 for b in send_bufs:
                     b.seek(0)
-                sent_result = await client.send_file(
-                    channel_identifier,
-                    send_bufs,
-                    caption=caption or None,
-                    parse_mode="html",
-                    buttons=reply_markup,
-                    force_document=False,
-                    reply_to=reply_to,
-                    **silent_kw,
-                )
+                sent_result = await client.send_file(channel_identifier, send_bufs, **promo_kw)
         else:
-            sent_result = await client.send_message(
-                channel_identifier,
-                caption or "(no content)",
-                parse_mode="html",
-                buttons=reply_markup,
-                reply_to=reply_to,
+            msg_kw2: dict = {
+                "buttons": reply_markup,
+                "reply_to": reply_to,
                 **silent_kw,
-            )
+            }
+            _apply_telethon_html_to_kwargs(msg_kw2, caption, field="message")
+            sent_result = await client.send_message(channel_identifier, **msg_kw2)
 
     return sent_result
 
@@ -531,7 +520,9 @@ async def send_scheduled_post(
     channel_identifier = normalize_telethon_peer_identifier(channel_identifier)
     slot = _peek_caption_slot_index(post)
     album_order_mode = _album_order_mode_for_send(post, reshuffle_album)
-    caption = resolve_scheduled_caption(post)
+    from app.services.caption_llm_rewrite import resolve_scheduled_caption_for_send
+
+    caption = resolve_scheduled_caption_for_send(post, db)
     merged = _merge_scheduled_post_buttons(post, db, post.get_buttons())
     reply_markup = _build_reply_markup(merged)
     silent_kw = _send_options(post)
@@ -576,7 +567,12 @@ async def send_scheduled_campaign(
     """
     slot = _peek_caption_slot_index(leader)
     album_order_mode = _album_order_mode_for_send(leader, reshuffle_album)
-    caption = resolve_scheduled_caption(leader)
+    from app.services.caption_llm_rewrite import (
+        note_llm_send_completed,
+        resolve_scheduled_caption_for_send,
+    )
+
+    caption = resolve_scheduled_caption_for_send(leader, db)
     merged = _merge_scheduled_post_buttons(leader, db, leader.get_buttons())
     reply_markup = _build_reply_markup(merged)
     mids, promo_urls, use_pool = _resolve_variant_sources(leader, slot)

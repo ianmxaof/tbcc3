@@ -76,6 +76,9 @@ def watch_folder_status():
     library = _env_path("TBCC_WATCH_LIBRARY", str(default_lib)) or default_lib
     debounce = float(os.environ.get("TBCC_WATCH_DEBOUNCE_S") or "1.5")
     stable_wait_s = float(os.environ.get("TBCC_WATCH_STABLE_WAIT_S") or "2.0")
+    media_only = (os.environ.get("TBCC_WATCH_MEDIA_ONLY") or "").strip().lower() in ("1", "true", "yes", "on")
+    reject_dir_raw = (os.environ.get("TBCC_WATCH_REJECT_DIR") or "").strip()
+    reject_dir = Path(reject_dir_raw).expanduser() if reject_dir_raw else None
     category_overrides_raw = (os.environ.get("TBCC_WATCH_CATEGORY_OVERRIDES") or "").strip()
     log_raw = (os.environ.get("TBCC_WATCH_LOG") or "").strip()
     log_path = Path(log_raw).expanduser() if log_raw else None
@@ -127,6 +130,8 @@ def watch_folder_status():
         "configured": True,
         "debounce_s": debounce,
         "stable_wait_s": stable_wait_s,
+        "media_only": media_only,
+        "reject_dir": str(reject_dir) if reject_dir else None,
         "inbox": {
             "path": inbox_path_str,
             "resolved": inbox_resolved,

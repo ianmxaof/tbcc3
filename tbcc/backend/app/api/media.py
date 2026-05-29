@@ -1,12 +1,16 @@
+import asyncio
 import io
+import json
 import logging
 from collections import defaultdict
 from typing import NamedTuple
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from sqlalchemy import update
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import or_, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from telethon.errors.rpcerrorlist import FileReferenceExpiredError
 
@@ -18,6 +22,12 @@ from app.services.tbcc_media_url import looks_like_tbcc_internal_media_url
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _norm_media_fid(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 class MediaFetchContext(NamedTuple):
@@ -182,7 +192,7 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
     if url.startswith(("http://", "https://")) and looks_like_tbcc_internal_media_url(url):
         url = ""
 
-    from app.services.telegram_admin import get_telegram_client
+    from app.services.telegram_admin import run_telegram_io
 
     async def _download_from_saved(client, msg_id: int):
         """Download bytes from Saved Messages; BytesIO is more reliable than passing `bytes` type."""
@@ -207,10 +217,11 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
     # Scraped / Telethon-imported rows store the origin as https://t.me/channel — that is HTML, not bytes.
     # The real file is always in Saved Messages at telegram_message_id (same as poster / album pipeline).
     if ctx.telegram_message_id is not None:
-        try:
-            client = await get_telegram_client()
+
+        async def _download_job(storage):
+            client = storage.client
             try:
-                data = await _download_from_saved(client, ctx.telegram_message_id)
+                return await _download_from_saved(client, ctx.telegram_message_id)
             except FileReferenceExpiredError:
                 logger.warning(
                     "File reference expired for media id=%s msg=%s; refetching",
@@ -223,7 +234,10 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
                     raise HTTPException(status_code=404, detail="Media not found in Telegram") from None
                 buf = io.BytesIO()
                 await client.download_media(msg, file=buf)
-                data = buf.getvalue()
+                return buf.getvalue()
+
+        try:
+            data = await run_telegram_io(_download_job)
         except HTTPException:
             raise
         except RuntimeError as e:
@@ -262,15 +276,14 @@ async def _fetch_saved_message_thumbnail_bytes(ctx: MediaFetchContext) -> tuple[
     """
     if ctx.telegram_message_id is None:
         return None
-    from app.services.telegram_admin import get_telegram_client
+    from app.services.telegram_admin import run_telegram_io
 
-    try:
-        client = await get_telegram_client()
+    async def _thumb_job(storage):
+        client = storage.client
         messages = await client.get_messages("me", ids=ctx.telegram_message_id)
         msg = _coerce_single_message(messages)
         if not msg or not msg.media:
             return None
-        # -1 asks Telethon/Telegram for the largest available thumbnail size.
         buf = io.BytesIO()
         await client.download_media(msg, file=buf, thumb=-1)
         data = buf.getvalue()
@@ -283,6 +296,9 @@ async def _fetch_saved_message_thumbnail_bytes(ctx: MediaFetchContext) -> tuple[
         if kind in ("photo", "gif"):
             return data, _MIME_FROM_EXT.get(ext, "image/jpeg")
         return None
+
+    try:
+        return await run_telegram_io(_thumb_job)
     except Exception:
         logger.debug("saved-message thumbnail fetch skipped for media id=%s", ctx.id, exc_info=True)
         return None
@@ -345,17 +361,24 @@ def get_media(media_id: int, db: Session = Depends(get_db)):
     return orm_to_dict(media)
 
 
-@router.get("/{media_id}/thumbnail")
-async def get_media_thumbnail(media_id: int):
-    """Grid / preview: proxy URL or download from Telegram Saved Messages."""
+_THUMB_BUSY_DETAIL = (
+    "Thumbnail unavailable (Telegram session or database busy). "
+    "Stop scraper_bot and other processes using admin.session, restart Celery worker, retry. "
+    "See tbcc/docs/TELEGRAM_OPS.md"
+)
+
+
+def _load_thumbnail_ctx(media_id: int) -> MediaFetchContext | None:
+    """Synchronous DB read for a thumbnail — run in a threadpool so cold cache misses
+    never block the event loop (and never starve /pools or /media list)."""
     from app.models.media import Media
 
     db = SessionLocal()
     try:
         media = db.query(Media).filter(Media.id == media_id).first()
         if not media:
-            raise HTTPException(status_code=404, detail="Not found")
-        ctx = MediaFetchContext(
+            return None
+        return MediaFetchContext(
             id=int(media.id),
             source_channel=media.source_channel,
             telegram_message_id=media.telegram_message_id,
@@ -364,25 +387,91 @@ async def get_media_thumbnail(media_id: int):
     finally:
         db.close()
 
-    mt = (ctx.media_type or "").lower()
-    if mt == "video":
-        # For <img> grid thumbnails, prefer Telegram's still preview instead of raw video bytes.
-        thumb = await _fetch_saved_message_thumbnail_bytes(ctx)
-        if thumb is not None:
-            data, mime = thumb
-        else:
-            data, mime = await _fetch_media_bytes_and_type(ctx)
-    else:
-        data, mime = await _fetch_media_bytes_and_type(ctx)
+
+# Coalesce concurrent cache misses for the same id so one slow Telegram download is not
+# started twice (each download holds the serialized admin session lock).
+_THUMB_MISS_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def _thumb_miss_lock(media_id: int) -> asyncio.Lock:
+    lock = _THUMB_MISS_LOCKS.get(media_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _THUMB_MISS_LOCKS[media_id] = lock
+    return lock
+
+
+def _thumbnail_file_response(path) -> FileResponse:
+    # Served entirely from disk: no DB, no Telegram session, no SQLite connection.
+    return FileResponse(
+        str(path),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@router.get("/{media_id}/thumbnail")
+async def get_media_thumbnail(media_id: int, refresh: bool = False):
+    """
+    Grid / preview thumbnail, served from a persistent on-disk cache.
+
+    Cache hit  → static JPEG from disk (no DB, no Telegram). This is what keeps the
+                 gallery solid while imports / sends / scraping / bulk approve run.
+    Negative   → 404 (frontend shows a numeric placeholder); avoids re-hitting Telegram
+                 every reload for posterless videos / failed fetches.
+    Cold miss  → download once via the throttled Telegram path, store JPEG, then serve.
+    """
+    from app.services.media_cache_storage import (
+        cached_thumb_path,
+        clear_cached_thumb,
+        negative_marker_fresh,
+        write_negative_marker,
+        write_thumb_atomic,
+    )
+    from app.services.telethon_thumb import NO_PREVIEW, fetch_thumbnail_bytes
+
+    if refresh:
+        clear_cached_thumb(media_id)
+
+    cached = cached_thumb_path(media_id)
+    if cached is not None:
+        return _thumbnail_file_response(cached)
+    if not refresh and negative_marker_fresh(media_id):
+        raise HTTPException(status_code=404, detail="No preview available for this media")
+
+    async with _thumb_miss_lock(media_id):
+        # Re-check: another request may have populated the cache while we waited.
+        cached = cached_thumb_path(media_id)
+        if cached is not None:
+            return _thumbnail_file_response(cached)
+
+        ctx = await run_in_threadpool(_load_thumbnail_ctx, media_id)
+        if ctx is None:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        try:
+            result = await fetch_thumbnail_bytes(ctx)
+        except HTTPException:
+            raise
+
+        if result is NO_PREVIEW:
+            # Genuinely no preview (e.g. video with no poster frame). Remember it so we
+            # stop asking Telegram on every gallery reload.
+            write_negative_marker(media_id)
+            raise HTTPException(status_code=404, detail="No preview available for this media")
+        if result is None:
+            # Transient busy / lock / timeout — do NOT negative-cache; let the next
+            # reload retry once the session frees up.
+            raise HTTPException(status_code=503, detail=_THUMB_BUSY_DETAIL, headers={"Retry-After": "5"})
+
+        data, _mime = result
+        # Store a real downscaled JPEG (cache files are .jpg / served as image/jpeg).
         jpeg = _image_bytes_to_thumbnail_jpeg(data)
         if jpeg:
             data = jpeg
-            mime = "image/jpeg"
-    return StreamingResponse(
-        iter([data]),
-        media_type=mime,
-        headers={"Cache-Control": "private, max-age=300"},
-    )
+        path = await run_in_threadpool(write_thumb_atomic, media_id, data)
+
+    return _thumbnail_file_response(path)
 
 
 @router.get("/{media_id}/file")
@@ -404,7 +493,23 @@ async def get_media_file(media_id: int):
     finally:
         db.close()
 
-    data, mime = await _fetch_media_bytes_and_type(ctx)
+    try:
+        data, mime = await asyncio.wait_for(_fetch_media_bytes_and_type(ctx), timeout=120.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Telegram download timed out. Retry when Celery queue is shorter.",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e).lower()
+        if "database is locked" in msg or "sqlite_busy" in msg:
+            raise HTTPException(status_code=503, detail=_THUMB_BUSY_DETAIL)
+        raise
+    if mime == "application/octet-stream":
+        kind, ext = sniff_media_kind(data)
+        mime = _MIME_FROM_EXT.get(ext, mime)
     return StreamingResponse(
         iter([data]),
         media_type=mime,
@@ -464,13 +569,13 @@ def update_media_status(media_id: int, data: dict, db: Session = Depends(get_db)
             pass
         else:
             if pid != media.pool_id:
-                fid = (media.file_unique_id or "").strip()
+                fid = _norm_media_fid(media.file_unique_id)
                 if fid:
                     conflict = (
                         db.query(Media)
                         .filter(
                             Media.pool_id == pid,
-                            Media.file_unique_id == fid,
+                            Media.file_unique_id == media.file_unique_id,
                             Media.id != media_id,
                         )
                         .first()
@@ -496,6 +601,9 @@ def delete_media(media_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Not found")
     db.delete(media)
     db.commit()
+    from app.services.media_cache_storage import clear_cached_thumb
+
+    clear_cached_thumb(media_id)
     return {"deleted": media_id}
 
 
@@ -546,9 +654,20 @@ def bulk_move_pool(data: dict = Body(...), db: Session = Depends(get_db)):
         )
         .all()
     )
-    target_fids = {str(r[0]).strip() for r in target_fid_rows if r[0] and str(r[0]).strip()}
+    target_fids = {_norm_media_fid(r[0]) for r in target_fid_rows if _norm_media_fid(r[0])}
 
     seen_batch_fids: set[str] = set()
+    seen_batch_empty = False
+    target_has_empty = (
+        db.query(Media.id)
+        .filter(
+            Media.pool_id == pid,
+            Media.id.notin_(id_list),
+            or_(Media.file_unique_id.is_(None), Media.file_unique_id == ""),
+        )
+        .first()
+        is not None
+    )
     skipped_dup = 0
     to_move: list[int] = []
 
@@ -556,21 +675,73 @@ def bulk_move_pool(data: dict = Body(...), db: Session = Depends(get_db)):
         m = medias.get(mid_int)
         if not m:
             continue
-        fid = (m.file_unique_id or "").strip()
+        fid = _norm_media_fid(m.file_unique_id)
         if fid:
             if fid in target_fids or fid in seen_batch_fids:
                 skipped_dup += 1
                 continue
             seen_batch_fids.add(fid)
+        else:
+            if target_has_empty or seen_batch_empty:
+                skipped_dup += 1
+                continue
+            seen_batch_empty = True
         to_move.append(mid_int)
 
+    updated = 0
     if to_move:
-        stmt = update(Media).where(Media.id.in_(to_move)).values(pool_id=pid)
-        result = db.execute(stmt)
-        db.commit()
-        updated = int(result.rowcount or 0)
-    else:
-        updated = 0
+        try:
+            stmt = update(Media).where(Media.id.in_(to_move)).values(pool_id=pid)
+            result = db.execute(stmt)
+            db.commit()
+            updated = int(result.rowcount or 0)
+        except IntegrityError as exc:
+            db.rollback()
+            logger.warning(
+                "bulk_move_pool bulk UPDATE hit dedup constraint pool_id=%s ids=%s: %s",
+                pid,
+                len(to_move),
+                exc.orig if getattr(exc, "orig", None) else exc,
+            )
+            for mid_int in to_move:
+                m = medias.get(mid_int)
+                if not m:
+                    continue
+                fid = _norm_media_fid(m.file_unique_id)
+                if fid:
+                    conflict = (
+                        db.query(Media.id)
+                        .filter(
+                            Media.pool_id == pid,
+                            Media.file_unique_id == m.file_unique_id,
+                            Media.id != mid_int,
+                        )
+                        .first()
+                    )
+                    if conflict:
+                        skipped_dup += 1
+                        continue
+                else:
+                    conflict = (
+                        db.query(Media.id)
+                        .filter(
+                            Media.pool_id == pid,
+                            Media.id != mid_int,
+                            (Media.file_unique_id.is_(None)) | (Media.file_unique_id == ""),
+                        )
+                        .first()
+                    )
+                    if conflict:
+                        skipped_dup += 1
+                        continue
+                try:
+                    m.pool_id = pid
+                    db.flush()
+                    updated += 1
+                except IntegrityError:
+                    db.rollback()
+                    skipped_dup += 1
+            db.commit()
 
     if skipped_dup and len(id_list) >= 10:
         logger.info(
@@ -606,6 +777,57 @@ def bulk_set_tags(data: dict = Body(...), db: Session = Depends(get_db)):
             continue
         fn(db, mid_int, val)
         n += 1
+    return {"updated": n}
+
+
+@router.patch("/bulk/gallery-capture-meta")
+def bulk_gallery_capture_meta(data: dict = Body(...), db: Session = Depends(get_db)):
+    """
+    Merge admin-only capture metadata into media.classification_json under tbcc_gallery_capture
+    (source page hostname — not shown in Telegram captions; extension auto-tag uses this instead of a site #hashtag).
+    """
+    from app.models.media import Media
+
+    ids = data.get("ids") or []
+    site_host = str(data.get("site_host") or "").strip() or None
+    source_page = str(data.get("source_page") or "").strip() or None
+    if site_host:
+        site_host = site_host[:255]
+    if source_page:
+        source_page = source_page[:2048]
+    patch: dict = {}
+    if site_host:
+        patch["site_host"] = site_host
+    if source_page:
+        patch["source_page"] = source_page
+    if not ids or not patch:
+        return {"updated": 0, "error": None if not ids else "Need site_host and/or source_page"}
+    n = 0
+    for mid in ids:
+        try:
+            mid_int = int(mid)
+        except (TypeError, ValueError):
+            continue
+        m = db.query(Media).filter(Media.id == mid_int).first()
+        if not m:
+            continue
+        meta: dict = {}
+        raw = getattr(m, "classification_json", None)
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    meta = parsed
+            except Exception:
+                meta = {}
+        prev_gc = meta.get("tbcc_gallery_capture")
+        if not isinstance(prev_gc, dict):
+            prev_gc = {}
+        prev_gc.update(patch)
+        meta["tbcc_gallery_capture"] = prev_gc
+        m.classification_json = json.dumps(meta, ensure_ascii=False)
+        n += 1
+    db.commit()
     return {"updated": n}
 
 

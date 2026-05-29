@@ -35,6 +35,7 @@ Thumbs.db
 *.log
 tmp/
 temp/
+.tbcc-run/
 
 # Telethon / Celery local state (secrets — do not publish)
 *.session

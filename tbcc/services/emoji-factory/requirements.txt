@@ -1,0 +1,2 @@
+# Optional; pipeline uses stdlib + ffmpeg on PATH.
+# Install only if you add Pillow-based static tools later.

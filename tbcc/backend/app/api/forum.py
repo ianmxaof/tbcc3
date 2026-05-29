@@ -27,6 +27,10 @@ class ForumPostAlbumBody(BaseModel):
     media_ids: list[int] = Field(..., min_length=1)
     caption: str = ""
     mark_posted: bool = True
+    send_silent: bool = Field(
+        default=False,
+        description="Telethon silent=True — subscribers are not notified about the new post.",
+    )
 
 
 @router.post("/post-album")
@@ -53,5 +57,6 @@ async def forum_post_album(body: ForumPostAlbumBody, db: Session = Depends(get_d
             db,
             caption=body.caption,
             mark_posted=body.mark_posted,
+            send_silent=bool(body.send_silent),
         )
     return result

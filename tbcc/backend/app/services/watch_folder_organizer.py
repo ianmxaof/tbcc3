@@ -51,6 +51,7 @@ _CATEGORIES: dict[str, tuple[str, ...]] = {
 }
 
 _CATEGORY_OVERRIDES: dict[str, str] = {}
+_MEDIA_ONLY_CATEGORIES = {"Images", "Videos"}
 
 
 def _load_dotenv() -> None:
@@ -152,11 +153,17 @@ def _append_log(log_path: Path | None, record: dict) -> None:
         logger.warning("watch log write failed: %s", e)
 
 
+def _is_truthy_env(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def organize_file(
     src: Path,
     library_root: Path,
     log_path: Path | None,
     stable_wait_s: float,
+    media_only: bool = False,
+    reject_dir: Path | None = None,
     dry_run: bool = False,
 ) -> tuple[bool, str, Path | None]:
     """
@@ -181,6 +188,33 @@ def organize_file(
         except OSError:
             return False, "file unavailable", None
     cat = _category_for_path(src)
+    if media_only and cat not in _MEDIA_ONLY_CATEGORIES:
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "action": "skip_non_media" if not reject_dir else ("dry_run_reject_non_media" if dry_run else "reject_non_media"),
+            "category": cat,
+            "src": str(src),
+        }
+        if not reject_dir:
+            _append_log(log_path, record)
+            return False, f"non-media ({cat})", None
+        reject_dest = _unique_dest(reject_dir / src.name)
+        record["dest"] = str(reject_dest)
+        if dry_run:
+            _append_log(log_path, record)
+            return True, f"would move non-media -> {reject_dest}", reject_dest
+        try:
+            reject_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(reject_dest))
+        except OSError as e:
+            logger.exception("reject move failed %s -> %s", src, reject_dest)
+            record["action"] = "error"
+            record["error"] = str(e)
+            _append_log(log_path, record)
+            return False, str(e), None
+        _append_log(log_path, record)
+        return True, f"moved non-media -> {reject_dest}", reject_dest
+
     dest_dir = library_root / cat
     dest = _unique_dest(dest_dir / src.name)
     record = {
@@ -211,6 +245,8 @@ def scan_inbox_once(
     library_root: Path,
     log_path: Path | None,
     stable_wait_s: float,
+    media_only: bool = False,
+    reject_dir: Path | None = None,
     dry_run: bool = False,
 ) -> int:
     n = 0
@@ -225,6 +261,8 @@ def scan_inbox_once(
             library_root,
             log_path,
             stable_wait_s=stable_wait_s,
+            media_only=media_only,
+            reject_dir=reject_dir,
             dry_run=dry_run,
         )
         if ok:
@@ -251,12 +289,16 @@ class _DebouncedOrganizer:
         log_path: Path | None,
         debounce_s: float,
         stable_wait_s: float,
+        media_only: bool,
+        reject_dir: Path | None,
     ):
         self.inbox = inbox
         self.library_root = library_root
         self.log_path = log_path
         self.debounce_s = debounce_s
         self.stable_wait_s = stable_wait_s
+        self.media_only = media_only
+        self.reject_dir = reject_dir
         self._timers: dict[str, threading.Timer] = {}
         self._lock = threading.Lock()
 
@@ -282,6 +324,8 @@ class _DebouncedOrganizer:
                 self.library_root,
                 self.log_path,
                 stable_wait_s=self.stable_wait_s,
+                media_only=self.media_only,
+                reject_dir=self.reject_dir,
                 dry_run=False,
             )
             if ok:
@@ -305,6 +349,8 @@ def run_watch_loop(
     log_path: Path | None,
     debounce_s: float,
     stable_wait_s: float,
+    media_only: bool = False,
+    reject_dir: Path | None = None,
 ) -> None:
     try:
         from watchdog.events import FileSystemEventHandler
@@ -318,8 +364,18 @@ def run_watch_loop(
     for sub in _CATEGORIES.keys():
         (library_root / sub).mkdir(parents=True, exist_ok=True)
     (library_root / "Other").mkdir(parents=True, exist_ok=True)
+    if media_only and reject_dir:
+        reject_dir.mkdir(parents=True, exist_ok=True)
 
-    deb = _DebouncedOrganizer(inbox, library_root, log_path, debounce_s, stable_wait_s)
+    deb = _DebouncedOrganizer(
+        inbox,
+        library_root,
+        log_path,
+        debounce_s,
+        stable_wait_s,
+        media_only=media_only,
+        reject_dir=reject_dir,
+    )
 
     class Handler(FileSystemEventHandler):
         def on_created(self, event):  # type: ignore[override]
@@ -336,12 +392,14 @@ def run_watch_loop(
     observer.schedule(Handler(), str(inbox), recursive=False)
     observer.start()
     logger.info(
-        "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s",
+        "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s media_only=%s reject_dir=%s",
         inbox,
         library_root,
         debounce_s,
         stable_wait_s,
         len(_CATEGORY_OVERRIDES),
+        media_only,
+        str(reject_dir) if reject_dir else "-",
     )
     try:
         while True:
@@ -378,13 +436,24 @@ def main(argv: list[str] | None = None) -> int:
 
     debounce = float(os.environ.get("TBCC_WATCH_DEBOUNCE_S") or "1.5")
     stable_wait_s = max(0.0, float(os.environ.get("TBCC_WATCH_STABLE_WAIT_S") or "2.0"))
+    media_only = _is_truthy_env(os.environ.get("TBCC_WATCH_MEDIA_ONLY"))
+    reject_dir_raw = (os.environ.get("TBCC_WATCH_REJECT_DIR") or "").strip()
+    reject_dir = Path(reject_dir_raw).expanduser().resolve() if reject_dir_raw else None
     log_path_raw = (os.environ.get("TBCC_WATCH_LOG") or "").strip()
     log_path = Path(log_path_raw).expanduser() if log_path_raw else None
     global _CATEGORY_OVERRIDES
     _CATEGORY_OVERRIDES = _parse_category_overrides((os.environ.get("TBCC_WATCH_CATEGORY_OVERRIDES") or "").strip())
 
     if args.once:
-        n = scan_inbox_once(inbox, library, log_path, stable_wait_s=stable_wait_s, dry_run=args.dry_run)
+        n = scan_inbox_once(
+            inbox,
+            library,
+            log_path,
+            stable_wait_s=stable_wait_s,
+            media_only=media_only,
+            reject_dir=reject_dir,
+            dry_run=args.dry_run,
+        )
         logger.info("Scan complete: organized %s file(s)", n)
         return 0
 
@@ -392,7 +461,15 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("--dry-run is only supported with --once")
         return 2
 
-    run_watch_loop(inbox, library, log_path, debounce, stable_wait_s=stable_wait_s)
+    run_watch_loop(
+        inbox,
+        library,
+        log_path,
+        debounce,
+        stable_wait_s=stable_wait_s,
+        media_only=media_only,
+        reject_dir=reject_dir,
+    )
     return 0
 
 

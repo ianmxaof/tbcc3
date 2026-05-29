@@ -16,6 +16,9 @@ const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
 const STORAGE_CUSTOM_ADAPTERS = "tbccCustomGalleryAdapters";
 const STORAGE_THEME = "tbccThemePreset";
 const STORAGE_PAYMENT_BOT_USERNAME = "tbccPaymentBotUsername";
+/** Keep in sync with STORAGE_SAVED_VIDEO_URLS in background.js */
+const STORAGE_SAVED_VIDEO_URLS = "tbccSavedVideoUrls";
+const SAVED_VIDEO_URLS_CAP = 600;
 
 /** Legacy "dashboard" single-tab aggregator removed — map to foreground tabs. */
 function normalizeOpenMode(stored) {
@@ -107,6 +110,73 @@ async function renderModelSearchHistory() {
     line.appendChild(rm);
     line.appendChild(mid);
     historyEl.appendChild(line);
+  });
+}
+
+async function getSavedVideoUrlRows() {
+  const data = await new Promise((resolve) => chrome.storage.local.get([STORAGE_SAVED_VIDEO_URLS], resolve));
+  return Array.isArray(data[STORAGE_SAVED_VIDEO_URLS]) ? data[STORAGE_SAVED_VIDEO_URLS] : [];
+}
+
+async function setSavedVideoUrlRows(rows) {
+  await new Promise((resolve) =>
+    chrome.storage.local.set({ [STORAGE_SAVED_VIDEO_URLS]: rows }, resolve)
+  );
+}
+
+async function renderSavedVideoUrlsList() {
+  const el = document.getElementById("savedVideoUrlsList");
+  if (!el) return;
+  const rows = await getSavedVideoUrlRows();
+  if (!rows.length) {
+    el.textContent = "No URLs saved yet.";
+    return;
+  }
+  el.innerHTML = "";
+  rows.forEach((row) => {
+    const u = String(row && row.url ? row.url : "").trim();
+    if (!u) return;
+    const ts = Number(row && row.addedAt ? row.addedAt : 0);
+    const line = document.createElement("div");
+    line.className = "tbcc-history-row";
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "tbcc-history-remove";
+    rm.setAttribute("aria-label", "Remove this URL");
+    rm.textContent = "×";
+    rm.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const latest = await getSavedVideoUrlRows();
+      const filtered = latest.filter(
+        (x) =>
+          !(
+            String(x && x.url ? x.url : "").trim() === u &&
+            Number(x && x.addedAt ? x.addedAt : 0) === ts
+          )
+      );
+      await setSavedVideoUrlRows(filtered);
+      setStatus("Removed from list.");
+      await renderSavedVideoUrlsList();
+      setTimeout(() => setStatus(""), 1400);
+    });
+    const mid = document.createElement("div");
+    mid.className = "tbcc-history-main";
+    const link = document.createElement("a");
+    link.href = u;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = u;
+    link.style.wordBreak = "break-all";
+    link.style.color = "var(--tbcc-accent, #8ab4f8)";
+    const right = document.createElement("span");
+    right.className = "cat";
+    right.textContent = formatHistoryTime(ts);
+    mid.appendChild(link);
+    mid.appendChild(right);
+    line.appendChild(rm);
+    line.appendChild(mid);
+    el.appendChild(line);
   });
 }
 
@@ -363,6 +433,7 @@ function renderMergedModelSearchSources(cfg, customSites, enabledMap) {
     [MODEL_SEARCH_CATEGORY_ONLYFANS]: [],
     [MODEL_SEARCH_CATEGORY_LIVECAMS]: [],
     [MODEL_SEARCH_CATEGORY_VIDEOS]: [],
+    [MODEL_SEARCH_CATEGORY_MACRO]: [],
   };
   for (const s of cfg.sites || []) {
     const c = normalizeModelSearchCategory(s.category);
@@ -372,12 +443,18 @@ function renderMergedModelSearchSources(cfg, customSites, enabledMap) {
     [MODEL_SEARCH_CATEGORY_ONLYFANS]: [],
     [MODEL_SEARCH_CATEGORY_LIVECAMS]: [],
     [MODEL_SEARCH_CATEGORY_VIDEOS]: [],
+    [MODEL_SEARCH_CATEGORY_MACRO]: [],
   };
   for (const s of customSites) {
     customByCat[normalizeModelSearchCategory(s.category)].push(s);
   }
 
-  for (const cat of [MODEL_SEARCH_CATEGORY_ONLYFANS, MODEL_SEARCH_CATEGORY_LIVECAMS, MODEL_SEARCH_CATEGORY_VIDEOS]) {
+  for (const cat of [
+    MODEL_SEARCH_CATEGORY_MACRO,
+    MODEL_SEARCH_CATEGORY_ONLYFANS,
+    MODEL_SEARCH_CATEGORY_LIVECAMS,
+    MODEL_SEARCH_CATEGORY_VIDEOS,
+  ]) {
     const fs = document.createElement("fieldset");
     const leg = document.createElement("legend");
     leg.textContent = modelSearchCategoryLabel(cat);
@@ -520,6 +597,7 @@ async function refreshModelSearchUi() {
     });
   });
   await renderModelSearchHistory();
+  await renderSavedVideoUrlsList();
 })();
 
 (function () {
@@ -544,6 +622,194 @@ if (btnClearHistory) {
     setStatus("Username history cleared.");
     setTimeout(() => setStatus(""), 1600);
   });
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[STORAGE_SAVED_VIDEO_URLS]) return;
+  void renderSavedVideoUrlsList();
+});
+
+const btnSavedVideoAddManual = document.getElementById("btnSavedVideoAddManual");
+const btnSavedVideoCopyAll = document.getElementById("btnSavedVideoCopyAll");
+const btnSavedVideoClear = document.getElementById("btnSavedVideoClear");
+if (btnSavedVideoAddManual) {
+  btnSavedVideoAddManual.addEventListener("click", async () => {
+    const inp = document.getElementById("savedVideoManualUrl");
+    const raw = String(inp && inp.value ? inp.value : "").trim();
+    if (!raw || !/^https?:\/\//i.test(raw)) {
+      setStatus("Enter a valid http(s) URL.", true);
+      return;
+    }
+    if (raw.startsWith("blob:") || raw.startsWith("data:")) {
+      setStatus("Blob/data URLs cannot be stored.", true);
+      return;
+    }
+    const rows = await getSavedVideoUrlRows();
+    if (rows.some((x) => String(x && x.url ? x.url : "").trim() === raw)) {
+      setStatus("That URL is already in the list.");
+      return;
+    }
+    await setSavedVideoUrlRows([{ url: raw, addedAt: Date.now() }, ...rows].slice(0, SAVED_VIDEO_URLS_CAP));
+    if (window.TbccMasterArchive) void TbccMasterArchive.recordUrl(raw, { source: "options_inbox" });
+    if (inp) inp.value = "";
+    setStatus("URL added.");
+    await renderSavedVideoUrlsList();
+    setTimeout(() => setStatus(""), 1600);
+  });
+}
+if (btnSavedVideoCopyAll) {
+  btnSavedVideoCopyAll.addEventListener("click", async () => {
+    const rows = await getSavedVideoUrlRows();
+    const lines = rows.map((x) => String(x && x.url ? x.url : "").trim()).filter(Boolean);
+    const text = lines.join("\n");
+    if (!text) {
+      setStatus("Nothing to copy.", true);
+      return;
+    }
+    try {
+      const clip = globalThis.TbccClipboard;
+      if (clip && clip.copyText) {
+        await clip.copyText(text, { anchor: btnSavedVideoCopyAll || undefined });
+        setStatus(`Copied ${lines.length} URL(s).`);
+      } else {
+        await navigator.clipboard.writeText(text);
+        setStatus(`Copied ${lines.length} URL(s) to clipboard.`);
+      }
+    } catch (_) {
+      setStatus("Clipboard permission denied — copy from the list manually.", true);
+    }
+    setTimeout(() => setStatus(""), 2200);
+  });
+}
+if (btnSavedVideoClear) {
+  btnSavedVideoClear.addEventListener("click", async () => {
+    await setSavedVideoUrlRows([]);
+    setStatus("Saved video list cleared (master archive unchanged).");
+    await renderSavedVideoUrlsList();
+    setTimeout(() => setStatus(""), 1600);
+  });
+}
+
+const masterArchiveListOpts = document.getElementById("masterArchiveListOpts");
+const masterArchiveStatusOpts = document.getElementById("masterArchiveStatusOpts");
+const masterArchivePagerOpts = document.getElementById("masterArchivePagerOpts");
+const masterArchiveFilterOpts = document.getElementById("masterArchiveFilterOpts");
+const masterArchiveKindOpts = document.getElementById("masterArchiveKindOpts");
+
+const masterArchiveOptsUi =
+  window.TbccArchiveListUi && window.TbccMasterArchive && masterArchiveListOpts
+    ? window.TbccArchiveListUi.createArchiveListController({
+        listEl: masterArchiveListOpts,
+        statusEl: masterArchiveStatusOpts,
+        pagerEl: masterArchivePagerOpts,
+        mode: "readonly",
+        getEntries: () => TbccMasterArchive.getEntries(),
+        getFilters: () => ({
+          q: (masterArchiveFilterOpts && masterArchiveFilterOpts.value) || "",
+          kind: (masterArchiveKindOpts && masterArchiveKindOpts.value) || "",
+          ...(window.TbccMasterArchive && TbccMasterArchive.readSortOptsFromDom
+            ? TbccMasterArchive.readSortOptsFromDom("Opts")
+            : {}),
+        }),
+      })
+    : null;
+
+async function renderMasterArchiveOpts() {
+  if (masterArchiveOptsUi) {
+    await masterArchiveOptsUi.refresh();
+    return;
+  }
+  if (masterArchiveStatusOpts) masterArchiveStatusOpts.textContent = "Archive UI not loaded.";
+}
+
+masterArchiveFilterOpts &&
+  masterArchiveFilterOpts.addEventListener("input", () => {
+    if (masterArchiveOptsUi) masterArchiveOptsUi.resetPage();
+    void renderMasterArchiveOpts();
+  });
+masterArchiveKindOpts &&
+  masterArchiveKindOpts.addEventListener("change", () => {
+    if (masterArchiveOptsUi) masterArchiveOptsUi.resetPage();
+    void renderMasterArchiveOpts();
+  });
+function onMasterArchiveOptsSortChange() {
+  if (masterArchiveOptsUi) masterArchiveOptsUi.resetPage();
+  void renderMasterArchiveOpts();
+}
+["masterArchiveSort1Opts", "masterArchiveSort1DirOpts", "masterArchiveSort2Opts", "masterArchiveSort2DirOpts"].forEach(
+  (id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", onMasterArchiveOptsSortChange);
+  }
+);
+const btnMasterOptsSelectAll = document.getElementById("btnMasterOptsSelectAll");
+const btnMasterOptsDeselectAll = document.getElementById("btnMasterOptsDeselectAll");
+const btnMasterOptsCopyUrls = document.getElementById("btnMasterOptsCopyUrls");
+btnMasterOptsSelectAll &&
+  btnMasterOptsSelectAll.addEventListener("click", () => masterArchiveOptsUi && masterArchiveOptsUi.selectAllOnPage());
+btnMasterOptsDeselectAll &&
+  btnMasterOptsDeselectAll.addEventListener("click", () => masterArchiveOptsUi && masterArchiveOptsUi.deselectAllOnPage());
+btnMasterOptsCopyUrls &&
+  btnMasterOptsCopyUrls.addEventListener("click", async () => {
+    if (!masterArchiveOptsUi) return;
+    const r = await masterArchiveOptsUi.copyCheckedUrlsOnPage();
+    if (masterArchiveStatusOpts) {
+      masterArchiveStatusOpts.textContent = r.ok
+        ? `Copied ${r.count} URL(s) from this page.`
+        : r.error || "Copy failed.";
+    }
+    if (r.ok) {
+      const clip = globalThis.TbccClipboard;
+      if (clip && clip.showCopied) clip.showCopied();
+    }
+  });
+const btnMasterOptsExportJson = document.getElementById("btnMasterOptsExportJson");
+const btnMasterOptsExportCsv = document.getElementById("btnMasterOptsExportCsv");
+const btnMasterOptsImport = document.getElementById("btnMasterOptsImport");
+const masterArchiveImportFileOpts = document.getElementById("masterArchiveImportFileOpts");
+async function getMasterArchiveOptsFiltered() {
+  const all = await TbccMasterArchive.getEntries();
+  return TbccMasterArchive.filterEntries(all, {
+    q: (masterArchiveFilterOpts && masterArchiveFilterOpts.value) || "",
+    kind: (masterArchiveKindOpts && masterArchiveKindOpts.value) || "",
+    ...(TbccMasterArchive.readSortOptsFromDom ? TbccMasterArchive.readSortOptsFromDom("Opts") : {}),
+  });
+}
+btnMasterOptsExportJson &&
+  btnMasterOptsExportJson.addEventListener("click", async () => {
+    const entries = await getMasterArchiveOptsFiltered();
+    TbccMasterArchive.downloadText(
+      `tbcc-master-${new Date().toISOString().slice(0, 10)}.json`,
+      TbccMasterArchive.exportJson(entries),
+      "application/json"
+    );
+  });
+btnMasterOptsExportCsv &&
+  btnMasterOptsExportCsv.addEventListener("click", async () => {
+    const entries = await getMasterArchiveOptsFiltered();
+    TbccMasterArchive.downloadText(
+      `tbcc-master-${new Date().toISOString().slice(0, 10)}.csv`,
+      TbccMasterArchive.exportCsv(entries),
+      "text/csv"
+    );
+  });
+btnMasterOptsImport &&
+  btnMasterOptsImport.addEventListener("click", () => {
+    if (masterArchiveImportFileOpts) masterArchiveImportFileOpts.click();
+  });
+masterArchiveImportFileOpts &&
+  masterArchiveImportFileOpts.addEventListener("change", async () => {
+    const file = masterArchiveImportFileOpts.files && masterArchiveImportFileOpts.files[0];
+    masterArchiveImportFileOpts.value = "";
+    if (!file) return;
+    const parsed = TbccMasterArchive.parseImportText(await file.text());
+    const r = await TbccMasterArchive.importEntries(parsed, true);
+    const statusEl = document.getElementById("masterArchiveStatusOpts");
+    if (statusEl) statusEl.textContent = r.ok ? `Imported ${r.added} new entries.` : r.error || "Failed.";
+    await renderMasterArchiveOpts();
+  });
+if (window.TbccMasterArchive) {
+  void TbccMasterArchive.restoreFromBackupIfEmpty().then(() => renderMasterArchiveOpts());
 }
 
 if (btnAnalyzeAdapter) {

@@ -47,6 +47,10 @@ export function WatchFolder() {
         <strong className="text-slate-300">library</strong> by type (Images, Videos, …). This page only reads{" "}
         <code className="text-cyan-400/90">TBCC_WATCH_*</code> from the same <code className="text-cyan-400/90">.env</code> as the API — it does not start the watcher.
       </p>
+      <p className="text-slate-500 text-xs mb-4">
+        New: set <code className="text-slate-300">TBCC_WATCH_MEDIA_ONLY=1</code> to keep only image/video files flowing to the library. Optional{" "}
+        <code className="text-slate-300">TBCC_WATCH_REJECT_DIR</code> moves non-media out of inbox.
+      </p>
 
       {err ? (
         <QueryErrorBanner title="Could not load watch folder status" message={err} onRetry={() => void load()} />
@@ -96,6 +100,18 @@ export function WatchFolder() {
               <div>
                 <dt className="text-slate-500">Debounce</dt>
                 <dd className="text-slate-300">{data.debounce_s}s before moving a new file</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Stability wait</dt>
+                <dd className="text-slate-300">{data.stable_wait_s}s size/mtime settle check</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Media-only mode</dt>
+                <dd className="text-slate-300">{data.media_only ? "enabled (Images/Videos only)" : "disabled (all categories)"}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Reject folder</dt>
+                <dd className="font-mono text-cyan-300/90 break-all">{data.reject_dir || "not set (non-media stays in inbox when media-only is on)"}</dd>
               </div>
             </dl>
           </section>

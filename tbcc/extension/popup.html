@@ -101,13 +101,20 @@
     TBCC Lite (generic capture, smaller batches)
   </label>
   <button type="button" id="openGallery" class="btn btn-primary">Open gallery</button>
+  <button type="button" id="openGalleryPopOut" class="btn btn-secondary">Gallery pop-out window</button>
   <button type="button" class="btn btn-green" id="btnCaptureReverse">Reverse search (capture tab)</button>
   <p id="captureStatus"></p>
   <button type="button" id="openExtensionOptions" class="btn btn-secondary">Extension options</button>
+  <p class="tbcc-launch-hint" style="margin:12px 0 6px;font-size:11px;color:var(--tbcc-text-muted);line-height:1.35">
+    Stack control (needs <code style="font-size:10px">tbcc-launch-daemon.ps1</code> on :8765, or API + internal key):
+  </p>
+  <button type="button" id="btnLaunchSupervisor" class="btn btn-secondary">Start tray supervisor</button>
+  <button type="button" id="btnLaunchFullStack" class="btn btn-secondary">Launch full stack (cold)</button>
   <div class="status-row">
     <span id="backendDot" class="dot" title="Backend"></span>
     <span id="backendStatus">Checking backend…</span>
   </div>
+  <script src="tbcc-clipboard-toast.js"></script>
   <script src="launch-full-stack.js"></script>
   <script src="popup.js"></script>
 </body>

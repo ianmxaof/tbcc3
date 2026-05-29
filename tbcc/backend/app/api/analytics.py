@@ -165,3 +165,25 @@ def post_events_summary(
         "by_day": by_day_out,
         "by_channel": ch_rows,
     }
+
+
+@router.get("/telegram-channel-stats")
+def telegram_channel_stats(
+    channel: str = Query(..., description="Telegram @username, t.me link, or numeric id"),
+    limit: int = Query(20, ge=1, le=50),
+):
+    """
+    Message views/forwards from Telegram via Telethon (not stored in TBCC DB).
+    Requires API_ID, API_HASH, and an authorized TBCC_POSTER_TELEGRAM_SESSION.
+    """
+    from app.services.telegram_channel_stats import (
+        fetch_channel_post_stats_sync,
+        telethon_stats_configured,
+    )
+
+    if not telethon_stats_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Set API_ID and API_HASH; authorize TBCC_POSTER_TELEGRAM_SESSION",
+        )
+    return fetch_channel_post_stats_sync(channel, limit=limit)

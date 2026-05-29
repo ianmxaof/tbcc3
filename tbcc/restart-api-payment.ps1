@@ -33,11 +33,11 @@ function Stop-ListenersOnPort {
     $raw = netstat -ano 2>$null | Select-String ":$Port\s"
     foreach ($line in $raw) {
       if ($line -match '\s+(\d+)\s*$') {
-        $pid = [int]$Matches[1]
-        if ($pid -gt 4) {
+        $procId = [int]$Matches[1]
+        if ($procId -gt 4) {
           try {
-            Stop-Process -Id $pid -Force -ErrorAction Stop
-            $killed += $pid
+            Stop-Process -Id $procId -Force -ErrorAction Stop
+            $killed += $procId
           } catch {}
         }
       }
@@ -97,8 +97,13 @@ if (-not $apiOnly) {
 
 Start-Sleep -Seconds 1
 
+$cleanupOrphans = Join-Path $tbccDir "scripts\tbcc-cleanup-orphans.ps1"
+if (Test-Path -LiteralPath $cleanupOrphans) {
+  try { & powershell -NoProfile -ExecutionPolicy Bypass -File $cleanupOrphans 2>$null | Out-Null } catch {}
+}
+
 Write-Host "[3] Starting API (new window)..." -ForegroundColor Yellow
-$cmdBackend = 'cd /d "' + $backendDir + '" && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-exclude scripts --reload-delay 1'
+$cmdBackend = 'cd /d "' + $backendDir + '" && python -m uvicorn app.main:app --host 127.0.0.1 --port 8000'
 Start-TbccCmdWindow -Title "TBCC-Backend" -Command $cmdBackend
 
 Write-Host "  Waiting for http://127.0.0.1:8000/health ..." -ForegroundColor Gray
@@ -114,7 +119,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if ($backendUp) {
   Write-Host "  API is up." -ForegroundColor Green
 } else {
-  Write-Host "  API not responding yet — check the TBCC-Backend window for errors." -ForegroundColor Yellow
+  Write-Host "  API not responding yet - check the TBCC-Backend window for errors." -ForegroundColor Yellow
 }
 
 if (-not $apiOnly) {
@@ -125,5 +130,5 @@ if (-not $apiOnly) {
 }
 
 Write-Host ""
-Write-Host "Done. Ensure tbcc/.env is saved before restart (TBCC_PROMO_PUBLIC_BASE_URL, TBCC_API_URL, etc.)." -ForegroundColor Gray
+Write-Host 'Done. Ensure tbcc/.env is saved before restart (TBCC_PROMO_PUBLIC_BASE_URL, TBCC_API_URL, etc.).' -ForegroundColor Gray
 Write-Host ""

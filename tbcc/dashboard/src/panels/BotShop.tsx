@@ -21,6 +21,7 @@ function planTagCount(p: Record<string, unknown>): number {
 }
 
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
+import { searchCatalogTags } from "../lib/tagCatalogSearch";
 import { WalletPendingOrders } from "../components/WalletPendingOrders";
 
 /**
@@ -123,6 +124,16 @@ export function BotShop() {
   const sortedTags = useMemo(
     () => [...tagCatalog].sort((a, b) => a.slug.localeCompare(b.slug)),
     [tagCatalog],
+  );
+  const [newTagSearch, setNewTagSearch] = useState("");
+  const [editTagSearch, setEditTagSearch] = useState("");
+  const newTagsVisible = useMemo(
+    () => searchCatalogTags(sortedTags, newTagSearch, 500).items,
+    [sortedTags, newTagSearch]
+  );
+  const editTagsVisible = useMemo(
+    () => searchCatalogTags(sortedTags, editTagSearch, 500).items,
+    [sortedTags, editTagSearch]
   );
 
   function toggleNewTag(id: number) {
@@ -617,19 +628,32 @@ export function BotShop() {
             {sortedTags.length === 0 ? (
               <p className="text-amber-200/80 text-xs mt-2">No tags in the database yet — add tags first.</p>
             ) : (
-              <div className="mt-2 max-h-32 overflow-y-auto border border-slate-600 rounded p-2 space-y-1">
-                {sortedTags.map((t) => (
-                  <label key={t.id} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={newTagIds.includes(t.id)}
-                      onChange={() => toggleNewTag(t.id)}
-                    />
-                    <span className="font-mono text-slate-400">{t.slug}</span>
-                    <span className="text-slate-500 truncate">{t.name}</span>
-                  </label>
-                ))}
-              </div>
+              <>
+                <input
+                  type="search"
+                  value={newTagSearch}
+                  onChange={(e) => setNewTagSearch(e.target.value)}
+                  placeholder="Search catalog tags…"
+                  className="mt-2 w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm"
+                  autoComplete="off"
+                />
+                <div className="mt-2 max-h-32 overflow-y-auto border border-slate-600 rounded p-2 space-y-1">
+                  {newTagsVisible.map((t) => (
+                    <label key={t.id} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={newTagIds.includes(t.id)}
+                        onChange={() => toggleNewTag(t.id)}
+                      />
+                      <span className="font-mono text-slate-400">{t.slug}</span>
+                      <span className="text-slate-500 truncate">{t.name}</span>
+                    </label>
+                  ))}
+                  {newTagsVisible.length === 0 ? (
+                    <p className="text-slate-500 text-xs">No matching tags.</p>
+                  ) : null}
+                </div>
+              </>
             )}
           </div>
           <label className="block">
@@ -965,19 +989,32 @@ export function BotShop() {
                 {sortedTags.length === 0 ? (
                   <p className="text-amber-200/80 text-xs mt-2">No tags yet — create tags first.</p>
                 ) : (
-                  <div className="mt-2 max-h-36 overflow-y-auto border border-slate-600 rounded p-2 space-y-1">
-                    {sortedTags.map((t) => (
-                      <label key={t.id} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editTagIds.includes(t.id)}
-                          onChange={() => toggleEditTag(t.id)}
-                        />
-                        <span className="font-mono text-slate-400">{t.slug}</span>
-                        <span className="text-slate-500 truncate">{t.name}</span>
-                      </label>
-                    ))}
-                  </div>
+                  <>
+                    <input
+                      type="search"
+                      value={editTagSearch}
+                      onChange={(e) => setEditTagSearch(e.target.value)}
+                      placeholder="Search catalog tags…"
+                      className="mt-2 w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm"
+                      autoComplete="off"
+                    />
+                    <div className="mt-2 max-h-36 overflow-y-auto border border-slate-600 rounded p-2 space-y-1">
+                      {editTagsVisible.map((t) => (
+                        <label key={t.id} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={editTagIds.includes(t.id)}
+                            onChange={() => toggleEditTag(t.id)}
+                          />
+                          <span className="font-mono text-slate-400">{t.slug}</span>
+                          <span className="text-slate-500 truncate">{t.name}</span>
+                        </label>
+                      ))}
+                      {editTagsVisible.length === 0 ? (
+                        <p className="text-slate-500 text-xs">No matching tags.</p>
+                      ) : null}
+                    </div>
+                  </>
                 )}
               </div>
               <label className="block">

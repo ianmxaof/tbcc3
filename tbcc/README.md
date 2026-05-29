@@ -35,6 +35,14 @@ Unified system for scraping, storing media in Telegram Saved Messages, approval 
 
 Lead with **saving media you can access in the browser** and **optional self-hosted TBCC** (localhost dashboard + pool workflow). Site-specific adapters and HLS server import are **advanced / self-host** topics — document them in README and in-app options, not as the primary store headline. Do **not** position the extension as a tool for paid streaming services you do not own (e.g. Netflix/YouTube ripping).
 
+## Emoji factory (custom emoji packs)
+
+Split-grid **VP9 WebM** tiles for Telegram **custom emoji packs** (separate from caption `<tg-emoji>` presets). See [`services/emoji-factory/README.md`](services/emoji-factory/README.md) (CLI) and [`services/emoji-factory/DESIGN-WORKFLOW.md`](services/emoji-factory/DESIGN-WORKFLOW.md) (dimensions, export timing, design rules, staged workflow).
+
+## MCP (Cursor / Claude)
+
+A local MCP server exposes schedule/media/analytics tools over your running API. See [`mcp-server/README.md`](mcp-server/README.md). Pair with Buffer MCP for X/IG/Threads queue from the same chat.
+
 ## Quick start
 
 1. Copy `tbcc/.env.example` to `tbcc/.env` and set `API_ID`, `API_HASH`, `ADMIN_TELEGRAM_ID`.
@@ -89,6 +97,10 @@ Lead with **saving media you can access in the browser** and **optional self-hos
 - **"Post now" / scheduled posts never fire:** Redis + **Celery Beat** + **Celery worker** must be running; the worker must consume **`post`** (and `celery` for `run_schedule`) — see command above. Poster account needs channel admin/post rights. Ensure **`admin_poster.session`** is authorized (worker log: `Telegram poster session is not logged in`). **Telegram auto-delete** (e.g. 1 day) can empty channel history so it looks “blank” even after sends.
 - **Promo / invoice images missing in Telegram:** Telegram loads image URLs **from its own servers**, not your PC. Set **`TBCC_PROMO_PUBLIC_BASE_URL`** (preferred) or **`TBCC_PUBLIC_BASE_URL`** to your public **`https://`** API (e.g. ngrok), restart the backend, then **re-upload** promos — dashboard upload builds `{that host}/static/promo/...`. For **ImgBB**, use a **direct image** URL (`https://i.ibb.co/.../file.jpg`), **not** “Viewer links” (`https://ibb.co/...` — those are HTML pages). If Telegram rejects a photo, the bot retries the invoice **without** it so checkout still works. **Dashboard file upload** (`POST /subscription-plans/upload-promo-image`) **normalizes** images server-side (Pillow): EXIF orientation, max edge 4096px, output **JPEG** or **PNG** (if transparency fits under the size cap), so local uploads are stored in a Telegram-friendly form.
 - **Channels / media / pools “vanished” after Postgres:** Schema migrations (`alembic upgrade head`) only create **tables**, not **data**. If you used SQLite before (`DATABASE_URL=sqlite:///./tbcc.db`), your rows lived in `tbcc.db` (usually under `tbcc/backend/` where you ran uvicorn). Pointing `DATABASE_URL` at PostgreSQL gives you a **new empty database** — that’s expected. **Recovery:** if `tbcc.db` still exists, run from `tbcc/backend`: `python scripts/sqlite_to_postgres.py --dry-run` then without `--dry-run` (Postgres must already be migrated). If you **recreated the Docker Postgres volume** or never had a SQLite file, restore from a backup only — nothing in the repo can recreate lost rows.
+- **Dashboard hangs / Celery `sqlite3.OperationalError: database is locked` on media downloads:** Usually **API + Celery + scraper_bot** contending on `admin.session` and `tbcc.db` while hundreds of thumbnail/auto-tag jobs run. See **`docs/TELEGRAM_OPS.md`**: stop scraper_bot, restart Celery, set `TBCC_AUTO_TAG_ON_IMPORT=0` during heavy approve sessions, use `TBCC_POSTER_TELEGRAM_SESSION` for posting. Check `GET /health/db` on port 8000.
+- **API port 8000 hung / dashboard cannot load:** Orphan uvicorn `--reload` workers — run `scripts/tbcc-cleanup-orphans.ps1` or tray **Cleanup orphan API workers**. Full stack uses `-NoReload` by default (`-Reload` to opt in). See **`docs/TBCC_PIPELINE.md`**.
+- **Slow extension → pool / Saved Messages:** Fast import pipeline (`TBCC_FAST_IMPORT=1`): bytes stage instantly, Telegram upload on Celery **`telegram`** queue. Poll `GET /import/jobs/{id}` or watch gallery job stages. System conflicts: `GET /health/system` (dashboard banner + gallery hint).
+- **Tray “Restart full stack” leaves duplicate Windows Terminal tabs:** Old tabs must exit before a new `-WtTabs` launch. Use **Restart full stack** (waits up to 60s for ports + TBCC terminal hosts to clear). If a warning appears, close any leftover **Windows Terminal** windows with TBCC-* tabs manually, then cold start again.
 
 ## Environment variables (extra)
 

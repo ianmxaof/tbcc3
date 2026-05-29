@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "tbcc": {
+      "command": "py",
+      "args": ["-3.13", "REPLACE_WITH_REPO_PATH/tbcc/mcp-server/server.py"],
+      "env": {
+        "TBCC_API_URL": "http://127.0.0.1:8000"
+      }
+    },
+    "buffer": {
+      "url": "https://mcp.buffer.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_BUFFER_API_TOKEN"
+      }
+    }
+  }
+}

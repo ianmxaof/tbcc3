@@ -7,10 +7,13 @@ import {
   formatLocalForDashboard,
   formatPtForDashboard,
   formatUtcForDashboard,
-  formatUtcWithLocalHint,
 } from "../utils/formatUtc";
 import { CaptionSnippetInsertSelect, CaptionSnippetLibraryManageButton } from "./CaptionSnippetLibrary";
+import { CustomEmojiInsertSelect, CustomEmojiLibraryManageButton } from "./CustomEmojiLibrary";
 import { CaptionTelegramHtmlField } from "./CaptionTelegramHtmlField";
+import { BufferXQueueEditor, type BufferXQueueItem } from "./BufferXQueueEditor";
+import { CaptionLlmRewriteFields } from "./CaptionLlmRewriteFields";
+import { SilentTelegramSendOption } from "./SilentTelegramSendOption";
 
 type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
 
@@ -160,6 +163,13 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const [editButtons, setEditButtons] = useState<Array<{ text: string; url: string }>>([]);
   const [editSendSilent, setEditSendSilent] = useState(false);
   const [editPinAfterSend, setEditPinAfterSend] = useState(false);
+  const [editBufferMirror, setEditBufferMirror] = useState(false);
+  const [editBufferPublishNow, setEditBufferPublishNow] = useState(false);
+  const [editBufferXQueue, setEditBufferXQueue] = useState<BufferXQueueItem[]>([]);
+  const [editLlmRewrite, setEditLlmRewrite] = useState(false);
+  const [editLlmMode, setEditLlmMode] = useState<"" | "random" | "interval">("interval");
+  const [editLlmInterval, setEditLlmInterval] = useState(3);
+  const [editLlmProb, setEditLlmProb] = useState(0.25);
   const [editCheckoutStarsEnabled, setEditCheckoutStarsEnabled] = useState(false);
   const [editCheckoutPlanId, setEditCheckoutPlanId] = useState(0);
   const [editCheckoutButtonLabel, setEditCheckoutButtonLabel] = useState("");
@@ -230,11 +240,20 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
       const cg = data?.campaign_group_id;
       const rs = data?.reshuffle;
+      const all =
+        (queryClient.getQueryData(["scheduledPosts"]) as Array<Record<string, unknown>> | undefined) || [];
+      const leaderId = cg ? Number(data.post_id ?? id) : id;
+      const post = all.find((x) => Number(x.id) === leaderId);
+      const bufHint = post?.buffer_mirror_enabled
+        ? post?.buffer_publish_now
+          ? " Buffer → X (publish now) runs right after Telegram — check X in a few seconds."
+          : " Buffer → X queued after Telegram — check publish.buffer.com."
+        : "";
       setTriggerNotice({
         kind: "ok",
         text: cg
-          ? `Campaign queued (leader #${data.post_id ?? id})${rs ? " — album order reshuffled for this send" : ""} — Celery will send to all channels shortly.`
-          : `Post #${id} queued${rs ? " — album order reshuffled for this send" : ""} — Celery will send shortly. Watch Telegram (and server logs if it fails).`,
+          ? `Campaign queued (leader #${data.post_id ?? id})${rs ? " — album order reshuffled for this send" : ""} — Celery will send to all channels shortly.${bufHint}`
+          : `Post #${id} queued${rs ? " — album order reshuffled for this send" : ""} — Celery will send shortly.${bufHint}`,
       });
     },
     onError: (e: Error, { id }) => {
@@ -329,6 +348,28 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     setEditButtons(parseButtonsFromPost(leader));
     setEditSendSilent(Boolean(leader.send_silent));
     setEditPinAfterSend(Boolean(leader.pin_after_send));
+    setEditBufferMirror(Boolean(leader.buffer_mirror_enabled));
+    setEditBufferPublishNow(Boolean(leader.buffer_publish_now));
+    setEditLlmRewrite(Boolean(leader.caption_llm_rewrite_enabled));
+    const lm = String(leader.caption_llm_rewrite_mode || "").toLowerCase();
+    setEditLlmMode(lm === "random" || lm === "interval" ? lm : "interval");
+    setEditLlmInterval(Math.max(1, Number(leader.caption_llm_rewrite_interval) || 3));
+    setEditLlmProb(
+      leader.caption_llm_rewrite_probability != null
+        ? Number(leader.caption_llm_rewrite_probability)
+        : 0.25
+    );
+    const bq = leader.buffer_x_queue;
+    setEditBufferXQueue(
+      Array.isArray(bq)
+        ? bq
+            .filter((x): x is Record<string, unknown> => x != null && typeof x === "object")
+            .map((x) => ({
+              text: String(x.text || ""),
+              image_url: x.image_url ? String(x.image_url) : undefined,
+            }))
+        : []
+    );
     setEditCheckoutStarsEnabled(Boolean(leader.checkout_stars_enabled));
     const cop = leader.checkout_stars_plan_id != null ? Number(leader.checkout_stars_plan_id) : 0;
     setEditCheckoutPlanId(Number.isFinite(cop) && cop > 0 ? cop : 0);
@@ -394,6 +435,19 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       : [];
     body.send_silent = editSendSilent;
     body.pin_after_send = editPinAfterSend;
+    body.buffer_mirror_enabled = editBufferMirror;
+    body.buffer_publish_now = editBufferMirror && editBufferPublishNow;
+    body.caption_llm_rewrite_enabled = editLlmRewrite;
+    body.caption_llm_rewrite_mode = editLlmRewrite && editLlmMode ? editLlmMode : null;
+    body.caption_llm_rewrite_interval = editLlmRewrite && editLlmMode === "interval" ? editLlmInterval : null;
+    body.caption_llm_rewrite_probability =
+      editLlmRewrite && editLlmMode === "random" ? editLlmProb : null;
+    body.buffer_x_queue = editBufferXQueue
+      .map((x) => ({
+        text: x.text.trim(),
+        ...(x.image_url?.trim().startsWith("https://") ? { image_url: x.image_url.trim() } : {}),
+      }))
+      .filter((x) => x.text.length > 0);
     body.checkout_stars_enabled = editCheckoutStarsEnabled;
     body.checkout_stars_plan_id =
       editCheckoutStarsEnabled && editCheckoutPlanId > 0 ? editCheckoutPlanId : null;
@@ -538,6 +592,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     Caption{editVariations.length > 1 ? "s (rotate in order)" : " / text"}
                   </span>
                   <CaptionSnippetLibraryManageButton />
+                  <CustomEmojiLibraryManageButton />
                 </div>
                 <div className="space-y-2">
                   {editVariations.map((line, i) => (
@@ -552,6 +607,13 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                         <CaptionSnippetInsertSelect
                           onInsert={(t) =>
                             setEditVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
+                          }
+                        />
+                        <CustomEmojiInsertSelect
+                          onInsert={(chunk) =>
+                            setEditVariations((prev) =>
+                              prev.map((p, j) => (j === i ? (p ? `${chunk}\n\n${p}` : chunk) : p))
+                            )
                           }
                         />
                         {editVariations.length > 1 && (
@@ -735,14 +797,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   )}
                 </div>
                 <div className="flex flex-col gap-2 pt-1 border-t border-slate-600/50">
-                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editSendSilent}
-                      onChange={(e) => setEditSendSilent(e.target.checked)}
-                    />
-                    Silent send
-                  </label>
+                  <SilentTelegramSendOption checked={editSendSilent} onChange={setEditSendSilent} />
                   <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
                     <input
                       type="checkbox"
@@ -751,6 +806,53 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     />
                     Pin after send
                   </label>
+                  <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editBufferMirror}
+                      onChange={(e) => {
+                        setEditBufferMirror(e.target.checked);
+                        if (!e.target.checked) setEditBufferPublishNow(false);
+                      }}
+                    />
+                    <strong className="text-sky-300">Buffer → X</strong> after Telegram send (campaign: leader row only)
+                  </label>
+                  {editBufferMirror ? (
+                    <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer ml-4">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={editBufferPublishNow}
+                        onChange={(e) => setEditBufferPublishNow(e.target.checked)}
+                      />
+                      <span>
+                        <strong className="text-emerald-300">Publish now</strong> (Buffer shareNow → X when Telegram sends)
+                      </span>
+                    </label>
+                  ) : null}
+                  {editBufferMirror ? (
+                    <BufferXQueueEditor
+                      items={editBufferXQueue}
+                      onChange={setEditBufferXQueue}
+                      disabled={updateScheduled.isPending}
+                    />
+                  ) : null}
+                  <CaptionLlmRewriteFields
+                    enabled={editLlmRewrite}
+                    onEnabledChange={setEditLlmRewrite}
+                    mode={editLlmMode}
+                    onModeChange={setEditLlmMode}
+                    interval={editLlmInterval}
+                    onIntervalChange={setEditLlmInterval}
+                    probability={editLlmProb}
+                    onProbabilityChange={setEditLlmProb}
+                    sendCount={
+                      editing?.caption_llm_send_count != null
+                        ? Number(editing.caption_llm_send_count)
+                        : undefined
+                    }
+                    disabled={updateScheduled.isPending}
+                  />
                 </div>
               </div>
               <div className="space-y-2 min-w-0">
@@ -952,6 +1054,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
             <tr>
               <th className="text-left p-3">Name</th>
               <th className="text-left p-3">Channel</th>
+              <th className="text-left p-3 min-w-[8rem]">Destinations</th>
               <th className="text-left p-3">Content</th>
               <th className="text-left p-3 w-[11rem]">Schedule</th>
               <th className="text-left p-3">Pool</th>
@@ -989,6 +1092,11 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                 ? (p.attachment_urls as string[]).filter((x) => String(x).trim())
                 : [];
               const btnCount = parseButtonsFromPost(p).length;
+              const bufferMirror = Boolean(p.buffer_mirror_enabled);
+              const bufferPublishNow = Boolean(p.buffer_publish_now);
+              const bufferQueueLen = Array.isArray(p.buffer_x_queue) ? p.buffer_x_queue.length : 0;
+              const llmRewrite = Boolean(p.caption_llm_rewrite_enabled);
+              const llmMode = String(p.caption_llm_rewrite_mode || "");
               const flags = [
                 p.send_silent ? "silent" : null,
                 p.pin_after_send ? "pin after" : null,
@@ -1018,7 +1126,43 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     <div className="truncate text-slate-200">
                       {channelCell}
                       {p.message_thread_id != null && p.message_thread_id !== undefined ? (
-                        <span className="text-slate-500 font-normal"> · #{p.message_thread_id}</span>
+                        <span className="text-slate-500 font-normal">
+                          {" "}
+                          · #{String(p.message_thread_id)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="p-3 text-sm align-top">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-slate-300 text-xs">Telegram</span>
+                      {bufferMirror ? (
+                        <span
+                          className="inline-flex w-fit items-center rounded px-1.5 py-0.5 text-xs font-medium bg-sky-900/60 text-sky-300 border border-sky-700/50"
+                          title={
+                            bufferQueueLen > 0
+                              ? `${bufferQueueLen} TBCC-stored X caption(s); next Telegram send uses #1, then Buffer queue`
+                              : "Mirrors Telegram caption to Buffer on each send"
+                          }
+                        >
+                          Buffer → X
+                          {bufferPublishNow ? " · instant" : " · buffer queue"}
+                          {bufferQueueLen > 0 ? ` · ${bufferQueueLen} TBCC` : bufferPublishNow ? "" : " · mirror TG"}
+                        </span>
+                      ) : (
+                        <span className="text-slate-600 text-xs">—</span>
+                      )}
+                      {llmRewrite ? (
+                        <span
+                          className="inline-flex w-fit items-center rounded px-1.5 py-0.5 text-xs font-medium bg-violet-900/50 text-violet-300 border border-violet-700/50"
+                          title={
+                            llmMode === "random"
+                              ? "LLM may rephrase caption on random sends"
+                              : `LLM rephrase every ${Number(p.caption_llm_rewrite_interval) || "?"} send(s)`
+                          }
+                        >
+                          LLM rewrite · {llmMode === "random" ? "random" : `every ${Number(p.caption_llm_rewrite_interval) || "?"}`}
+                        </span>
                       ) : null}
                     </div>
                   </td>

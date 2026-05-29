@@ -7,15 +7,30 @@ from pathlib import Path
 
 from app.workers.celery_app import celery
 from app.utils.telegram_peer import normalize_telethon_peer_identifier
-from app.utils.telethon_session import admin_session_stem, poster_session_stem
+from app.utils.telethon_session import (
+    admin_session_stem,
+    configure_telethon_sqlite_session,
+    graceful_telethon_disconnect,
+    poster_session_stem,
+    telethon_sessions_share_file,
+)
 
 logger = logging.getLogger(__name__)
 
 _poster_client = None
-# Thread lock: each Celery task uses asyncio.run() → a new event loop. A module-level asyncio.Lock()
-# would bind to the first loop and break later tasks; Telethon also forbids reusing a connected
-# client across different loops.
+# Each Celery task uses asyncio.run() → a new event loop. Never reuse _poster_client across tasks.
 _poster_client_lock = threading.Lock()
+
+
+def _begin_poster_async_task() -> None:
+    """Drop any client tied to a previous task's closed event loop."""
+    global _poster_client
+    with _poster_client_lock:
+        _poster_client = None
+
+
+async def _poster_task_finally() -> None:
+    await _reset_poster_client()
 
 
 def _is_recurring_due_now(post, now_utc: datetime) -> bool:
@@ -119,6 +134,7 @@ async def _ensure_poster_authorized(client) -> None:
     """
     if not client.is_connected():
         await client.connect()
+        configure_telethon_sqlite_session(client)
     if not await client.is_user_authorized():
         if _try_bootstrap_poster_from_admin():
             await client.disconnect()
@@ -136,15 +152,21 @@ async def _ensure_poster_authorized(client) -> None:
 
 
 async def _get_poster_client():
-    """Telethon client reused within one Celery task (one asyncio.run); see task finally block."""
+    """One Telethon client per Celery task (same asyncio.run); never carry over to the next task."""
     from telethon import TelegramClient
 
     global _poster_client
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured (API_ID/API_HASH missing)")
+    if telethon_sessions_share_file():
+        logger.warning(
+            "Poster and admin Telethon sessions share %s.session — set TBCC_POSTER_TELEGRAM_SESSION=admin_poster "
+            "and TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1 in tbcc/.env",
+            Path(poster_session_stem()).name,
+        )
     with _poster_client_lock:
-        need_new = _poster_client is None
-    if need_new:
+        if _poster_client is not None:
+            return _poster_client
         c = TelegramClient(
             poster_session_stem(),
             int(os.environ["API_ID"]),
@@ -153,44 +175,49 @@ async def _get_poster_client():
         try:
             await _ensure_poster_authorized(c)
         except Exception:
-            try:
-                await c.disconnect()
-            except Exception:
-                logger.debug("poster client disconnect after auth failure", exc_info=True)
+            await graceful_telethon_disconnect(c)
             raise
-        with _poster_client_lock:
-            if _poster_client is None:
-                _poster_client = c
-            else:
-                await c.disconnect()
-    else:
-        with _poster_client_lock:
-            client = _poster_client
-        if client is not None and not client.is_connected():
-            await _ensure_poster_authorized(client)
-    with _poster_client_lock:
+        _poster_client = c
         return _poster_client
 
 
 async def _reset_poster_client() -> None:
-    """Drop broken connection/session handle so the next attempt starts fresh."""
+    """Drop client for this task's event loop before asyncio.run() returns."""
     global _poster_client
     with _poster_client_lock:
         c = _poster_client
         _poster_client = None
     if c is not None:
-        try:
-            await c.disconnect()
-        except Exception:
-            logger.debug("poster client disconnect after error failed", exc_info=True)
+        await graceful_telethon_disconnect(c)
+
+
+@celery.task(name="app.workers.poster_worker.mirror_scheduled_post_to_buffer")
+def mirror_scheduled_post_to_buffer(post_id: int):
+    from app.services.scheduled_buffer_mirror import mirror_scheduled_post_to_buffer_sync
+
+    mirror_scheduled_post_to_buffer_sync(int(post_id))
+
+
+def _after_telegram_buffer_mirror(post_id: int, *, manual_trigger: bool) -> None:
+    """Queue or run Buffer mirror immediately after a successful Telegram send."""
+    if manual_trigger:
+        from app.services.scheduled_buffer_mirror import mirror_scheduled_post_to_buffer_sync
+
+        mirror_scheduled_post_to_buffer_sync(int(post_id))
+        return
+    try:
+        mirror_scheduled_post_to_buffer.delay(int(post_id))
+    except Exception:
+        logger.debug("buffer mirror enqueue skipped", exc_info=True)
 
 
 @celery.task(name="app.workers.poster_worker.post_scheduled_text")
-def post_scheduled_text(post_id: int, reshuffle_album: bool = False):
+def post_scheduled_text(post_id: int, reshuffle_album: bool = False, manual_trigger: bool = False):
     """Send a scheduled post (text, media, buttons) to its channel.
 
     reshuffle_album: when True, randomize promo + picked media order for this send only (does not
     change saved album_order_mode). Also allows one-time posts that already have sent_at to send again.
+    manual_trigger: dashboard Post now — force send + run Buffer mirror in-process when enabled.
     """
     from app.database.session import SessionLocal
     from app.models.channel import Channel
@@ -198,6 +225,7 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False):
     from app.services.scheduled_post_service import send_scheduled_campaign, send_scheduled_post
 
     async def run():
+        _begin_poster_async_task()
         try:
             db = SessionLocal()
             try:
@@ -245,15 +273,22 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False):
                             leader = siblings[0]
                             now = datetime.utcnow()
                             # Campaign jobs can partially succeed; only (re)send siblings currently due.
-                            due_targets = {
-                                int(p.id)
-                                for p in siblings
-                                if (not _is_scheduled_post_auto_paused(p) or reshuffle_album)
-                                and (
-                                    _is_recurring_due_now(p, now)
-                                    or (not p.interval_minutes and not p.sent_at)
-                                )
-                            }
+                            if manual_trigger:
+                                due_targets = {
+                                    int(p.id)
+                                    for p in siblings
+                                    if not _is_scheduled_post_auto_paused(p) or reshuffle_album
+                                }
+                            else:
+                                due_targets = {
+                                    int(p.id)
+                                    for p in siblings
+                                    if (not _is_scheduled_post_auto_paused(p) or reshuffle_album)
+                                    and (
+                                        _is_recurring_due_now(p, now)
+                                        or (not p.interval_minutes and not p.sent_at)
+                                    )
+                                }
                             if not due_targets:
                                 logger.info(
                                     "Campaign %s: nothing due to send (interval or auto-pause); skipping",
@@ -312,6 +347,17 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False):
                                 len(failed_ids),
                                 " (reshuffle)" if reshuffle_album else "",
                             )
+                            leader = siblings[0]
+                            if int(leader.id) in sent_ids and getattr(
+                                leader, "buffer_mirror_enabled", False
+                            ):
+                                _after_telegram_buffer_mirror(
+                                    int(leader.id), manual_trigger=manual_trigger
+                                )
+                            if sent_ids:
+                                from app.services.caption_llm_rewrite import note_llm_send_completed
+
+                                note_llm_send_completed(leader)
                             if failed_ids and campaign_result.first_error is not None:
                                 logger.warning(
                                     "Campaign %s had channel failures (first error): %s",
@@ -345,6 +391,13 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False):
                                 channel.identifier,
                                 " (reshuffle)" if reshuffle_album else "",
                             )
+                            if getattr(post, "buffer_mirror_enabled", False):
+                                _after_telegram_buffer_mirror(
+                                    int(post.id), manual_trigger=manual_trigger
+                                )
+                            from app.services.caption_llm_rewrite import note_llm_send_completed
+
+                            note_llm_send_completed(post)
                         break
                     except Exception as send_err:
                         if attempt >= max_attempts or not _is_retryable_telegram_error(send_err):
@@ -404,6 +457,93 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False):
     asyncio.run(run())
 
 
+@celery.task(name="app.workers.poster_worker.post_listening_relay_message")
+def post_listening_relay_message(
+    channel_id: int,
+    html_body: str,
+    message_thread_id: int | None = None,
+    send_silent: bool = True,
+    copy_block_followup_html: str | None = None,
+    copy_followups_json: str | None = None,
+):
+    """Post listening relay HTML; optional copy follow-up(s) under the link preview (text, media, buttons)."""
+    from app.database.session import SessionLocal
+    from app.models.channel import Channel
+    from app.services.listening_relay_send import (
+        RelayCopyFollowup,
+        followups_from_json,
+        send_relay_copy_followups,
+    )
+
+    body = (html_body or "").strip()
+    if not body:
+        logger.warning("post_listening_relay_message: empty body for channel_id=%s", channel_id)
+        return
+
+    followups = followups_from_json(copy_followups_json)
+    if not followups and (copy_block_followup_html or "").strip():
+        followups = [RelayCopyFollowup(html=(copy_block_followup_html or "").strip())]
+
+    async def run():
+        _begin_poster_async_task()
+        db = SessionLocal()
+        try:
+            ch = db.query(Channel).filter(Channel.id == channel_id).first()
+            if not ch:
+                logger.warning("post_listening_relay_message: channel %s not found", channel_id)
+                return
+            peer = normalize_telethon_peer_identifier(ch.identifier)
+            silent_kw = {"silent": True} if send_silent else {}
+            max_attempts = max(1, int(os.getenv("TBCC_POSTER_MAX_ATTEMPTS", "3")))
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
+                    client = await _get_poster_client()
+                    from app.services.telegram_custom_emoji import telethon_message_kwargs
+
+                    mk = telethon_message_kwargs(body[:4096])
+                    sent = await client.send_message(
+                        peer,
+                        reply_to=message_thread_id,
+                        **silent_kw,
+                        **mk,
+                    )
+                    if followups:
+                        reply_anchor = getattr(sent, "id", None) or message_thread_id
+                        await send_relay_copy_followups(
+                            client,
+                            peer,
+                            reply_anchor=reply_anchor,
+                            followups=followups,
+                            db=db,
+                            send_silent=send_silent,
+                        )
+                    break
+                except Exception as send_err:
+                    if attempt >= max_attempts or not _is_retryable_telegram_error(send_err):
+                        raise
+                    logger.warning(
+                        "post_listening_relay_message retry %s/%s channel_id=%s: %s",
+                        attempt,
+                        max_attempts,
+                        channel_id,
+                        send_err,
+                    )
+                    await _reset_poster_client()
+                    await asyncio.sleep(min(10, 2 * attempt))
+        finally:
+            db.close()
+
+    async def main():
+        try:
+            await run()
+        finally:
+            await _reset_poster_client()
+
+    asyncio.run(main())
+
+
 @celery.task(name="app.workers.poster_worker.post_pool")
 def post_pool(pool_id: int, channel_identifier: str):
     from app.database.session import SessionLocal
@@ -411,6 +551,7 @@ def post_pool(pool_id: int, channel_identifier: str):
     from app.services.album_service import post_pool_albums
 
     async def run():
+        _begin_poster_async_task()
         try:
             db = SessionLocal()
             try:

@@ -7,17 +7,19 @@ type Row = Record<string, unknown>;
  * Shows #id when the thumbnail URL fails (common for some media types).
  */
 export function ApprovedMediaPickerStrip({
-  rows,
-  selectedIds,
+  rows = [],
+  selectedIds = [],
   onToggle,
-  rowKeyPrefix,
+  rowKeyPrefix = "media",
 }: {
-  rows: Row[];
-  selectedIds: number[];
+  rows?: Row[];
+  selectedIds?: number[];
   onToggle: (mediaId: number) => void;
-  rowKeyPrefix: string;
+  rowKeyPrefix?: string;
 }) {
-  const n = rows.length;
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const safeIds = Array.isArray(selectedIds) ? selectedIds : [];
+  const n = safeRows.length;
   return (
     <div className="min-w-0">
       <div className="mb-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-0">
@@ -30,9 +32,9 @@ export function ApprovedMediaPickerStrip({
         className="flex max-w-full min-h-[2.75rem] flex-nowrap gap-1.5 overflow-x-auto pb-1 scroll-smooth"
         style={{ scrollbarWidth: "thin" }}
       >
-        {rows.map((m) => {
+        {safeRows.map((m) => {
           const mid = Number(m.id);
-          const sel = selectedIds.includes(mid);
+          const sel = safeIds.includes(mid);
           const mt = String(m.media_type || "");
           return (
             <button

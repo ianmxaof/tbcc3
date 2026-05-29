@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>TBCC Model Lookup</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles/components.css" />
+  <link rel="stylesheet" href="styles/model-search-panel.css" />
+</head>
+<body class="tbcc-model-search-panel">
+  <header class="msp-header">
+    <h1>Model lookup</h1>
+    <p class="msp-sub">
+      <strong>Macro search</strong> checks all enabled macro sources in the background and lists only sites with hits.
+      <strong>Tab search</strong> still opens OnlyFans / live cam / video sources in new tabs (and your Telegram bot sources).
+    </p>
+  </header>
+
+  <section class="msp-search card">
+    <label class="msp-label" for="mspUsername">Username</label>
+    <div class="msp-search-row">
+      <input type="text" id="mspUsername" class="tbcc-input" placeholder="model_username" autocomplete="off" spellcheck="false" />
+      <button type="button" id="btnMacroSearch" class="tbcc-btn-primary">Macro search</button>
+    </div>
+    <div class="msp-tab-actions">
+      <button type="button" id="btnTabsOnlyfans" class="tbcc-btn-secondary">Open tabs — OnlyFans</button>
+      <button type="button" id="btnTabsLivecams" class="tbcc-btn-secondary">Open tabs — Live cams</button>
+      <button type="button" id="btnTabsVideos" class="tbcc-btn-secondary">Open tabs — Videos</button>
+    </div>
+    <p id="mspStatus" class="msp-status" aria-live="polite"></p>
+  </section>
+
+  <section class="msp-report card" aria-labelledby="mspReportHeading">
+    <div class="msp-report-head">
+      <h2 id="mspReportHeading">Results report</h2>
+      <span id="mspReportMeta" class="msp-report-meta"></span>
+    </div>
+    <div id="mspReportBody" class="msp-report-body">
+      <p class="msp-empty">Run a macro search to see sites with results. Sites with no hits are omitted.</p>
+    </div>
+    <div id="mspReportTotal" class="msp-report-total" hidden></div>
+  </section>
+
+  <section class="msp-helper card">
+    <h2>URL template helper</h2>
+    <p class="msp-sub">
+      After you run a manual search on a site, paste the full address bar URL here and enter the username you searched for — TBCC suggests a <code>{username}</code> template for Options → Add source.
+    </p>
+    <label class="msp-label" for="mspHelperUrl">Search result URL</label>
+    <input type="url" id="mspHelperUrl" class="tbcc-input msp-helper-input" placeholder="https://example.com/search/your_model" />
+    <label class="msp-label" for="mspHelperUser">Username used in that search</label>
+    <input type="text" id="mspHelperUser" class="tbcc-input msp-helper-input" placeholder="your_model" />
+    <div class="msp-helper-actions">
+      <button type="button" id="btnDeriveTemplate" class="tbcc-btn-secondary">Suggest template</button>
+      <button type="button" id="btnCopyTemplate" class="tbcc-btn-secondary" disabled>Copy template</button>
+    </div>
+    <pre id="mspTemplateOut" class="msp-template-out" hidden></pre>
+  </section>
+
+  <footer class="msp-footer">
+    <button type="button" id="btnManageSources" class="tbcc-btn-secondary">Manage sources &amp; history</button>
+  </footer>
+
+  <script src="model-search-shared.js"></script>
+  <script src="model-search-panel.js"></script>
+</body>
+</html>

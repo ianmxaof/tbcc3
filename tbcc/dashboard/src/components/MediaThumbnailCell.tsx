@@ -1,6 +1,25 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 
+/** Limit parallel thumbnail fetches so /media list + bulk approve are not starved. */
+const THUMB_MAX_PARALLEL = 2;
+let thumbActive = 0;
+const thumbWaiters: Array<() => void> = [];
+
+async function withThumbnailSlot<T>(fn: () => Promise<T>): Promise<T> {
+  while (thumbActive >= THUMB_MAX_PARALLEL) {
+    await new Promise<void>((resolve) => thumbWaiters.push(resolve));
+  }
+  thumbActive += 1;
+  try {
+    return await fn();
+  } finally {
+    thumbActive -= 1;
+    const next = thumbWaiters.shift();
+    if (next) next();
+  }
+}
+
 /**
  * Loads preview bytes via fetch (same path as <img src> but reliable through Vite /api proxy)
  * and shows a numeric fallback if the request fails (instead of an empty box).
@@ -54,7 +73,9 @@ export function MediaThumbnailCell({
 
     (async () => {
       try {
-        const res = await fetch(api.media.thumbnailUrl(mediaId), { signal: ac.signal });
+        const res = await withThumbnailSlot(() =>
+          fetch(api.media.thumbnailUrl(mediaId), { signal: ac.signal })
+        );
         if (!res.ok) throw new Error(String(res.status));
         const blob = await res.blob();
         const u = URL.createObjectURL(blob);
@@ -81,7 +102,7 @@ export function MediaThumbnailCell({
   }, [visible, mediaId]);
 
   const mediaClass = className ?? "";
-  const outer = `flex w-full h-full min-h-0 items-center justify-center bg-slate-800 text-slate-500 text-[10px] leading-tight text-center ${
+  const outer = `relative flex w-full h-full min-h-0 items-center justify-center bg-slate-800 text-slate-500 text-[10px] leading-tight text-center ${
     phase === "ok" && objectUrl ? "p-0 overflow-hidden" : "p-0.5"
   }`;
 
@@ -103,21 +124,22 @@ export function MediaThumbnailCell({
       </span>
     );
   } else {
-    const mt = String(mediaType || "").toLowerCase();
-    if (mt === "video") {
-      inner = (
-        <video
-          src={objectUrl}
-          className={mediaClass}
-          muted
-          playsInline
-          preload="metadata"
-          title={`Video #${mediaId}`}
-        />
-      );
-    } else {
-      inner = <img src={objectUrl} alt="" className={mediaClass} loading="lazy" decoding="async" />;
-    }
+    // The thumbnail endpoint returns a JPEG poster frame for video too, so always render
+    // an <img> (a JPEG fed to <video src> never paints). Full playback is in the lightbox.
+    const isVideo = String(mediaType || "").toLowerCase() === "video";
+    inner = (
+      <>
+        <img src={objectUrl} alt="" className={mediaClass} loading="lazy" decoding="async" />
+        {isVideo && (
+          <span
+            className="absolute bottom-1 right-1 rounded bg-black/60 px-1 text-[10px] leading-none text-white"
+            title={`Video #${mediaId}`}
+          >
+            ▶
+          </span>
+        )}
+      </>
+    );
   }
 
   return (

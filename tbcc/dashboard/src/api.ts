@@ -5,7 +5,9 @@
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
 
 /** Avoid infinite “Loading…” if the backend or DB never responds (default fetch has no timeout). */
-const FETCH_TIMEOUT_MS = 30_000;
+const FETCH_TIMEOUT_MS = 60_000;
+/** Media list can wait behind SQLite writes + many parallel thumbnail reads on the same API host. */
+const MEDIA_LIST_TIMEOUT_MS = 90_000;
 /** Bulk writes can wait behind SQLite + many parallel thumbnail reads — allow longer per chunk. */
 const BULK_PATCH_TIMEOUT_MS = 300_000;
 const BULK_MEDIA_CHUNK_SIZE = 15;
@@ -93,6 +95,9 @@ export type WatchFolderStatus =
   | {
       configured: true;
       debounce_s: number;
+      stable_wait_s: number;
+      media_only: boolean;
+      reject_dir: string | null;
       inbox: {
         path: string;
         resolved: boolean;
@@ -139,9 +144,19 @@ export type LootBotSettingsEffective = {
   bot_username: string;
   primary_loot_room_invite_url: string;
   primary_loot_room_chat_id: number | null;
+  aof_group_chat_id: number | null;
+  aof_group_message_thread_id: number | null;
+  daily_promo_enabled: boolean;
+  daily_promo_hour_utc: number;
+  daily_promo_intro_html: string | null;
+  buffer_mirror_enabled: boolean;
+  buffer_publish_now: boolean;
+  buffer_x_queue?: Array<{ text: string; image_url?: string }>;
   config_poll_seconds: number;
   narrative_enabled: boolean;
   narrative_system_prompt: string | null;
+  loot_referral_enabled?: boolean;
+  referral_bonus_pulls?: number | null;
   drop_spoiler_default: boolean;
   runtime_adapter: string;
   runtime_cmd_start?: string | null;
@@ -153,6 +168,78 @@ export type LootBotSettingsEffective = {
   bot_token_masked: string | null;
   bot_token_configured: boolean;
   bot_token_source: string;
+};
+
+export type ListeningRelaySettings = {
+  enabled: boolean;
+  channel_id: number | null;
+  message_thread_id: number | null;
+  lastfm_username: string | null;
+  lastfm_api_key_masked: string | null;
+  poll_interval_minutes: number;
+  message_template_html: string | null;
+  /** Effective templates (DB variations JSON, else legacy single `message_template_html`). */
+  message_template_variations: string[];
+  template_rotation_active: boolean;
+  /** Legacy single footer; cleared when variations are saved from the dashboard. */
+  message_footer_html: string | null;
+  /** One entry per template slot — flavor/promo caption above the Last.fm preview (no placeholders). */
+  message_footer_variations: string[];
+  /** One entry per template slot — <pre> tap-to-copy block (second message under preview). */
+  message_copy_block_variations: string[];
+  /** Per-slot copy panel: buttons, promo media, albums (scheduler parity). */
+  message_slot_extras: RelaySlotExtra[];
+  template_rotation_mode: "sequential" | "random";
+  ascii_art_enabled: boolean;
+  ascii_art_min_interval: number;
+  ascii_art_max_interval: number;
+  ascii_art_scrobble_counter: number;
+  ascii_art_next_threshold: number | null;
+  tryptych_enabled: boolean;
+  tryptych_on_ascii_beat: boolean;
+  ascii_art_max_width: number;
+  ascii_art_max_lines: number;
+  webhook_secret_masked: string | null;
+  send_silent: boolean;
+  buffer_relay_enabled: boolean;
+  buffer_relay_min_interval_minutes: number;
+  buffer_relay_max_per_day_utc: number;
+  buffer_relay_utc_day: string | null;
+  buffer_relay_posts_today: number;
+  buffer_relay_last_post_at: string | null;
+  last_poll_at: string | null;
+  has_lastfm_dedupe: boolean;
+  has_webhook_dedupe: boolean;
+};
+
+export type RelaySlotExtra = {
+  copy_buttons: Array<{ text: string; url: string }>;
+  copy_media_ids: number[];
+  copy_attachment_urls: string[];
+  copy_album_order_mode: "static" | "shuffle" | "carousel";
+  copy_pin_after_send: boolean;
+  copy_checkout_stars_enabled: boolean;
+  copy_checkout_stars_plan_id: number | null;
+  copy_checkout_button_label: string | null;
+  copy_checkout_referral_code: string | null;
+};
+
+export type RelayAsciiEntry = {
+  id: string;
+  name: string;
+  content: string;
+  builtin?: boolean;
+};
+
+export type ListeningRelayLastfmPreview = {
+  ok: boolean;
+  track: Record<string, unknown> | null;
+  formatted: string | null;
+  copy_followups?: Array<Record<string, unknown>>;
+  copy_followups_json?: string | null;
+  ascii_beat_preview?: boolean;
+  tryptych_preview?: boolean;
+  detail?: string;
 };
 
 export type LootModifier = {
@@ -184,6 +271,30 @@ export type LootRollPreview = {
   modifiers?: Array<{ id: number; kind: string; label?: string | null; target_url?: string | null }>;
 };
 
+export type CaptureArchiveEntry = {
+  id: number | null;
+  kind: "url" | "username";
+  value: string;
+  source?: string;
+  ref?: string;
+  note?: string;
+  origin?: string;
+  summary?: string;
+  added_at?: string | null;
+  addedAt?: number | null;
+};
+
+export type CaptureArchiveEntryInput = {
+  kind?: string;
+  value: string;
+  source?: string;
+  ref?: string;
+  note?: string;
+  origin?: string;
+  added_at?: string | null;
+  addedAt?: number | null;
+};
+
 export const api = {
   health: () => fetchApi<{ status: string }>("/health"),
   healthDb: () =>
@@ -204,7 +315,9 @@ export const api = {
       if (opts?.sort) params.set("sort", opts.sort);
       if (opts?.target_pool_id != null) params.set("target_pool_id", String(opts.target_pool_id));
       const q = params.toString();
-      return fetchApi<Array<Record<string, unknown>>>(q ? `/media?${q}` : "/media");
+      return fetchApi<Array<Record<string, unknown>>>(q ? `/media?${q}` : "/media", {
+        timeoutMs: MEDIA_LIST_TIMEOUT_MS,
+      });
     },
     get: async (mediaId: number) =>
       throwIfBodyError(await fetchApi<Record<string, unknown>>(`/media/${mediaId}`)),
@@ -316,6 +429,74 @@ export const api = {
         { method: "POST", body: "{}" }
       ),
   },
+  captionSnippets: {
+    list: () => fetchApi<Array<{ id: number; title: string | null; body: string }>>("/caption-snippets/"),
+    create: (body: { title?: string | null; body: string }) =>
+      fetchApi<{ id: number; title: string | null; body: string }>("/caption-snippets/", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    bulk: (body: { items: Array<{ title?: string | null; body: string }> }) =>
+      fetchApi<{ created: number }>("/caption-snippets/bulk", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    delete: (id: number) =>
+      fetchApi<{ deleted: boolean; id: number }>(`/caption-snippets/${id}`, { method: "DELETE" }),
+  },
+  promoAffiliateLinks: {
+    list: (opts?: { sort?: string; active_only?: boolean }) => {
+      const q = new URLSearchParams();
+      if (opts?.sort) q.set("sort", opts.sort);
+      if (opts?.active_only === false) q.set("active_only", "false");
+      const qs = q.toString();
+      return fetchApi<
+        Array<{
+          id: number;
+          label: string;
+          url: string;
+          short_url: string | null;
+          payout_kind: string;
+          payout_detail: string | null;
+          priority_tier: number;
+          expires_at: string | null;
+          active: boolean;
+          created_at: string | null;
+        }>
+      >(`/promo-affiliate-links/${qs ? `?${qs}` : ""}`);
+    },
+    bulk: (body: {
+      items: Array<{
+        label: string;
+        url: string;
+        short_url?: string | null;
+        payout_kind?: string;
+        payout_detail?: string | null;
+        priority_tier?: number;
+        expires_at?: string | null;
+        active?: boolean;
+      }>;
+    }) =>
+      fetchApi<{ created: number }>("/promo-affiliate-links/bulk", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    shorten: (id: number) =>
+      fetchApi<{
+        id: number;
+        label: string;
+        url: string;
+        short_url: string | null;
+        payout_kind: string;
+        payout_detail: string | null;
+        priority_tier: number;
+        expires_at: string | null;
+        active: boolean;
+        created_at: string | null;
+      }>(`/promo-affiliate-links/${id}/shorten`, { method: "POST", body: "{}" }),
+    delete: (id: number) =>
+      fetchApi<{ deleted: boolean; id: number }>(`/promo-affiliate-links/${id}`, { method: "DELETE" }),
+  },
   pools: {
     list: () => fetchApi<Array<Record<string, unknown>>>("/pools"),
     create: (body: {
@@ -367,6 +548,7 @@ export const api = {
       media_ids: number[];
       caption?: string;
       mark_posted?: boolean;
+      send_silent?: boolean;
     }) =>
       fetchApi<{
         ok?: boolean;
@@ -450,8 +632,78 @@ export const api = {
   },
   sources: {
     list: () => fetchApi<Array<Record<string, unknown>>>("/sources"),
-    create: (body: { name: string; source_type?: string; identifier: string; pool_id: number; active?: boolean }) =>
-      fetchApi<Record<string, unknown>>("/sources", { method: "POST", body: JSON.stringify(body) }),
+    get: (id: number) => fetchApi<Record<string, unknown>>(`/sources/${id}`),
+    listScrapeRuns: (limit = 8) =>
+      fetchApi<Array<Record<string, unknown>>>(`/sources/scrape-runs/latest?limit=${limit}`),
+    listSourceScrapeRuns: (sourceId: number, limit = 20) =>
+      fetchApi<Array<Record<string, unknown>>>(`/sources/${sourceId}/scrape-runs?limit=${limit}`),
+    create: (body: {
+      name: string;
+      source_type?: string;
+      identifier: string;
+      pool_id: number;
+      active?: boolean;
+      schedule_cron?: string | null;
+      schedule_enabled?: boolean;
+      media_types?: "both" | "photos" | "videos";
+      max_messages_per_run?: number;
+    }) => fetchApi<Record<string, unknown>>("/sources", { method: "POST", body: JSON.stringify(body) }),
+    update: async (
+      id: number,
+      body: Partial<{
+        name: string;
+        source_type: string;
+        identifier: string;
+        pool_id: number;
+        active: boolean;
+        schedule_cron: string | null;
+        schedule_enabled: boolean;
+        media_types: "both" | "photos" | "videos";
+        max_messages_per_run: number;
+      }>
+    ) => {
+      const payload = JSON.stringify(body);
+      try {
+        return await fetchApi<Record<string, unknown>>(`/sources/${id}`, {
+          method: "PATCH",
+          body: payload,
+        });
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e);
+        if (!/method not allowed/i.test(msg)) throw e;
+        return fetchApi<Record<string, unknown>>(`/sources/${id}/update`, {
+          method: "POST",
+          body: payload,
+        });
+      }
+    },
+    delete: async (id: number) => {
+      try {
+        return await fetchApi<{ deleted: boolean; id: number }>(`/sources/${id}`, { method: "DELETE" });
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e);
+        if (!/method not allowed/i.test(msg)) throw e;
+        return fetchApi<{ deleted: boolean; id: number }>(`/sources/${id}/delete`, { method: "POST" });
+      }
+    },
+    scraperAuthStatus: () => fetchApi<Record<string, unknown>>("/sources/scraper-auth/status"),
+    scraperAuthPhone: (phone: string) =>
+      fetchApi<Record<string, unknown>>("/sources/scraper-auth/phone", {
+        method: "POST",
+        body: JSON.stringify({ phone }),
+      }),
+    scraperAuthCode: (code: string) =>
+      fetchApi<Record<string, unknown>>("/sources/scraper-auth/code", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
+    scraperAuthPassword: (password: string) =>
+      fetchApi<Record<string, unknown>>("/sources/scraper-auth/password", {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      }),
+    scraperAuthCancel: () =>
+      fetchApi<Record<string, unknown>>("/sources/scraper-auth/cancel", { method: "POST" }),
   },
   channels: {
     list: () => fetchApi<Array<Record<string, unknown>>>("/channels"),
@@ -598,6 +850,313 @@ export const api = {
         "/loot-bot-settings",
         { method: "PATCH", body: JSON.stringify(body) }
       ),
+    triggerDailyPromo: () =>
+      fetchApi<{ ok: boolean; queued: boolean; sent?: boolean; chat_id: number | null; buffer_mirror_enabled?: boolean }>(
+        "/loot-bot-settings/trigger-daily-promo",
+        { method: "POST" }
+      ),
+    bufferTestPost: (body?: { text?: string; publish_now?: boolean }) =>
+      fetchApi<{ ok: boolean; mode: string; chars: number; channels: number }>(
+        "/loot-bot-settings/buffer-test-post",
+        { method: "POST", body: JSON.stringify(body ?? {}) }
+      ),
+  },
+  emojiFactory: {
+    prerequisites: () =>
+      fetchApi<{
+        ffmpeg: boolean;
+        telethon_session: boolean;
+        telethon_error: string | null;
+        docs: Record<string, string>;
+      }>("/emoji-factory/prerequisites"),
+    runSplit: (body: {
+      input_path: string;
+      out_dir: string;
+      cols?: number;
+      rows?: number;
+      tile_px?: number;
+      margin_pct?: number;
+      loop_sec?: number;
+      crf?: number;
+      static?: boolean;
+    }) =>
+      fetchApi<{
+        ok: boolean;
+        manifest_path: string;
+        out_dir: string;
+        tile_count: number;
+        over_soft_limit: number;
+      }>("/emoji-factory/run-split", { method: "POST", body: JSON.stringify(body) }),
+    createFromUpload: async (
+      file: File,
+      opts: {
+        cols?: number;
+        rows?: number;
+        tile_px?: number;
+        margin_pct?: number;
+        loop_sec?: number;
+        crf?: number;
+        static?: boolean;
+        title?: string;
+        short_name?: string;
+        upload_telegram?: boolean;
+        dry_run?: boolean;
+      }
+    ) => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("cols", String(opts.cols ?? 4));
+      form.append("rows", String(opts.rows ?? 4));
+      form.append("tile_px", String(opts.tile_px ?? 100));
+      form.append("margin_pct", String(opts.margin_pct ?? 8));
+      form.append("loop_sec", String(opts.loop_sec ?? 3));
+      form.append("crf", String(opts.crf ?? 38));
+      form.append("static", opts.static ? "true" : "false");
+      form.append("title", opts.title ?? "TBCC emoji pack");
+      form.append("short_name", opts.short_name ?? "");
+      form.append("upload_telegram", opts.upload_telegram ? "true" : "false");
+      form.append("dry_run", opts.dry_run ? "true" : "false");
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/emoji-factory/create-from-upload`, { method: "POST", body: form });
+      } catch (e) {
+        const msg =
+          e instanceof TypeError && e.message === "Failed to fetch"
+            ? "Cannot reach backend. Is it running on http://localhost:8000?"
+            : String(e);
+        throw new Error(msg);
+      }
+      const text = await res.text();
+      let data: Record<string, unknown> = {};
+      try {
+        data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+      } catch {
+        throw new Error(text || res.statusText);
+      }
+      if (!res.ok) {
+        const detail = data.detail;
+        throw new Error(
+          typeof detail === "string" ? detail : Array.isArray(detail) ? JSON.stringify(detail) : text || res.statusText
+        );
+      }
+      return data as {
+        ok: boolean;
+        split: Record<string, unknown>;
+        upload?: Record<string, unknown>;
+      };
+    },
+    uploadFromManifest: (body: {
+      manifest_path: string;
+      title: string;
+      short_name: string;
+      dry_run: boolean;
+    }) =>
+      fetchApi<Record<string, unknown>>("/emoji-factory/upload-from-manifest", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    sketchbook: {
+      listPages: () =>
+        fetchApi<
+          Array<{
+            id: number;
+            sort_order: number;
+            title: string | null;
+            body: string;
+            created_at?: string | null;
+            updated_at?: string | null;
+          }>
+        >("/emoji-factory/sketchbook/pages"),
+      createPage: (body?: { title?: string | null; body?: string }) =>
+        fetchApi<{ id: number; sort_order: number; title: string | null; body: string }>(
+          "/emoji-factory/sketchbook/pages",
+          { method: "POST", body: JSON.stringify(body ?? {}) }
+        ),
+      patchPage: (pageId: number, body: { title?: string | null; body?: string }) =>
+        fetchApi<{ id: number; sort_order: number; title: string | null; body: string }>(
+          `/emoji-factory/sketchbook/pages/${pageId}`,
+          { method: "PATCH", body: JSON.stringify(body) }
+        ),
+      deletePage: (pageId: number) =>
+        fetchApi<{ deleted: boolean; id: number }>(`/emoji-factory/sketchbook/pages/${pageId}`, {
+          method: "DELETE",
+        }),
+      savePreset: (pageId: number, body?: { title?: string | null; html?: string }) =>
+        fetchApi<{ id: number; title: string; html_fragment: string }>(
+          `/emoji-factory/sketchbook/pages/${pageId}/save-preset`,
+          { method: "POST", body: JSON.stringify(body ?? {}) }
+        ),
+    },
+  },
+  telegramCustomEmoji: {
+    listPresets: () => fetchApi<Array<{ id: number; title: string; html_fragment: string; source_note?: string | null }>>("/telegram-custom-emoji/presets"),
+    createPreset: (body: { title: string; html_fragment: string; source_note?: string | null }) =>
+      fetchApi<{ id: number; title: string; html_fragment: string }>("/telegram-custom-emoji/presets", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    deletePreset: (id: number) =>
+      fetchApi<{ deleted: number }>(`/telegram-custom-emoji/presets/${id}`, { method: "DELETE" }),
+    validate: (html: string) =>
+      fetchApi<Record<string, unknown>>("/telegram-custom-emoji/validate", {
+        method: "POST",
+        body: JSON.stringify({ html }),
+      }),
+    buildTag: (body: { document_id: number; placeholder?: string }) =>
+      fetchApi<{ tag: string }>("/telegram-custom-emoji/build-tag", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    savedMessagesRecent: (limit = 20) =>
+      fetchApi<{
+        peer: string;
+        messages: Array<{
+          message_id: number;
+          preview: string;
+          has_custom_emoji: boolean;
+          date?: string | null;
+        }>;
+      }>(`/telegram-custom-emoji/saved-messages/recent?limit=${limit}`),
+    installedPacks: () =>
+      fetchApi<{
+        count: number;
+        packs: Array<{ id: number; short_name: string; title: string; count: number; access_hash?: number }>;
+      }>("/telegram-custom-emoji/installed-packs"),
+    packEmojis: (shortName: string) =>
+      fetchApi<{
+        id: number;
+        short_name: string;
+        title: string;
+        count: number;
+        emojis: Array<{ document_id: number; alt: string; placeholder: string; tag: string; free: boolean }>;
+      }>(`/telegram-custom-emoji/installed-packs/${encodeURIComponent(shortName)}/emojis`),
+    importMacro: (body: {
+      peer?: string;
+      message_id: number;
+      peer_link?: string;
+      title?: string | null;
+      layout?: string;
+      save_preset?: boolean;
+      save_sketchbook?: boolean;
+      send_to_saved?: boolean;
+    }) =>
+      fetchApi<{
+        ok: boolean;
+        html: string;
+        preset_id: number | null;
+        sketch_page_id: number | null;
+        sent_to: string | null;
+        custom_emoji_count: number;
+      }>("/telegram-custom-emoji/import-macro", { method: "POST", body: JSON.stringify(body) }),
+    extract: (body: { peer?: string; message_id?: number; peer_link?: string }) =>
+      fetchApi<{
+        custom_emoji_html: string;
+        custom_emoji_html_with_body?: string;
+        full_message_html?: string;
+        plain_text?: string;
+        custom_emoji_count: number;
+      }>("/telegram-custom-emoji/extract-from-message", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    testSend: (body: { html: string; channel_id?: number; telegram_user_id?: number; send_silent?: boolean }) =>
+      fetchApi<{ ok: boolean; sent_to: string }>("/telegram-custom-emoji/test-send", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
+  gallerySendPromo: {
+    get: () =>
+      fetchApi<{
+        settings: {
+          enabled: boolean;
+          active_image_id: string | null;
+          active_image: { id: string; url: string; label?: string; filename?: string } | null;
+          images: Array<{ id: string; url: string; label?: string; filename?: string }>;
+        };
+      }>("/gallery-send-promo"),
+    patch: (body: { enabled?: boolean; active_image_id?: string | null }) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>("/gallery-send-promo", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    uploadImage: (file: File, label?: string) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (label) fd.append("label", label);
+      return fetchApi<{ ok: boolean; image: Record<string, unknown>; settings: Record<string, unknown> }>(
+        "/gallery-send-promo/images",
+        { method: "POST", body: fd }
+      );
+    },
+    deleteImage: (imageId: string) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>(
+        `/gallery-send-promo/images/${encodeURIComponent(imageId)}`,
+        { method: "DELETE" }
+      ),
+  },
+  zipBundle: {
+    get: () =>
+      fetchApi<{
+        settings: {
+          enabled: boolean;
+          include_text_file: boolean;
+          include_image: boolean;
+          text_filename: string;
+          text_body: string;
+          image_filename: string | null;
+          image_url: string | null;
+          has_image_on_disk: boolean;
+        };
+      }>("/zip-bundle-settings"),
+    patch: (body: Record<string, unknown>) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>("/zip-bundle-settings", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    uploadPromoImage: (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      return fetchApi<{ ok: boolean; filename: string; url: string }>("/zip-bundle-settings/promo-image", {
+        method: "POST",
+        body: fd,
+      });
+    },
+  },
+  listeningRelay: {
+    get: () =>
+      fetchApi<{ settings: ListeningRelaySettings; webhook_secret?: string }>("/listening-relay-settings"),
+    patch: (body: Record<string, unknown>) =>
+      fetchApi<{ ok: boolean; settings: ListeningRelaySettings; webhook_secret?: string }>(
+        "/listening-relay-settings",
+        { method: "PATCH", body: JSON.stringify(body) }
+      ),
+    lastfmPreview: () => fetchApi<ListeningRelayLastfmPreview>("/listening-relay-settings/lastfm-preview"),
+    testPost: () =>
+      fetchApi<{ ok: boolean; queued?: boolean }>("/listening-relay-settings/test-post", { method: "POST" }),
+    bufferTestPost: (body?: {
+      text?: string;
+      image_url?: string;
+      x_only?: boolean;
+      publish_now?: boolean;
+    }) =>
+      fetchApi<{ ok: boolean; queued?: Array<{ channel_id: string; post_id?: string }>; errors?: unknown }>(
+        "/listening-relay-settings/buffer-test-post",
+        { method: "POST", body: JSON.stringify(body ?? {}) }
+      ),
+    listAsciiArt: () =>
+      fetchApi<{ entries: RelayAsciiEntry[]; max_width: number; max_lines: number }>(
+        "/listening-relay-settings/ascii-art"
+      ),
+    uploadAsciiArt: (body: { name?: string; content: string }) =>
+      fetchApi<{ ok: boolean; entry: RelayAsciiEntry }>("/listening-relay-settings/ascii-art", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    deleteAsciiArt: (id: string) =>
+      fetchApi<{ ok: boolean }>(`/listening-relay-settings/ascii-art/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
   },
   loot: {
     listModifiers: (includeInactive = true) =>
@@ -607,6 +1166,32 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    createModifierFromUrl: (body: {
+      url: string;
+      label?: string;
+      kind?: string;
+      source_note?: string;
+    }) =>
+      fetchApi<LootModifier>("/loot/modifiers/from-url", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    creatorSubmit: (body: { url: string; telegram_user_id?: number; handle?: string }) =>
+      fetchApi<{ ok: boolean; modifier_id: number; label: string; target_url: string; message: string }>(
+        "/loot/creator-submit",
+        { method: "POST", body: JSON.stringify(body) }
+      ),
+    createModifiersFromUrlBatch: (items: Array<{
+      url: string;
+      label?: string;
+      kind?: string;
+      source_note?: string;
+      as_zip_pack?: boolean;
+    }>) =>
+      fetchApi<{ ok_count: number; fail_count: number; results: Array<{ index: number; url: string; ok: boolean; modifier_id?: number; error?: string }> }>(
+        "/loot/modifiers/from-url/batch",
+        { method: "POST", body: JSON.stringify({ items }) }
+      ),
     patchModifier: (id: number, body: Partial<LootModifier>) =>
       fetchApi<LootModifier>(`/loot/modifiers/${id}`, {
         method: "PATCH",
@@ -796,7 +1381,9 @@ export const api = {
   },
   jobs: {
     triggerScrape: (sourceId: number) =>
-      fetchApi<{ status: string }>(`/jobs/scrape/${sourceId}`, { method: "POST" }),
+      fetchApi<{ status: string; run_id: number; celery_task_id?: string }>(`/jobs/scrape/${sourceId}`, {
+        method: "POST",
+      }),
     triggerPost: (poolId: number) =>
       fetchApi<{ status: string }>(`/jobs/post/${poolId}`, { method: "POST" }),
   },
@@ -832,6 +1419,13 @@ export const api = {
       checkout_stars_plan_id?: number | null;
       checkout_button_label?: string | null;
       checkout_referral_code?: string | null;
+      buffer_mirror_enabled?: boolean;
+      buffer_publish_now?: boolean;
+      buffer_x_queue?: Array<{ text: string; image_url?: string }>;
+      caption_llm_rewrite_enabled?: boolean;
+      caption_llm_rewrite_mode?: "random" | "interval" | null;
+      caption_llm_rewrite_interval?: number | null;
+      caption_llm_rewrite_probability?: number | null;
     }) =>
       fetchApi<{ posts: Array<Record<string, unknown>>; campaign_group_id: string | null }>(
         "/scheduled-posts",
@@ -863,8 +1457,14 @@ export const api = {
         checkout_stars_plan_id?: number | null;
         checkout_button_label?: string | null;
         checkout_referral_code?: string | null;
-        /** Clear auto-pause after repeated send failures (same as Post now). */
         clear_auto_pause?: boolean;
+        buffer_mirror_enabled?: boolean | null;
+        buffer_publish_now?: boolean | null;
+        buffer_x_queue?: Array<{ text: string; image_url?: string }> | null;
+        caption_llm_rewrite_enabled?: boolean | null;
+        caption_llm_rewrite_mode?: "random" | "interval" | null;
+        caption_llm_rewrite_interval?: number | null;
+        caption_llm_rewrite_probability?: number | null;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/scheduled-posts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -883,5 +1483,69 @@ export const api = {
           { method: "POST" }
         )
       ),
+  },
+  archive: {
+    list: (params?: {
+      q?: string;
+      kind?: "" | "url" | "username";
+      username?: string;
+      page?: number;
+      page_size?: number;
+      include_media?: boolean;
+      sort?: string;
+      order?: "asc" | "desc";
+      sort2?: string;
+      order2?: "asc" | "desc";
+    }) => {
+      const sp = new URLSearchParams();
+      if (params?.q) sp.set("q", params.q);
+      if (params?.kind) sp.set("kind", params.kind);
+      if (params?.username) sp.set("username", params.username);
+      sp.set("page", String(params?.page ?? 1));
+      sp.set("page_size", String(Math.min(100, params?.page_size ?? 100)));
+      if (params?.include_media === false) sp.set("include_media", "false");
+      if (params?.sort) sp.set("sort", params.sort);
+      if (params?.order) sp.set("order", params.order);
+      if (params?.sort2) sp.set("sort2", params.sort2);
+      if (params?.order2) sp.set("order2", params.order2);
+      const qs = sp.toString();
+      return fetchApi<{
+        items: CaptureArchiveEntry[];
+        total: number;
+        page: number;
+        page_size: number;
+        total_pages: number;
+      }>(`/archive/entries?${qs}`);
+    },
+    syncBundle: () =>
+      fetchApi<{ entries: CaptureArchiveEntry[]; total: number }>("/archive/entries/sync-bundle"),
+    handles: () => fetchApi<{ handles: string[] }>("/archive/entries/handles"),
+    bulk: (entries: CaptureArchiveEntryInput[], merge = true) =>
+      fetchApi<{ ok: boolean; added: number; total: number }>("/archive/entries/bulk", {
+        method: "POST",
+        body: JSON.stringify({ entries, merge }),
+      }),
+    syncFromMedia: () =>
+      fetchApi<{ ok: boolean; added: number; scanned: number }>("/archive/entries/sync-from-media", {
+        method: "POST",
+      }),
+    clear: (confirm: string) =>
+      fetchApi<{ ok: boolean; deleted: number }>(
+        `/archive/entries?confirm=${encodeURIComponent(confirm)}`,
+        { method: "DELETE" }
+      ),
+    exportDownloadUrl: (
+      format: "json" | "csv" | "txt",
+      params?: { q?: string; kind?: string; sort?: string; order?: string; sort2?: string; order2?: string }
+    ) => {
+      const sp = new URLSearchParams({ format });
+      if (params?.q) sp.set("q", params.q);
+      if (params?.kind) sp.set("kind", params.kind);
+      if (params?.sort) sp.set("sort", params.sort);
+      if (params?.order) sp.set("order", params.order);
+      if (params?.sort2) sp.set("sort2", params.sort2);
+      if (params?.order2) sp.set("order2", params.order2);
+      return `${API_BASE}/archive/entries/export?${sp.toString()}`;
+    },
   },
 };

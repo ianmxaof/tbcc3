@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { canPreviewInGallery } from "../components/MediaGalleryModal";
@@ -8,8 +8,63 @@ import { MediaThumbnailCell } from "../components/MediaThumbnailCell";
 import { MediaLlmSuggestModal } from "../components/MediaLlmSuggestModal";
 import { ContentPools } from "./ContentPools";
 import { InfoDisclosure } from "../components/InfoDisclosure";
+import { TagCatalogCombobox } from "../components/TagCatalogCombobox";
+import {
+  SilentTelegramSendOption,
+  readSendSilentPreference,
+  writeSendSilentPreference,
+} from "../components/SilentTelegramSendOption";
+
+type MediaRow = Record<string, unknown>;
+
+/** Large hit target for list-view row selection (replaces tiny native checkboxes). */
+function MediaRowSelectionControl({
+  selected,
+  title,
+  onPointer,
+}: {
+  selected: boolean;
+  title: string;
+  onPointer: (e: React.MouseEvent) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-media-selection="1"
+      className={`flex h-full min-h-[3.25rem] w-full items-center justify-center border-r border-slate-600/60 transition-colors ${
+        selected ? "bg-cyan-900/45 hover:bg-cyan-900/55" : "bg-slate-800/40 hover:bg-slate-700/55"
+      }`}
+      aria-pressed={selected}
+      aria-label={selected ? "Deselect row" : "Select row"}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onPointer(e);
+      }}
+      onContextMenu={(e) => {
+        e.stopPropagation();
+        onPointer(e);
+        e.preventDefault();
+      }}
+    >
+      <span
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded border-2 shadow-sm ${
+          selected ? "border-cyan-300 bg-cyan-600 text-white" : "border-slate-400 bg-slate-900/90 text-transparent"
+        }`}
+        aria-hidden
+      >
+        {selected ? (
+          <svg viewBox="0 0 12 12" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M2 6l3 3 5-6" />
+          </svg>
+        ) : null}
+      </span>
+    </button>
+  );
+}
 
 export function MediaLibrary() {
+  const [searchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState<string | undefined>("pending");
   /** 0 = all pools (API omits pool_id). Backend always supported this; the UI did not until now. */
   const [poolFilterId, setPoolFilterId] = useState(0);
@@ -25,6 +80,17 @@ export function MediaLibrary() {
   const [bulkPoolId, setBulkPoolId] = useState<number>(0);
   const [bulkTagsText, setBulkTagsText] = useState("");
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const status = searchParams.get("status");
+    const poolRaw = searchParams.get("pool_id");
+    if (status) setStatusFilter(status);
+    if (poolRaw != null && poolRaw !== "") {
+      const n = Number(poolRaw);
+      if (Number.isFinite(n) && n > 0) setPoolFilterId(n);
+    }
+  }, [searchParams]);
+
   const { data: media = [], isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["media", statusFilter, poolFilterId, tagFilter, tagSlugFilter, sortMode, recommendPoolId],
     queryFn: () => {
@@ -63,6 +129,7 @@ export function MediaLibrary() {
   const [uploadThreadId, setUploadThreadId] = useState<number | null>(null);
   const [uploadCaption, setUploadCaption] = useState("");
   const [markPostedAfterChannel, setMarkPostedAfterChannel] = useState(true);
+  const [uploadSendSilent, setUploadSendSilent] = useState(readSendSilentPreference);
   const [uploadMsg, setUploadMsg] = useState<string | null>(null);
   const uploadFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -143,6 +210,7 @@ export function MediaLibrary() {
           media_ids: mediaIds,
           caption: captionForTelegram ?? "",
           mark_posted: markPostedAfterChannel,
+          send_silent: uploadSendSilent,
         });
         if (post.error) lines.push(`Telegram: ${post.error}`);
         else if (post.errors?.length) lines.push(`Telegram: ${post.errors.join("; ")}`);
@@ -258,33 +326,52 @@ export function MediaLibrary() {
   const toggleSelected = (id: number) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
-  const selectAllCurrent = () => setSelectedIds((media as Array<Record<string, unknown>>).map((m) => Number(m.id)));
+  const selectAllCurrent = () => setSelectedIds((media as MediaRow[]).map((m) => Number(m.id)));
   const clearSelection = () => setSelectedIds([]);
 
-  /** Display index anchor for Shift+click range (same idea as extension gallery `lastSelectionAnchorIndex`). */
+  /** Display index anchors for Shift+click / Shift+right-click range (extension gallery pattern). */
   const gridSelectionAnchorRef = useRef(0);
+  const listSelectionAnchorRef = useRef(0);
 
-  const previewable = useMemo(
-    () => (media as Array<Record<string, unknown>>).filter((m) => canPreviewInGallery(m)),
-    [media]
-  );
+  const previewable = useMemo(() => (media as MediaRow[]).filter((m) => canPreviewInGallery(m)), [media]);
+  const mediaRows = media as MediaRow[];
 
-  const handleGalleryCellPointer = (id: number, displayIdx: number, e: React.MouseEvent) => {
+  /**
+   * Windows-style multi-select: Ctrl/Cmd toggles; Shift selects inclusive range from anchor.
+   * Works on left- or right-click / contextmenu (right-click is primary for fast pruning).
+   */
+  const handleMediaSelectionPointer = (
+    id: number,
+    displayIdx: number,
+    rows: MediaRow[],
+    anchorRef: React.MutableRefObject<number>,
+    e: React.MouseEvent
+  ) => {
+    const modifier = e.shiftKey || e.ctrlKey || e.metaKey;
+    if (e.type === "contextmenu" && !modifier) {
+      e.preventDefault();
+      e.stopPropagation();
+      anchorRef.current = displayIdx;
+      toggleSelected(id);
+      return;
+    }
     if (e.shiftKey) {
       e.preventDefault();
-      const a = Math.min(gridSelectionAnchorRef.current, displayIdx);
-      const b = Math.max(gridSelectionAnchorRef.current, displayIdx);
-      const rangeIds = previewable.slice(a, b + 1).map((m) => Number(m.id));
-      setSelectedIds(rangeIds);
+      e.stopPropagation();
+      const a = Math.min(anchorRef.current, displayIdx);
+      const b = Math.max(anchorRef.current, displayIdx);
+      setSelectedIds(rows.slice(a, b + 1).map((m) => Number(m.id)));
       return;
     }
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+      e.stopPropagation();
+      toggleSelected(id);
       return;
     }
-    gridSelectionAnchorRef.current = displayIdx;
-    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    if (e.type === "contextmenu") return;
+    anchorRef.current = displayIdx;
+    toggleSelected(id);
   };
 
   const selectAllPreviewable = () =>
@@ -344,9 +431,9 @@ export function MediaLibrary() {
       <div className="mb-3 flex justify-end">
         <InfoDisclosure>
           Central store for imported media. Use <strong>List pool</strong> below to show only one queue (curate per pool) or{" "}
-          <strong>All pools</strong> to see everything. <strong>List</strong>: click a row to open the <strong>gallery suite</strong> (full-size
-          preview, tags, pool routing). <strong>Gallery</strong> grid: click tile to toggle selection; <strong>Ctrl/Cmd+click</strong>{" "}
-          toggles one; <strong>Shift+click</strong> selects a range; <strong>double-click</strong> opens suite.
+          <strong>All pools</strong> to see everything.           <strong>List</strong>: click a row to open the <strong>gallery suite</strong>; use the wide selection strip on the left (or{" "}
+          <strong>Ctrl/Cmd+right-click</strong> / <strong>Shift+right-click</strong> anywhere on the row) to select.{" "}
+          <strong>Gallery</strong>: same modifiers on left- or right-click; <strong>double-click</strong> opens suite.
           <br />
           Tag registry:{" "}
           <Link to="/tags" className="text-cyan-400 hover:underline">
@@ -509,14 +596,23 @@ export function MediaLibrary() {
           </div>
         )}
         {uploadDestMode === "channel" && uploadChannelId > 0 && (
-          <label className="flex items-center gap-2 text-xs text-slate-300 mb-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={markPostedAfterChannel}
-              onChange={(e) => setMarkPostedAfterChannel(e.target.checked)}
+          <div className="flex flex-col gap-2 mb-3 max-w-xl">
+            <SilentTelegramSendOption
+              checked={uploadSendSilent}
+              onChange={(v) => {
+                setUploadSendSilent(v);
+                writeSendSilentPreference(v);
+              }}
             />
-            After posting to Telegram, mark media as <strong>posted</strong> in the library
-          </label>
+            <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={markPostedAfterChannel}
+                onChange={(e) => setMarkPostedAfterChannel(e.target.checked)}
+              />
+              After posting to Telegram, mark media as <strong>posted</strong> in the library
+            </label>
+          </div>
         )}
         <label className="block text-xs text-slate-400 mb-3">
           Caption (optional)
@@ -681,19 +777,15 @@ export function MediaLibrary() {
         </label>
         <label className="flex items-center gap-2 text-xs text-slate-400">
           Tag slug
-          <select
+          <TagCatalogCombobox
+            mode="filter"
+            tags={tagList}
             value={tagSlugFilter}
-            onChange={(e) => setTagSlugFilter(e.target.value)}
-            className="px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200 max-w-[160px]"
-            title="Filter by structured tag (exact slug)"
-          >
-            <option value="">(any)</option>
-            {tagList.map((t) => (
-              <option key={t.id} value={t.slug}>
-                {t.slug}
-              </option>
-            ))}
-          </select>
+            onChange={setTagSlugFilter}
+            placeholder="Search tag slug…"
+            className="w-44"
+            anyLabel="(any)"
+          />
         </label>
         <label className="flex items-center gap-2 text-xs text-slate-400">
           Tag text contains
@@ -936,7 +1028,7 @@ export function MediaLibrary() {
         <div className={`mb-4 ${galleryTransportDocked ? "pb-40 sm:pb-36" : ""}`}>
           {previewable.length > 0 && (
             <p className="text-slate-500 text-xs mb-2">
-              Hover for pool · click / checkbox = toggle · Ctrl/Cmd+click = toggle one · Shift+click = range · double-click = open suite
+              Hover for pool · click = toggle · Ctrl/Cmd+click or right-click = toggle one · Shift+click or Shift+right-click = range · double-click = suite
             </p>
           )}
           <div
@@ -967,13 +1059,18 @@ export function MediaLibrary() {
                       e.stopPropagation();
                       openSuiteForId(id);
                     }}
+                    onContextMenu={(e) => {
+                      handleMediaSelectionPointer(id, displayIdx, previewable, gridSelectionAnchorRef, e);
+                    }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      readOnly
-                      className="absolute top-1 left-1 z-20 h-4 w-4 cursor-pointer rounded border-slate-500 bg-slate-900/90 text-cyan-600 shadow"
-                      title="Toggle selection (Ctrl/Cmd and Shift supported)"
+                    <button
+                      type="button"
+                      className={`absolute top-0 left-0 z-20 flex h-9 w-9 items-center justify-center border-0 cursor-pointer rounded-br-lg ${
+                        selected ? "bg-cyan-900/80" : "bg-slate-900/75 hover:bg-slate-800/90"
+                      }`}
+                      aria-pressed={selected}
+                      aria-label={selected ? "Deselect" : "Select"}
+                      title="Toggle · Ctrl/Cmd+click or right-click · Shift+click or right-click for range"
                       onMouseDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -981,14 +1078,27 @@ export function MediaLibrary() {
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        handleGalleryCellPointer(id, displayIdx, e);
+                        handleMediaSelectionPointer(id, displayIdx, previewable, gridSelectionAnchorRef, e);
                       }}
-                    />
+                    >
+                      <span
+                        className={`flex h-5 w-5 items-center justify-center rounded border-2 ${
+                          selected ? "border-cyan-300 bg-cyan-600" : "border-slate-400 bg-slate-950/90"
+                        }`}
+                        aria-hidden
+                      >
+                        {selected ? (
+                          <svg viewBox="0 0 12 12" className="h-3 w-3 text-white" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <path d="M2 6l3 3 5-6" />
+                          </svg>
+                        ) : null}
+                      </span>
+                    </button>
                     <button
                       type="button"
                       className="absolute inset-0 z-10 p-0 border-0 cursor-pointer bg-transparent"
                       aria-label={`Media ${id}, ${poolLabel}. Toggle selection; double-click for suite.`}
-                      onClick={(e) => handleGalleryCellPointer(id, displayIdx, e)}
+                      onClick={(e) => handleMediaSelectionPointer(id, displayIdx, previewable, gridSelectionAnchorRef, e)}
                     >
                       <MediaThumbnailCell
                         mediaId={id}
@@ -1028,17 +1138,22 @@ export function MediaLibrary() {
         <table className="w-full border border-slate-600 rounded-lg overflow-hidden">
           <thead className="bg-slate-700">
             <tr>
-              <th className="text-left p-3 w-10">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.length > 0 && (media as Array<Record<string, unknown>>).every((m) => selectedIds.includes(Number(m.id)))}
-                  ref={(el) => {
-                    if (!el) return;
-                    el.indeterminate = selectedIds.length > 0 && selectedIds.length < (media as Array<Record<string, unknown>>).length;
-                  }}
-                  onChange={(e) => (e.target.checked ? selectAllCurrent() : clearSelection())}
-                  title="Select all on page"
-                />
+              <th className="text-left p-0 w-14 align-stretch">
+                <label className="flex h-full min-h-[2.75rem] cursor-pointer items-center justify-center bg-slate-700/50 hover:bg-slate-600/40">
+                  <input
+                    type="checkbox"
+                    className="h-5 w-5 shrink-0 cursor-pointer rounded border-slate-400 bg-slate-900 text-cyan-600"
+                    checked={
+                      selectedIds.length > 0 && mediaRows.every((m) => selectedIds.includes(Number(m.id)))
+                    }
+                    ref={(el) => {
+                      if (!el) return;
+                      el.indeterminate = selectedIds.length > 0 && selectedIds.length < mediaRows.length;
+                    }}
+                    onChange={(e) => (e.target.checked ? selectAllCurrent() : clearSelection())}
+                    title="Select all on page"
+                  />
+                </label>
               </th>
               <th className="text-left p-3">Thumbnail</th>
               <th className="text-left p-3">ID</th>
@@ -1058,27 +1173,40 @@ export function MediaLibrary() {
             </tr>
           </thead>
           <tbody>
-            {media.map((m: Record<string, unknown>) => (
+            {mediaRows.map((m, displayIdx) => {
+              const rowId = Number(m.id);
+              const rowSelected = selectedIds.includes(rowId);
+              return (
               <tr
                 key={String(m.id)}
                 className={`border-t border-slate-600 hover:bg-slate-800/50 ${
-                  canPreviewInGallery(m) ? "cursor-pointer" : "cursor-default"
-                }`}
+                  rowSelected ? "bg-cyan-950/35 ring-1 ring-inset ring-cyan-800/40" : ""
+                } ${canPreviewInGallery(m) ? "cursor-pointer" : "cursor-default"}`}
                 onClick={(e) => {
                   const t = e.target as HTMLElement;
                   if (t.closest("input, button, textarea, a, label")) return;
                   if (!canPreviewInGallery(m)) return;
-                  openSuiteForId(Number(m.id));
+                  openSuiteForId(rowId);
                 }}
-                title={canPreviewInGallery(m) ? "Click row to open gallery suite (preview + tags + pool)" : ""}
+                onContextMenu={(e) => {
+                  if (!e.shiftKey && !e.ctrlKey && !e.metaKey) return;
+                  const t = e.target as HTMLElement;
+                  if (t.closest("button") && !t.closest("[data-media-selection]")) return;
+                  handleMediaSelectionPointer(rowId, displayIdx, mediaRows, listSelectionAnchorRef, e);
+                }}
+                title={
+                  canPreviewInGallery(m)
+                    ? "Click row for suite · Ctrl/Cmd+right-click toggle · Shift+right-click range · use left strip to select"
+                    : "Ctrl/Cmd+right-click toggle · Shift+right-click range"
+                }
               >
-                <td className="p-3">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(Number(m.id))}
-                    onChange={() => toggleSelected(Number(m.id))}
-                    onDoubleClick={(e) => e.stopPropagation()}
-                    title="Select for bulk action"
+                <td className="p-0 w-14 align-stretch">
+                  <MediaRowSelectionControl
+                    selected={rowSelected}
+                    title="Select · Ctrl/Cmd+click or right-click toggle · Shift+click or right-click range"
+                    onPointer={(e) =>
+                      handleMediaSelectionPointer(rowId, displayIdx, mediaRows, listSelectionAnchorRef, e)
+                    }
                   />
                 </td>
                 <td className="p-3 w-[4.5rem]">
@@ -1152,7 +1280,8 @@ export function MediaLibrary() {
                   )}
                 </td>
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
       </div>

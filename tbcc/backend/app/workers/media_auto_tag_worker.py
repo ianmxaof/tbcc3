@@ -17,3 +17,15 @@ def auto_tag_media_llm(media_id: int):
     else:
         logger.info("auto_tag_media_llm media_id=%s result=%s", media_id, out)
     return out
+
+
+@celery.task(name="app.workers.media_auto_tag_worker.auto_tag_media_enrich")
+def auto_tag_media_enrich(media_id: int):
+    from app.services.auto_tag_enrich import run_auto_tag_enrich_for_media
+
+    out = run_auto_tag_enrich_for_media(media_id)
+    if not out.get("ok"):
+        logger.warning("auto_tag_media_enrich media_id=%s result=%s", media_id, out)
+    else:
+        logger.info("auto_tag_media_enrich media_id=%s result=%s", media_id, out)
+    return out

@@ -27,6 +27,7 @@ celery = Celery(
 celery.conf.include = [
     "app.workers.poster_worker",
     "app.workers.scraper_worker",
+    "app.workers.scrape_scheduler_worker",
     "app.workers.scheduler_worker",
     "app.workers.subscription_worker",
     "app.workers.grant_access_worker",
@@ -34,18 +35,31 @@ celery.conf.include = [
     "app.workers.landing_bulletin_worker",
     "app.workers.media_auto_tag_worker",
     "app.workers.link_resolver_worker",
+    "app.workers.listening_relay_worker",
+    "app.workers.loot_promo_worker",
+    "app.workers.import_telegram_worker",
 ]
 
 celery.conf.task_routes = {
     "app.workers.scraper_worker.*": {"queue": "scrape"},
+    "app.workers.scrape_scheduler_worker.*": {"queue": "scrape"},
     "app.workers.poster_worker.*": {"queue": "post"},
     "app.workers.subscription_worker.*": {"queue": "subscription"},
     "app.workers.grant_access_worker.*": {"queue": "subscription"},
     "app.workers.milestone_worker.*": {"queue": "subscription"},
     "app.workers.landing_bulletin_worker.*": {"queue": "subscription"},
+    "app.workers.listening_relay_worker.*": {"queue": "post"},
+    "app.workers.loot_promo_worker.*": {"queue": "celery"},
+    "app.workers.import_telegram_worker.*": {"queue": "telegram"},
 }
 
 # AOF landing bulletin: task runs every hour UTC; task checks dashboard/env hour (no beat restart needed).
+# Windows: avoid prefork + Telethon asyncio teardown issues; use solo pool (one process).
+if os.name == "nt":
+    celery.conf.worker_pool = "solo"
+    celery.conf.worker_concurrency = 1
+
+
 celery.conf.beat_schedule = {
     "schedule-posts": {
         "task": "app.workers.scheduler_worker.run_schedule",
@@ -58,5 +72,17 @@ celery.conf.beat_schedule = {
     "aof-landing-bulletin": {
         "task": "app.workers.landing_bulletin_worker.send_aof_landing_bulletin",
         "schedule": crontab(minute=0, hour="*"),
+    },
+    "loot-daily-promo": {
+        "task": "app.workers.loot_promo_worker.send_loot_daily_promo",
+        "schedule": crontab(minute=0, hour="*"),
+    },
+    "listening-relay-lastfm": {
+        "task": "app.workers.listening_relay_worker.poll_listening_relay_lastfm",
+        "schedule": crontab(minute="*/2"),
+    },
+    "scrape-scheduler-tick": {
+        "task": "app.workers.scrape_scheduler_worker.tick_scheduled_scrapes",
+        "schedule": crontab(minute="*/5"),
     },
 }

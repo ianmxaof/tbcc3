@@ -23,6 +23,7 @@ async def post_album(
     media_items: list,
     caption: str = "",
     reply_to: int | None = None,
+    send_silent: bool = False,
 ):
     """
     Posts a Telegram album using media from Saved Messages (by telegram_message_id).
@@ -44,8 +45,9 @@ async def post_album(
         logger.warning("Could not fetch all media; skipping album to avoid partial send")
         return
     cap = caption.strip() if caption else None
+    silent_kw = {"silent": True} if send_silent else {}
     try:
-        await client.send_file(channel, medias, caption=cap, reply_to=reply_to)
+        await client.send_file(channel, medias, caption=cap, reply_to=reply_to, **silent_kw)
     except Exception as e:
         # Telegram sometimes rejects SendMultiMediaRequest (invalid mix, API quirks, forum edge cases).
         # Fall back to one message per item so valid items still post.
@@ -56,7 +58,7 @@ async def post_album(
         )
         for idx, single in enumerate(medias):
             c = cap if idx == 0 else None
-            await client.send_file(channel, single, caption=c, reply_to=reply_to)
+            await client.send_file(channel, single, caption=c, reply_to=reply_to, **silent_kw)
 
 
 async def post_pool_albums(
@@ -124,6 +126,7 @@ async def post_media_ids_to_forum_topic(
     db: Session,
     caption: str = "",
     mark_posted: bool = True,
+    send_silent: bool = False,
 ) -> dict:
     """
     Post selected DB media as one or more albums (≤10 items each) to a Telegram destination.
@@ -163,6 +166,7 @@ async def post_media_ids_to_forum_topic(
                     chunk,
                     caption=cap,
                     reply_to=message_thread_id,
+                    send_silent=send_silent,
                 )
                 sent += 1
                 if mark_posted:

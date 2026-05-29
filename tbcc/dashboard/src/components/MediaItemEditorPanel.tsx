@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { MediaThumbnailCell } from "./MediaThumbnailCell";
+import { TagCatalogCombobox } from "./TagCatalogCombobox";
 
 type Tab = "general" | "tags";
 
@@ -228,7 +229,22 @@ export function MediaItemEditorPanel({ mediaId, showPreviewThumb = false, onCanc
                     placeholder="e.g. bigtits, cosplay"
                   />
                 </label>
-                <p className="text-slate-500 text-xs">Catalog — click to add; creates manual tag links (keeps auto tags unless you replace).</p>
+                <p className="text-slate-500 text-xs">Catalog — search to add; or click chips below (manual tag links; keeps auto tags unless you replace).</p>
+                <TagCatalogCombobox
+                  mode="add"
+                  tags={tagList}
+                  hideJunk
+                  placeholder="Search catalog…"
+                  className="max-w-md"
+                  onPick={(label) => {
+                    const cur = tagsText
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean);
+                    if (cur.some((c) => c.toLowerCase() === label.toLowerCase())) return;
+                    setTagsText((prev) => (prev.trim() ? `${prev.trim()}, ${label}` : label));
+                  }}
+                />
                 <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto">
                   {tagList.map((t) => (
                     <button

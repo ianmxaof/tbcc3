@@ -1045,22 +1045,21 @@ async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> Non
     st = await _get_runtime_settings()
     custom_loot_intro = str(st.get("loot_intro_html") or "").strip()
     intro = custom_loot_intro or (
-        "🗝 <b>Loot Room — 24H Key</b>\n\n"
-        "One key. One timed run.\n"
-        "You unlock access to the private Loot Room group for 24 hours.\n\n"
-        "📦 <b>Inside the run</b>\n"
-        "• Free floor drops\n"
-        "• Blurred preview walls\n"
-        "• Premium unlock prompts\n"
-        "• Flash offers and timed posts\n\n"
-        "⚡ <b>Choose a key below</b>"
+        "<b>Loot Room — 24h access</b>\n\n"
+        "One purchase. One window.\n"
+        "Private room entry for 24 hours; @aof_lootgod_bot handles your pulls.\n\n"
+        "<b>During the run</b>\n"
+        "• Tiered drops (low to max)\n"
+        "• Up to three modifier slots per pull\n"
+        "• Spoiler delivery — you peel what you earned\n\n"
+        "<b>Select a key</b>"
     )
     await msg.reply_text(
         intro,
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("🗝 Show Loot Room Keys", callback_data="menu_loot_subscribe")],
+                [InlineKeyboardButton("Loot Room keys", callback_data="menu_loot_subscribe")],
                 [InlineKeyboardButton("🛍 Open Full Store", callback_data="menu_shop")],
             ]
         ),

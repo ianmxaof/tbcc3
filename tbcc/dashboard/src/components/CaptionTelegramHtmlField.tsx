@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useSnippetInsertBridge } from "../hooks/useSnippetInsertBridge";
 
 type Props = {
   value: string;
@@ -24,6 +25,7 @@ export function CaptionTelegramHtmlField({
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const selRestore = useRef<{ start: number; end: number } | null>(null);
+  const { onFocus: regSnippetFocus, onBlur: regSnippetBlur } = useSnippetInsertBridge(value, onChange, taRef);
 
   useLayoutEffect(() => {
     const el = taRef.current;
@@ -78,19 +80,36 @@ export function CaptionTelegramHtmlField({
           <button type="button" className={btn} onClick={() => wrap("<code>", "</code>")} title="Monospace">
             Mono
           </button>
+          <button
+            type="button"
+            className={btn}
+            title="Insert custom emoji tag (Misc → Caption banners)"
+            onClick={() => {
+              const id = window.prompt("Custom emoji document_id (Misc tab → extract from message)");
+              if (!id?.trim()) return;
+              const ph = (window.prompt("Placeholder character (exactly one)", "⭐") || "⭐").trim();
+              const one = ph ? ph.slice(0, 1) : "⭐";
+              wrap(`<tg-emoji emoji-id="${id.trim()}">`, `${one}</tg-emoji>`);
+            }}
+          >
+            Emoji
+          </button>
         </div>
         <textarea
           ref={taRef}
           placeholder={placeholder}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onFocus={regSnippetFocus}
+          onBlur={regSnippetBlur}
           rows={rows}
           className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 min-w-0"
         />
         <p className="text-slate-500 text-[10px] leading-snug">
-          Sent as Telegram HTML. For a different &quot;font&quot;, use Unicode stylers outside TBCC or the Mono tag. In text,
-          use <code className="text-slate-400">&amp;lt;</code> only for tags you intend — raw{" "}
-          <code className="text-slate-400">&amp;</code> should be <code className="text-slate-400">&amp;amp;</code>.
+          Sent as Telegram HTML (includes custom emoji via{" "}
+          <code className="text-slate-400">&lt;tg-emoji emoji-id=&quot;…&quot;&gt;⭐&lt;/tg-emoji&gt;</code>). Extract IDs
+          under Misc → Caption banners, or build a new pack under Emoji packs. Poster account must have the pack
+          installed.
         </p>
       </div>
       {extraActions ? <div className="flex flex-col gap-1 shrink-0 items-end pt-0.5">{extraActions}</div> : null}

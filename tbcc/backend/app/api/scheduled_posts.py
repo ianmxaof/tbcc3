@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import uuid
 from datetime import datetime
@@ -34,6 +36,26 @@ def _normalize_attachment_urls(raw: list[str] | None) -> list[str]:
         if isinstance(x, str) and x.strip():
             out.append(x.strip())
     return out[:10]
+
+
+def _normalize_buffer_x_queue(raw: list | None) -> list[dict]:
+    if not raw or not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for x in raw:
+        if not isinstance(x, dict):
+            continue
+        t = str(x.get("text") or "").strip()
+        if not t:
+            continue
+        entry: dict = {"text": t[:2800]}
+        iu = str(x.get("image_url") or "").strip()
+        if iu.startswith("https://"):
+            entry["image_url"] = iu[:2048]
+        out.append(entry)
+        if len(out) >= 10:
+            break
+    return out
 
 
 def _normalize_album_variants(raw: list | None) -> list[dict]:
@@ -82,6 +104,8 @@ def scheduled_post_to_api_dict(post: ScheduledTextPost) -> dict:
         d["buttons"] = raw_btn
     else:
         d["buttons"] = []
+    d["buffer_x_queue"] = post.get_buffer_x_queue()
+    d.pop("buffer_x_queue_json", None)
     return d
 
 
@@ -204,6 +228,40 @@ def _patch_scheduled_post_core(
         post.checkout_referral_code = (v.strip().upper()[:16] if isinstance(v, str) and v.strip() else None)
     if "clear_auto_pause" in fs and body.clear_auto_pause:
         _clear_auto_pause_state(post)
+    if "buffer_mirror_enabled" in fs:
+        post.buffer_mirror_enabled = bool(body.buffer_mirror_enabled)
+    if "buffer_publish_now" in fs:
+        post.buffer_publish_now = bool(body.buffer_publish_now)
+    if "caption_llm_rewrite_enabled" in fs:
+        post.caption_llm_rewrite_enabled = bool(body.caption_llm_rewrite_enabled)
+        if not post.caption_llm_rewrite_enabled:
+            post.caption_llm_rewrite_mode = None
+    if "caption_llm_rewrite_mode" in fs:
+        m = (body.caption_llm_rewrite_mode or "").strip().lower()
+        if m in ("random", "interval"):
+            post.caption_llm_rewrite_mode = m
+        elif m in ("", "off", "none"):
+            post.caption_llm_rewrite_mode = None
+        else:
+            raise HTTPException(400, "caption_llm_rewrite_mode must be random or interval")
+    if "caption_llm_rewrite_interval" in fs:
+        v = body.caption_llm_rewrite_interval
+        post.caption_llm_rewrite_interval = max(1, int(v)) if v is not None else None
+    if "caption_llm_rewrite_probability" in fs:
+        v = body.caption_llm_rewrite_probability
+        if v is None:
+            post.caption_llm_rewrite_probability = None
+        else:
+            post.caption_llm_rewrite_probability = max(0.0, min(1.0, float(v)))
+    if "buffer_x_queue" in fs:
+        raw_q = body.buffer_x_queue
+        dumped = [x.model_dump() for x in raw_q] if raw_q else []
+        post.set_buffer_x_queue(_normalize_buffer_x_queue(dumped))
+
+
+class BufferXQueueItem(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2800)
+    image_url: str | None = Field(None, max_length=2048)
 
 
 class ScheduledPostCreate(BaseModel):
@@ -243,6 +301,15 @@ class ScheduledPostCreate(BaseModel):
         default=None,
         description="Optional 1–16 char referral code; attributes /start to referrer before checkout.",
     )
+    buffer_mirror_enabled: bool = False
+    buffer_publish_now: bool = False
+    buffer_x_queue: list[BufferXQueueItem] | None = None
+    caption_llm_rewrite_enabled: bool = False
+    caption_llm_rewrite_mode: str | None = Field(
+        None, description="random | interval (requires TBCC_CAPTION_LLM_REWRITE_ENABLED=1)"
+    )
+    caption_llm_rewrite_interval: int | None = Field(None, ge=1, le=100)
+    caption_llm_rewrite_probability: float | None = Field(None, ge=0.0, le=1.0)
 
 
 class ScheduledPostUpdate(BaseModel):
@@ -272,6 +339,13 @@ class ScheduledPostUpdate(BaseModel):
     checkout_stars_plan_id: int | None = None
     checkout_button_label: str | None = None
     checkout_referral_code: str | None = None
+    buffer_mirror_enabled: bool | None = None
+    buffer_publish_now: bool | None = None
+    buffer_x_queue: list[BufferXQueueItem] | None = None
+    caption_llm_rewrite_enabled: bool | None = None
+    caption_llm_rewrite_mode: str | None = None
+    caption_llm_rewrite_interval: int | None = Field(None, ge=1, le=100)
+    caption_llm_rewrite_probability: float | None = Field(None, ge=0.0, le=1.0)
 
 
 def _resolve_create_channel_ids(body: ScheduledPostCreate) -> list[int]:
@@ -371,7 +445,19 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
                     if isinstance(body.checkout_referral_code, str) and body.checkout_referral_code.strip()
                     else None
                 ),
+                buffer_mirror_enabled=bool(getattr(body, "buffer_mirror_enabled", False)),
+                buffer_publish_now=bool(getattr(body, "buffer_publish_now", False)),
+                caption_llm_rewrite_enabled=bool(getattr(body, "caption_llm_rewrite_enabled", False)),
+                caption_llm_rewrite_mode=(
+                    (body.caption_llm_rewrite_mode or "").strip().lower() or None
+                    if getattr(body, "caption_llm_rewrite_mode", None)
+                    else None
+                ),
+                caption_llm_rewrite_interval=getattr(body, "caption_llm_rewrite_interval", None),
+                caption_llm_rewrite_probability=getattr(body, "caption_llm_rewrite_probability", None),
             )
+            if body.buffer_x_queue is not None:
+                post.set_buffer_x_queue(_normalize_buffer_x_queue([x.model_dump() for x in body.buffer_x_queue]))
             db.add(post)
             created.append(post)
         for p in created:
@@ -462,12 +548,8 @@ def trigger_scheduled_campaign(
         ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
         if not ch:
             return {"error": "Channel not found"}
-    if is_recurring:
-        now = datetime.utcnow()
-        for p in rows:
-            p.last_posted_at = now
     db.commit()
-    post_scheduled_text.delay(leader.id, reshuffle_album=reshuffle)
+    post_scheduled_text.delay(leader.id, reshuffle_album=reshuffle, manual_trigger=True)
     return {
         "status": "scheduled",
         "post_id": leader.id,
@@ -575,10 +657,6 @@ def trigger_scheduled_post(
         ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
         if not ch:
             return {"error": "Channel not found"}
-    if is_recurring:
-        now = datetime.utcnow()
-        for p in rows:
-            p.last_posted_at = now
     db.commit()
-    post_scheduled_text.delay(leader_id, reshuffle_album=reshuffle)
+    post_scheduled_text.delay(leader_id, reshuffle_album=reshuffle, manual_trigger=True)
     return {"status": "scheduled", "post_id": leader_id, "campaign_group_id": cg, "reshuffle": reshuffle}

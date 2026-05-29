@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -38,11 +39,18 @@ class PoolUpdate(BaseModel):
 @router.get("/")
 def list_pools(db: Session = Depends(get_db)):
     pools = db.query(ContentPool).all()
+    # One grouped query instead of one COUNT per pool — keeps /pools fast and small even
+    # while the gallery / bulk approve are contending for the database.
+    counts = dict(
+        db.query(Media.pool_id, func.count(Media.id))
+        .filter(Media.status == "approved")
+        .group_by(Media.pool_id)
+        .all()
+    )
     result = []
     for p in pools:
         d = orm_to_dict(p)
-        cnt = db.query(Media).filter(Media.pool_id == p.id, Media.status == "approved").count()
-        d["approved_count"] = cnt
+        d["approved_count"] = int(counts.get(p.id, 0))
         result.append(d)
     return result
 

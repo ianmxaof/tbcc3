@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "sites": [
     {
       "id": "coomer",
@@ -36,6 +36,312 @@
       "name": "Xhomealone Videos",
       "category": "videos",
       "url": "https://xhomealone.com/search/{username}/"
+    },
+    {
+      "id": "leakedzone",
+      "name": "Leakedzone",
+      "category": "macro",
+      "url": "https://leakedzone.com/{username}"
+    },
+    {
+      "id": "cumcams",
+      "name": "CumCams",
+      "category": "macro",
+      "url": "https://cumcams.cc/?s={username}"
+    },
+    {
+      "id": "cloudbate",
+      "name": "Cloudbate",
+      "category": "macro",
+      "url": "https://www.cloudbate.com/search?q={username}"
+    },
+    {
+      "id": "pusvid",
+      "name": "PUSVID",
+      "category": "macro",
+      "url": "https://pusvid.com/?s={username}"
+    },
+    {
+      "id": "xhomealone",
+      "name": "XHomeAlone",
+      "category": "macro",
+      "url": "https://xhomealone.com/search/{username}/"
+    },
+    {
+      "id": "xcamladyx",
+      "name": "XCamLadyX",
+      "category": "macro",
+      "url": "https://xcamladyx.com/?s={username}"
+    },
+    {
+      "id": "bestcam_macro",
+      "name": "BestCam",
+      "category": "macro",
+      "url": "https://bestcam.tv/search/{username}"
+    },
+    {
+      "id": "camshowrecordings_net",
+      "name": "Cam Show Recordings (.net)",
+      "category": "macro",
+      "url": "https://www.camshowrecordings.net/search?q={username}"
+    },
+    {
+      "id": "onscreens",
+      "name": "OnScreens",
+      "category": "macro",
+      "url": "https://www.onscreens.me/search?q={username}"
+    },
+    {
+      "id": "girlsinprivates",
+      "name": "Girls in Privates",
+      "category": "macro",
+      "url": "https://girlsinprivates.com/index.php?search={username}"
+    },
+    {
+      "id": "camlovin",
+      "name": "CamLovin",
+      "category": "macro",
+      "url": "https://camlovin.com/?q={username}"
+    },
+    {
+      "id": "privaterecords",
+      "name": "PrivateRecords.webcam",
+      "category": "macro",
+      "url": "https://privaterecords.webcam/?s={username}"
+    },
+    {
+      "id": "someonesister",
+      "name": "Someone's Sister",
+      "category": "macro",
+      "url": "https://someonesister.com/?s={username}"
+    },
+    {
+      "id": "camwh",
+      "name": "CamWh",
+      "category": "macro",
+      "url": "https://camwh.com/?s={username}"
+    },
+    {
+      "id": "camshowrecordings_com",
+      "name": "Cam Show Recordings (.com)",
+      "category": "macro",
+      "url": "https://www.camshowrecordings.com/search/{username}"
+    },
+    {
+      "id": "webcamrecs",
+      "name": "WebcamRecs",
+      "category": "macro",
+      "url": "https://webcamrecs.com/search/{username}"
+    },
+    {
+      "id": "erome",
+      "name": "EroMe",
+      "category": "macro",
+      "url": "https://www.erome.com/search?q={username}"
+    },
+    {
+      "id": "leakshaven",
+      "name": "LeaksHaven",
+      "category": "macro",
+      "url": "https://leakshaven.com/?q={username}"
+    },
+    {
+      "id": "coomer_macro",
+      "name": "Coomer",
+      "category": "macro",
+      "url": "https://coomer.st/artists?q={username}&service=&sort_by=favorited&order="
+    },
+    {
+      "id": "badjojo",
+      "name": "Badjojo OnlyFans",
+      "category": "macro",
+      "url": "https://www.badjojo.com/onlyfans/?q={username}"
+    },
+    {
+      "id": "erothots",
+      "name": "EroThots",
+      "category": "macro",
+      "url": "https://erothots.co/?s={username}"
+    },
+    {
+      "id": "thefap",
+      "name": "TheFap",
+      "category": "macro",
+      "url": "https://thefap.net/?s={username}"
+    },
+    {
+      "id": "whoreshub",
+      "name": "WhoresHub",
+      "category": "macro",
+      "url": "https://www.whoreshub.com/search/{username}/"
+    },
+    {
+      "id": "onlyxfinder",
+      "name": "OnlyxFinder",
+      "category": "macro",
+      "url": "https://onlyxfinder.com/search?q={username}"
+    },
+    {
+      "id": "leaks4fap",
+      "name": "Leaks4Fap",
+      "category": "macro",
+      "url": "https://leaks4fap.com/?q={username}"
+    },
+    {
+      "id": "creativeboxgaming",
+      "name": "CreativeBox Gaming",
+      "category": "macro",
+      "url": "https://creativeboxgaming.com/search?query={username}"
+    },
+    {
+      "id": "topfapwomen",
+      "name": "TopFapWomen",
+      "category": "macro",
+      "url": "https://www.topfapwomen.com/search?q={username}"
+    },
+    {
+      "id": "porn4fans",
+      "name": "Porn4Fans",
+      "category": "macro",
+      "url": "https://www.porn4fans.com/?s={username}"
+    },
+    {
+      "id": "thots_tv",
+      "name": "Thots.TV",
+      "category": "macro",
+      "url": "https://thots.tv/?s={username}"
+    },
+    {
+      "id": "leaknudes",
+      "name": "LeakNudes",
+      "category": "macro",
+      "url": "https://leaknudes.com/?s={username}"
+    },
+    {
+      "id": "leakslink",
+      "name": "LeaksLink",
+      "category": "macro",
+      "url": "https://www.leakslink.xyz/?q={username}"
+    },
+    {
+      "id": "modelsearcher",
+      "name": "ModelSearcher",
+      "category": "macro",
+      "url": "https://modelsearcher.com/search?q={username}"
+    },
+    {
+      "id": "fapodrop",
+      "name": "Fapodrop",
+      "category": "macro",
+      "url": "https://fapodrop.com/?s={username}"
+    },
+    {
+      "id": "fapdungeon",
+      "name": "FapDungeon",
+      "category": "macro",
+      "url": "https://fapdungeon.com/?s={username}"
+    },
+    {
+      "id": "topfapgirlspics",
+      "name": "TopFapGirlsPics",
+      "category": "macro",
+      "url": "https://www.topfapgirlspics.com/search?q={username}"
+    },
+    {
+      "id": "nudogram",
+      "name": "Nudogram",
+      "category": "macro",
+      "url": "https://nudogram.com/?s={username}"
+    },
+    {
+      "id": "leakfan",
+      "name": "LeakFan",
+      "category": "macro",
+      "url": "https://leakfan.com/?s={username}"
+    },
+    {
+      "id": "fapshots",
+      "name": "Fapshots",
+      "category": "macro",
+      "url": "https://packs.fapshots.com/?search={username}"
+    },
+    {
+      "id": "thefap_request",
+      "name": "TheFap Request",
+      "category": "macro",
+      "url": "https://thefap.net/request/?q={username}"
+    },
+    {
+      "id": "fapomania",
+      "name": "Fapomania",
+      "category": "macro",
+      "url": "https://fapomania.com/?s={username}"
+    },
+    {
+      "id": "picazor",
+      "name": "Picazor",
+      "category": "macro",
+      "url": "https://picazor.com/search?q={username}"
+    },
+    {
+      "id": "onlyleaks",
+      "name": "OnlyLeaks",
+      "category": "macro",
+      "url": "https://onlyleaks.me/?s={username}"
+    },
+    {
+      "id": "fapopedia",
+      "name": "Fapopedia",
+      "category": "macro",
+      "url": "https://fapopedia.net/?s={username}"
+    },
+    {
+      "id": "onlysonar",
+      "name": "OnlySonar",
+      "category": "macro",
+      "url": "https://onlysonar.com/search?q={username}"
+    },
+    {
+      "id": "onlyfansfinder",
+      "name": "OnlyFans Finder",
+      "category": "macro",
+      "url": "https://onlyfansfinder.org/?q={username}"
+    },
+    {
+      "id": "onlyguider",
+      "name": "OnlyGuider",
+      "category": "macro",
+      "url": "https://onlyguider.com/search?q={username}"
+    },
+    {
+      "id": "leakutopia",
+      "name": "LeakUtopia",
+      "category": "macro",
+      "url": "https://leakutopia.com/?s={username}"
+    },
+    {
+      "id": "leakifyhub",
+      "name": "LeakifyHub",
+      "category": "macro",
+      "url": "https://leakifyhub.com/?s={username}"
+    },
+    {
+      "id": "fkbae",
+      "name": "FKBAE Snapchat",
+      "category": "macro",
+      "url": "https://fkbae.to/?s={username}"
+    },
+    {
+      "id": "thothd",
+      "name": "ThotHD",
+      "category": "macro",
+      "url": "https://thothd.com/?s={username}"
+    },
+    {
+      "id": "fapello_macro",
+      "name": "Fapello",
+      "category": "macro",
+      "url": "https://fapello.com/search/{username}"
     }
   ]
 }

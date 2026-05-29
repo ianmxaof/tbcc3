@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api, type LootBotSettingsEffective, type LootModifier, type LootRollPreview } from "../api";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
+import { tbccCopyText } from "../utils/clipboardToast";
 
 type Overrides = Record<string, unknown>;
 
@@ -17,9 +18,20 @@ export function LootOverseerSettingsPanel() {
   const [botUsername, setBotUsername] = useState("");
   const [inviteUrl, setInviteUrl] = useState("");
   const [chatId, setChatId] = useState("");
+  const [aofGroupChatId, setAofGroupChatId] = useState("");
+  const [aofGroupThreadId, setAofGroupThreadId] = useState("");
+  const [dailyPromoEnabled, setDailyPromoEnabled] = useState(false);
+  const [dailyPromoHourUtc, setDailyPromoHourUtc] = useState("18");
+  const [dailyPromoIntro, setDailyPromoIntro] = useState("");
+  const [bufferMirror, setBufferMirror] = useState(false);
+  const [bufferPublishNow, setBufferPublishNow] = useState(true);
+  const [bufferXQueueText, setBufferXQueueText] = useState("");
   const [pollSeconds, setPollSeconds] = useState("");
   const [narrativeOn, setNarrativeOn] = useState(false);
   const [narrativePrompt, setNarrativePrompt] = useState("");
+  const [lootReferralOn, setLootReferralOn] = useState(true);
+  const [referralBonusPulls, setReferralBonusPulls] = useState("");
+  const [creatorOfUrl, setCreatorOfUrl] = useState("");
   const [spoilerDefault, setSpoilerDefault] = useState(true);
   const [runtimeAdapter, setRuntimeAdapter] = useState<"" | "local" | "command">("");
   const [cmdStart, setCmdStart] = useState("");
@@ -54,10 +66,29 @@ export function LootOverseerSettingsPanel() {
     setInviteUrl(String(ov.primary_loot_room_invite_url ?? eff?.primary_loot_room_invite_url ?? ""));
     const cid = ov.primary_loot_room_chat_id ?? eff?.primary_loot_room_chat_id;
     setChatId(cid != null && cid !== "" ? String(cid) : "");
+    const aofCid = ov.aof_group_chat_id ?? eff?.aof_group_chat_id;
+    setAofGroupChatId(aofCid != null && aofCid !== "" ? String(aofCid) : "");
+    const aofTid = ov.aof_group_message_thread_id ?? eff?.aof_group_message_thread_id;
+    setAofGroupThreadId(aofTid != null && aofTid !== "" ? String(aofTid) : "");
+    setDailyPromoEnabled(Boolean(ov.daily_promo_enabled ?? eff?.daily_promo_enabled));
+    const ph = ov.daily_promo_hour_utc ?? eff?.daily_promo_hour_utc;
+    setDailyPromoHourUtc(ph != null ? String(ph) : "18");
+    setDailyPromoIntro(String(ov.daily_promo_intro_html ?? eff?.daily_promo_intro_html ?? ""));
+    setBufferMirror(Boolean(ov.buffer_mirror_enabled ?? eff?.buffer_mirror_enabled));
+    setBufferPublishNow(Boolean(ov.buffer_publish_now ?? eff?.buffer_publish_now ?? true));
+    const q = (ov.buffer_x_queue ?? eff?.buffer_x_queue) as Array<{ text?: string }> | undefined;
+    if (Array.isArray(q) && q.length > 0) {
+      setBufferXQueueText(q.map((x) => String(x.text ?? "").trim()).filter(Boolean).join("\n---\n"));
+    } else {
+      setBufferXQueueText("");
+    }
     const ps = ov.config_poll_seconds ?? eff?.config_poll_seconds;
     setPollSeconds(ps != null ? String(ps) : "");
     setNarrativeOn(Boolean(ov.narrative_enabled ?? eff?.narrative_enabled));
     setNarrativePrompt(String(ov.narrative_system_prompt ?? eff?.narrative_system_prompt ?? ""));
+    setLootReferralOn(Boolean(ov.loot_referral_enabled ?? eff?.loot_referral_enabled ?? true));
+    const rbp = ov.referral_bonus_pulls ?? eff?.referral_bonus_pulls;
+    setReferralBonusPulls(rbp != null && rbp !== "" ? String(rbp) : "");
     setSpoilerDefault(Boolean(ov.drop_spoiler_default ?? eff?.drop_spoiler_default ?? true));
     const ra = (ov.runtime_adapter ?? eff?.runtime_adapter ?? "") as string;
     setRuntimeAdapter(ra === "command" || ra === "local" ? ra : "");
@@ -76,6 +107,16 @@ export function LootOverseerSettingsPanel() {
       setBotTokenInput("");
     },
   });
+  const creatorSubmit = useMutation({
+    mutationFn: () => api.loot.creatorSubmit({ url: creatorOfUrl.trim() }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["lootModifiers"] });
+      setCreatorOfUrl("");
+      window.alert(data.message || "Added to modifier pool");
+    },
+    onError: (e: Error) => window.alert(e.message || "Submit failed"),
+  });
+
   const createModifier = useMutation({
     mutationFn: () =>
       api.loot.createModifier({
@@ -114,6 +155,15 @@ export function LootOverseerSettingsPanel() {
       }),
     onSuccess: (data) => setRollPreview(data),
   });
+  const triggerDailyPromo = useMutation({
+    mutationFn: () => api.lootBotSettings.triggerDailyPromo(),
+  });
+  const bufferTest = useMutation({
+    mutationFn: () =>
+      api.lootBotSettings.bufferTestPost({
+        publish_now: bufferPublishNow,
+      }),
+  });
   const sendPreviewDm = useMutation({
     mutationFn: () =>
       api.loot.sendPreviewDm({
@@ -151,13 +201,35 @@ export function LootOverseerSettingsPanel() {
     const chatIdTrim = chatId.trim();
     const chatIdNum =
       chatIdTrim && Number.isFinite(Number(chatIdTrim)) ? Math.trunc(Number(chatIdTrim)) : null;
+    const aofTrim = aofGroupChatId.trim();
+    const aofNum = aofTrim && Number.isFinite(Number(aofTrim)) ? Math.trunc(Number(aofTrim)) : null;
+    const threadTrim = aofGroupThreadId.trim();
+    const threadNum =
+      threadTrim && Number.isFinite(Number(threadTrim)) ? Math.trunc(Number(threadTrim)) : null;
     const body: Record<string, unknown> = {
       bot_username: botUsername.trim() || null,
       primary_loot_room_invite_url: inviteUrl.trim() || null,
       primary_loot_room_chat_id: chatIdNum,
+      aof_group_chat_id: aofNum,
+      aof_group_message_thread_id: threadNum,
+      daily_promo_enabled: dailyPromoEnabled,
+      daily_promo_hour_utc: dailyPromoHourUtc.trim() ? Math.min(23, Math.max(0, Number(dailyPromoHourUtc.trim()))) : null,
+      daily_promo_intro_html: dailyPromoIntro.trim() || null,
+      buffer_mirror_enabled: bufferMirror,
+      buffer_publish_now: bufferMirror && bufferPublishNow,
+      buffer_x_queue: bufferXQueueText
+        .split(/\n---\n/)
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, 10)
+        .map((text) => ({ text: text.slice(0, 2800) })),
       config_poll_seconds: pollSeconds.trim() ? Number(pollSeconds.trim()) : null,
       narrative_enabled: narrativeOn,
       narrative_system_prompt: narrativePrompt.trim() || null,
+      loot_referral_enabled: lootReferralOn,
+      referral_bonus_pulls: referralBonusPulls.trim()
+        ? Math.min(20, Math.max(0, Number(referralBonusPulls.trim())))
+        : null,
       drop_spoiler_default: spoilerDefault,
       runtime_adapter: runtimeAdapter || null,
       runtime_cmd_start: cmdStart.trim() || null,
@@ -182,9 +254,10 @@ export function LootOverseerSettingsPanel() {
       <h2 className="text-xl font-semibold mb-2">Loot overseer (@aof_lootgod_bot)</h2>
       <p className="text-slate-400 mb-4 max-w-3xl">
         Runtime for <code className="text-slate-300">python -m bots.loot_bot</code>. Values here override{" "}
-        <code className="text-slate-300">tbcc/.env</code> where noted. The bot polls this API for invite URL, spoiler
-        defaults, and narrative flags. Assign loot-eligible media pools in the DB table{" "}
-        <code className="text-slate-300">loot_pool_eligibility</code> (or add a picker UI later).
+        <code className="text-slate-300">tbcc/.env</code> where noted. Daily Loot Room ads post to your{" "}
+        <strong className="text-slate-300">main AOF group</strong> from this bot (not Dashboard → Growth — that is a
+        separate referral bulletin on the payment bot). Assign loot pools in{" "}
+        <code className="text-slate-300">loot_pool_eligibility</code>.
       </p>
 
       {isError && (
@@ -228,6 +301,138 @@ export function LootOverseerSettingsPanel() {
                 placeholder="-100…"
               />
             </label>
+          </div>
+
+          <div className="rounded-lg border border-cyan-900/50 bg-slate-900/40 p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-slate-200">Main AOF group — daily Loot Room promo</h3>
+            <p className="text-xs text-slate-500">
+              @aof_lootgod_bot posts here once per day (UTC hour below). Celery Beat task{" "}
+              <code className="text-slate-400">loot-daily-promo</code> runs hourly and sends when the hour matches.
+              Add the loot bot as admin in the group with permission to post.
+            </p>
+            <label className="block text-xs text-slate-400">
+              Main AOF group chat id (required for promos)
+              <input
+                className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm"
+                value={aofGroupChatId}
+                onChange={(e) => setAofGroupChatId(e.target.value)}
+                placeholder="-100… (same id you use for the public AOF group)"
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Forum topic id (optional)
+              <input
+                className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm"
+                value={aofGroupThreadId}
+                onChange={(e) => setAofGroupThreadId(e.target.value)}
+                placeholder="e.g. 42"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={dailyPromoEnabled}
+                onChange={(e) => setDailyPromoEnabled(e.target.checked)}
+              />
+              Enable daily promo (off at first — turn on when ready)
+            </label>
+            <label className="block text-xs text-slate-400">
+              Send hour (UTC, 0–23)
+              <input
+                type="number"
+                min={0}
+                max={23}
+                className="mt-1 w-24 rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm"
+                value={dailyPromoHourUtc}
+                onChange={(e) => setDailyPromoHourUtc(e.target.value)}
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Promo message HTML (optional — blank uses default release copy)
+              <textarea
+                className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm min-h-[80px]"
+                value={dailyPromoIntro}
+                onChange={(e) => setDailyPromoIntro(e.target.value)}
+                placeholder="<b>Loot Room — open.</b> Tiered pulls…"
+              />
+            </label>
+            <div className="flex flex-wrap gap-2 items-center">
+              <button
+                type="button"
+                onClick={() => triggerDailyPromo.mutate()}
+                disabled={triggerDailyPromo.isPending || !aofGroupChatId.trim()}
+                className="px-3 py-1.5 rounded bg-cyan-800 text-white hover:bg-cyan-700 disabled:opacity-50 text-sm"
+              >
+                {triggerDailyPromo.isPending ? "Sending…" : "Post promo now (Telegram + X if enabled)"}
+              </button>
+              {triggerDailyPromo.isSuccess ? (
+                <span className="text-xs text-emerald-400">
+                  Sent to Telegram
+                  {triggerDailyPromo.data?.buffer_mirror_enabled ? " · Buffer mirror enabled" : ""}.
+                </span>
+              ) : null}
+              {triggerDailyPromo.isError ? (
+                <span className="text-xs text-red-300">{(triggerDailyPromo.error as Error).message}</span>
+              ) : null}
+            </div>
+
+            <div className="rounded border border-sky-900/40 bg-slate-950/50 p-3 space-y-2 mt-2">
+              <h4 className="text-xs font-semibold text-sky-200 uppercase tracking-wide">Buffer → X (with each promo)</h4>
+              <p className="text-xs text-slate-500">
+                Same wiring as Scheduler jobs: after a successful Telegram promo, TBCC posts to your Buffer X channel
+                (≤280 chars). Needs <code className="text-slate-400">TBCC_BUFFER_API_KEY</code> and{" "}
+                <code className="text-slate-400">TBCC_BUFFER_CHANNEL_ID_PRIMARY</code> in .env.
+              </p>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={bufferMirror}
+                  onChange={(e) => {
+                    setBufferMirror(e.target.checked);
+                    if (!e.target.checked) setBufferPublishNow(false);
+                  }}
+                />
+                Mirror daily promo to Buffer → X
+              </label>
+              {bufferMirror ? (
+                <label className="flex items-center gap-2 text-sm text-slate-300 ml-5">
+                  <input
+                    type="checkbox"
+                    checked={bufferPublishNow}
+                    onChange={(e) => setBufferPublishNow(e.target.checked)}
+                  />
+                  Publish now on X (<code className="text-xs text-slate-500">shareNow</code> — same moment as Telegram)
+                </label>
+              ) : null}
+              <label className="block text-xs text-slate-400">
+                Optional X captions (one per block, separated by a line with only <code>---</code>). Blank = auto from
+                Telegram promo text + button links, trimmed to 280.
+                <textarea
+                  className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm min-h-[72px] font-mono"
+                  value={bufferXQueueText}
+                  onChange={(e) => setBufferXQueueText(e.target.value)}
+                  placeholder={"Loot Room is open. Free pulls in DM — @aof_lootgod_bot\n---\nNext week caption…"}
+                />
+              </label>
+              <div className="flex flex-wrap gap-2 items-center">
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded bg-emerald-800 text-white hover:bg-emerald-700 disabled:opacity-50 text-sm"
+                  disabled={bufferTest.isPending}
+                  onClick={() => bufferTest.mutate()}
+                >
+                  {bufferTest.isPending ? "Testing…" : bufferPublishNow ? "Test X post now" : "Test X addToQueue"}
+                </button>
+                {bufferTest.isSuccess ? (
+                  <span className="text-xs text-emerald-400">
+                    X {bufferTest.data?.mode} · {bufferTest.data?.chars} chars
+                  </span>
+                ) : null}
+                {bufferTest.isError ? (
+                  <span className="text-xs text-red-300">{(bufferTest.error as Error).message}</span>
+                ) : null}
+              </div>
+            </div>
           </div>
 
           <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4 space-y-3">
@@ -281,7 +486,7 @@ export function LootOverseerSettingsPanel() {
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input type="checkbox" checked={narrativeOn} onChange={(e) => setNarrativeOn(e.target.checked)} />
-              Enable narrative / LLM layer (orchestrator will read this when wired)
+              Overseer LLM chat (DM the bot; uses TBCC_OPENAI_API_KEY or Ollama)
             </label>
             <label className="block text-xs text-slate-400">
               Narrative system prompt (optional)
@@ -289,9 +494,46 @@ export function LootOverseerSettingsPanel() {
                 className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm min-h-[88px]"
                 value={narrativePrompt}
                 onChange={(e) => setNarrativePrompt(e.target.value)}
-                placeholder="Persona and tone for drop narration…"
+                placeholder="Extra persona notes appended to the default Loot Overseer voice…"
               />
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input type="checkbox" checked={lootReferralOn} onChange={(e) => setLootReferralOn(e.target.checked)} />
+              Loot referrals (bonus free pulls via lootref_ deep links)
+            </label>
+            <label className="block text-xs text-slate-400">
+              Bonus pulls per referred friend (0–20, blank = env default)
+              <input
+                className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm"
+                value={referralBonusPulls}
+                onChange={(e) => setReferralBonusPulls(e.target.value)}
+                placeholder="1"
+              />
+            </label>
+          </div>
+
+          <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-slate-200">Creator / OnlyFans pool</h3>
+            <p className="text-xs text-slate-500">
+              Same as bot <code className="text-slate-400">/model</code> — profile URL becomes an active modifier on tier 5+ rolls.
+            </p>
+            <label className="block text-xs text-slate-400">
+              OnlyFans profile URL
+              <input
+                className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm"
+                value={creatorOfUrl}
+                onChange={(e) => setCreatorOfUrl(e.target.value)}
+                placeholder="https://onlyfans.com/handle"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={creatorSubmit.isPending || !creatorOfUrl.trim()}
+              onClick={() => creatorSubmit.mutate()}
+              className="text-xs px-3 py-1.5 rounded bg-violet-700/80 text-white hover:bg-violet-600 disabled:opacity-40"
+            >
+              {creatorSubmit.isPending ? "Adding…" : "Add to modifier pool"}
+            </button>
           </div>
 
           <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4 space-y-3">
@@ -492,7 +734,9 @@ export function LootOverseerSettingsPanel() {
                         {m.target_url ? (
                           <button
                             type="button"
-                            onClick={() => void navigator.clipboard?.writeText(String(m.target_url))}
+                            onClick={(e) =>
+                              void tbccCopyText(String(m.target_url), { anchor: e.currentTarget })
+                            }
                             className="px-2 py-1 rounded border border-slate-600 hover:bg-slate-800"
                           >
                             Copy URL
@@ -530,7 +774,9 @@ export function LootOverseerSettingsPanel() {
           <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-200">Test roll now</h3>
             <p className="text-xs text-slate-500">
-              Dry-run only: no Telegram sends and no DB drop rows. Useful to validate rarity, media picks, and caption modifiers.
+              Dry-run does not save drop rows. <strong className="text-slate-300">Send preview to my DM</strong> delivers
+              the real album (from Saved Messages) plus zip modifiers via @aof_lootgod_bot. Pools must be listed in{" "}
+              <code className="text-slate-400">loot_pool_eligibility</code> (FLOOR / SPOTLIGHT / VAULT).
             </p>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
               <label className="block text-xs text-slate-400">
@@ -590,7 +836,7 @@ export function LootOverseerSettingsPanel() {
                   disabled={sendPreviewDm.isPending}
                   className="px-3 py-1.5 rounded bg-cyan-700 text-white hover:bg-cyan-600 disabled:opacity-50"
                 >
-                  {sendPreviewDm.isPending ? "Sending…" : "Send preview to my DM"}
+                  {sendPreviewDm.isPending ? "Sending…" : "Send visual preview to DM"}
                 </button>
               </div>
             </div>

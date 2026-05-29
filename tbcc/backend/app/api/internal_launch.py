@@ -45,6 +45,8 @@ def launch_full_stack(_: None = Depends(_require_internal)):
             "-File",
             str(start_ps1),
             "-Full",
+            "-WtTabs",
+            "-NoOpen",
         ]
         creationflags = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
         subprocess.Popen(args, cwd=str(root), creationflags=creationflags)
@@ -70,3 +72,77 @@ def launch_full_stack(_: None = Depends(_require_internal)):
 
     logger.info("Launched full stack via API: cwd=%s script=%s", root, start_ps1)
     return JSONResponse(content={"ok": True, "via": "api", "cwd": str(root)})
+
+
+def _supervisor_running_win() -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import subprocess as sp
+
+        out = sp.check_output(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_Process -EA SilentlyContinue | "
+                "Where-Object { $_.CommandLine -match 'tbcc-supervisor\\.ps1' }).Count -gt 0",
+            ],
+            text=True,
+            timeout=8,
+        )
+        return out.strip().lower() == "true"
+    except Exception:
+        return False
+
+
+@router.post("/launch-supervisor")
+def launch_supervisor(_: None = Depends(_require_internal)):
+    """Spawn tbcc-supervisor.ps1 (tray) on Windows."""
+    root = _tbcc_root()
+    supervisor = root / "tools" / "tbcc-supervisor.ps1"
+    if not supervisor.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "tbcc-supervisor.ps1 not found", "path": str(supervisor)},
+        )
+
+    if _supervisor_running_win():
+        return JSONResponse(
+            content={
+                "ok": True,
+                "via": "api",
+                "already_running": True,
+                "detail": "Tray supervisor already running.",
+            }
+        )
+
+    if sys.platform == "win32":
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Sta",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(supervisor),
+            ],
+            cwd=str(supervisor.parent),
+            creationflags=subprocess.CREATE_NO_WINDOW,  # type: ignore[attr-defined]
+        )
+    else:
+        return JSONResponse(
+            status_code=501,
+            content={
+                "ok": False,
+                "error": "Tray supervisor is Windows-only; run tbcc-launch-daemon.ps1 locally.",
+            },
+        )
+
+    logger.info("Launched tray supervisor via API: %s", supervisor)
+    return JSONResponse(
+        content={"ok": True, "via": "api", "already_running": False, "path": str(supervisor)}
+    )
