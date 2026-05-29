@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 from collections import defaultdict
 from typing import NamedTuple
 
@@ -89,6 +90,23 @@ _MIME_FROM_EXT = {
     "avi": "video/x-msvideo",
     "bin": "application/octet-stream",
 }
+
+
+def _media_list_limit(requested: int | None = None) -> int:
+    """Cap on rows returned by the media list.
+
+    Defaults to TBCC_MEDIA_LIST_LIMIT (100) — the operator wants a small, fast library,
+    not thousands of rows hammering thumbnail fetches. A per-request ?limit may lower it
+    but never exceed the configured ceiling.
+    """
+    raw = (os.getenv("TBCC_MEDIA_LIST_LIMIT") or "100").strip()
+    try:
+        ceiling = max(1, int(raw))
+    except ValueError:
+        ceiling = 100
+    if requested is not None and requested > 0:
+        return min(requested, ceiling)
+    return ceiling
 
 
 def _split_tag_tokens(raw: str | None) -> list[str]:
@@ -313,6 +331,7 @@ def list_media(
     tag_slug: str | None = None,
     sort: str | None = None,
     target_pool_id: int | None = None,
+    limit: int | None = None,
 ):
     from app.models.media import Media
     from app.models.tbcc_tag import TbccTag, MediaTagLink
@@ -337,7 +356,7 @@ def list_media(
     elif tag and tag.strip():
         needle = f"%{tag.strip().lower()}%"
         q = q.filter(Media.tags.isnot(None)).filter(Media.tags.ilike(needle))
-    items = q.order_by(Media.id.desc()).limit(200).all()
+    items = q.order_by(Media.id.desc()).limit(_media_list_limit(limit)).all()
     sort_mode = (sort or "").strip().lower()
     model_pool_id = target_pool_id if target_pool_id is not None else pool_id
     if sort_mode == "recommended" and model_pool_id is not None and items:

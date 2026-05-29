@@ -72,22 +72,43 @@ export function MediaThumbnailCell({
     }
 
     (async () => {
-      try {
-        const res = await withThumbnailSlot(() =>
-          fetch(api.media.thumbnailUrl(mediaId), { signal: ac.signal })
-        );
-        if (!res.ok) throw new Error(String(res.status));
-        const blob = await res.blob();
-        const u = URL.createObjectURL(blob);
-        if (cancelled) {
-          URL.revokeObjectURL(u);
+      // The backend returns 503 + Retry-After while the Telegram session is busy (transient,
+      // not a real failure). Back off and retry a few times — releasing the throttle slot
+      // between attempts — so a busy moment doesn't leave a permanent "#id" placeholder.
+      const MAX_ATTEMPTS = 4;
+      const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+        try {
+          const res = await withThumbnailSlot(() =>
+            fetch(api.media.thumbnailUrl(mediaId), { signal: ac.signal })
+          );
+          if (res.status === 503 && attempt + 1 < MAX_ATTEMPTS) {
+            const ra = Number(res.headers.get("Retry-After"));
+            const delayMs = Math.min(15000, (Number.isFinite(ra) && ra > 0 ? ra : 5) * 1000);
+            await sleep(delayMs);
+            if (cancelled || ac.signal.aborted) return;
+            continue;
+          }
+          if (!res.ok) throw new Error(String(res.status));
+          const blob = await res.blob();
+          const u = URL.createObjectURL(blob);
+          if (cancelled) {
+            URL.revokeObjectURL(u);
+            return;
+          }
+          revokeRef.current = u;
+          setObjectUrl(u);
+          setPhase("ok");
           return;
+        } catch {
+          if (cancelled || ac.signal.aborted) return;
+          if (attempt + 1 >= MAX_ATTEMPTS) {
+            setPhase("fail");
+            return;
+          }
+          await sleep(1500);
+          if (cancelled || ac.signal.aborted) return;
         }
-        revokeRef.current = u;
-        setObjectUrl(u);
-        setPhase("ok");
-      } catch {
-        if (!cancelled) setPhase("fail");
       }
     })();
 
