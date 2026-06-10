@@ -51,14 +51,35 @@ cd c:\Powercore-repo-main\telegram_bot2\tbcc
 .\start.ps1 -Full -WtTabs
 ```
 
-Adds tabs **TBCC-NSFW-Detect** and **TBCC-Lustpress** when `.env` has:
+Adds tabs **TBCC-NSFW-Detect**, **TBCC-Lustpress**, and **TBCC-CLIP-Categorize** when `.env` has:
 
 ```env
 TBCC_NSFW_DETECT_URL=http://127.0.0.1:8001
 TBCC_LUSTPRESS_URL=http://127.0.0.1:3000
+TBCC_CLIP_CATEGORIZE_URL=http://127.0.0.1:8002
+TBCC_CLIP_CATEGORIES_FILE=C:/path/to/clip-categories.json
 ```
 
 Requires **TBCC-Celery** (`-Full`) for import enrichment tasks.
+
+### CLIP niche categorizer (port **8002**)
+
+Local zero-shot sorting against your fixed category list (OpenCLIP ViT-B/32). No LLM vision required for the primary pass.
+
+```powershell
+cd c:\Powercore-repo-main\telegram_bot2\tbcc\services
+.\setup-enrichment.ps1   # installs torch + open-clip-torch
+cd ..
+python tools/import_clip_categories.py --in C:/path/your-1400-categories.txt --out data/clip-categories.json
+# Set TBCC_CLIP_CATEGORIES_FILE in .env to that output path, then:
+.\start.ps1 -Full -WtTabs
+```
+
+First CLIP startup encodes all category prompts (~few minutes on CPU for 1400 labels; cached as `.clip_embeddings.npz` beside the catalog).
+
+**How it works:** each category becomes a text prompt (`a photo of {label}`). At startup CLIP encodes all prompts once. Per image, CLIP encodes the image and picks the highest cosine-similarity category. If score/margin is below `TBCC_CLIP_MIN_CONF` / `TBCC_CLIP_MIN_MARGIN`, an optional vision LLM (`TBCC_VISION_LLM_PROVIDER=openrouter|openai|ollama`) fills the gap.
+
+Same pipeline feeds: watch-folder subfolders, dashboard import tags, extension Saved Messages hashtags.
 
 Optional custom clone paths:
 

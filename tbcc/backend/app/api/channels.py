@@ -13,7 +13,7 @@ from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.pool_cleanup import cascade_delete_pool
 from app.services.telegram_admin import get_telegram_client
-from app.utils.telegram_peer import normalize_telethon_peer_identifier
+from app.utils.telegram_peer import normalize_telethon_peer_identifier, resolve_poster_peer
 from telethon import functions
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,30 @@ class ChannelPinBody(BaseModel):
     unpin: bool = False
 
 router = APIRouter()
+
+
+async def _resolve_channel_entity(client, ch: Channel):
+    """
+    Resolve Channel.identifier for Telethon (admin.session).
+
+    Numeric -100… ids fail until the account has joined the chat; use invite_link fallback.
+    """
+    return await resolve_poster_peer(
+        client,
+        ch.identifier,
+        invite_fallback=getattr(ch, "invite_link", None),
+    )
+
+
+async def _telegram_client_for_channel_ops():
+    """Poster session first (same account that sends scheduled/relay posts)."""
+    try:
+        from app.workers.poster_worker import _get_poster_client
+
+        return await _get_poster_client()
+    except Exception as poster_err:
+        logger.warning("forum/channel ops: poster client unavailable (%s), trying admin", poster_err)
+        return await get_telegram_client()
 
 
 class ChannelCreate(BaseModel):
@@ -60,12 +84,12 @@ async def list_channel_forum_topics(channel_id: int, db: Session = Depends(get_d
     if not ch:
         return {"topics": [], "error": "Channel not found"}
     try:
-        client = await get_telegram_client()
+        client = await _telegram_client_for_channel_ops()
     except Exception as e:
         logger.warning("forum-topics: no telegram client: %s", e)
         return {"topics": [], "error": str(e)}
     try:
-        entity = await client.get_input_entity(ch.identifier)
+        entity = await _resolve_channel_entity(client, ch)
         resp = await client(
             functions.messages.GetForumTopicsRequest(
                 peer=entity,
@@ -109,12 +133,12 @@ async def pin_channel_message(channel_id: int, body: ChannelPinBody, db: Session
     if not ch:
         raise HTTPException(status_code=404, detail="Channel not found")
     try:
-        client = await get_telegram_client()
+        client = await _telegram_client_for_channel_ops()
     except Exception as e:
         logger.warning("pin-message: no telegram client: %s", e)
         raise HTTPException(status_code=503, detail=str(e)) from e
     try:
-        entity = await client.get_input_entity(ch.identifier)
+        entity = await _resolve_channel_entity(client, ch)
         if body.unpin:
             await client(
                 functions.messages.UpdatePinnedMessageRequest(
@@ -148,7 +172,7 @@ async def rotate_channel_invite(
     if not ch:
         raise HTTPException(status_code=404, detail="Channel not found")
     try:
-        client = await get_telegram_client()
+        client = await _telegram_client_for_channel_ops()
     except Exception as e:
         logger.warning("rotate-invite: no telegram client: %s", e)
         raise HTTPException(status_code=503, detail=str(e)) from e
@@ -163,7 +187,7 @@ async def rotate_channel_invite(
     title = (body.title or "").strip() or None
 
     try:
-        entity = await client.get_input_entity(peer)
+        entity = await _resolve_channel_entity(client, ch)
     except Exception as e:
         logger.info("rotate-invite: cannot resolve entity channel_id=%s peer=%s: %s", channel_id, peer, e)
         return {"ok": False, "error": f"Cannot resolve channel identifier: {e}"}

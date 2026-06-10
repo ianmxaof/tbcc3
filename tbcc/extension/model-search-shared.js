@@ -76,16 +76,17 @@ function guessResultCountFromHtml(html) {
  * Best-effort: does this search/profile page look like it has content?
  * Returns { hasResults, count, reason } where reason is ok | none | blocked | error.
  */
-function analyzeModelSearchHtml(html, finalUrl) {
+function analyzeModelSearchHtml(html, finalUrl, username) {
   if (!html || typeof html !== "string" || html.length < 40) {
-    return { hasResults: false, count: 0, reason: "empty" };
+    return { hasResults: false, count: 0, reason: "empty", confidence: "none", signal: "empty" };
   }
   const lower = html.toLowerCase();
+  const userLc = String(username || "").trim().toLowerCase();
   const blocked =
     /just a moment|cf-browser-verification|attention required|enable javascript|ddos protection|checking your browser|cloudflare/i.test(
       html
     );
-  if (blocked) return { hasResults: false, count: 0, reason: "blocked" };
+  if (blocked) return { hasResults: false, count: 0, reason: "blocked", confidence: "none", signal: "blocked" };
 
   if (/^\s*[\[{]/.test(html.trim())) {
     try {
@@ -93,12 +94,14 @@ function analyzeModelSearchHtml(html, finalUrl) {
       const arr = Array.isArray(data) ? data : Array.isArray(data && data.items) ? data.items : null;
       if (arr) {
         const n = arr.length;
-        return { hasResults: n > 0, count: n, reason: n > 0 ? "ok" : "none" };
+        const confidence = n >= 2 ? "high" : n === 1 ? "medium" : "none";
+        return { hasResults: n > 0, count: n, reason: n > 0 ? "ok" : "none", confidence, signal: "json" };
       }
       if (data && typeof data === "object" && data.total != null) {
         const n = Number(data.total);
         if (Number.isFinite(n) && n >= 0) {
-          return { hasResults: n > 0, count: n, reason: n > 0 ? "ok" : "none" };
+          const confidence = n >= 2 ? "high" : n === 1 ? "medium" : "none";
+          return { hasResults: n > 0, count: n, reason: n > 0 ? "ok" : "none", confidence, signal: "json_total" };
         }
       }
     } catch (_) {}
@@ -109,8 +112,9 @@ function analyzeModelSearchHtml(html, finalUrl) {
       lower
     );
   let count = guessResultCountFromHtml(html);
+  let signal = count != null ? "count_regex" : "none";
   if (explicitEmpty && (count == null || count === 0)) {
-    return { hasResults: false, count: 0, reason: "none" };
+    return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "explicit_empty" };
   }
 
   if (count == null) {
@@ -125,23 +129,37 @@ function analyzeModelSearchHtml(html, finalUrl) {
       const m = html.match(p);
       if (m) cards = Math.max(cards, m.length);
     }
-    if (cards >= 2) count = cards;
-    else if (cards === 1) count = 1;
+    if (cards >= 2) {
+      count = cards;
+      signal = "cards";
+    } else if (cards === 1) {
+      count = 1;
+      signal = "cards";
+    }
   }
 
   if ((count == null || count === 0) && /404|page not found|doesn't exist|user not found|model not found/i.test(lower)) {
-    return { hasResults: false, count: 0, reason: "none" };
+    return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "not_found" };
   }
 
-  if (count == null && html.length > 6000 && /(video|photo|album|gallery|stream|thumbnail|onlyfans)/i.test(lower)) {
-    count = 1;
+  let hasResults = count != null && count > 0;
+  if (hasResults && userLc && !lower.includes(userLc)) {
+    hasResults = false;
+    count = 0;
+    signal = "no_username_in_html";
   }
 
-  const hasResults = count != null && count > 0;
+  let confidence = "none";
+  if (hasResults) {
+    confidence = signal === "json" || signal === "json_total" || (count || 0) >= 2 ? "high" : "medium";
+  }
+
   return {
     hasResults,
     count: hasResults ? count : 0,
     reason: hasResults ? "ok" : "none",
+    confidence,
+    signal,
     finalUrl: finalUrl || "",
   };
 }

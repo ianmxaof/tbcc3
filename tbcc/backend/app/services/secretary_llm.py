@@ -11,12 +11,11 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-def _openai_key() -> str:
-    return (os.getenv("TBCC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
-
-
 def _model() -> str:
-    return (os.getenv("TBCC_SECRETARY_LLM_MODEL") or os.getenv("TBCC_LLM_MODEL") or "gpt-4o-mini").strip()
+    from app.services.llm_completions import resolve_text_model
+
+    explicit = (os.getenv("TBCC_SECRETARY_LLM_MODEL") or "").strip()
+    return resolve_text_model(explicit or None)
 
 
 def _max_tokens() -> int:
@@ -42,7 +41,9 @@ def default_system_prompt() -> str:
 
 
 def openai_configured() -> bool:
-    return bool(_openai_key())
+    from app.services.llm_completions import text_llm_configured
+
+    return text_llm_configured()
 
 
 async def fetch_subscription_catalog_snippet(api_base: str, *, max_plans: int = 12) -> str:
@@ -93,9 +94,12 @@ async def complete_secretary_chat(
     """
     messages: OpenAI-style chat messages (role + content), must include at least one user turn.
     """
-    key = _openai_key()
-    if not key:
-        raise RuntimeError("Set TBCC_OPENAI_API_KEY or OPENAI_API_KEY")
+    from app.services.llm_completions import complete_chat_text_async, text_llm_configured
+
+    if not text_llm_configured():
+        raise RuntimeError(
+            "Set TBCC_OPENROUTER_API_KEY (TBCC_LLM_PROVIDER=openrouter) or TBCC_OPENAI_API_KEY"
+        )
 
     if not messages:
         raise ValueError("messages empty")
@@ -110,33 +114,10 @@ async def complete_secretary_chat(
         body_msgs = [{"role": "system", "content": default_system_prompt() + (extra_system_suffix or "")}]
         body_msgs.extend(messages)
 
-    payload: dict[str, Any] = {
-        "model": _model(),
-        "messages": body_msgs,
-        "max_tokens": _max_tokens(),
-        "temperature": 0.6,
-    }
-
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=90.0,
-        )
-        if not r.is_success:
-            detail = (r.text or "")[:500]
-            logger.warning("OpenAI secretary HTTP %s: %s", r.status_code, detail)
-            raise RuntimeError(f"OpenAI error {r.status_code}")
-        data = r.json()
-
-    try:
-        choice0 = (data.get("choices") or [{}])[0]
-        msg = (choice0.get("message") or {})
-        text = (msg.get("content") or "").strip()
-    except Exception as e:
-        logger.warning("bad OpenAI secretary response: %s", e)
-        raise RuntimeError("Bad OpenAI response") from e
-    if not text:
-        raise RuntimeError("Empty model reply")
-    return text
+    return await complete_chat_text_async(
+        body_msgs,
+        model=_model(),
+        max_tokens=_max_tokens(),
+        temperature=0.6,
+        timeout=90.0,
+    )

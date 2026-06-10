@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TBCC simplified toolbar mark  flat colors, thick stroke, 16px-safe. Regenerate PNGs via scripts/build-icons.py -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <style>
+      .hex { fill: none; stroke: #89b4fa; stroke-width: 28; stroke-linejoin: round; stroke-linecap: round; }
+      .bolt { fill: #f5c2e7; }
+    </style>
+  </defs>
+  <!-- Optional background rect  omitted for transparent exports -->
+  <rect id="bg" width="512" height="512" fill="#1e1e2e" />
+  <!-- flat-top hex, enlarged to ~92% of canvas -->
+  <polygon class="hex" points="256,44 418,138 418,326 256,420 94,326 94,138" />
+  <!-- diagonal lightning � 7-pt thick bolt with horizontal middle bar (matches original art) -->
+  <polygon class="bolt" points="443,14 373,224 330,284 60,498 129,284 166,218 245,136" />
+</svg>

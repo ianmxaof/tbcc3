@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { CaptionSnippetInsertSelect } from "./CaptionSnippetLibrary";
-import { CustomEmojiInsertSelect } from "./CustomEmojiLibrary";
 import { SnippetAwareTextarea } from "./SnippetAwareTextarea";
+import { TbccInsertMenu } from "./TbccInsertMenu";
+import { TbccInsertLibraryToolbar } from "./TbccInsertLibraryToolbar";
 import {
   EMPTY_RELAY_SLOT_EXTRA,
   RelayCopySlotExtras,
@@ -108,7 +108,7 @@ function slotCardMetaLines(
   if (slot.copy_media_ids.length) lines.push(`${slot.copy_media_ids.length} approved media`);
   if (slot.copy_attachment_urls.length) lines.push(`${slot.copy_attachment_urls.length} promo URL(s)`);
   if (slot.copy_album_order_mode !== "static") lines.push(`Album: ${slot.copy_album_order_mode}`);
-  return lines.slice(0, 5);
+  return lines.slice(0, 2);
 }
 
 function slotDetailBadges(tpl: string, footer: string, copy: string, extra: RelaySlotExtra) {
@@ -144,6 +144,8 @@ type SlotEditorFieldsProps = {
   extra: RelaySlotExtra;
   canRemove: boolean;
   salablePlans: Array<{ id: number; name?: string; price_stars?: number; product_type?: string }>;
+  channels?: Array<Record<string, unknown>>;
+  pools?: Array<Record<string, unknown>>;
   onTemplateChange: (v: string) => void;
   onFooterChange: (v: string) => void;
   onCopyBlockChange: (v: string) => void;
@@ -159,6 +161,8 @@ function RelayTemplateSlotEditorFields({
   extra,
   canRemove,
   salablePlans,
+  channels = [],
+  pools = [],
   onTemplateChange,
   onFooterChange,
   onCopyBlockChange,
@@ -171,10 +175,7 @@ function RelayTemplateSlotEditorFields({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-sm font-medium text-slate-200">Template {i + 1}</span>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
-          <CaptionSnippetInsertSelect onInsert={onTemplateChange} />
-          <CustomEmojiInsertSelect
-            onInsert={(chunk) => onTemplateChange(template ? `${chunk}\n\n${template}` : chunk)}
-          />
+          <TbccInsertMenu channels={channels} pools={pools} onInsert={onTemplateChange} />
           {canRemove ? (
             <button type="button" className="text-xs text-red-400 hover:text-red-300" onClick={onRemove}>
               Remove slot
@@ -194,7 +195,7 @@ function RelayTemplateSlotEditorFields({
         <span className="block text-[11px] text-slate-500">
           Flavor / promo caption (first message, above Last.fm preview — HTML)
         </span>
-        <CaptionSnippetInsertSelect onInsert={onFooterChange} />
+        <TbccInsertMenu channels={channels} pools={pools} onInsert={onFooterChange} />
       </div>
       <SnippetAwareTextarea
         className="w-full min-h-[52px] bg-slate-900 border border-slate-700 rounded px-3 py-2 text-slate-200 font-mono text-xs"
@@ -207,16 +208,19 @@ function RelayTemplateSlotEditorFields({
         <span className="block text-[11px] text-slate-500">
           Copy block — tap-to-copy panel under the Last.fm card (second message)
         </span>
-        <button
-          type="button"
-          className="text-[10px] px-2 py-0.5 rounded border border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700"
-          onClick={() => {
-            const body = copyBlock.trim();
-            onCopyBlockChange(body.startsWith("<pre") ? body : `<pre>${body}</pre>`);
-          }}
-        >
-          Wrap &lt;pre&gt;
-        </button>
+        <div className="flex flex-wrap items-center gap-1 shrink-0">
+          <TbccInsertMenu channels={channels} pools={pools} onInsert={onCopyBlockChange} />
+          <button
+            type="button"
+            className="text-[10px] px-2 py-0.5 rounded border border-slate-600 bg-slate-800 text-slate-300 hover:bg-slate-700"
+            onClick={() => {
+              const body = copyBlock.trim();
+              onCopyBlockChange(body.startsWith("<pre") ? body : `<pre>${body}</pre>`);
+            }}
+          >
+            Wrap &lt;pre&gt;
+          </button>
+        </div>
       </div>
       <SnippetAwareTextarea
         className="w-full min-h-[48px] bg-slate-950 border border-slate-700 rounded px-3 py-2 text-slate-200 font-mono text-xs"
@@ -282,6 +286,8 @@ export type RelayTemplateSlotsEditorProps = {
   templatePage: number;
   onTemplatePageChange: (page: number) => void;
   salablePlans: Array<{ id: number; name?: string; price_stars?: number; product_type?: string }>;
+  channels?: Array<Record<string, unknown>>;
+  pools?: Array<Record<string, unknown>>;
   onEdited: () => void;
   onTemplateVariantsChange: (fn: (prev: string[]) => string[]) => void;
   onFooterVariantsChange: (fn: (prev: string[]) => string[]) => void;
@@ -299,6 +305,8 @@ export function RelayTemplateSlotsEditor({
   templatePage,
   onTemplatePageChange,
   salablePlans,
+  channels = [],
+  pools = [],
   onEdited,
   onTemplateVariantsChange,
   onFooterVariantsChange,
@@ -347,6 +355,19 @@ export function RelayTemplateSlotsEditor({
     if (editingSlot === i) setEditingSlot(null);
   };
 
+  const appendBlankSlots = (count: number) => {
+    if (count < 1 || templateVariants.length >= RELAY_TEMPLATE_SLOTS_MAX) return;
+    const room = RELAY_TEMPLATE_SLOTS_MAX - templateVariants.length;
+    const n = Math.min(count, room);
+    onEdited();
+    onTemplateVariantsChange((prev) => [...prev, ...Array(n).fill("")]);
+    onFooterVariantsChange((prev) => [...prev, ...Array(n).fill("")]);
+    onCopyBlockVariantsChange((prev) => [...prev, ...Array(n).fill("")]);
+    onSlotExtrasChange((prev) => [...prev, ...Array(n).fill({ ...EMPTY_RELAY_SLOT_EXTRA })]);
+    const newPage = Math.floor((templateVariants.length + n - 1) / RELAY_TEMPLATE_PAGE_SIZE);
+    onTemplatePageChange(newPage);
+  };
+
   const editorPropsFor = (i: number): SlotEditorFieldsProps => ({
     slotIndex: i,
     template: templateVariants[i] ?? "",
@@ -355,6 +376,8 @@ export function RelayTemplateSlotsEditor({
     extra: slotExtras[i] ?? { ...EMPTY_RELAY_SLOT_EXTRA },
     canRemove: templateVariants.length > 1,
     salablePlans,
+    channels,
+    pools,
     onTemplateChange: (v) => {
       onEdited();
       onTemplateVariantsChange((prev) => prev.map((p, j) => (j === i ? v : p)));
@@ -393,6 +416,9 @@ export function RelayTemplateSlotsEditor({
     <div className="border-t border-slate-700 pt-4">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <h3 className="text-sm font-medium text-slate-200">Message templates (HTML)</h3>
+        <TbccInsertLibraryToolbar />
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2 mb-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[11px] text-slate-500">Layout</span>
           <select
@@ -469,7 +495,7 @@ export function RelayTemplateSlotsEditor({
               <button
                 key={i}
                 type="button"
-                className={`text-left rounded-lg border p-3 transition-colors min-h-[132px] flex flex-col gap-1.5 ${
+                className={`text-left rounded-lg border p-2 transition-colors min-h-[84px] flex flex-col gap-1 ${
                   editingSlot === i
                     ? "border-cyan-500 bg-cyan-950/30 ring-1 ring-cyan-500/40"
                     : filled
@@ -478,9 +504,9 @@ export function RelayTemplateSlotsEditor({
                 }`}
                 onClick={() => setEditingSlot(i)}
               >
-                <div className="flex items-start justify-between gap-1 min-h-[2rem]">
+                <div className="flex items-start justify-between gap-1 min-h-[1.25rem]">
                   <span
-                    className="text-[11px] font-medium text-slate-200 line-clamp-2 leading-snug flex-1"
+                    className="text-[10px] font-medium text-slate-200 line-clamp-1 leading-snug flex-1"
                     title={title}
                   >
                     {title}
@@ -509,15 +535,16 @@ export function RelayTemplateSlotsEditor({
                 <div className="flex-1 flex flex-col gap-0.5 min-h-0">
                   {metaLines.length ? (
                     metaLines.map((ln) => (
-                      <p key={ln} className="text-[10px] text-slate-500 line-clamp-1 leading-tight">
+                      <p key={ln} className="text-[9px] text-slate-500 line-clamp-1 leading-tight">
                         {ln}
                       </p>
                     ))
                   ) : (
-                    <p className="text-[10px] text-slate-600 italic">Click to configure</p>
+                    <p className="text-[9px] text-slate-600 italic">Click to edit</p>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1 mt-auto pt-1">
+                {(filterChips.length > 0 || detailBadges.length > 0) ? (
+                <div className="flex flex-wrap gap-0.5 mt-auto pt-0.5">
                   {filterChips.map((b) => (
                     <span
                       key={b}
@@ -535,6 +562,7 @@ export function RelayTemplateSlotsEditor({
                     </span>
                   ))}
                 </div>
+                ) : null}
               </button>
             );
           })}
@@ -552,24 +580,25 @@ export function RelayTemplateSlotsEditor({
         </div>
       )}
 
-      <button
-        type="button"
-        className="mt-3 text-sm text-cyan-400 hover:text-cyan-300 disabled:opacity-40"
-        disabled={templateVariants.length >= RELAY_TEMPLATE_SLOTS_MAX}
-        onClick={() => {
-          onEdited();
-          onTemplateVariantsChange((prev) => [...prev, ""]);
-          onFooterVariantsChange((prev) => [...prev, ""]);
-          onCopyBlockVariantsChange((prev) => [...prev, ""]);
-          onSlotExtrasChange((prev) => [...prev, { ...EMPTY_RELAY_SLOT_EXTRA }]);
-          const newIndex = templateVariants.length;
-          const newPage = Math.floor(newIndex / RELAY_TEMPLATE_PAGE_SIZE);
-          onTemplatePageChange(newPage);
-          if (layout === "grid") setEditingSlot(newIndex);
-        }}
-      >
-        + Add template ({templateVariants.length}/{RELAY_TEMPLATE_SLOTS_MAX}) — 2+ filled enables rotation
-      </button>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-cyan-800/90 text-cyan-100 text-sm hover:bg-cyan-700 disabled:opacity-40 border border-cyan-700/60"
+          disabled={templateVariants.length >= RELAY_TEMPLATE_SLOTS_MAX}
+          onClick={() => appendBlankSlots(1)}
+        >
+          + Add slot ({templateVariants.length}/{RELAY_TEMPLATE_SLOTS_MAX})
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-sm hover:bg-slate-600 disabled:opacity-40 border border-slate-600"
+          disabled={templateVariants.length + RELAY_TEMPLATE_PAGE_SIZE > RELAY_TEMPLATE_SLOTS_MAX}
+          onClick={() => appendBlankSlots(RELAY_TEMPLATE_PAGE_SIZE)}
+        >
+          Add page ({RELAY_TEMPLATE_PAGE_SIZE} blank slots)
+        </button>
+        <span className="text-[11px] text-slate-500">2+ filled enables rotation · click a card to edit</span>
+      </div>
 
       {editingSlot != null && layout === "grid" ? (
         <RelayTemplateSlotModal {...editorPropsFor(editingSlot)} onClose={() => setEditingSlot(null)} />

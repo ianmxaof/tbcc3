@@ -37,6 +37,8 @@ class PaymentBotSettingsPatch(BaseModel):
     video_finder_enabled: bool | None = None
     video_finder_sources: list[dict[str, str]] | None = None
     video_finder_max_links_per_source: int | None = Field(None, ge=1, le=30)
+    macro_search_custom_sources: list[dict[str, str]] | None = None
+    macro_search_disabled: dict[str, bool] | None = None
 
 
 def _ensure_row(db: Session) -> PaymentBotSettings:
@@ -89,6 +91,18 @@ def _row_overrides_dict(r: PaymentBotSettings) -> dict[str, Any]:
             video_sources = json.loads(r.video_finder_sources_json)
         except Exception:
             video_sources = None
+    macro_custom = None
+    macro_disabled = None
+    if getattr(r, "macro_search_custom_sources_json", None):
+        try:
+            macro_custom = json.loads(r.macro_search_custom_sources_json)
+        except Exception:
+            macro_custom = None
+    if getattr(r, "macro_search_disabled_json", None):
+        try:
+            macro_disabled = json.loads(r.macro_search_disabled_json)
+        except Exception:
+            macro_disabled = None
     return {
         "main_menu": menu,
         "welcome_html": r.welcome_html,
@@ -106,6 +120,8 @@ def _row_overrides_dict(r: PaymentBotSettings) -> dict[str, Any]:
         "video_finder_enabled": None if r.video_finder_enabled is None else bool(r.video_finder_enabled),
         "video_finder_sources": video_sources,
         "video_finder_max_links_per_source": r.video_finder_max_links_per_source,
+        "macro_search_custom_sources": macro_custom,
+        "macro_search_disabled": macro_disabled,
     }
 
 
@@ -175,6 +191,43 @@ def patch_payment_bot_settings(body: PaymentBotSettingsPatch, db: Session = Depe
                                 row[key] = vals[:20]
                     out.append(row)
                 r.video_finder_sources_json = json.dumps(out) if out else None
+            continue
+        if key == "macro_search_custom_sources":
+            if val is None:
+                r.macro_search_custom_sources_json = None
+            else:
+                out_macro: list[dict[str, str]] = []
+                for item in val[:80]:
+                    if not isinstance(item, dict):
+                        raise HTTPException(
+                            status_code=400, detail="macro_search_custom_sources must be an array of objects"
+                        )
+                    sid = str(item.get("id") or "").strip()
+                    name = str(item.get("name") or "").strip()
+                    url = str(item.get("url") or "").strip()
+                    if not sid or not name or "{username}" not in url:
+                        raise HTTPException(
+                            status_code=400, detail="Each macro source needs id, name, url with {username}"
+                        )
+                    if not url.startswith(("http://", "https://")):
+                        raise HTTPException(status_code=400, detail="Macro source url must be http(s)")
+                    row_m: dict[str, Any] = {
+                        "id": sid[:64],
+                        "name": name[:128],
+                        "url": url[:1024],
+                        "category": str(item.get("category") or "macro").strip()[:32] or "macro",
+                    }
+                    out_macro.append(row_m)
+                r.macro_search_custom_sources_json = json.dumps(out_macro) if out_macro else None
+            continue
+        if key == "macro_search_disabled":
+            if val is None:
+                r.macro_search_disabled_json = None
+            else:
+                if not isinstance(val, dict):
+                    raise HTTPException(status_code=400, detail="macro_search_disabled must be an object")
+                clean = {str(k).strip()[:64]: bool(v) for k, v in val.items() if str(k).strip()}
+                r.macro_search_disabled_json = json.dumps(clean) if clean else None
             continue
         if not hasattr(r, key):
             continue

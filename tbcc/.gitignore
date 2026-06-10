@@ -37,12 +37,23 @@ tmp/
 temp/
 .tbcc-run/
 
+# Local ML / vendored clones (not part of TBCC releases)
+data/*.npz
+services/lustpress/
+services/NSFW_Detection_API/
+
+# Icon scratch files
+extension/icons/_*-test.png
+
 # Telethon / Celery local state (secrets — do not publish)
 *.session
 *.session-journal
+*.session-shm
+*.session-wal
 celerybeat-schedule
 celerybeat-schedule-shm
 celerybeat-schedule-wal
 
 # TypeScript
 dashboard/tsconfig.tsbuildinfo
+services/NSFW_Detection_API/

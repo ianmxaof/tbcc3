@@ -27,6 +27,9 @@ function formatMeta(e: CaptureArchiveEntry): string {
   const parts: string[] = [];
   if (e.source) parts.push(e.source);
   if (e.origin && e.origin !== e.source) parts.push(e.origin);
+  if (e.status && e.status !== "approved") parts.push(`status: ${e.status}`);
+  if (e.submitted_by) parts.push(`by tg:${e.submitted_by}`);
+  if (e.tags) parts.push(`tags: ${e.tags}`);
   if (e.ref) parts.push(`ref: ${e.ref.slice(0, 120)}`);
   if (e.added_at) {
     try {
@@ -69,12 +72,14 @@ export function MasterArchivePanel() {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
   const [q, setQ] = useState("");
+  const [tags, setTags] = useState("");
   const [kind, setKind] = useState<"" | "url" | "username">("");
   const [sort, setSort] = useState<ArchiveSortField>("added_at");
   const [order, setOrder] = useState<ArchiveSortOrder>("desc");
   const [sort2, setSort2] = useState<"" | ArchiveSortField>("");
   const [order2, setOrder2] = useState<ArchiveSortOrder>("asc");
   const [usernameTab, setUsernameTab] = useState("");
+  const [viewMode, setViewMode] = useState<"archive" | "pending">("archive");
   const [pasteText, setPasteText] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [status, setStatus] = useState("");
@@ -87,20 +92,31 @@ export function MasterArchivePanel() {
   });
 
   const listQ = useQuery({
-    queryKey: ["archive", "entries", page, q, kind, usernameTab, sort, order, sort2, order2],
+    queryKey: ["archive", "entries", page, q, tags, kind, usernameTab, sort, order, sort2, order2, viewMode],
     queryFn: () =>
       api.archive.list({
         page,
         page_size: PAGE_SIZE,
         q: q.trim() || undefined,
+        tags: tags.trim() || undefined,
         kind: kind || undefined,
         username: usernameTab || undefined,
-        include_media: true,
+        include_media: viewMode === "archive",
+        status: viewMode === "pending" ? "pending" : undefined,
         sort,
         order,
         sort2: sort2 || undefined,
         order2,
       }),
+  });
+
+  const governEntry = useMutation({
+    mutationFn: ({ id, status }: { id: number; status: "approved" | "rejected" }) =>
+      api.archive.governEntry(id, status),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["archive"] });
+    },
+    onError: (e) => setStatus(String(e)),
   });
 
   const syncMedia = useMutation({
@@ -129,11 +145,26 @@ export function MasterArchivePanel() {
     mutationFn: async (text: string) => {
       const parsed = parseUrlsFromPaste(text);
       if (!parsed.length) throw new Error("No http(s) URLs found in paste.");
-      return api.archive.bulk(parsed, true);
+      return api.archive.bulk(parsed, true, true);
     },
     onSuccess: (r) => {
-      setStatus(`Added ${r.added} new URL(s) from clipboard paste.`);
+      const tagged = r.auto_tag?.enriched;
+      setStatus(
+        `Added ${r.added} new URL(s) from clipboard paste` +
+          (tagged != null ? ` · auto-tagged ${tagged}` : "") +
+          "."
+      );
       setPasteText("");
+      void qc.invalidateQueries({ queryKey: ["archive"] });
+    },
+    onError: (e) => setStatus(String(e)),
+  });
+
+  const bulkAutoTag = useMutation({
+    mutationFn: (opts: { ids?: number[]; missing_only?: boolean; limit?: number; force?: boolean }) =>
+      api.archive.bulkAutoTag(opts),
+    onSuccess: (r) => {
+      setStatus(`Auto-tagged ${r.enriched} URL(s) (${r.skipped} skipped, ${r.scanned} scanned).`);
       void qc.invalidateQueries({ queryKey: ["archive"] });
     },
     onError: (e) => setStatus(String(e)),
@@ -226,19 +257,72 @@ export function MasterArchivePanel() {
     } catch {
       parsed = parseUrlsFromPaste(text);
     }
-    const r = await api.archive.bulk(parsed, true);
-    setStatus(`Imported ${r.added} new entr${r.added === 1 ? "y" : "ies"} to server archive.`);
+    const r = await api.archive.bulk(parsed, true, true);
+    const tagged = r.auto_tag?.enriched;
+    setStatus(
+      `Imported ${r.added} new entr${r.added === 1 ? "y" : "ies"} to server archive` +
+        (tagged != null ? ` · auto-tagged ${tagged}` : "") +
+        "."
+    );
     void qc.invalidateQueries({ queryKey: ["archive"] });
+  };
+
+  const autoTagSelected = () => {
+    const ids = items
+      .filter((e) => e.kind === "url" && e.id != null && selected.has(entryKey(e)))
+      .map((e) => e.id as number);
+    if (!ids.length) {
+      setStatus("Select URL rows on this page to auto-tag (needs server row id).");
+      return;
+    }
+    bulkAutoTag.mutate({ ids, missing_only: false, limit: ids.length });
+  };
+
+  const autoTagMissing = () => {
+    bulkAutoTag.mutate({ missing_only: true, limit: 24 });
   };
 
   return (
     <div className="max-w-5xl space-y-4">
       <h1 className="text-2xl font-semibold text-slate-100">Master archive</h1>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className={`tbcc-btn-secondary text-sm ${viewMode === "archive" ? "ring-1 ring-emerald-500/60" : ""}`}
+          onClick={() => {
+            setViewMode("archive");
+            setPage(1);
+          }}
+        >
+          Approved archive
+        </button>
+        <button
+          type="button"
+          className={`tbcc-btn-secondary text-sm ${viewMode === "pending" ? "ring-1 ring-amber-500/60" : ""}`}
+          onClick={() => {
+            setViewMode("pending");
+            setPage(1);
+          }}
+        >
+          Pending review (Telegram)
+        </button>
+      </div>
+      {viewMode === "pending" && (
+        <p className="text-sm text-amber-200/90 max-w-3xl">
+          Community submissions from the Erome/Bunkr forum topic and macro search bot. Approve to publish into the
+          master archive (extension sync, loot modifier, import pipeline).
+        </p>
+      )}
       <p className="text-sm text-slate-400 max-w-3xl">
         Merged server history: extension sync, clipboard paste, manual import, and media-library source URLs.
-        Lists <strong className="text-slate-200">{PAGE_SIZE}</strong> entries per page — export for the full set. The
-        browser extension keeps a local copy; use <strong className="text-slate-200">Sync from server</strong> in the
-        gallery Master archive sheet to match this list.
+        Each URL can get a short <strong className="text-slate-200">auto-tag description</strong> (page semantic sweep +
+        tags) — use <strong className="text-slate-200">Auto-tag missing</strong> or select rows and re-run. URLs on the{" "}
+        <strong className="text-slate-200">Approved archive</strong> tab appear automatically in the global{" "}
+        <strong className="text-slate-200">Insert…</strong> menu (no extra approve step — only{" "}
+        <strong className="text-slate-200">Pending review (Telegram)</strong> submissions need Approve/Reject). Lists{" "}
+        <strong className="text-slate-200">{PAGE_SIZE}</strong> entries per page — export for the full set. The browser
+        extension keeps a local copy; use <strong className="text-slate-200">Sync from server</strong> in the gallery
+        Master archive sheet to match this list.
       </p>
 
       <InfoDisclosure title="What sync &amp; clear do">
@@ -340,6 +424,19 @@ export function MasterArchivePanel() {
           </datalist>
         </label>
         <label className="flex flex-col gap-1 text-xs text-slate-400">
+          Tags
+          <input
+            type="text"
+            value={tags}
+            onChange={(e) => {
+              setTags(e.target.value);
+              setPage(1);
+            }}
+            placeholder="erome, staging"
+            className="bg-slate-800 border border-slate-600 rounded px-2 py-1.5 text-slate-100 min-w-[140px]"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-slate-400">
           Type
           <select
             value={kind}
@@ -431,6 +528,24 @@ export function MasterArchivePanel() {
           onClick={() => setSelected(new Set())}
         >
           Deselect all
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-fuchsia-900/60 text-fuchsia-100 text-sm hover:bg-fuchsia-800/70 border border-fuchsia-800/50"
+          onClick={() => autoTagMissing()}
+          disabled={bulkAutoTag.isPending || viewMode !== "archive"}
+          title="Semantic page sweep for URLs missing a description (up to 24)"
+        >
+          {bulkAutoTag.isPending ? "Auto-tagging…" : "Auto-tag missing"}
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-fuchsia-900/40 text-fuchsia-100 text-sm hover:bg-fuchsia-800/60 border border-fuchsia-900/40"
+          onClick={() => autoTagSelected()}
+          disabled={bulkAutoTag.isPending || viewMode !== "archive"}
+          title="Re-run auto-tag for checked URLs on this page"
+        >
+          Auto-tag selected
         </button>
         <button
           type="button"
@@ -572,7 +687,30 @@ export function MasterArchivePanel() {
                   )}
                 </div>
                 {e.summary ? <p className="text-xs text-slate-300 mt-1">{e.summary}</p> : null}
+                {e.description && e.note && !String(e.note).startsWith("ref:") ? (
+                  <p className="text-xs text-slate-500 mt-0.5">Note: {e.note}</p>
+                ) : null}
                 <p className="text-xs text-slate-500 mt-1">{formatMeta(e)}</p>
+                {viewMode === "pending" && e.id != null ? (
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      type="button"
+                      className="px-2 py-0.5 rounded text-xs bg-emerald-900/50 text-emerald-200 border border-emerald-800/60"
+                      disabled={governEntry.isPending}
+                      onClick={() => governEntry.mutate({ id: e.id as number, status: "approved" })}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      className="px-2 py-0.5 rounded text-xs bg-red-900/40 text-red-200 border border-red-900/50"
+                      disabled={governEntry.isPending}
+                      onClick={() => governEntry.mutate({ id: e.id as number, status: "rejected" })}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
           ))

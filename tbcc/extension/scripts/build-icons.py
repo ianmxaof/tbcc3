@@ -1,127 +1,168 @@
 #!/usr/bin/env python3
-"""Build TBCC extension icons + favicon from a square or landscape master PNG."""
+"""Build TBCC extension icons from the simplified vector mark (flat stroke, no gradient)."""
 
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 ICONS_DIR = ROOT / "icons"
+TRANSPARENT_DIR = ICONS_DIR / "transparent"
 DOCS_MASTER = ROOT / "docs" / "tbcc-icon-master.png"
+SVG_MARK = ICONS_DIR / "tbcc-mark.svg"
 
-# Chrome MV3 + gallery favicon flyout
-PNG_SIZES = (16, 32, 48, 128)
-ICO_SIZES = (16, 32, 48)
+# Brand (Catppuccin Mocha family)
+BG = (0x1E, 0x1E, 0x2E, 0xFF)
+BLUE = (0x89, 0xB4, 0xFA, 0xFF)
+PINK = (0xF5, 0xC2, 0xE7, 0xFF)
 
+PNG_SIZES = (16, 32, 48, 128, 256)
+ICO_SIZES = (16, 32, 48, 64, 128, 256)
 
-def center_crop_square(im: Image.Image) -> Image.Image:
-    w, h = im.size
-    side = min(w, h)
-    left = (w - side) // 2
-    top = (h - side) // 2
-    return im.crop((left, top, left + side, top + side))
+# Normalized flat-top hex (pointy sides) — matches tbcc-mark.svg
+HEX_FRAC = [
+    (0.500, 0.086),
+    (0.816, 0.270),
+    (0.816, 0.637),
+    (0.500, 0.820),
+    (0.184, 0.637),
+    (0.184, 0.270),
+]
 
+# 7-vertex thick lightning traced from original master (horizontal middle bar + wide spikes)
+BOLT_FRAC = [
+    (0.865, 0.028),  # top tip
+    (0.728, 0.438),  # right inner jog
+    (0.645, 0.555),  # middle bottom-right (parallelogram)
+    (0.118, 0.972),  # bottom tip
+    (0.252, 0.555),  # middle bottom-left
+    (0.325, 0.425),  # middle top-left
+    (0.478, 0.265),  # upper-left shoulder
+]
 
-def _background_fill(im: Image.Image) -> tuple[int, ...]:
-    """Sample corners so padded edges match the master gradient."""
-    w, h = im.size
-    pts = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
-    if im.mode == "RGBA":
-        rs, gs, bs, _ = zip(*(im.getpixel(p) for p in pts))
-        return (sum(rs) // 4, sum(gs) // 4, sum(bs) // 4, 255)
-    rs, gs, bs = zip(*(im.getpixel(p)[:3] for p in pts))
-    return (sum(rs) // 4, sum(gs) // 4, sum(bs) // 4)
-
-
-def fit_to_canvas(im: Image.Image, fill: float = 1.06) -> Image.Image:
-    """
-    Place the mark on a square canvas.
-
-    fill < 1.0 — inset margin (legacy “breathing room”).
-    fill = 1.0 — edge-to-edge on the square master.
-    fill > 1.0 — zoom in and center-crop (larger bolt at 16px; Chrome’s rounded mask still clears tips).
-    """
-    side = im.size[0]
-    if fill <= 0 or fill > 1.2:
-        raise ValueError("fill must be in (0, 1.2]")
-
-    if fill >= 1.0:
-        target = max(side, int(round(side * fill)))
-        zoomed = im.resize((target, target), Image.Resampling.LANCZOS)
-        left = (target - side) // 2
-        top = (target - side) // 2
-        return zoomed.crop((left, top, left + side, top + side))
-
-    inner = max(1, int(round(side * fill)))
-    scaled = im.resize((inner, inner), Image.Resampling.LANCZOS)
-    out = Image.new(im.mode, (side, side), _background_fill(im))
-    off = (side - inner) // 2
-    out.paste(scaled, (off, off))
-    return out
+# Mark scale around center (1.0 = SVG coords; >1 zooms for Chrome toolbar fill)
+MARK_BLEED = 0.94
 
 
-def resize_icon(im: Image.Image, size: int) -> Image.Image:
-    out = im.resize((size, size), Image.Resampling.LANCZOS)
+def _scale_points(frac: list[tuple[float, float]], size: int, bleed: float) -> list[tuple[float, float]]:
+    c = 0.5
+    s = float(size)
+    return [(((x - c) * bleed + c) * s, ((y - c) * bleed + c) * s) for x, y in frac]
+
+
+def _stroke_width(size: int) -> float:
+    """Thicker at small sizes so the hex ring stays visible at 16px."""
     if size <= 16:
-        out = out.filter(ImageFilter.UnsharpMask(radius=0.5, percent=150, threshold=1))
-    elif size <= 32:
-        out = out.filter(ImageFilter.UnsharpMask(radius=0.6, percent=130, threshold=2))
-    return out
+        return 2.0
+    if size <= 32:
+        return 3.0
+    return max(4.0, round(size * 28 / 512))
 
 
-def build_all(source: Path, *, master_out: Path | None = None, fill: float = 1.06) -> None:
-    im = Image.open(source).convert("RGBA")
-    square = center_crop_square(im)
-    square = fit_to_canvas(square, fill=fill)
+def _draw_stroked_polygon(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[float, float]],
+    color: tuple[int, ...],
+    width: float,
+    punch: tuple[int, ...],
+) -> None:
+    """Thick stroke via outer/inner polygon; inner filled with punch (bg or transparent)."""
+    cx = sum(p[0] for p in points) / len(points)
+    cy = sum(p[1] for p in points) / len(points)
+    half = width / 2.0
+    outer: list[tuple[float, float]] = []
+    inner: list[tuple[float, float]] = []
+    for x, y in points:
+        dx, dy = x - cx, y - cy
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+        outer.append((x + ux * half, y + uy * half))
+        inner.append((x - ux * half, y - uy * half))
+    draw.polygon(outer, fill=color)
+    draw.polygon(inner, fill=punch)
 
-    if master_out:
-        master = square.resize((1024, 1024), Image.Resampling.LANCZOS)
-        master.save(master_out, format="PNG", optimize=True)
 
+def render_mark(size: int, *, background: bool, bleed: float = MARK_BLEED) -> Image.Image:
+    im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    if background:
+        bg_layer = Image.new("RGBA", (size, size), BG)
+        im = Image.alpha_composite(im, bg_layer)
+
+    hex_pts = _scale_points(HEX_FRAC, size, bleed)
+    bolt_pts = _scale_points(BOLT_FRAC, size, bleed)
+    punch: tuple[int, ...] = BG if background else (0, 0, 0, 0)
+
+    hex_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    _draw_stroked_polygon(ImageDraw.Draw(hex_layer), hex_pts, BLUE, _stroke_width(size), punch)
+
+    bolt_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(bolt_layer).polygon(bolt_pts, fill=PINK)
+
+    im = Image.alpha_composite(im, hex_layer)
+    im = Image.alpha_composite(im, bolt_layer)
+    return im
+
+
+def build_simplified(*, bleed: float = MARK_BLEED, transparent_dir: Path = TRANSPARENT_DIR) -> dict[int, Image.Image]:
     ICONS_DIR.mkdir(parents=True, exist_ok=True)
+    transparent_dir.mkdir(parents=True, exist_ok=True)
 
-    png_images: dict[int, Image.Image] = {}
+    with_bg: dict[int, Image.Image] = {}
+    no_bg: dict[int, Image.Image] = {}
+
     for size in PNG_SIZES:
-        icon = resize_icon(square, size)
-        dest = ICONS_DIR / f"icon{size}.png"
-        icon.save(dest, format="PNG", optimize=True)
-        png_images[size] = icon
-        print(f"wrote {dest} ({dest.stat().st_size} bytes)")
+        bg_icon = render_mark(size, background=True, bleed=bleed)
+        tr_icon = render_mark(size, background=False, bleed=bleed)
+
+        bg_path = ICONS_DIR / f"icon{size}.png"
+        tr_path = transparent_dir / f"icon{size}.png"
+        bg_icon.save(bg_path, format="PNG", optimize=True)
+        tr_icon.save(tr_path, format="PNG", optimize=True)
+        with_bg[size] = bg_icon
+        no_bg[size] = tr_icon
+        print(f"wrote {bg_path} ({bg_path.stat().st_size} bytes)")
+        print(f"wrote {tr_path} ({tr_path.stat().st_size} bytes)")
 
     ico_path = ICONS_DIR / "favicon.ico"
-    ico_images = [png_images[s].convert("RGBA") for s in ICO_SIZES]
-    ico_images[0].save(
+    ico_images = []
+    for s in ICO_SIZES:
+        if s not in with_bg:
+            with_bg[s] = render_mark(s, background=True, bleed=bleed)
+        ico_images.append(with_bg[s].convert("RGBA"))
+    ico_images[-1].save(
         ico_path,
         format="ICO",
         sizes=[(s, s) for s in ICO_SIZES],
-        append_images=ico_images[1:],
+        append_images=ico_images[:-1],
     )
     print(f"wrote {ico_path} ({ico_path.stat().st_size} bytes)")
 
+    master = render_mark(1024, background=True, bleed=bleed)
+    master.save(DOCS_MASTER, format="PNG", optimize=True)
+    print(f"wrote {DOCS_MASTER} ({DOCS_MASTER.stat().st_size} bytes)")
+
+    return with_bg
+
 
 def main() -> None:
-    default_src = DOCS_MASTER
-
-    p = argparse.ArgumentParser(description="Generate TBCC extension icons from master PNG")
-    p.add_argument("source", nargs="?", type=Path, default=default_src, help="Master PNG path")
-    p.add_argument("--no-master-copy", action="store_true", help="Skip updating docs/tbcc-icon-master.png")
+    p = argparse.ArgumentParser(description="Generate TBCC simplified vector icons (with + transparent sets)")
     p.add_argument(
-        "--fill",
+        "--mark-bleed",
         type=float,
-        default=1.06,
+        default=MARK_BLEED,
         metavar="FACTOR",
-        help="Mark scale on square canvas: 1.0=full bleed, 1.06=default (larger at 16px), <1 adds margin",
+        help="Mark scale on canvas (default 0.94 — fills Chrome 16px toolbar)",
     )
     args = p.parse_args()
 
-    if not args.source.is_file():
-        raise SystemExit(f"Source image not found: {args.source}")
+    if not SVG_MARK.is_file():
+        raise SystemExit(f"Missing vector source: {SVG_MARK}")
 
-    master_out = None if args.no_master_copy else DOCS_MASTER
-    build_all(args.source, master_out=master_out, fill=args.fill)
+    build_simplified(bleed=args.mark_bleed)
     print("Done. Reload the extension in chrome://extensions")
 
 

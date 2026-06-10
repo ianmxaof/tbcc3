@@ -2274,13 +2274,15 @@
       out.push(s);
     }
     try {
-      add(String(location.hostname || "").replace(/^www\./, ""));
+      /* Hostname is admin-side capture metadata — not a public hashtag. */
     } catch (_) {}
     try {
       var title = document.title || "";
       if (title) {
         title.split(/[|\-–—·]/).forEach(function (part) {
-          add(part);
+          var p = (part || "").trim();
+          if (typeof TbccAutoTagUtils !== "undefined" && TbccAutoTagUtils.isTraceSourceLabel && TbccAutoTagUtils.isTraceSourceLabel(p)) return;
+          add(p);
         });
       }
     } catch (_) {}

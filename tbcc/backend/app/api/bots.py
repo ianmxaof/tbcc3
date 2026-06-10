@@ -165,6 +165,87 @@ def _stop_loot_bot(db: Session) -> dict:
     return {"ok": True, "status": "stopped", "pid": None}
 
 
+def _secretary_runtime_cfg() -> dict:
+    return {
+        "adapter": (os.getenv("TBCC_SECRETARY_RUNTIME_ADAPTER") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or "local").strip().lower(),
+        "start": (os.getenv("TBCC_SECRETARY_BOT_CMD_START") or "").strip(),
+        "stop": (os.getenv("TBCC_SECRETARY_BOT_CMD_STOP") or "").strip(),
+        "restart": (os.getenv("TBCC_SECRETARY_BOT_CMD_RESTART") or "").strip(),
+        "reload": (os.getenv("TBCC_SECRETARY_BOT_CMD_RELOAD") or "").strip(),
+        "status": (os.getenv("TBCC_SECRETARY_BOT_CMD_STATUS") or "").strip(),
+    }
+
+
+def _secretary_runtime_adapter() -> str:
+    v = _secretary_runtime_cfg()["adapter"]
+    return v if v in ("local", "command") else "local"
+
+
+def _start_secretary_bot() -> dict:
+    cfg = _secretary_runtime_cfg()
+    if _secretary_runtime_adapter() == "command":
+        if not cfg.get("start"):
+            raise HTTPException(status_code=400, detail="Set TBCC_SECRETARY_BOT_CMD_START for command adapter.")
+        p = subprocess.run(cfg["start"], shell=True, capture_output=True, text=True)
+        out = (p.stdout or "").strip()
+        if p.returncode != 0:
+            raise HTTPException(status_code=502, detail=(p.stderr or out or "start failed")[:500])
+        return {"ok": True, "status": "unknown", "pid": None, "message": out or "start command executed"}
+    if _proc_alive("secretary_bot"):
+        p = _LOCAL_PROCS["secretary_bot"]
+        return {"ok": True, "status": "running", "pid": p.pid, "message": "already running"}
+    cwd = _backend_root()
+    args = [sys.executable, "-m", "bots.secretary_bot"]
+    p = subprocess.Popen(args, cwd=str(cwd))
+    _LOCAL_PROCS["secretary_bot"] = p
+    return {"ok": True, "status": "running", "pid": p.pid}
+
+
+def _stop_secretary_bot() -> dict:
+    cfg = _secretary_runtime_cfg()
+    if _secretary_runtime_adapter() == "command":
+        if not cfg.get("stop"):
+            raise HTTPException(status_code=400, detail="Set TBCC_SECRETARY_BOT_CMD_STOP for command adapter.")
+        p = subprocess.run(cfg["stop"], shell=True, capture_output=True, text=True)
+        out = (p.stdout or "").strip()
+        if p.returncode != 0:
+            raise HTTPException(status_code=502, detail=(p.stderr or out or "stop failed")[:500])
+        return {"ok": True, "status": "stopped", "pid": None, "message": out or "stop command executed"}
+    p = _LOCAL_PROCS.get("secretary_bot")
+    if not p or p.poll() is not None:
+        return {"ok": True, "status": "stopped", "pid": None, "message": "already stopped"}
+    try:
+        p.terminate()
+        p.wait(timeout=8)
+    except Exception:
+        p.kill()
+    return {"ok": True, "status": "stopped", "pid": None}
+
+
+def _bot_runtime_status_secretary() -> dict:
+    adapter = _secretary_runtime_adapter()
+    if adapter == "local":
+        return _bot_runtime_status_local("secretary_bot")
+    cfg = _secretary_runtime_cfg()
+    status_cmd = cfg.get("status") or ""
+    if status_cmd:
+        p = subprocess.run(status_cmd, shell=True, capture_output=True, text=True)
+        msg = (p.stdout or p.stderr or "").strip().lower()
+        status = "running" if any(x in msg for x in ("running", "active", "up")) else "unknown"
+        if any(x in msg for x in ("stopped", "inactive", "down")):
+            status = "stopped"
+        return {"bot_key": "secretary_bot", "status": status, "pid": None, "adapter": "command", "message": msg}
+    return {"bot_key": "secretary_bot", "status": "unknown", "pid": None, "adapter": "command"}
+
+
+def _runtime_for_key(name: str, db: Session) -> dict:
+    if name == "loot_bot":
+        return _bot_runtime_status("loot_bot", db)
+    if name == "secretary_bot":
+        return _bot_runtime_status_secretary()
+    return _bot_runtime_status("payment_bot", db)
+
+
 @router.get("/")
 def list_bots(db: Session = Depends(get_db)):
     from app.models.bot import Bot
@@ -195,6 +276,19 @@ def list_bots(db: Session = Depends(get_db)):
                 "adapter": loot_rt.get("adapter"),
             }
         )
+    sec_rt = _bot_runtime_status_secretary()
+    if not any(str(r.get("name") or "").lower() == "secretary_bot" for r in rows):
+        rows.append(
+            {
+                "id": "runtime:secretary_bot",
+                "name": "secretary_bot",
+                "role": "secretary_faq",
+                "status": sec_rt["status"],
+                "last_seen": None,
+                "pid": sec_rt.get("pid"),
+                "adapter": sec_rt.get("adapter"),
+            }
+        )
     return rows
 
 
@@ -210,17 +304,36 @@ def get_bot(bot_id: int, db: Session = Depends(get_db)):
 @router.get("/runtime/{bot_key}")
 def get_bot_runtime(bot_key: str, db: Session = Depends(get_db)):
     key = (bot_key or "").strip().lower()
-    if key not in ("payment_bot", "loot_bot"):
-        raise HTTPException(status_code=404, detail="Unknown bot_key; use payment_bot or loot_bot.")
-    return _bot_runtime_status(key, db)
+    if key not in ("payment_bot", "loot_bot", "secretary_bot"):
+        raise HTTPException(status_code=404, detail="Unknown bot_key; use payment_bot, loot_bot, or secretary_bot.")
+    return _runtime_for_key(key, db)
 
 
 @router.post("/runtime/{bot_key}/{action}")
 def control_bot_runtime(bot_key: str, action: str, db: Session = Depends(get_db)):
     key = (bot_key or "").strip().lower()
     act = (action or "").strip().lower()
-    if key not in ("payment_bot", "loot_bot"):
-        raise HTTPException(status_code=404, detail="Unknown bot_key; use payment_bot or loot_bot.")
+    if key not in ("payment_bot", "loot_bot", "secretary_bot"):
+        raise HTTPException(status_code=404, detail="Unknown bot_key; use payment_bot, loot_bot, or secretary_bot.")
+    if key == "secretary_bot":
+        if act == "start":
+            return _start_secretary_bot()
+        if act == "stop":
+            return _stop_secretary_bot()
+        if act == "restart":
+            if _secretary_runtime_adapter() == "command":
+                cmd = (_secretary_runtime_cfg().get("restart") or "").strip()
+                if cmd:
+                    p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                    if p.returncode != 0:
+                        raise HTTPException(status_code=502, detail=(p.stderr or p.stdout or "restart failed")[:500])
+                    return {"ok": True, "status": "unknown", "pid": None, "message": (p.stdout or "").strip()}
+            _stop_secretary_bot()
+            return _start_secretary_bot()
+        if act == "reload":
+            return {"ok": True, "status": "running" if _proc_alive("secretary_bot") else "stopped", "pid": None, "message": "restart secretary bot to reload .env"}
+        raise HTTPException(status_code=400, detail="Action must be one of: start, stop, restart, reload")
+
     if key == "payment_bot":
         if act == "start":
             return _start_payment_bot(db)

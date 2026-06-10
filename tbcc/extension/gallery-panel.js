@@ -67,11 +67,46 @@
     updateFooterActive();
   }
 
+  function scrollOptionsIframe(targetId) {
+    if (!targetId) return;
+    const iframe = document.getElementById("iframe-options");
+    if (!iframe || !iframe.contentWindow) return;
+    const send = () => {
+      try {
+        iframe.contentWindow.postMessage({ type: "tbcc-options-scroll", id: targetId }, "*");
+      } catch (_) {}
+    };
+    if (iframe.getAttribute("src")) {
+      send();
+      window.setTimeout(send, 400);
+    }
+  }
+
   window.tbccSetPanelView = setPanelView;
 
   window.addEventListener("message", (ev) => {
     if (!ev.data || typeof ev.data.type !== "string") return;
     if (extOrigin && ev.origin !== extOrigin) return;
+    if (ev.data.type === "tbcc-collected-send-saved") {
+      if (typeof window.tbccBeginCollectedStageInDest === "function") {
+        void window.tbccBeginCollectedStageInDest(ev.data.items || [], { destMode: "saved" });
+      } else if (typeof window.tbccBeginCollectedSendToSaved === "function") {
+        void window.tbccBeginCollectedSendToSaved(ev.data.items || []);
+      }
+      return;
+    }
+    if (ev.data.type === "tbcc-collected-stage-dest") {
+      if (typeof window.tbccBeginCollectedStageInDest === "function") {
+        void window.tbccBeginCollectedStageInDest(ev.data.items || [], {
+          destMode: ev.data.destMode || "saved",
+          tagsCsv: ev.data.tagsCsv || "",
+          caption: ev.data.caption || "",
+          poolId: ev.data.poolId,
+          autoSend: !!ev.data.autoSend,
+        });
+      }
+      return;
+    }
     if (ev.data.type === "tbcc-open-gallery-popout") {
       try {
         chrome.windows.create(
@@ -100,6 +135,9 @@
     }
     if (v === "main" || v === "collected" || v === "lookup" || v === "tools" || v === "options") {
       setPanelView(v);
+      if (v === "options" && ev.data.scrollTo) {
+        window.setTimeout(() => scrollOptionsIframe(String(ev.data.scrollTo)), 80);
+      }
     }
   });
 

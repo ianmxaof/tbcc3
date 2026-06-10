@@ -19,10 +19,11 @@ logger = logging.getLogger(__name__)
 def enrich_pipeline_enabled() -> bool:
     if (os.getenv("TBCC_AUTO_TAG_ON_IMPORT") or "").strip().lower() in ("1", "true", "yes"):
         return True
+    from app.services.clip_classifier import clip_classifier_enabled
     from app.services.lustpress_metadata import lustpress_enabled
     from app.services.nsfw_classifier import nsfw_classifier_enabled
 
-    return lustpress_enabled() or nsfw_classifier_enabled()
+    return lustpress_enabled() or nsfw_classifier_enabled() or clip_classifier_enabled()
 
 
 def llm_fallback_enabled() -> bool:
@@ -95,10 +96,14 @@ def _should_enqueue_llm(
     metadata_tag_count: int,
     topic_tag_count: int,
     media_type: str,
+    clip_confident: bool = False,
+    clip_tag_count: int = 0,
 ) -> bool:
     from app.services.auto_tag_llm import auto_tag_llm_enabled
 
     if not auto_tag_llm_enabled():
+        return False
+    if clip_confident and clip_tag_count >= 1:
         return False
     if not llm_fallback_enabled():
         return True
@@ -170,13 +175,29 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
     """Sync Celery entry: lustpress → nsfw → optional LLM enqueue."""
     import asyncio
 
+    try:
+        from app.services.focus_profile import pause_auto_tag_work, skip_sidecar_enrich
+
+        if pause_auto_tag_work():
+            return {"ok": True, "media_id": media_id, "skipped": "focus_pause_auto_tag"}
+    except Exception:
+        pass
+
     from app.database.session import SessionLocal
     from app.models.media import Media
     from app.services.lustpress_metadata import fetch_metadata_for_url, lustpress_enabled, metadata_to_tag_slugs
+    from app.services.media_niche_classify import classify_image_bytes_niche
     from app.services.media_pool_routing import try_assign_pool_from_tags
     from app.services.nsfw_classifier import classify_image_bytes, classify_image_url, nsfw_classifier_enabled
 
-    out: dict[str, Any] = {"ok": True, "media_id": media_id, "lustpress": False, "nsfw": False, "llm_enqueued": False}
+    out: dict[str, Any] = {
+        "ok": True,
+        "media_id": media_id,
+        "lustpress": False,
+        "nsfw": False,
+        "clip": False,
+        "llm_enqueued": False,
+    }
     db = SessionLocal()
     try:
         m = db.query(Media).filter(Media.id == media_id).first()
@@ -211,12 +232,22 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
         nsfw_tier = (m.nsfw_tier or "unknown").lower()
         nsfw_confident = False
         top_class = ""
+        mt = (m.media_type or "").lower()
+        img_bytes: bytes | None = None
 
-        if nsfw_classifier_enabled():
+        _skip_sidecar = False
+        try:
+            from app.services.focus_profile import skip_sidecar_enrich
+
+            _skip_sidecar = skip_sidecar_enrich()
+        except Exception:
+            pass
+
+        if nsfw_classifier_enabled() and not _skip_sidecar:
             classify_url = source_url
-            img_bytes: bytes | None = None
-            mt = (m.media_type or "").lower()
-            if mt == "video" or (classify_url and not classify_url.lower().split("?", 1)[0].endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))):
+            if mt == "video" or (
+                classify_url and not classify_url.lower().split("?", 1)[0].endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
+            ):
                 loop = asyncio.new_event_loop()
                 try:
                     asyncio.set_event_loop(loop)
@@ -238,7 +269,60 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
                 out["nsfw"] = True
                 out["nsfw_tier"] = res.nsfw_tier
                 out["nsfw_confident"] = res.confident
+                if top_class:
+                    try:
+                        raw_cj = m.classification_json
+                        extras = json.loads(raw_cj) if raw_cj else {}
+                        if not isinstance(extras, dict):
+                            extras = {}
+                    except Exception:
+                        extras = {}
+                    extras["nsfw_classify"] = {
+                        "top_class": top_class,
+                        "top_probability": res.top_probability,
+                        "confident": res.confident,
+                    }
+                    m.classification_json = json.dumps(extras, ensure_ascii=False)
                 db.commit()
+
+        clip_confident = False
+        clip_tag_count = 0
+        img_for_clip = img_bytes
+        if not img_for_clip and mt in ("photo", "gif", ""):
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                img_for_clip = loop.run_until_complete(_fetch_image_bytes_for_classify(media_id))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
+        if img_for_clip and not _skip_sidecar:
+            from app.services.clip_classifier import clip_classifier_enabled
+
+            if clip_classifier_enabled():
+                niche = classify_image_bytes_niche(img_for_clip)
+                if niche:
+                    out["clip"] = True
+                    clip_meta = niche.get("clip") or {}
+                    clip_confident = bool(clip_meta.get("confident"))
+                    slug_pairs: list[tuple[str, str, str | None]] = []
+                    for slug in niche.get("labels") or []:
+                        s = str(slug).strip()
+                        if s:
+                            slug_pairs.append((s, s.replace("-", " ").title(), "topic"))
+                    if slug_pairs:
+                        clip_tag_count = _apply_metadata_tags(db, media_id, slug_pairs)
+                        out["clip_tags"] = clip_tag_count
+                    try:
+                        raw_cj = m.classification_json
+                        extras = json.loads(raw_cj) if raw_cj else {}
+                        if not isinstance(extras, dict):
+                            extras = {}
+                    except Exception:
+                        extras = {}
+                    extras["niche_classify"] = niche
+                    m.classification_json = json.dumps(extras, ensure_ascii=False)
+                    db.commit()
 
         route = try_assign_pool_from_tags(db, media_id)
         if route.get("applied"):
@@ -253,12 +337,21 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
             metadata_tag_count=metadata_applied,
             topic_tag_count=topic_count,
             media_type=m.media_type or "",
+            clip_confident=clip_confident,
+            clip_tag_count=clip_tag_count,
         ):
             from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
 
             enqueue_auto_tag_llm_if_enabled(media_id)
             out["llm_enqueued"] = True
     except Exception as e:
+        if "database is locked" in str(e).lower():
+            try:
+                from app.services.focus_profile import record_session_stress_event
+
+                record_session_stress_event("auto_tag_enrich")
+            except Exception:
+                pass
         logger.exception("auto_tag_enrich failed media_id=%s", media_id)
         return {"ok": False, "error": str(e), "media_id": media_id}
     finally:
@@ -267,6 +360,14 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
 
 
 def enqueue_auto_tag_enrich_if_enabled(media_id: int) -> None:
+    try:
+        from app.services.focus_profile import pause_auto_tag_work
+
+        if pause_auto_tag_work():
+            logger.debug("skip auto_tag_enrich enqueue media_id=%s (focus profile)", media_id)
+            return
+    except Exception:
+        pass
     if not enrich_pipeline_enabled():
         from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
 

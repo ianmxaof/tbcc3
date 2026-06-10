@@ -11,6 +11,8 @@ class ScheduledTextPost(Base):
     name = Column(String, nullable=True)
     # When set, this row is part of a multi-channel campaign; scheduler fires the lowest-id row only.
     campaign_group_id = Column(String(36), nullable=True)
+    # Multi-channel only: each interval picks one random sibling channel instead of posting to all.
+    campaign_random_channel = Column(Boolean, nullable=False, default=False)
     channel_id = Column(Integer, nullable=False)
     # Telegram forum topic id (same as Bot API message_thread_id); NULL = post to main chat / non-forum channel
     message_thread_id = Column(Integer, nullable=True)
@@ -25,6 +27,8 @@ class ScheduledTextPost(Base):
     posting_auto_pause_reason = Column(String(512), nullable=True)
     media_ids = Column(Text, nullable=True)  # JSON list of media table IDs
     pool_id = Column(Integer, nullable=True)  # optional: use pool's approved media
+    # When True (and pool_id is NULL), each send picks a random pool that has approved media.
+    pool_collective_random = Column(Boolean, nullable=False, default=False)
     # Per-job overrides when pool_id is set (if NULL, use ContentPool.album_size / randomize_queue)
     album_size = Column(Integer, nullable=True)
     pool_randomize = Column(Boolean, nullable=True)

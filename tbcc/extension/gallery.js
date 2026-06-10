@@ -1,8 +1,12 @@
 const API_BASE = "http://localhost:8000";
 const TBCC_API_HEALTH_URL = API_BASE + "/health";
+const TBCC_API_OFFLINE_RETRY_MS = 15000;
 
 /** Cached API reachability — avoids hammering :8000 when backend is down. */
 let _tbccApiReachableCache = { ok: null, at: 0 };
+let _tbccApiReachablePrev = null;
+let _tbccApiOfflinePollTimer = null;
+let _tbccLastHealthToastKey = "";
 
 function isTbccConnectionError(err) {
   const msg = String((err && err.message) || err || "").toLowerCase();
@@ -39,22 +43,64 @@ function invalidateTbccApiReachableCache() {
   _tbccApiReachableCache = { ok: null, at: 0 };
 }
 
-function setTbccApiOfflineBanner(visible, detail) {
-  const el = document.getElementById("tbccApiOfflineBanner");
-  const text = document.getElementById("tbccApiOfflineBannerText");
-  if (!el) return;
-  el.hidden = !visible;
-  if (text && visible) {
-    text.textContent =
-      detail ||
-      "TBCC API offline — start the backend (localhost:8000). Capture still works; pools, tags, and Telegram send need the API.";
+function startTbccApiOfflinePoll() {
+  if (_tbccApiOfflinePollTimer) return;
+  _tbccApiOfflinePollTimer = setInterval(() => {
+    void syncTbccApiReachability(true);
+  }, TBCC_API_OFFLINE_RETRY_MS);
+}
+
+function stopTbccApiOfflinePoll() {
+  if (!_tbccApiOfflinePollTimer) return;
+  clearInterval(_tbccApiOfflinePollTimer);
+  _tbccApiOfflinePollTimer = null;
+}
+
+function notifyTbccApiReachabilityTransition(ok) {
+  if (_tbccApiReachablePrev === ok) return;
+  const was = _tbccApiReachablePrev;
+  _tbccApiReachablePrev = ok;
+  if (ok && was === false) {
+    showToast("TBCC API connected.", "success");
+  } else if (!ok && was !== false) {
+    showToast(
+      "TBCC API offline — capture still works. Start backend (:8000) or Launch full stack in Capture options.",
+      "error"
+    );
   }
 }
 
-async function refreshTbccApiOfflineBanner() {
-  const ok = await probeTbccApiReachable(false);
-  setTbccApiOfflineBanner(!ok);
+async function fetchJsonWithTimeout(url, init, timeoutMs) {
+  const ms = Math.min(Math.max(Number(timeoutMs) || 45000, 3000), 180000);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(url, { ...(init || {}), signal: ac.signal });
+    const text = await r.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (_) {}
+    return { r, data, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function syncTbccApiReachability(forceProbe) {
+  const ok = await probeTbccApiReachable(!!forceProbe);
+  if (ok) {
+    stopTbccApiOfflinePoll();
+  } else {
+    startTbccApiOfflinePoll();
+  }
+  notifyTbccApiReachabilityTransition(ok);
   return ok;
+}
+
+/** @deprecated alias */
+async function refreshTbccApiOfflineBanner(forceProbe) {
+  return syncTbccApiReachability(forceProbe);
 }
 
 function markPoolSelectOffline() {
@@ -210,7 +256,7 @@ let suppressNextGridClick = false;
 let activeTab = "current";
 let currentTabId = null;
 let settings = {
-  format: "original",
+  format: "jpeg",
   autoRefresh: true,
   cropBottomEnabled: false,
   cropBottomPercent: 8,
@@ -250,6 +296,9 @@ let settings = {
   notifyOnSendTbccComplete: true,
   notifyOnSendSavedComplete: true,
   notifyOnSendChannelComplete: true,
+  notificationStyle: "full",
+  downloadMode: "buffered",
+  skipPromoWatermark: false,
 };
 let tbccLightboxVideoObjectUrl = "";
 /** Tracks which item the lightbox is currently showing so wheel/arrow steps can compute next/prev. */
@@ -333,6 +382,14 @@ const captionLibraryClose = document.getElementById("captionLibraryClose");
 const captionLibTitle = document.getElementById("captionLibTitle");
 const captionLibBody = document.getElementById("captionLibBody");
 const btnCaptionLibSave = document.getElementById("btnCaptionLibSave");
+let captionLibEditingId = null;
+
+function resetCaptionLibraryForm() {
+  captionLibEditingId = null;
+  if (captionLibTitle) captionLibTitle.value = "";
+  if (captionLibBody) captionLibBody.value = "";
+  if (btnCaptionLibSave) btnCaptionLibSave.textContent = "Save to library";
+}
 const captionLibList = document.getElementById("captionLibList");
 const autoTagOnExportLabel = document.getElementById("autoTagOnExportLabel");
 const btnForumTopicsRefresh = document.getElementById("btnForumTopicsRefresh");
@@ -340,6 +397,7 @@ const telegramPostBody = document.getElementById("telegramPostBody");
 const btnSend = document.getElementById("btnSend");
 const btnDownload = document.getElementById("btnDownload");
 const btnDownloadZip = document.getElementById("btnDownloadZip");
+const btnAddToCollected = document.getElementById("btnAddToCollected");
 const btnCopyJd = document.getElementById("btnCopyJd");
 const fileInput = document.getElementById("fileInput");
 const loadingEl = document.getElementById("loading");
@@ -350,6 +408,7 @@ const tbccLightbox = document.getElementById("tbccLightbox");
 const tbccLightboxImg = document.getElementById("tbccLightboxImg");
 const tbccLightboxVideo = document.getElementById("tbccLightboxVideo");
 const tbccLightboxVideoErr = document.getElementById("tbccLightboxVideoErr");
+const tbccLightboxMeta = document.getElementById("tbccLightboxMeta");
 const tbccLightboxClose = document.getElementById("tbccLightboxClose");
 const progressEl = document.getElementById("progress");
 const progressTitle = document.getElementById("progressTitle");
@@ -725,6 +784,16 @@ async function renderCaptionLibraryModalList() {
     head.appendChild(actions);
     const pre = document.createElement("pre");
     pre.textContent = String(s.body || "");
+    li.title = "Click to edit in form above";
+    li.style.cursor = "pointer";
+    li.addEventListener("click", (ev) => {
+      if (ev.target.closest("button")) return;
+      captionLibEditingId = s.id;
+      if (captionLibTitle) captionLibTitle.value = s.title ? String(s.title) : "";
+      if (captionLibBody) captionLibBody.value = String(s.body || "");
+      if (btnCaptionLibSave) btnCaptionLibSave.textContent = "Update caption";
+      if (captionLibTitle && captionLibTitle.focus) captionLibTitle.focus();
+    });
     li.appendChild(head);
     li.appendChild(pre);
     captionLibList.appendChild(li);
@@ -751,6 +820,18 @@ function appendCaptionToSavedForm(form, captionOverride) {
       ? String(captionOverride).trim()
       : getAlbumCaptionForSend();
   if (c) form.append("caption", c);
+}
+
+function markAppendSendPromoForm(form, meta) {
+  if (meta && meta.appendPromo) form.append("append_send_promo", "true");
+}
+
+function markAppendSendPromoPayload(payload, meta) {
+  if (meta && meta.appendPromo) payload.append_send_promo = true;
+}
+
+function autoTagOnExportEnabled() {
+  return !autoTagOnExport || autoTagOnExport.checked !== false;
 }
 
 /** Saved send: never block uploads longer than this on tag API (local tags apply immediately). */
@@ -864,7 +945,7 @@ async function syncEnrichImportedMedia(mediaIds) {
 /** Saved Messages: caption field + optional hashtags (TBCC tags are not stored without pool import). */
 async function getCaptionForSavedMessagesSend(selectedItems) {
   let cap = getAlbumCaptionForSend();
-  const useAutoTag = !!(autoTagOnExport && autoTagOnExport.checked);
+  const useAutoTag = autoTagOnExportEnabled();
   const hasManualTags = gallerySendTags.length > 0;
   if (!useAutoTag && !hasManualTags) return cap;
 
@@ -923,17 +1004,46 @@ async function fetchPageTitleQuick() {
   }
 }
 
-/** Saved send: caption + hashtags; optionally pre-fill title when empty (one pass). */
+/** Saved send: auto-fill title/description from page, then caption + hashtags. */
+async function fillCaptionFromPageForSend() {
+  if (getAlbumCaptionForSend().trim()) return;
+  const tid = await resolveTargetTabId();
+  if (!tid) return;
+  let bundle = { title: "", description: "" };
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      files: ["media-url-guards.js", "auto-tag-utils.js", "capture.js"],
+    });
+    const exec = await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      func: () =>
+        typeof window.__tbccGetCaptionBundle === "function"
+          ? window.__tbccGetCaptionBundle()
+          : { title: "", description: "" },
+    });
+    const res = exec && exec[0] && exec[0].result;
+    if (res) bundle = res || bundle;
+  } catch (_) {
+    return;
+  }
+  const lines = [];
+  const titleLine = stripTraceSourceFromCaptionText(bundle.title);
+  if (titleLine) lines.push(titleLine);
+  const desc = stripTraceSourceFromCaptionText(String(bundle.description || "").trim());
+  if (desc && !descriptionOverlapsTitle(titleLine, desc)) lines.push(desc);
+  const cap = lines.join("\n").trim();
+  if (!cap || !forumAlbumCaption) return;
+  forumAlbumCaption.value = cap.length > TBCC_TELEGRAM_CAPTION_MAX ? cap.slice(0, TBCC_TELEGRAM_CAPTION_MAX) : cap;
+  captionBaseText = forumAlbumCaption.value;
+  syncCaptionFieldFromBase();
+  await persistCaptionSlicesToStorage();
+}
+
+/** Saved send: caption + hashtags; auto-fill from page when empty. */
 async function ensureSavedMessagesCaption(selectedItems) {
-  if (!getAlbumCaptionForSend().trim()) {
-    const wantTitle =
-      !!(autoTagOnExport && autoTagOnExport.checked) || gallerySendTags.length > 0;
-    if (wantTitle) {
-      try {
-        const title = await fetchPageTitleQuick();
-        if (title && forumAlbumCaption) forumAlbumCaption.value = title;
-      } catch (_) {}
-    }
+  if (!getAlbumCaptionForSend().trim() && autoTagOnExportEnabled()) {
+    await fillCaptionFromPageForSend();
   }
   return getCaptionForSavedMessagesSend(selectedItems);
 }
@@ -1478,6 +1588,9 @@ function extractCamPerformerFromTitle(title) {
 
 /** Omit scrape-site style tokens from Auto cap hashtags (metadata stays in TBCC elsewhere). */
 function shouldHideTraceSourceInCaption(tagOrHint) {
+  if (typeof TbccAutoTagUtils !== "undefined" && TbccAutoTagUtils.isTraceSourceLabel) {
+    return TbccAutoTagUtils.isTraceSourceLabel(tagOrHint);
+  }
   const raw = String(tagOrHint || "")
     .trim()
     .toLowerCase()
@@ -1521,7 +1634,7 @@ async function loadTagCatalog() {
   }
   if (lastErr && isTbccConnectionError(lastErr)) {
     invalidateTbccApiReachableCache();
-    setTbccApiOfflineBanner(true);
+    void syncTbccApiReachability(true);
   } else if (lastErr) {
     console.warn("TBCC loadTagCatalog:", lastErr);
   }
@@ -1679,6 +1792,7 @@ function buildTagCatalogLookup() {
 }
 
 function addAutoTagToSet(set, lookup, raw, skipUnknownDomains) {
+  if (shouldHideTraceSourceInCaption(raw)) return;
   const normalized = normalizeAutoTagCandidate(raw);
   if (!normalized) return;
   const low = normalized.toLowerCase();
@@ -1726,7 +1840,6 @@ function collectPerItemAutoTags(item, lookup, resolvedSourcePage) {
     (resolvedSourcePage && String(resolvedSourcePage)) ||
     "";
   if (item) {
-    addAutoTagToSet(out, lookup, item.pageHost || "", true);
     if (pageFromCapture) extractAutoTagsFromUrl(pageFromCapture, lookup, out);
   } else if (pageFromCapture) {
     extractAutoTagsFromUrl(pageFromCapture, lookup, out);
@@ -2086,6 +2199,186 @@ function descriptionOverlapsTitle(title, description) {
   return false;
 }
 
+/** Drop scrape-site tokens from caption title/description lines (admin keeps source in TBCC metadata). */
+function stripTraceSourceFromCaptionText(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const parts = raw.split(/[|\-–—·\n]/).map((p) => p.trim()).filter(Boolean);
+  const kept = parts.filter((p) => !shouldHideTraceSourceInCaption(p));
+  return (kept.length ? kept.join(" · ") : raw).trim();
+}
+
+/** Insert at caption caret (base text only — not the appended link block). */
+function insertTextIntoCaptionBody(chunk) {
+  const t = String(chunk || "").trim();
+  if (!t || !forumAlbumCaption) return;
+  const lines = buildAlwaysIncludeLinksLines();
+  const block = lines.length ? lines.join("\n") : "";
+  let base = String(captionBaseText || "");
+  const el = forumAlbumCaption;
+  if (document.activeElement === el && typeof el.selectionStart === "number") {
+    const fullVal = el.value || "";
+    let baseEnd = fullVal.length;
+    if (block && fullVal.endsWith(block)) {
+      baseEnd = fullVal.length - block.length;
+      if (fullVal.slice(baseEnd - 2, baseEnd) === "\n\n") baseEnd -= 2;
+    }
+    const start = Math.min(el.selectionStart, baseEnd);
+    const end = Math.min(el.selectionEnd, baseEnd);
+    base = base.slice(0, start) + t + base.slice(end);
+  } else {
+    base = base.trim() ? `${base.trim()}\n\n${t}` : t;
+  }
+  captionBaseText = base;
+  syncCaptionFieldFromBase();
+  void persistCaptionSlicesToStorage();
+}
+window.tbccInsertIntoCaption = insertTextIntoCaptionBody;
+
+function collectedItemToGalleryItem(it) {
+  const url = String((it && it.url) || "").trim();
+  const mt =
+    (it && it.mediaType) ||
+    guessMediaType(url);
+  return {
+    url,
+    thumbUrl: (it && it.thumbUrl) || "",
+    mediaType: mt,
+    tagName: (it && it.tagName) || (mt === "video" ? "video" : "img"),
+    tabId: it && it.tabId != null ? it.tabId : null,
+    tbccSourcePageUrl: (it && it.tbccSourcePageUrl) || "",
+    detailPageUrl: (it && it.detailPageUrl) || "",
+    name: (it && it.name) || "",
+    fromCollected: true,
+    collectionId: (it && it.collectionId) || "",
+    collectedNote: (it && it.note) || "",
+  };
+}
+
+function mergeCollectedTagsIntoSend(tagsCsv, items) {
+  const tagSet = new Set();
+  const add = (raw) => {
+    const s = String(raw || "")
+      .trim()
+      .replace(/^#+/, "");
+    if (s.length >= 2 && s.length <= 64) tagSet.add(s);
+  };
+  if (tagsCsv) {
+    const lib = window.TbccCollected;
+    const parsed = lib && lib.parseTagsCsv ? lib.parseTagsCsv(tagsCsv) : String(tagsCsv).split(/[,;]+/);
+    (Array.isArray(parsed) ? parsed : []).forEach(add);
+  }
+  for (const it of items || []) {
+    if (it && it.tagsCsv) {
+      const lib = window.TbccCollected;
+      const parsed = lib && lib.parseTagsCsv ? lib.parseTagsCsv(it.tagsCsv) : [];
+      (Array.isArray(it.tags) ? it.tags : parsed).forEach(add);
+    } else if (it && Array.isArray(it.tags)) {
+      it.tags.forEach(add);
+    }
+  }
+  for (const t of tagSet) addGallerySendTag(t);
+  if (tagSet.size) renderTagChipRow();
+}
+
+/**
+ * Stage Collected items on the main gallery grid and open Dest (optional auto-send).
+ * @param {object[]} items normalized collected rows
+ * @param {{ destMode?: string, tagsCsv?: string, caption?: string, poolId?: number, autoSend?: boolean }} opts
+ */
+async function beginCollectedStageInDest(items, opts) {
+  const o = opts || {};
+  if (typeof window.tbccSetPanelView === "function") window.tbccSetPanelView("main");
+  const list = (Array.isArray(items) ? items : [])
+    .map((it) => (window.TbccCollected && TbccCollected.normalizeCollectedItem ? TbccCollected.normalizeCollectedItem(it) : it))
+    .filter(Boolean);
+  if (!list.length) return;
+
+  for (const it of list) {
+    const url = String(it.url || "").trim();
+    if (!url) continue;
+    if (!imageList.some((x) => x.url === url)) {
+      imageList.push(collectedItemToGalleryItem(it));
+    }
+    selectedUrls.add(url);
+  }
+  renderGrid();
+  updateCountAndSend();
+  await persistSelection();
+
+  mergeCollectedTagsIntoSend(o.tagsCsv || "", list);
+
+  if (o.caption && captionLibBody) {
+    captionLibBody.value = String(o.caption);
+    syncCaptionFieldFromBase();
+  }
+
+  const dest = String(o.destMode || "saved").toLowerCase();
+  if (o.poolId != null && poolSelect && Number.isFinite(Number(o.poolId)) && Number(o.poolId) > 0) {
+    poolSelect.value = String(o.poolId);
+    await chrome.storage.local.set({ tbccPoolId: Number(o.poolId) });
+    syncPoolSelectTooltip();
+  }
+
+  if (dest === "pool") await applyDestMacro("pool");
+  else if (dest === "forum") await applyDestMacro("forum");
+  else if (dest === "channel") await applyDestMacro("channel");
+  else await applyDestMacro("saved");
+
+  updateTelegramPostControls();
+  updateImportSheetLayout();
+  syncDestMacroButtons();
+  updateSendButtonLabel();
+  setTelegramSheetOpen(true);
+
+  const destLabel =
+    dest === "pool"
+      ? "TBCC pool"
+      : dest === "forum"
+        ? "forum topic"
+        : dest === "channel"
+          ? "channel"
+          : "Saved Messages";
+  showToast(
+    `${list.length} item(s) staged in Dest → ${destLabel}. Review caption/tags, then Send.`,
+    "success",
+    { type: "gallery_dest" }
+  );
+
+  if (o.autoSend) sendToTBCC();
+}
+
+async function beginCollectedSendToSaved(items) {
+  return beginCollectedStageInDest(items, { destMode: "saved" });
+}
+window.tbccBeginCollectedStageInDest = beginCollectedStageInDest;
+window.tbccBeginCollectedSendToSaved = beginCollectedSendToSaved;
+
+async function addSelectedToCollected() {
+  const list = getFilteredList().filter((i) => selectedUrls.has(i.url));
+  if (!list.length) return showToast("Select tiles to add to Collected.", "info");
+  if (!window.TbccCollected || !TbccCollected.fromGalleryItem) {
+    return showToast("Collected module not loaded.", "error");
+  }
+  const label =
+    typeof window.prompt === "function"
+      ? window.prompt("Optional batch name for this group (leave blank for none):", "")
+      : "";
+  const batchLabel = label && String(label).trim() ? String(label).trim() : "";
+  const collectionId = batchLabel ? "batch_" + batchLabel.replace(/\s+/g, "-").slice(0, 40) : "";
+  const rows = list
+    .map((it) => TbccCollected.fromGalleryItem(it, { collectionId, collectionLabel: batchLabel }))
+    .filter(Boolean);
+  const { added, total } = await TbccCollected.appendItems(rows);
+  showToast(
+    added
+      ? `Added ${added} to Collected (${total} total) — click to open.`
+      : "Already in Collected (URLs merged).",
+    added ? "success" : "info",
+    { type: "gallery_collected" }
+  );
+}
+
 /** Optional: fill caption from page title/meta + hashtags from Tags on Send and page hints. */
 async function autoCapFromPage() {
   const tid = await resolveTargetTabId();
@@ -2117,9 +2410,10 @@ async function autoCapFromPage() {
     return;
   }
   const lines = [];
-  if (bundle.title) lines.push(String(bundle.title).trim());
-  const desc = String(bundle.description || "").trim();
-  if (desc && !descriptionOverlapsTitle(bundle.title, desc)) lines.push(desc);
+  const titleLine = stripTraceSourceFromCaptionText(bundle.title);
+  if (titleLine) lines.push(titleLine);
+  const desc = stripTraceSourceFromCaptionText(String(bundle.description || "").trim());
+  if (desc && !descriptionOverlapsTitle(titleLine, desc)) lines.push(desc);
   const tagLine = buildHashtagLineFromTagsAndHints(gallerySendTags, hints);
   if (tagLine) {
     if (lines.length) lines.push("");
@@ -2664,7 +2958,9 @@ async function loadPools() {
     }
     if (savedUrlInboxDefaultDest) {
       const stored = await chrome.storage.local.get([STORAGE_INBOX_DEFAULT_DEST]);
-      const d = stored[STORAGE_INBOX_DEFAULT_DEST] === "loot_modifier" ? "loot_modifier" : "pool";
+      const raw = stored[STORAGE_INBOX_DEFAULT_DEST];
+      const d =
+        raw === "loot_modifier" ? "loot_modifier" : raw === "pool" ? "pool" : "archive";
       savedUrlInboxDefaultDest.value = d;
       syncInboxDefaultDestUi();
     }
@@ -2672,7 +2968,7 @@ async function loadPools() {
     if (isTbccConnectionError(e)) {
       invalidateTbccApiReachableCache();
       markPoolSelectOffline();
-      setTbccApiOfflineBanner(true);
+      void syncTbccApiReachability(true);
     }
   }
 }
@@ -2754,7 +3050,7 @@ async function loadChannelsForForum() {
     syncCaptionFieldFromBase();
     if (isTbccConnectionError(e)) {
       invalidateTbccApiReachableCache();
-      setTbccApiOfflineBanner(true);
+      void syncTbccApiReachability(true);
     }
   }
 }
@@ -2846,7 +3142,8 @@ async function applyDestMacro(which) {
   if (!forumPostEnabled || !postDestMode) return;
   if (which === "pool") {
     forumPostEnabled.checked = false;
-    await chrome.storage.local.set({ tbccForumPostEnabled: false });
+    await chrome.storage.local.set({ tbccForumPostEnabled: false, tbccPostDestMode: "channel" });
+    if (postDestMode.value === "saved") postDestMode.value = "channel";
   } else {
     forumPostEnabled.checked = true;
     await chrome.storage.local.set({ tbccForumPostEnabled: true });
@@ -2910,7 +3207,7 @@ function updateImportSheetLayout() {
   if (autoTagOnExportLabel) {
     autoTagOnExportLabel.textContent = savedMode
       ? "Auto-fill: add page/URL hints as #hashtags in the caption"
-      : "Auto-fill: add page tab, site, and URL path hints to your tags";
+      : "Auto-fill: add page tab and URL path hints to your tags (not source site names)";
   }
 }
 
@@ -3172,6 +3469,43 @@ async function resolveTargetTabIdUncached() {
   } finally {
     galleryDockedTab = saved;
   }
+}
+
+/** When user picks Current tab, prefer the page they were browsing (not the side panel context). */
+async function pinCaptureTabForCurrentMode() {
+  try {
+    const got = await chrome.storage.local.get("tbccLastActiveTabId");
+    const lastId = got.tbccLastActiveTabId;
+    if (lastId != null) {
+      const t = await chrome.tabs.get(lastId);
+      if (t && t.id && isInjectablePageUrl(t.url)) {
+        currentTabId = t.id;
+        return t.id;
+      }
+    }
+  } catch (_) {}
+  if (galleryDockedTab && galleryDockedTab.tabId != null) {
+    try {
+      const t = await chrome.tabs.get(galleryDockedTab.tabId);
+      if (t && t.id && isInjectablePageUrl(t.url)) {
+        currentTabId = t.id;
+        return t.id;
+      }
+    } catch (_) {}
+  }
+  try {
+    const w = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    if (w && w.id != null) {
+      const [aw] = await chrome.tabs.query({ windowId: w.id, active: true });
+      if (aw && aw.id && isInjectablePageUrl(aw.url)) {
+        currentTabId = aw.id;
+        return aw.id;
+      }
+    }
+  } catch (_) {}
+  const tid = await resolveTargetTabId();
+  if (tid != null) currentTabId = tid;
+  return tid;
 }
 
 async function resolveTargetTabId() {
@@ -4329,16 +4663,15 @@ async function mergeCrawlerItemsIntoGallery(items, sourceUrl, adapterUsed) {
 
 async function tryCrawlViaMyjd(url) {
   try {
-    const r = await fetch(API_BASE + "/jd/resolve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    const text = await r.text();
-    let data = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch (_) {}
+    const { r, data } = await fetchJsonWithTimeout(
+      API_BASE + "/jd/resolve",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      },
+      150000
+    );
     if (!r.ok) return null;
     const items = Array.isArray(data.items) ? data.items : [];
     if (!items.length) return null;
@@ -4389,8 +4722,14 @@ async function crawlActiveTab() {
   try {
     const adapterHint = detectCrawlerAdapterHint(url);
     const useCookies = crawlerShouldUseCookiesForUrl(url);
+    const eromeHint =
+      adapterHint === "erome" && /^https?:\/\/[^/]*erome\.com\/(?!a\/)/i.test(url)
+        ? " · profile/search albums"
+        : "";
     setCrawlerStatus(
-      (adapterHint === "bunkr" ? "Resolving…" : "Crawling…") + (useCookies ? " · cookies" : ""),
+      (adapterHint === "bunkr" ? "Resolving…" : "Crawling…") +
+        eromeHint +
+        (useCookies ? " · cookies" : ""),
       "info"
     );
 
@@ -4884,6 +5223,7 @@ function updateCountAndSend(opts) {
   if (btnDownload) btnDownload.disabled = selInView === 0;
   if (btnDownloadZip) btnDownloadZip.disabled = selInView === 0;
   if (btnCopyJd) btnCopyJd.disabled = selInView === 0;
+  if (btnAddToCollected) btnAddToCollected.disabled = selInView === 0;
   if (btnSelectToggle) {
     btnSelectToggle.disabled = rows.length === 0;
     const allSelected = rows.length > 0 && selInView === rows.length;
@@ -4984,11 +5324,33 @@ function syncGalleryContextMenuItems() {
   syncDisabled("selectAnchorToggle", btnSelectAnchorToggle);
   const st = galleryCtxMenu.querySelector('[data-ctx="selectToggle"]');
   if (st && btnSelectToggle) st.textContent = btnSelectToggle.textContent || "Select all";
+  const lookupBtn = galleryCtxMenu.querySelector('[data-ctx="lookupUsername"]');
+  if (lookupBtn) {
+    void chrome.storage.local.get(["tbccLastCopiedUsername"], (d) => {
+      const u = d && d.tbccLastCopiedUsername ? String(d.tbccLastCopiedUsername).trim() : "";
+      lookupBtn.hidden = !u;
+      lookupBtn.textContent = u ? `Look up username (@${u})` : "Look up username";
+    });
+  }
 }
 
 function openGalleryContextMenu(clientX, clientY) {
   if (!galleryCtxMenu) return;
   syncGalleryContextMenuItems();
+  galleryCtxMenu.querySelectorAll(".tbcc-gallery-ctx-menu__flyout").forEach((f) => {
+    f.hidden = true;
+  });
+  galleryCtxMenu.querySelectorAll(".tbcc-gallery-ctx-menu__sub").forEach((sub) => {
+    const fly = sub.querySelector(".tbcc-gallery-ctx-menu__flyout");
+    const parent = sub.querySelector("[data-ctx-sub]");
+    if (!fly || !parent) return;
+    parent.onmouseenter = () => {
+      fly.hidden = false;
+    };
+    sub.onmouseleave = () => {
+      fly.hidden = true;
+    };
+  });
   galleryCtxMenu.hidden = false;
   galleryCtxMenu.setAttribute("aria-hidden", "false");
   galleryCtxMenu.style.left = `${clientX}px`;
@@ -5066,6 +5428,46 @@ function onGalleryContextMenuAction(key) {
     case "help":
       btnGalleryHelp && btnGalleryHelp.click();
       return;
+    case "reverseImage": {
+      const list = getFilteredList().filter((i) => selectedUrls.has(i.url));
+      const it = list[0] || currentLightboxItem;
+      if (!it) return showToast("Select an image or open preview first.", "info");
+      const url = bestHttpMediaUrlForItem(it) || it.url;
+      chrome.runtime.sendMessage({ action: "tbcc-launch-reverse-image", url: String(url || "") });
+      return;
+    }
+    case "savedMessages": {
+      const chk = document.getElementById("chkSavedOnly");
+      if (chk) chk.checked = true;
+      if (btnSend) btnSend.click();
+      else showToast("Send control not available.", "error");
+      return;
+    }
+    case "collectedAdd":
+      void addSelectedToCollected();
+      return;
+    case "saveTabArchive": {
+      void chrome.runtime.sendMessage({ action: "tbcc-gallery-save-tab-archive" }, (r) => {
+        if (chrome.runtime.lastError) {
+          showToast(chrome.runtime.lastError.message || "Could not save.", "error");
+          return;
+        }
+        if (r && r.ok) showToast("Saved tab URL to master archive.", "success");
+        else showToast((r && r.error) || "Could not save tab URL.", "error");
+      });
+      return;
+    }
+    case "lookupUsername": {
+      void chrome.storage.local.get(["tbccLastCopiedUsername"], (d) => {
+        const u = d && d.tbccLastCopiedUsername ? String(d.tbccLastCopiedUsername).trim() : "";
+        if (!u) {
+          showToast("No username copied yet — right-click a model on a cam/fan site.", "info");
+          return;
+        }
+        chrome.runtime.sendMessage({ action: "tbcc-launch-model-search-tabs", username: u });
+      });
+      return;
+    }
     default:
   }
 }
@@ -5331,12 +5733,14 @@ function importResponseOk(data) {
 }
 
 async function postImportBytes(blob, filename, poolId, savedOnly, source, captionOverride, galleryJobId) {
+  const prep = await tbccPrepareRasterBlob(blob, null, filename);
   const form = new FormData();
-  form.append("file", blob, filename);
+  form.append("file", prep.blob, prep.name);
   form.append("pool_id", String(poolId));
   form.append("saved_only", savedOnly ? "true" : "false");
   form.append("source", source || "extension:upload-cropped");
   if (savedOnly) appendCaptionToSavedForm(form, captionOverride);
+  if (settings && settings.skipPromoWatermark === true) form.append("skip_watermark", "true");
   if (typeof tbccPostImportForm === "function") {
     return tbccPostImportForm(form, galleryJobId || null);
   }
@@ -5348,6 +5752,42 @@ function filenameForCropUrl(url) {
   const n = filenameFromUrl(url);
   if (/\.(jpe?g)$/i.test(n)) return n;
   return (n.replace(/\.[^.]+$/, "") || "media") + ".jpg";
+}
+
+async function tbccApplyPromoWatermarkBlob(blob, mediaTypeHint) {
+  if (settings && settings.skipPromoWatermark === true) return blob;
+  try {
+    const form = new FormData();
+    form.append("file", blob, "media.bin");
+    form.append("media_type", mediaTypeHint || "photo");
+    form.append("skip_watermark", "false");
+    const r = await fetch(API_BASE + "/import/watermark-bytes", { method: "POST", body: form });
+    if (!r.ok) return blob;
+    const ct = r.headers.get("content-type") || blob.type || "application/octet-stream";
+    return new Blob([await r.arrayBuffer()], { type: ct });
+  } catch (_) {
+    return blob;
+  }
+}
+
+/** WebP → JPG when ⚙ Format is "Convert to JPG"; then optional crop/watermark pipeline. */
+async function tbccPrepareRasterBlob(blob, url, filenameHint) {
+  let out = blob;
+  let name = filenameHint || filenameFromUrl(url) || "media.jpg";
+  if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegBlob) {
+    const w = await TbccWebp.tbccEnsureJpegBlob(out, { url, name });
+    out = w.blob;
+    name = w.name;
+  }
+  if (isImageItem({ url, mediaType: "photo" }) && shouldApplyImagePipelineForUrl(url)) {
+    out = await applyImagePipeline(out, url);
+    name = filenameForCropUrl(url);
+  }
+  return { blob: out, name };
+}
+
+function tbccWebpConvertEnabled() {
+  return settings.format === "jpeg";
 }
 
 function tbccIsEromeMediaUrl(url) {
@@ -5409,9 +5849,22 @@ async function tbccRefererPageForItem(it) {
   return "";
 }
 
-async function fetchUrlBytesToBlob(url, refererPageUrl) {
+function resolveFetchTabIdForItem(it) {
+  if (it && it.tabId != null && it.tabId !== "" && Number.isFinite(Number(it.tabId))) return Number(it.tabId);
+  if (galleryDockedTab && galleryDockedTab.tabId != null) return galleryDockedTab.tabId;
+  if (currentTabId != null) return currentTabId;
+  return null;
+}
+
+async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem) {
   url = normalizeTbccMediaUrlForImport(url);
   const ref = typeof refererPageUrl === "string" ? refererPageUrl : "";
+  const tabId =
+    tabIdOrItem && typeof tabIdOrItem === "object"
+      ? resolveFetchTabIdForItem(tabIdOrItem)
+      : tabIdOrItem != null && Number.isFinite(Number(tabIdOrItem))
+        ? Number(tabIdOrItem)
+        : currentTabId;
   if (url && String(url).startsWith("data:")) {
     try {
       const r = await fetch(url);
@@ -5423,15 +5876,18 @@ async function fetchUrlBytesToBlob(url, refererPageUrl) {
     if (r.ok) return await r.blob();
   } catch (_) {}
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ action: "tbcc-content-fetch-bytes", url, refererPageUrl: ref }, (res) => {
-      if (chrome.runtime.lastError) {
-        resolve(null);
-        return;
+    chrome.runtime.sendMessage(
+      { action: "tbcc-content-fetch-bytes", url, refererPageUrl: ref, tabId },
+      (res) => {
+        if (chrome.runtime.lastError) {
+          resolve(null);
+          return;
+        }
+        if (res && res.ok && res.buffer) {
+          resolve(new Blob([res.buffer], { type: "application/octet-stream" }));
+        } else resolve(null);
       }
-      if (res && res.ok && res.buffer) {
-        resolve(new Blob([res.buffer], { type: "application/octet-stream" }));
-      } else resolve(null);
-    });
+    );
   });
 }
 
@@ -5444,34 +5900,31 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
   if (it.file) {
     const raw = (it.name || "file").replace(/[^\w.\-]+/g, "_");
     const safe = raw || "file";
-    let blob = it.file;
-    if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-      try {
-        blob = await applyImagePipeline(
-          new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" }),
-          it.url
-        );
-      } catch (_) {}
+    if (isImageItem(it)) {
+      const prep = await tbccPrepareRasterBlob(
+        new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" }),
+        it.url,
+        safe
+      );
+      const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
+      return { filename: pad + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), blob: wm };
     }
-    const nameOut =
-      isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)
-        ? /\.(jpe?g)$/i.test(safe)
-          ? safe
-          : (safe.replace(/\.[^.]+$/, "") || "file") + ".jpg"
-        : safe;
-    return { filename: pad + "_" + nameOut, blob };
+    return { filename: pad + "_" + safe, blob: await tbccApplyPromoWatermarkBlob(it.file, isImageItem(it) ? "photo" : "video") };
   }
   if (it.url && String(it.url).startsWith("data:image/")) {
     try {
       const r = await fetch(it.url);
-      let blob = await r.blob();
-      if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-        try {
-          blob = await applyImagePipeline(blob, it.url);
-        } catch (_) {}
+      const blob = await r.blob();
+      if (isImageItem(it)) {
+        const prep = await tbccPrepareRasterBlob(blob, it.url, filenameForCropUrl(it.url));
+        const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
+        return {
+          filename: (pad + "_" + prep.name).replace(/[^\w.\-]+/g, "_"),
+          blob: wm,
+        };
       }
       return {
-        filename: (pad + "_" + filenameForCropUrl(it.url)).replace(/[^\w.\-]+/g, "_"),
+        filename: (pad + "_" + filenameFromUrl(it.url)).replace(/[^\w.\-]+/g, "_"),
         blob,
       };
     } catch (e) {
@@ -5489,14 +5942,13 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
       }
     }
     const r = await fetch(it.url);
-    let blob = await r.blob();
-    if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-      try {
-        blob = await applyImagePipeline(blob, it.url);
-      } catch (_) {}
+    const blob = await r.blob();
+    if (isImageItem(it)) {
+      const prep = await tbccPrepareRasterBlob(blob, it.url, "media.webp");
+      const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
+      return { filename: pad + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), blob: wm };
     }
-    const ext = isImageItem(it) && shouldApplyImagePipelineForUrl(it.url) ? ".jpg" : "";
-    return { filename: pad + "_media" + ext, blob };
+    return { filename: pad + "_media", blob: await tbccApplyPromoWatermarkBlob(blob, "video") };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
     const httpFetchUrl = bestHttpMediaUrlForItem(it) || it.url;
@@ -5511,22 +5963,22 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
     }
     const url = normalizeTbccMediaUrlForImport(httpFetchUrl);
     const refPage = await tbccRefererPageForItem(it);
-    let blob = await fetchUrlBytesToBlob(url, refPage);
+    let blob = await fetchUrlBytesToBlob(url, refPage, it);
     if (!blob) throw new Error("Could not fetch: " + String(httpFetchUrl).slice(0, 96));
-    if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-      try {
-        blob = await applyImagePipeline(blob, it.url);
-      } catch (_) {}
+    if (isImageItem(it)) {
+      const prep = await tbccPrepareRasterBlob(blob, it.url, filenameFromUrl(httpFetchUrl));
+      const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
       return {
-        filename: (pad + "_" + filenameForCropUrl(it.url)).replace(/[^\w.\-]+/g, "_"),
-        blob,
+        filename: (pad + "_" + prep.name).replace(/[^\w.\-]+/g, "_"),
+        blob: wm,
       };
     }
     const base = filenameFromUrl(httpFetchUrl);
     const ext = it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
     const hasExt = /\.\w{2,5}$/i.test(base);
     const filename = pad + "_" + (hasExt ? base : base + ext);
-    return { filename: filename.replace(/[^\w.\-]+/g, "_"), blob };
+    const wmBlob = await tbccApplyPromoWatermarkBlob(blob, "video");
+    return { filename: filename.replace(/[^\w.\-]+/g, "_"), blob: wmBlob };
   }
   throw new Error("Unsupported item for ZIP");
 }
@@ -5851,6 +6303,31 @@ function openLightboxForItem(item) {
   })();
 }
 
+function updateLightboxMeta(item, isVideo) {
+  if (!tbccLightboxMeta) return;
+  if (!item) {
+    tbccLightboxMeta.hidden = true;
+    tbccLightboxMeta.textContent = "";
+    return;
+  }
+  const u = String(bestHttpMediaUrlForItem(item) || item.url || "");
+  const fname = filenameFromUrl(u) || (item.name ? String(item.name) : "media");
+  const fmt = mediaFormatLabel(item, isVideo);
+  const dims = isVideo ? formatVideoCellLabel(item, tbccLightboxVideo) : formatDimsLabel(item);
+  const host = (() => {
+    try {
+      return new URL(u).hostname;
+    } catch (_) {
+      return "";
+    }
+  })();
+  const page = item.tbccSourcePageUrl || item.detailPageUrl || "";
+  const lines = [fname, [fmt, dims].filter(Boolean).join(" · "), host].filter(Boolean);
+  if (page && /^https?:\/\//i.test(String(page))) lines.push(String(page).slice(0, 120));
+  tbccLightboxMeta.textContent = lines.join("\n");
+  tbccLightboxMeta.hidden = !lines.length;
+}
+
 function openLightboxForItemAfterResolve(item) {
   if (!item || !tbccLightbox) return;
   currentLightboxItem = item;
@@ -5902,7 +6379,7 @@ function openLightboxForItemAfterResolve(item) {
         setLightboxVideoMessage("Direct playback failed; trying session-backed fallback...");
         try {
           const refPage = await tbccRefererPageForItem(item);
-          const fallbackBlob = await fetchUrlBytesToBlob(u, refPage);
+          const fallbackBlob = await fetchUrlBytesToBlob(u, refPage, item);
           if (fallbackBlob && fallbackBlob.size > 0) {
             tbccLightboxVideoObjectUrl = URL.createObjectURL(fallbackBlob);
             vEl.src = tbccLightboxVideoObjectUrl;
@@ -5921,14 +6398,27 @@ function openLightboxForItemAfterResolve(item) {
     };
     vEl.onloadeddata = () => {
       if (!/\.(m3u8|mpd)(\?|$)/i.test(uLow)) setLightboxVideoMessage("");
+      updateLightboxMeta(item, true);
     };
     vEl.src = u;
     vEl.style.display = "block";
+    updateLightboxMeta(item, true);
   } else if (tbccLightboxImg) {
     tbccLightboxImg.src = u;
     tbccLightboxImg.style.display = "block";
+    tbccLightboxImg.onload = () => updateLightboxMeta(item, false);
+    updateLightboxMeta(item, false);
   }
   tbccLightbox.classList.add("visible");
+}
+
+function formatToastDisplayMessage(message, clickAction) {
+  let text = String(message || "");
+  const style = settings.notificationStyle || "full";
+  if (style === "app_name_only") return clickAction ? "TBCC — click to open" : "TBCC";
+  if (clickAction && !/click to open/i.test(text)) text += " — Click to open.";
+  if (style === "minimal" && text.length > 140) text = text.slice(0, 137) + "…";
+  return text;
 }
 
 function showToast(message, type, clickAction) {
@@ -5936,7 +6426,7 @@ function showToast(message, type, clickAction) {
   const t = type || "info";
   const el = document.createElement("div");
   el.className = "toast " + (t === "success" ? "success" : t === "error" ? "error" : "info");
-  el.textContent = message;
+  el.textContent = formatToastDisplayMessage(message, clickAction);
   if (clickAction) {
     el.classList.add("toast--clickable");
     el.title = "Click to open";
@@ -5997,6 +6487,28 @@ function endGalleryJob(id, outcome) {
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.action === "tbcc-ops-alert-toast" && msg.alert) {
+    const a = msg.alert;
+    const critical = String(a.severity || "").toLowerCase() === "critical";
+    showToast(a.message || a.title || "TBCC alert", critical ? "error" : "info");
+    return;
+  }
+  if (msg && msg.action === "tbcc-gallery-open-inbox") {
+    void openGalleryInboxForUrl(msg.url || null);
+    return;
+  }
+  if (msg && msg.action === "tbcc-gallery-open-archive") {
+    openMasterArchiveSheet(true);
+    return;
+  }
+  if (msg && msg.action === "tbcc-gallery-open-dest") {
+    setTelegramSheetOpen(true);
+    return;
+  }
+  if (msg && msg.action === "tbcc-gallery-open-collected") {
+    if (typeof window.tbccSetPanelView === "function") window.tbccSetPanelView("collected");
+    return;
+  }
   if (msg && msg.action === "tbcc-gallery-request-close") {
     try {
       window.close();
@@ -6060,8 +6572,11 @@ function openSavedUrlInboxSheet(open) {
 }
 
 function syncInboxDefaultDestUi() {
-  const isMod = savedUrlInboxDefaultDest && savedUrlInboxDefaultDest.value === "loot_modifier";
-  if (savedUrlInboxDefaultPoolWrap) savedUrlInboxDefaultPoolWrap.style.display = isMod ? "none" : "";
+  const dest = savedUrlInboxDefaultDest ? savedUrlInboxDefaultDest.value : "archive";
+  const isArchive = dest === "archive";
+  const isMod = dest === "loot_modifier";
+  if (savedUrlInboxDefaultPoolWrap) savedUrlInboxDefaultPoolWrap.style.display = isArchive || isMod ? "none" : "";
+  if (btnSavedUrlInboxImportSel) btnSavedUrlInboxImportSel.style.display = isArchive ? "none" : "";
 }
 
 function buildInboxDestSelect(row) {
@@ -6350,6 +6865,33 @@ function enqueueInboxPoolBackgroundImports(poolRows, all, pendingAutoTag, global
   return poolRows.length;
 }
 
+function focusSavedUrlInboxRow(url) {
+  const target = String(url || "")
+    .trim()
+    .toLowerCase();
+  if (!target || !savedUrlInboxList) return false;
+  const row = [...savedUrlInboxList.querySelectorAll(".saved-url-inbox-row")].find(
+    (el) => el.dataset.inboxUrl === target
+  );
+  if (!row) return false;
+  row.classList.add("saved-url-inbox-row--highlight");
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  window.setTimeout(() => row.classList.remove("saved-url-inbox-row--highlight"), 4500);
+  return true;
+}
+
+async function openGalleryInboxForUrl(url) {
+  if (typeof window.tbccSetPanelView === "function") window.tbccSetPanelView("main");
+  openSavedUrlInboxSheet(true);
+  await renderSavedUrlInboxList();
+  const clean = String(url || "").trim();
+  if (clean) {
+    if (!focusSavedUrlInboxRow(clean)) {
+      setSavedUrlInboxStatus("URL is in the inbox queue (scroll to find it).");
+    }
+  }
+}
+
 async function renderSavedUrlInboxList() {
   if (!savedUrlInboxList || !window.TbccSavedUrlInbox) return;
   const rows = await TbccSavedUrlInbox.getRows();
@@ -6371,6 +6913,9 @@ async function renderSavedUrlInboxList() {
           ? " saved-url-inbox-row--importing"
           : "");
     item.setAttribute("role", "listitem");
+    item.dataset.inboxUrl = String(row.url || "")
+      .trim()
+      .toLowerCase();
 
     const cb = document.createElement("input");
     cb.type = "checkbox";
@@ -6711,6 +7256,33 @@ function setInboxChecksAll(checked) {
   });
 }
 
+async function archiveCheckedInboxUrls() {
+  const picked = await getCheckedInboxRows();
+  if (!picked.length) {
+    showToast("Check one or more URLs to archive.", "info");
+    return;
+  }
+  let n = 0;
+  for (const r of picked) {
+    const res = await TbccSavedUrlInbox.appendToArchive(r.url, {
+      tagsCsv: r.tagsCsv || "",
+      note: r.note || "",
+      ref: "inbox_batch",
+    });
+    if (res.ok) n++;
+  }
+  const keys = new Set(picked.map((r) => TbccSavedUrlInbox.rowKey(r)));
+  const rows = (await TbccSavedUrlInbox.getRows()).filter((r) => !keys.has(TbccSavedUrlInbox.rowKey(r)));
+  await TbccSavedUrlInbox.setRows(rows);
+  await renderSavedUrlInboxList();
+  setSavedUrlInboxStatus(n ? `Archived ${n} URL(s) to master archive.` : "Nothing archived.");
+  showToast(
+    n ? `Archived ${n} URL(s) to master archive — click to open.` : "Nothing archived.",
+    n ? "success" : "info",
+    n ? { type: "gallery_master_archive" } : null
+  );
+}
+
 async function exportInboxRows(format) {
   const rows = await TbccSavedUrlInbox.getRows();
   if (!rows.length) {
@@ -6744,7 +7316,11 @@ const masterArchiveBackdrop = document.getElementById("masterArchiveBackdrop");
 const masterArchiveList = document.getElementById("masterArchiveList");
 const masterArchiveStatus = document.getElementById("masterArchiveStatus");
 const masterArchiveFilter = document.getElementById("masterArchiveFilter");
+const masterArchiveTags = document.getElementById("masterArchiveTags");
 const masterArchiveKind = document.getElementById("masterArchiveKind");
+const savedUrlInboxDefaultTags = document.getElementById("savedUrlInboxDefaultTags");
+const savedUrlInboxActions = document.getElementById("savedUrlInboxActions");
+const btnSavedUrlInboxRunAction = document.getElementById("btnSavedUrlInboxRunAction");
 const masterArchivePager = document.getElementById("masterArchivePager");
 const tbccActiveJobsBar = document.getElementById("tbccActiveJobsBar");
 const tbccActiveJobsList = document.getElementById("tbccActiveJobsList");
@@ -6798,6 +7374,7 @@ const masterArchiveUi =
         getEntries: () => TbccMasterArchive.getEntries(),
         getFilters: () => ({
           q: (masterArchiveFilter && masterArchiveFilter.value) || "",
+          tags: (masterArchiveTags && masterArchiveTags.value) || "",
           kind: (masterArchiveKind && masterArchiveKind.value) || "",
           ...(TbccMasterArchive.readSortOptsFromDom ? TbccMasterArchive.readSortOptsFromDom("") : {}),
         }),
@@ -6824,6 +7401,7 @@ async function getMasterArchiveFilteredEntries() {
   const all = await TbccMasterArchive.getEntries();
   return TbccMasterArchive.filterEntries(all, {
     q: (masterArchiveFilter && masterArchiveFilter.value) || "",
+    tags: (masterArchiveTags && masterArchiveTags.value) || "",
     kind: (masterArchiveKind && masterArchiveKind.value) || "",
     ...(TbccMasterArchive.readSortOptsFromDom ? TbccMasterArchive.readSortOptsFromDom("") : {}),
   });
@@ -6865,30 +7443,28 @@ function formatJobAge(ms) {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-let _tbccLastSystemHealth = null;
-
 async function refreshSystemHealthHint() {
-  const el = document.getElementById("tbccSystemHealthHint");
-  if (!el) return;
   const data = await new Promise((resolve) => {
     chrome.runtime.sendMessage({ action: "tbcc-health-system" }, (r) => {
       if (chrome.runtime.lastError) resolve(null);
       else resolve(r && r.data ? r.data : null);
     });
   });
-  _tbccLastSystemHealth = data;
   if (!data || data.ok) {
-    el.hidden = true;
-    el.textContent = "";
+    _tbccLastHealthToastKey = "";
     return;
   }
   const crit = (data.conflicts || []).filter((c) => c.severity === "critical");
-  const msg = crit.length
-    ? crit.map((c) => c.message).join(" · ")
-    : (data.conflicts || []).map((c) => c.message).join(" · ");
-  el.hidden = false;
-  el.textContent = msg.slice(0, 280);
-  el.title = (data.recommendations || []).join("\n");
+  const messages = crit.length
+    ? crit.map((c) => c.message)
+    : (data.conflicts || []).map((c) => c.message).filter(Boolean);
+  if (!messages.length) return;
+  const key = messages.join("|");
+  if (key === _tbccLastHealthToastKey) return;
+  _tbccLastHealthToastKey = key;
+  const head = String(messages[0] || "").slice(0, 220);
+  const tail = messages.length > 1 ? ` (+${messages.length - 1} more — see Dashboard)` : "";
+  showToast(head + tail, "error");
 }
 
 async function syncPauseImportQueueButton() {
@@ -7059,7 +7635,7 @@ function setCropPopoverOpen(open) {
 
 function updateActionBarSubtitle() {}
 
-async function importSavedUrlJson(urls, poolId, captionOverride) {
+async function importSavedUrlJson(urls, poolId, captionOverride, meta) {
   const normalized = (urls || []).map((u) => normalizeTbccMediaUrlForImport(u));
   const payload = { urls: normalized, pool_id: poolId, saved_only: true };
   const c =
@@ -7067,6 +7643,7 @@ async function importSavedUrlJson(urls, poolId, captionOverride) {
       ? String(captionOverride).trim()
       : getAlbumCaptionForSend();
   if (c) payload.caption = c;
+  markAppendSendPromoPayload(payload, meta);
   const r = await fetch(API_BASE + "/import/url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -7205,8 +7782,7 @@ async function downloadSelectedAsZip() {
     const msg = "Saved ZIP with " + ok + " file(s) to Downloads/tbcc/ (use for digital bundle upload).";
     if (progressStatus) progressStatus.textContent = msg;
     notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete", {
-      type: "url",
-      url: "http://localhost:5173/",
+      type: "gallery_sidepanel",
     });
   } catch (e) {
     if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
@@ -7234,25 +7810,40 @@ async function sendSelectedToJDownloader() {
   if (progressEl) progressEl.classList.add("visible");
   if (progressStatus) progressStatus.textContent = "Sending " + uniq.length + " link(s) to JDownloader…";
   try {
-    const r = await fetch(API_BASE + "/jd/add-links", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        links: uniq.join("\n"),
-        package_name: "TBCC gallery " + new Date().toISOString().slice(0, 16).replace("T", " "),
-        autostart: false,
-      }),
-    });
-    const text = await r.text();
-    let data = {};
-    try {
-      data = text ? JSON.parse(text) : {};
-    } catch (_) {}
+    const { r, data, text } = await fetchJsonWithTimeout(
+      API_BASE + "/jd/add-links",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          links: uniq.join("\n"),
+          package_name: "TBCC gallery " + new Date().toISOString().slice(0, 16).replace("T", " "),
+          autostart: false,
+          background: uniq.length >= 12,
+        }),
+      },
+      60000
+    );
     if (!r.ok) throw new Error((data && data.detail) || text || r.statusText);
+    if (data && data.queued) {
+      if (progressStatus)
+        progressStatus.textContent =
+          "Queued " + (data.link_count || uniq.length) + " link(s) to JDownloader (background).";
+      showToast("Queued to JDownloader — API won't block while JD ingests links.", "success");
+      return;
+    }
+    const batches = data && data.batches != null ? data.batches : 1;
     if (progressStatus)
-      progressStatus.textContent = "Added " + uniq.length + " link(s) to JDownloader LinkGrabber.";
+      progressStatus.textContent =
+        "Added " + uniq.length + " link(s) to JDownloader" + (batches > 1 ? " (" + batches + " batches)." : ".");
     showToast("Sent to JDownloader. Check LinkCollector in JD or My.JDownloader.", "success");
   } catch (e) {
+    const timedOut = (e && e.name === "AbortError") || /abort/i.test(String(e && e.message));
+    const errMsg = timedOut
+      ? "JDownloader request timed out — try fewer selected items or check JD is online."
+      : e && e.message
+        ? e.message
+        : "send failed";
     try {
       const clip = globalThis.TbccClipboard;
       if (clip && clip.copyText) {
@@ -7264,7 +7855,7 @@ async function sendSelectedToJDownloader() {
       if (progressStatus)
         progressStatus.textContent =
           "MyJD unavailable — copied " + uniq.length + " URL(s) for manual paste.";
-      showToast((e && e.message ? e.message : "MyJD failed") + " — URLs copied to clipboard.", "info");
+      showToast(errMsg + " — URLs copied to clipboard.", "info");
     } catch (clipErr) {
       if (progressError)
         progressError.textContent =
@@ -7277,6 +7868,70 @@ async function downloadSelected() {
   const list = getFilteredList();
   const selected = list.filter((i) => selectedUrls.has(i.url));
   if (selected.length === 0 || !chrome.downloads) return;
+  if (settings.downloadMode === "direct") return downloadSelectedDirect(selected);
+  return downloadSelectedBuffered(selected);
+}
+
+/** Fetch each file fully (TBCC progress bar), then hand off to the browser download manager. */
+async function downloadSelectedBuffered(selected) {
+  const jobId = await beginGalleryJob("download", "Gallery download");
+  try {
+    btnDownload.disabled = true;
+    if (btnDownloadZip) btnDownloadZip.disabled = true;
+    if (btnCopyJd) btnCopyJd.disabled = true;
+    if (progressError) progressError.textContent = "";
+    if (progressEl) progressEl.classList.add("visible");
+    if (progressTitle) progressTitle.textContent = "Download";
+    if (progressFill) progressFill.style.width = "0%";
+    const staged = [];
+    const total = selected.length;
+    for (let i = 0; i < total; i++) {
+      if (progressStatus) progressStatus.textContent = `Fetching ${i + 1} / ${total}…`;
+      if (progressFill) progressFill.style.width = Math.round(((i + 1) / total) * 50) + "%";
+      try {
+        const { filename, blob } = await getBlobAndNameForZipItem(selected[i], i);
+        staged.push({ filename: "tbcc/" + filename.replace(/^[\d_]+_/, ""), blob });
+      } catch (e) {
+        if (progressError)
+          progressError.textContent = (progressError.textContent || "") + (e.message || "fetch failed") + "; ";
+      }
+    }
+    let n = 0;
+    for (let j = 0; j < staged.length; j++) {
+      const { filename, blob } = staged[j];
+      if (progressStatus) progressStatus.textContent = `Saving ${j + 1} / ${staged.length}…`;
+      if (progressFill) progressFill.style.width = 50 + Math.round(((j + 1) / staged.length) * 50) + "%";
+      const blobUrl = URL.createObjectURL(blob);
+      await new Promise((resolve, reject) => {
+        chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
+          URL.revokeObjectURL(blobUrl);
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve();
+        });
+      });
+      n++;
+    }
+    if (progressStatus && n > 0) {
+      progressStatus.textContent = `Downloaded ${n} file(s) to your Downloads/tbcc folder.`;
+    }
+    if (n > 0) {
+      notifyCompletion(
+        `Downloaded ${n} file(s) — click to open gallery.`,
+        "success",
+        "notifyOnZipComplete",
+        "TBCC download complete",
+        { type: "gallery_sidepanel" }
+      );
+    }
+  } finally {
+    btnDownload.disabled = false;
+    if (btnDownloadZip) btnDownloadZip.disabled = selectedCountInFilteredList() === 0;
+    if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
+    endGalleryJob(jobId);
+  }
+}
+
+async function downloadSelectedDirect(selected) {
   const jobId = await beginGalleryJob("download", "Gallery download");
   try {
   btnDownload.disabled = true;
@@ -7288,16 +7943,16 @@ async function downloadSelected() {
     const idx = String(i + 1).padStart(2, "0");
     try {
       if (it.file) {
-        let dlBlob = it.file;
         let name = (it.name || "file").replace(/[^\w.\-]+/g, "_");
-        if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-          try {
-            dlBlob = await applyImagePipeline(
-              new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" }),
-              it.url
-            );
-            name = /\.(jpe?g)$/i.test(name) ? name : (name.replace(/\.[^.]+$/, "") || "file") + ".jpg";
-          } catch (_) {}
+        let dlBlob = it.file;
+        if (isImageItem(it)) {
+          const prep = await tbccPrepareRasterBlob(
+            new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" }),
+            it.url,
+            name
+          );
+          dlBlob = prep.blob;
+          name = prep.name.replace(/[^\w.\-]+/g, "_");
         }
         const blobUrl = URL.createObjectURL(dlBlob);
         await new Promise((resolve) => {
@@ -7317,12 +7972,17 @@ async function downloadSelected() {
             "That URL is a page (HTML), not a video file. The extension needs a direct .mp4 (or similar) link — or use JDownloader / your backend to resolve the stream."
           );
         }
-        if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-          const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
+        if (
+          isImageItem(it) &&
+          (shouldApplyImagePipelineForUrl(it.url) ||
+            tbccWebpConvertEnabled() ||
+            (typeof TbccWebp !== "undefined" && TbccWebp.tbccUrlLooksLikeWebp(httpFetchUrl)))
+        ) {
+          const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
           if (!raw || !raw.size) throw new Error("Could not fetch image for processing");
-          const out = await applyImagePipeline(raw, it.url);
-          const filename = "tbcc/" + idx + "_" + filenameForCropUrl(it.url);
-          const blobUrl = URL.createObjectURL(out);
+          const prep = await tbccPrepareRasterBlob(raw, it.url, filenameFromUrl(httpFetchUrl));
+          const filename = "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_");
+          const blobUrl = URL.createObjectURL(prep.blob);
           await new Promise((resolve, reject) => {
             chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
               URL.revokeObjectURL(blobUrl);
@@ -7331,9 +7991,15 @@ async function downloadSelected() {
             });
           });
         } else if (hostNeedsSessionFetch(httpFetchUrl)) {
-          const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it));
+          const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
           if (!raw || !raw.size) throw new Error("Could not fetch media for download (session)");
-          const base = filenameFromUrl(httpFetchUrl);
+          let dlBlob = raw;
+          let base = filenameFromUrl(httpFetchUrl);
+          if (isImageItem(it)) {
+            const prep = await tbccPrepareRasterBlob(raw, it.url, base);
+            dlBlob = prep.blob;
+            base = prep.name;
+          }
           const ext =
             it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video"
               ? /\.(mp4|webm|m4v|mov|mkv|m3u8|mpd)(\?|$)/i.test(base)
@@ -7342,7 +8008,25 @@ async function downloadSelected() {
               : "";
           const hasExt = /\.\w{2,5}$/i.test(base);
           const filename = ("tbcc/" + idx + "_" + (hasExt ? base : base + ext)).replace(/[^\w.\-]+/g, "_");
-          const blobUrl = URL.createObjectURL(raw);
+          const blobUrl = URL.createObjectURL(dlBlob);
+          await new Promise((resolve, reject) => {
+            chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
+              URL.revokeObjectURL(blobUrl);
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve();
+            });
+          });
+        } else if (
+          isImageItem(it) &&
+          tbccWebpConvertEnabled() &&
+          typeof TbccWebp !== "undefined" &&
+          TbccWebp.tbccUrlLooksLikeWebp(httpFetchUrl)
+        ) {
+          const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
+          if (!raw || !raw.size) throw new Error("Could not fetch WebP for conversion");
+          const prep = await tbccPrepareRasterBlob(raw, it.url, filenameFromUrl(httpFetchUrl));
+          const filename = "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_");
+          const blobUrl = URL.createObjectURL(prep.blob);
           await new Promise((resolve, reject) => {
             chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
               URL.revokeObjectURL(blobUrl);
@@ -7366,13 +8050,16 @@ async function downloadSelected() {
         try {
           const r = await fetch(it.url);
           let b = await r.blob();
-          if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
-            b = await applyImagePipeline(b, it.url);
+          let fname = "tbcc/" + idx + "_" + filenameFromUrl(it.url);
+          if (isImageItem(it)) {
+            const prep = await tbccPrepareRasterBlob(b, it.url, filenameForCropUrl(it.url));
+            b = prep.blob;
+            fname = "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_");
           }
           const blobUrl = URL.createObjectURL(b);
           await new Promise((resolve, reject) => {
             chrome.downloads.download(
-              { url: blobUrl, filename: "tbcc/" + idx + "_" + filenameForCropUrl(it.url), saveAs: false },
+              { url: blobUrl, filename: fname, saveAs: false },
               () => {
                 URL.revokeObjectURL(blobUrl);
                 if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -7384,13 +8071,15 @@ async function downloadSelected() {
           throw new Error("Could not download data URL image");
         }
       } else if (it.url && it.url.startsWith("blob:")) {
-        if (isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)) {
+        if (isImageItem(it)) {
           const r = await fetch(it.url);
-          let b = await r.blob();
-          b = await applyImagePipeline(b, it.url);
-          const blobUrl = URL.createObjectURL(b);
+          const b0 = await r.blob();
+          const prep = await tbccPrepareRasterBlob(b0, it.url, "media.webp");
+          const blobUrl = URL.createObjectURL(prep.blob);
           await new Promise((resolve) => {
-            chrome.downloads.download({ url: blobUrl, filename: "tbcc/" + idx + "_media.jpg", saveAs: false }, () => {
+            chrome.downloads.download(
+              { url: blobUrl, filename: "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), saveAs: false },
+              () => {
               URL.revokeObjectURL(blobUrl);
               resolve();
             });
@@ -7447,6 +8136,7 @@ async function downloadSelected() {
 btnDownload && btnDownload.addEventListener("click", () => downloadSelected());
 btnDownloadZip && btnDownloadZip.addEventListener("click", () => downloadSelectedAsZip());
 btnCopyJd && btnCopyJd.addEventListener("click", () => void sendSelectedToJDownloader());
+btnAddToCollected && btnAddToCollected.addEventListener("click", () => void addSelectedToCollected());
 btnCrawlTab && btnCrawlTab.addEventListener("click", () => void crawlActiveTab());
 void refreshCrawlerTabUrlLabel();
 
@@ -7546,6 +8236,7 @@ tabCurrentBtn &&
     activeTab = "current";
     syncCaptureTabButtons();
     saveGalleryUiState();
+    await pinCaptureTabForCurrentMode();
     await clearSelectionForNewCapture();
     doRefresh();
   });
@@ -7607,29 +8298,6 @@ btnGalleryPopOut &&
   });
 
 btnRefresh && btnRefresh.addEventListener("click", () => refreshPanelOrHardScan());
-
-const btnTbccLaunchApiFromGallery = document.getElementById("btnTbccLaunchApiFromGallery");
-const btnTbccRetryApiFromGallery = document.getElementById("btnTbccRetryApiFromGallery");
-if (btnTbccLaunchApiFromGallery && typeof globalThis.tbccLaunchFullStack === "function") {
-  btnTbccLaunchApiFromGallery.addEventListener("click", () => {
-    globalThis.tbccLaunchFullStack();
-    showToast("Launching TBCC stack…", "info");
-  });
-}
-if (btnTbccRetryApiFromGallery) {
-  btnTbccRetryApiFromGallery.addEventListener("click", () => {
-    invalidateTbccApiReachableCache();
-    void refreshTbccApiOfflineBanner().then((ok) => {
-      if (ok) {
-        void Promise.all([loadTagCatalog(), loadPools(), loadChannelsForForum()]).then(() =>
-          showToast("API connected.", "info")
-        );
-      } else {
-        showToast("API still offline — start backend or use Launch full stack.", "info");
-      }
-    });
-  });
-}
 
 viewMainEl &&
   viewMainEl.addEventListener("contextmenu", (e) => {
@@ -7753,6 +8421,15 @@ forumAlbumCaption &&
     void persistCaptionSlicesToStorage();
   });
 btnAutoCap && btnAutoCap.addEventListener("click", () => void autoCapFromPage());
+
+const captionInsertMenuMount = document.getElementById("captionInsertMenuMount");
+if (captionInsertMenuMount && typeof TbccInsertMenu === "function") {
+  TbccInsertMenu(captionInsertMenuMount, {
+    onInsert: insertTextIntoCaptionBody,
+    getChannels: () => tbccChannelsCacheLast || [],
+    getPools: () => cachedPoolsForInbox || [],
+  });
+}
 btnAlwaysIncludeToggle &&
   btnAlwaysIncludeToggle.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -7784,8 +8461,7 @@ btnAlwaysIncludeCustomAdd &&
     showToast("Custom link added — toggle checkboxes to include in sends.", "success");
   });
   btnCaptionLibraryOpen.addEventListener("click", async () => {
-    if (captionLibTitle) captionLibTitle.value = "";
-    if (captionLibBody) captionLibBody.value = "";
+    resetCaptionLibraryForm();
     await renderCaptionLibraryModalList();
     setCaptionLibraryModalOpen(true);
   });
@@ -7802,17 +8478,20 @@ btnCaptionLibSave &&
       return;
     }
     try {
-      const r = await fetch(API_BASE + "/caption-snippets/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: title || null, body }),
-      });
+      const editing = captionLibEditingId != null;
+      const r = await fetch(
+        API_BASE + (editing ? "/caption-snippets/" + captionLibEditingId : "/caption-snippets/"),
+        {
+          method: editing ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: title || null, body }),
+        }
+      );
       const text = await r.text();
       if (!r.ok) throw new Error(text || `HTTP ${r.status}`);
-      if (captionLibTitle) captionLibTitle.value = "";
-      if (captionLibBody) captionLibBody.value = "";
+      resetCaptionLibraryForm();
       await renderCaptionLibraryModalList();
-      showToast("Saved to caption library.", "success");
+      showToast(editing ? "Caption updated." : "Saved to caption library.", "success");
     } catch (e) {
       showToast("Save failed: " + (e.message || String(e)), "error");
     }
@@ -7929,6 +8608,18 @@ async function importOneUrl(url, poolId, savedOnly, captionOverride) {
 const IN_TAB_PER_URL_MS = 90000;
 /** Telegram media group max size; backend groups Saved Messages sends into albums of up to this many. */
 const SAVED_ALBUM_CHUNK = 10;
+
+function countGalleryBatchItemsForPromoPlan(selected) {
+  return (selected || []).filter((it) => it && (it.url || it.file)).length;
+}
+
+function tbccSliceSavedAlbumChunk(items, start, albumPlanner) {
+  if (albumPlanner && typeof TbccSendPromo !== "undefined" && TbccSendPromo.sliceNextAlbumChunk) {
+    return TbccSendPromo.sliceNextAlbumChunk(items, start, albumPlanner);
+  }
+  const take = Math.min(SAVED_ALBUM_CHUNK, items.length - start);
+  return { chunk: items.slice(start, start + take), next: start + take, appendPromo: false };
+}
 /** Must match backend `SavedBatchUrlsBody` / `SAVED_BATCH_MAX_FILES` (import_.py) for POST /import/url with urls[]. */
 const SAVED_URL_BATCH_MAX = 100;
 
@@ -8037,47 +8728,63 @@ async function readPageUrlsAsByteArrays(tabId, urls, frameId) {
   return p;
 }
 
-async function postSavedBatchFilesFromPageItems(items, bump, appendErr, savedCaption) {
-  for (let i = 0; i < items.length; i += SAVED_ALBUM_CHUNK) {
-    const chunk = items.slice(i, i + SAVED_ALBUM_CHUNK);
-    const form = new FormData();
-    const sent = [];
-    for (let j = 0; j < chunk.length; j++) {
-      const it = chunk[j];
-      const arr = it._tbccBytes;
-      if (!arr || !arr.length) continue;
-      let blob = new Blob([new Uint8Array(arr)], { type: "application/octet-stream" });
-      if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
-        try {
-          blob = await applyImagePipeline(blob, it.url);
-        } catch (_) {}
-      }
-      const name =
-        isImageItem(it) && shouldApplyImagePipelineForUrl(it.url)
-          ? filenameForCropUrl(it.url)
-          : `media_${j}.jpg`;
-      form.append("files", blob, name);
-      sent.push(it);
-    }
-    if (!sent.length) {
-      appendErr("Could not read image bytes from the page (tab closed or wrong frame?)");
-      continue;
-    }
-    appendCaptionToSavedForm(form, savedCaption);
-    try {
-      const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
-      const data = await parseImportResponse(r);
-      if (data.status === "saved_only" && !data.error) {
-        for (const it of sent) {
-          await addToCollected({ url: it.url, type: it.type || "image", addedAt: Date.now(), to_saved: true });
-          bump();
+async function postSavedBatchFilesFromPageItems(
+  items,
+  bump,
+  appendErr,
+  savedCaption,
+  scheduleSavedSend,
+  albumPlanner,
+  packSendMeta
+) {
+  let i = 0;
+  while (i < items.length) {
+    const { chunk, next, appendPromo } = tbccSliceSavedAlbumChunk(items, i, albumPlanner);
+    if (!chunk.length) break;
+    const runBatch = async (meta) => {
+      const form = new FormData();
+      const sent = [];
+      for (let j = 0; j < chunk.length; j++) {
+        const it = chunk[j];
+        const arr = it._tbccBytes;
+        if (!arr || !arr.length) continue;
+        let blob = new Blob([new Uint8Array(arr)], { type: "application/octet-stream" });
+        let name = `media_${j}.jpg`;
+        if (isImageItem(it)) {
+          try {
+            const prep = await tbccPrepareRasterBlob(blob, it.url, filenameFromUrl(it.url) || name);
+            blob = prep.blob;
+            name = prep.name;
+          } catch (_) {}
         }
-      } else {
-        appendErr(data.error || "Saved batch failed");
+        form.append("files", blob, name);
+        sent.push(it);
       }
-    } catch (e) {
-      appendErr(e.message || String(e));
-    }
+      if (!sent.length) {
+        appendErr("Could not read image bytes from the page (tab closed or wrong frame?)");
+        return;
+      }
+      appendCaptionToSavedForm(form, savedCaption);
+      markAppendSendPromoForm(form, meta);
+      try {
+        const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
+        const data = await parseImportResponse(r);
+        if (data.status === "saved_only" && !data.error) {
+          for (const it of sent) {
+            await addToCollected({ url: it.url, type: it.type || "image", addedAt: Date.now(), to_saved: true });
+            bump();
+          }
+        } else {
+          appendErr(data.error || "Saved batch failed");
+        }
+      } catch (e) {
+        appendErr(e.message || String(e));
+      }
+    };
+    const schedMeta = typeof packSendMeta === "function" ? packSendMeta(appendPromo, chunk.length) : { appendPromo };
+    if (typeof scheduleSavedSend === "function") scheduleSavedSend(runBatch, schedMeta);
+    else await runBatch(schedMeta);
+    i = next;
   }
 }
 
@@ -8102,50 +8809,101 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
     savedCaption != null && String(savedCaption).trim() !== ""
       ? String(savedCaption).trim()
       : await ensureSavedMessagesCaption(selected);
+  const promoState =
+    typeof TbccSendPromo !== "undefined" && TbccSendPromo.prepareAlbumTail
+      ? await TbccSendPromo.prepareAlbumTail()
+      : { pack: null, pending: false };
+  const batchPlan = { total: countGalleryBatchItemsForPromoPlan(selected), sent: 0 };
+  const albumPlanner =
+    promoState.pending &&
+    typeof TbccSendPromo !== "undefined" &&
+    TbccSendPromo.createAlbumSendPlanner
+      ? TbccSendPromo.createAlbumSendPlanner(batchPlan.total, true)
+      : null;
+  function savedSendMeta(plannerAppend, itemCount) {
+    const n = Math.max(0, Number(itemCount) || 0);
+    batchPlan.sent += n;
+    const appendPromo =
+      !!plannerAppend || (promoState.pending && batchPlan.sent >= batchPlan.total);
+    return { appendPromo };
+  }
+  const savedSendOps = [];
+  const scheduleSavedSend = (fn, schedMeta) => savedSendOps.push({ fn, schedMeta: schedMeta || {} });
+  const flushScheduledSavedSends = async () => {
+    let promoAttached = false;
+    for (const op of savedSendOps) {
+      const meta = { ...op.schedMeta };
+      if (meta.appendPromo) promoAttached = true;
+      await op.fn(meta);
+      if (meta.appendPromo) promoState.pending = false;
+    }
+    savedSendOps.length = 0;
+    if (
+      promoState.pending &&
+      !promoAttached &&
+      albumPlanner &&
+      albumPlanner.needsPromoOnlySend &&
+      albumPlanner.needsPromoOnlySend()
+    ) {
+      if (typeof TbccSendPromo !== "undefined" && TbccSendPromo.sendSavedTail) {
+        await TbccSendPromo.sendSavedTail(poolId, appendCaptionToSavedForm, appendErr, bump);
+        promoState.pending = false;
+      }
+    }
+  };
   const groups = groupConsecutiveSavedKinds(selected);
   for (const g of groups) {
     if (g.kind === "file") {
-      for (let i = 0; i < g.items.length; i += SAVED_ALBUM_CHUNK) {
-        const chunk = g.items.slice(i, i + SAVED_ALBUM_CHUNK);
-        const form = new FormData();
-        for (const it of chunk) {
-          let fileToSend = it.file;
-          let name = it.name || "media";
-          if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
-            try {
-              const raw = new Blob([await it.file.arrayBuffer()], {
-                type: it.file.type || "application/octet-stream",
-              });
-              const cropped = await applyImagePipeline(raw, it.url);
-              fileToSend = cropped;
-              name = /\.(jpe?g)$/i.test(name) ? name : (name.replace(/\.[^.]+$/, "") || "media") + ".jpg";
-            } catch (_) {}
-          }
-          form.append("files", fileToSend, name);
-        }
-        appendCaptionToSavedForm(form, cap);
-        try {
-          const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
-          const data = await parseImportResponse(r);
-          if (data.status === "saved_only" && !data.error) {
-            for (const it of chunk) {
-              await addToCollected({ url: it.url, type: it.type || "image", addedAt: Date.now(), to_saved: true });
-              bump();
+      let fi = 0;
+      while (fi < g.items.length) {
+        const { chunk, next, appendPromo } = tbccSliceSavedAlbumChunk(g.items, fi, albumPlanner);
+        if (!chunk.length) break;
+        fi = next;
+        scheduleSavedSend(async (meta) => {
+          const form = new FormData();
+          for (const it of chunk) {
+            let fileToSend = it.file;
+            let name = it.name || "media";
+            if (isImageItem(it)) {
+              try {
+                const raw = new Blob([await it.file.arrayBuffer()], {
+                  type: it.file.type || "application/octet-stream",
+                });
+                const prep = await tbccPrepareRasterBlob(raw, it.url, name);
+                fileToSend = prep.blob;
+                name = prep.name;
+              } catch (_) {}
             }
-          } else {
-            appendErr(data.error || "Saved batch failed");
+            form.append("files", fileToSend, name);
           }
-        } catch (e) {
-          appendErr(e.message);
-        }
+          appendCaptionToSavedForm(form, cap);
+          markAppendSendPromoForm(form, meta);
+          try {
+            const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
+            const data = await parseImportResponse(r);
+            if (data.status === "saved_only" && !data.error) {
+              for (const it of chunk) {
+                await addToCollected({ url: it.url, type: it.type || "image", addedAt: Date.now(), to_saved: true });
+                bump();
+              }
+            } else {
+              appendErr(data.error || "Saved batch failed");
+            }
+          } catch (e) {
+            appendErr(e.message);
+          }
+        }, savedSendMeta(appendPromo, chunk.length));
       }
     } else if (g.kind === "datapage") {
-      for (let i = 0; i < g.items.length; i += SAVED_ALBUM_CHUNK) {
-        const chunk = g.items.slice(i, i + SAVED_ALBUM_CHUNK);
+      let di = 0;
+      while (di < g.items.length) {
+        const { chunk, next, appendPromo } = tbccSliceSavedAlbumChunk(g.items, di, albumPlanner);
+        if (!chunk.length) break;
+        di = next;
         const prepared = [];
         for (const it of chunk) {
           try {
-            const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
+            const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it), it);
             if (!raw || !raw.size) {
               appendErr("Could not read image data from gallery tile");
               continue;
@@ -8155,7 +8913,16 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
             appendErr((e.message || String(e)).slice(0, 160));
           }
         }
-        if (prepared.length) await postSavedBatchFilesFromPageItems(prepared, bump, appendErr, cap);
+        if (prepared.length)
+          await postSavedBatchFilesFromPageItems(
+            prepared,
+            bump,
+            appendErr,
+            cap,
+            scheduleSavedSend,
+            albumPlanner,
+            savedSendMeta
+          );
       }
     } else if (g.kind.startsWith("intab:")) {
       const tabId = parseInt(g.kind.slice("intab:".length), 10);
@@ -8173,8 +8940,11 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
         byFrame.get(fid).push(it);
       }
       for (const [frameId, frameItems] of byFrame) {
-        for (let i = 0; i < frameItems.length; i += SAVED_ALBUM_CHUNK) {
-          const chunk = frameItems.slice(i, i + SAVED_ALBUM_CHUNK);
+        let fii = 0;
+        while (fii < frameItems.length) {
+          const { chunk, next, appendPromo } = tbccSliceSavedAlbumChunk(frameItems, fii, albumPlanner);
+          if (!chunk.length) break;
+          fii = next;
           const urls = chunk.map((it) => it.url);
           try {
             const payload = await readPageUrlsAsByteArrays(
@@ -8199,7 +8969,15 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
                 `${chunk.length - prepared.length} of ${chunk.length} image(s) could not be read from the page`
               );
             }
-            await postSavedBatchFilesFromPageItems(prepared, bump, appendErr, cap);
+            await postSavedBatchFilesFromPageItems(
+              prepared,
+              bump,
+              appendErr,
+              cap,
+              scheduleSavedSend,
+              albumPlanner,
+              savedSendMeta
+            );
           } catch (e) {
             appendErr(e.message || String(e));
           }
@@ -8212,70 +8990,99 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
         const sliceNeedsBytes = slice.some((it) => isImageItem(it) && shouldApplyImagePipelineForUrl(it.url));
         if (!sliceNeedsBytes) {
           const urls = slice.map((it) => normalizeTbccMediaUrlForImport(it.url));
-          try {
-            const payload = { urls, pool_id: poolId, saved_only: true };
-            if (cap) payload.caption = cap;
-            const r = await fetch(API_BASE + "/import/url", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-            const data = await parseImportResponse(r);
-            if (data.status === "saved_only" && !data.error) {
-              const okSet =
-                Array.isArray(data.ok_urls) && data.ok_urls.length
-                  ? new Set(data.ok_urls.map((u) => normalizeTbccMediaUrlForImport(u)))
-                  : null;
-              for (const it of slice) {
-                const u = normalizeTbccMediaUrlForImport(it.url);
-                if (okSet && !okSet.has(u)) continue;
-                await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
-                bump();
-              }
-              if (Array.isArray(data.errors) && data.errors.length) {
-                const first = data.errors[0] && data.errors[0].error;
-                appendErr(
-                  data.errors.length === 1
-                    ? first || "One URL failed"
-                    : `${data.errors.length} URL(s) failed; others were sent. ${first ? String(first).slice(0, 120) : ""}`
-                );
-              }
-            } else {
-              appendErr(data.error || "Saved batch (URLs) failed");
-            }
-          } catch (e) {
-            appendErr(e.message);
-          }
-        } else {
-          let pendingCrops = [];
-          const flushCrops = async () => {
-            if (!pendingCrops.length) return;
-            const form = new FormData();
-            pendingCrops.forEach((p, j) => form.append("files", p.blob, p.name || `media_${j}.jpg`));
-            appendCaptionToSavedForm(form, cap);
+          const urlMeta = savedSendMeta(false, slice.length);
+          scheduleSavedSend(async (meta) => {
             try {
-              const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
+              const payload = { urls, pool_id: poolId, saved_only: true };
+              if (cap) payload.caption = cap;
+              markAppendSendPromoPayload(payload, meta);
+              const r = await fetch(API_BASE + "/import/url", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
               const data = await parseImportResponse(r);
               if (data.status === "saved_only" && !data.error) {
-                for (const p of pendingCrops) {
-                  await addToCollected({ url: p.url, type: "image", addedAt: Date.now(), to_saved: true });
+                const okSet =
+                  Array.isArray(data.ok_urls) && data.ok_urls.length
+                    ? new Set(data.ok_urls.map((u) => normalizeTbccMediaUrlForImport(u)))
+                    : null;
+                for (const it of slice) {
+                  const u = normalizeTbccMediaUrlForImport(it.url);
+                  if (okSet && !okSet.has(u)) continue;
+                  await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
                   bump();
                 }
+                if (Array.isArray(data.errors) && data.errors.length) {
+                  const first = data.errors[0] && data.errors[0].error;
+                  appendErr(
+                    data.errors.length === 1
+                      ? first || "One URL failed"
+                      : `${data.errors.length} URL(s) failed; others were sent. ${first ? String(first).slice(0, 120) : ""}`
+                  );
+                }
               } else {
-                appendErr(data.error || "Saved batch (cropped) failed");
+                appendErr(data.error || "Saved batch (URLs) failed");
               }
             } catch (e) {
               appendErr(e.message);
             }
+          }, urlMeta);
+        } else {
+          let pendingCrops = [];
+          const flushCrops = () => {
+            if (!pendingCrops.length) return;
+            const crops = pendingCrops.slice();
             pendingCrops = [];
-          };
-          for (const it of slice) {
-            if (isImageItem(it) && !shouldApplyImagePipelineForUrl(it.url)) {
-              await flushCrops();
+            const cropTake = crops.length;
+            let cropPlannerAppend = false;
+            if (albumPlanner) {
+              cropPlannerAppend = albumPlanner.appendPromoAfterChunk(cropTake);
+              albumPlanner.advance(cropTake);
+            }
+            const cropMeta = savedSendMeta(cropPlannerAppend, cropTake);
+            scheduleSavedSend(async (meta) => {
+              const form = new FormData();
+              crops.forEach((p, j) => form.append("files", p.blob, p.name || `media_${j}.jpg`));
+              appendCaptionToSavedForm(form, cap);
+              markAppendSendPromoForm(form, meta);
               try {
-                const data = await importSavedUrlJson([it.url], poolId, cap);
+                const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
+                const data = await parseImportResponse(r);
                 if (data.status === "saved_only" && !data.error) {
-                  await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
+                  for (const p of crops) {
+                    await addToCollected({ url: p.url, type: "image", addedAt: Date.now(), to_saved: true });
+                    bump();
+                  }
+                } else {
+                  appendErr(data.error || "Saved batch (cropped) failed");
+                }
+              } catch (e) {
+                appendErr(e.message);
+              }
+            }, cropMeta);
+          };
+          const scheduleSavedUrl = (it) => {
+            const url = typeof it === "string" ? it : (it && it.url) || "";
+            const refItem = typeof it === "object" && it ? it : { url };
+            const preferSession =
+              tbccWebpConvertEnabled() &&
+              typeof TbccWebp !== "undefined" &&
+              TbccWebp.tbccUrlLooksLikeWebp(url);
+            const oneMeta = savedSendMeta(false, 1);
+            scheduleSavedSend(async (meta) => {
+              try {
+                const data = preferSession
+                  ? await importUrlViaExtensionSession(
+                      url,
+                      poolId,
+                      true,
+                      await tbccRefererPageForItem(refItem),
+                      cap
+                    )
+                  : await importSavedUrlJson([url], poolId, cap, meta);
+                if (data.status === "saved_only" && !data.error) {
+                  await addToCollected({ url, type: "image", addedAt: Date.now(), to_saved: true });
                   bump();
                 } else {
                   appendErr(data.error || "Saved URL import failed");
@@ -8283,64 +9090,44 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
               } catch (e) {
                 appendErr(e.message);
               }
+            }, oneMeta);
+          };
+          for (const it of slice) {
+            if (isImageItem(it) && !shouldApplyImagePipelineForUrl(it.url)) {
+              flushCrops();
+              scheduleSavedUrl(it);
               continue;
             }
             if (isImageItem(it)) {
               try {
-                const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
+                const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it), it);
                 if (raw && raw.size > 0) {
-                  const cropped = await applyImagePipeline(raw, it.url);
+                  const prep = await tbccPrepareRasterBlob(raw, it.url, filenameForCropUrl(it.url));
                   pendingCrops.push({
-                    blob: cropped,
-                    name: filenameForCropUrl(it.url),
+                    blob: prep.blob,
+                    name: prep.name,
                     url: it.url,
                   });
-                  if (pendingCrops.length >= SAVED_ALBUM_CHUNK) await flushCrops();
+                  const cropTake =
+                    albumPlanner && albumPlanner.take
+                      ? albumPlanner.take(pendingCrops.length + 1)
+                      : SAVED_ALBUM_CHUNK;
+                  if (pendingCrops.length >= (cropTake > 0 ? cropTake : SAVED_ALBUM_CHUNK)) flushCrops();
                 } else {
-                  await flushCrops();
-                  try {
-                    const data = await importSavedUrlJson([it.url], poolId, cap);
-                    if (data.status === "saved_only" && !data.error) {
-                      await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
-                      bump();
-                    } else {
-                      appendErr(data.error || "Saved URL import failed");
-                    }
-                  } catch (e) {
-                    appendErr(e.message);
-                  }
+                  flushCrops();
+                  scheduleSavedUrl(it.url);
                 }
               } catch (e) {
                 appendErr(e.message);
-                await flushCrops();
-                try {
-                  const data = await importSavedUrlJson([it.url], poolId, cap);
-                  if (data.status === "saved_only" && !data.error) {
-                    await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
-                    bump();
-                  } else {
-                    appendErr(data.error || "Saved URL import failed");
-                  }
-                } catch (e2) {
-                  appendErr(e2.message);
-                }
+                flushCrops();
+                scheduleSavedUrl(it.url);
               }
             } else {
-              await flushCrops();
-              try {
-                const data = await importSavedUrlJson([it.url], poolId, cap);
-                if (data.status === "saved_only" && !data.error) {
-                  await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
-                  bump();
-                } else {
-                  appendErr(data.error || "Saved URL import failed");
-                }
-              } catch (e) {
-                appendErr(e.message);
-              }
+              flushCrops();
+              scheduleSavedUrl(it.url);
             }
           }
-          await flushCrops();
+          flushCrops();
         }
       }
     } else if (g.kind === "session") {
@@ -8360,8 +9147,11 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
           appendErr(e.message);
         }
       } else {
-        for (let i = 0; i < g.items.length; i += SAVED_ALBUM_CHUNK) {
-          const chunk = g.items.slice(i, i + SAVED_ALBUM_CHUNK);
+        let si = 0;
+        while (si < g.items.length) {
+          const { chunk, next, appendPromo } = tbccSliceSavedAlbumChunk(g.items, si, albumPlanner);
+          if (!chunk.length) break;
+          si = next;
           const allImg = chunk.every(isImageItem);
           if (!allImg) {
             try {
@@ -8379,40 +9169,43 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
             }
             continue;
           }
-          try {
-            const form = new FormData();
-            for (const it of chunk) {
-              const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
-              if (!raw || !raw.size) throw new Error("fetch bytes");
-              const cropped = await applyImagePipeline(raw, it.url);
-              form.append("files", cropped, filenameForCropUrl(it.url));
-            }
-            appendCaptionToSavedForm(form, cap);
-            const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
-            const data = await parseImportResponse(r);
-            if (data.status === "saved_only" && !data.error) {
-              for (const it of chunk) {
-                await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
-                bump();
-              }
-            } else {
-              appendErr(data.error || "Saved batch (session crop) failed");
-            }
-          } catch (e) {
+          scheduleSavedSend(async (meta) => {
             try {
-              const data = await importViaExtensionBytesSavedBatch(chunk.map((x) => x.url), cap);
-              if (data.ok && !data.error) {
+              const form = new FormData();
+              for (const it of chunk) {
+                const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it), it);
+                if (!raw || !raw.size) throw new Error("fetch bytes");
+                const prep = await tbccPrepareRasterBlob(raw, it.url, filenameForCropUrl(it.url));
+                form.append("files", prep.blob, prep.name);
+              }
+              appendCaptionToSavedForm(form, cap);
+              markAppendSendPromoForm(form, meta);
+              const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
+              const data = await parseImportResponse(r);
+              if (data.status === "saved_only" && !data.error) {
                 for (const it of chunk) {
                   await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
                   bump();
                 }
               } else {
-                appendErr(data.error || "Session saved batch failed");
+                appendErr(data.error || "Saved batch (session crop) failed");
               }
-            } catch (e2) {
-              appendErr(e2.message || String(e));
+            } catch (e) {
+              try {
+                const data = await importViaExtensionBytesSavedBatch(chunk.map((x) => x.url), cap);
+                if (data.ok && !data.error) {
+                  for (const it of chunk) {
+                    await addToCollected({ url: it.url, type: "image", addedAt: Date.now(), to_saved: true });
+                    bump();
+                  }
+                } else {
+                  appendErr(data.error || "Session saved batch failed");
+                }
+              } catch (e2) {
+                appendErr(e2.message || String(e));
+              }
             }
-          }
+          }, savedSendMeta(appendPromo, chunk.length));
         }
       }
     } else {
@@ -8428,8 +9221,11 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
         byTab.get(tid).push(it);
       }
       for (const [tabId, tabItems] of byTab) {
-        for (let i = 0; i < tabItems.length; i += SAVED_ALBUM_CHUNK) {
-          const chunk = tabItems.slice(i, i + SAVED_ALBUM_CHUNK);
+        let tii = 0;
+        while (tii < tabItems.length) {
+          const { chunk, next } = tbccSliceSavedAlbumChunk(tabItems, tii, albumPlanner);
+          if (!chunk.length) break;
+          tii = next;
           const frameId =
             chunk[0] && chunk[0].tbccCaptureFrameId != null ? chunk[0].tbccCaptureFrameId : null;
           const urls = chunk.map((it) => it.url);
@@ -8452,9 +9248,7 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
       }
     }
   }
-  if (typeof TbccSendPromo !== "undefined" && TbccSendPromo.sendSavedTail) {
-    await TbccSendPromo.sendSavedTail(poolId, appendCaptionToSavedForm, appendErr, bump);
-  }
+  await flushScheduledSavedSends();
 }
 
 function tbccScriptTargetForTabFrame(tabId, frameId, urls) {
@@ -8659,7 +9453,7 @@ async function runSendBatch(savedOnly) {
     if (progressTitle) progressTitle.textContent = "Sending to Saved Messages…";
     if (!savedCaption.trim()) {
       showToast(
-        "No caption or tags to attach — open Send settings, add message text or tags, or use Auto cap.",
+        "No caption or tags to attach — add message text in Send settings or disable auto-tag to send without.",
         "info"
       );
     }
@@ -8701,12 +9495,12 @@ async function runSendBatch(savedOnly) {
   for (const it of withFile) {
     let uploadBlob = it.file;
     let uploadName = it.name || "media";
-    if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
+    if (isImageItem(it)) {
       try {
         const raw = new Blob([await it.file.arrayBuffer()], { type: it.file.type || "application/octet-stream" });
-        const cropped = await applyImagePipeline(raw, it.url);
-        uploadBlob = cropped;
-        uploadName = /\.(jpe?g)$/i.test(uploadName) ? uploadName : (uploadName.replace(/\.[^.]+$/, "") || "media") + ".jpg";
+        const prep = await tbccPrepareRasterBlob(raw, it.url, uploadName);
+        uploadBlob = prep.blob;
+        uploadName = prep.name;
       } catch (_) {}
     }
     const form = new FormData();
@@ -8739,11 +9533,10 @@ async function runSendBatch(savedOnly) {
   for (const it of httpPage) {
     if (shouldApplyImagePipelineForUrl(it.url) && isImageItem(it)) {
       try {
-        const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it));
+        const raw = await fetchUrlBytesToBlob(it.url, await tbccRefererPageForItem(it), it);
         if (raw && raw.size > 0) {
-          const cropped = await applyImagePipeline(raw, it.url);
           const data = await postImportBytes(
-            cropped,
+            raw,
             filenameForCropUrl(it.url),
             poolId,
             savedOnly,
@@ -8857,9 +9650,8 @@ async function runSendBatch(savedOnly) {
         try {
           const raw = await fetchUrlBytesToBlob(url, await tbccRefererPageForItem(it || { tabId, url }));
           if (raw && raw.size > 0) {
-            const cropped = await applyImagePipeline(raw, url);
             const data = await postImportBytes(
-              cropped,
+              raw,
               filenameForCropUrl(url),
               poolId,
               savedOnly,
@@ -8946,7 +9738,7 @@ async function runSendBatch(savedOnly) {
   }
 
   if (!savedOnly && importedMediaIds.length) {
-    const useAutoTag = !!(autoTagOnExport && autoTagOnExport.checked);
+    const useAutoTag = autoTagOnExportEnabled();
     const hasManualTags = gallerySendTags.length > 0;
     if (progressTitle) progressTitle.textContent = useAutoTag ? "Auto-tagging…" : "Applying tags…";
     try {
@@ -9041,18 +9833,19 @@ async function runSendBatch(savedOnly) {
   clearGallerySendTags();
   if (hadErr) {
     notifyCompletion(
-      "TBCC send finished with errors (" + done + " / " + total + ").",
+      "TBCC send finished with errors (" + done + " / " + total + ") — click to open Dest.",
       "error",
       "notifyOnSendTbccComplete",
-      "TBCC send status"
+      "TBCC send status",
+      { type: "gallery_dest" }
     );
   } else {
     notifyCompletion(
-      "Completed " + done + " / " + total + " item(s).",
+      "Completed " + done + " / " + total + " item(s) — click to open Dest.",
       "success",
       "notifyOnSendTbccComplete",
       "TBCC import complete",
-      { type: "url", url: "http://localhost:5173/" }
+      { type: "gallery_dest" }
     );
   }
   if (telegramPostAttempted && !telegramPostHadError) {
@@ -9079,25 +9872,29 @@ async function runSendBatch(savedOnly) {
 /**
  * Destination Saved → Telegram Saved Messages (albums ≤10) with caption + #hashtags from Send settings.
  * Library → TBCC pool (+ tags on media rows); Topic/Channel → pool then Telegram post.
+ * Pool-only is forumPostEnabled unchecked (Collected sidebar "TBCC pool only") — not postDestMode alone.
  */
 function sendToTBCC() {
-  const destSaved = postDestMode && postDestMode.value === "saved";
-  if (destSaved) {
-    if (forumPostEnabled && !forumPostEnabled.checked) {
-      forumPostEnabled.checked = true;
-      void chrome.storage.local.set({ tbccForumPostEnabled: true });
-      updateTelegramPostControls();
-      updateImportSheetLayout();
-      syncDestMacroButtons();
-    }
-    return runSendBatch(true);
-  }
+  const poolOnly = forumPostEnabled && !forumPostEnabled.checked;
+  const destSaved =
+    !poolOnly && postDestMode && postDestMode.value === "saved" && forumPostEnabled && forumPostEnabled.checked;
+  if (destSaved) return runSendBatch(true);
   return runSendBatch(false);
 }
 
 btnSend && btnSend.addEventListener("click", sendToTBCC);
 
 async function addToCollected(item) {
+  if (window.TbccCollected && TbccCollected.appendItems) {
+    const row =
+      TbccCollected.normalizeCollectedItem({
+        ...item,
+        fromSend: true,
+        staged: false,
+      }) || null;
+    if (row) await TbccCollected.appendItems([row]);
+    return;
+  }
   const key = STORAGE_COLLECTED;
   const raw = await new Promise((r) => chrome.storage.local.get(key, (o) => r(o[key])));
   const arr = Array.isArray(raw) ? raw : [];
@@ -9166,29 +9963,40 @@ savedUrlInboxDefaultDest &&
   savedUrlInboxDefaultDest.addEventListener("change", () => {
     syncInboxDefaultDestUi();
     chrome.storage.local.set({
-      [STORAGE_INBOX_DEFAULT_DEST]: savedUrlInboxDefaultDest.value === "loot_modifier" ? "loot_modifier" : "pool",
+      [STORAGE_INBOX_DEFAULT_DEST]: savedUrlInboxDefaultDest.value || "archive",
     });
   });
 btnSavedUrlInboxAdd &&
   btnSavedUrlInboxAdd.addEventListener("click", async () => {
     const url = savedUrlInboxManualUrl && savedUrlInboxManualUrl.value.trim();
     if (!url) return showToast("Enter a URL.", "info");
-    const defDest =
-      savedUrlInboxDefaultDest && savedUrlInboxDefaultDest.value === "loot_modifier"
-        ? "loot_modifier"
-        : "pool";
+    const defDest = savedUrlInboxDefaultDest ? savedUrlInboxDefaultDest.value : "archive";
     const defPool =
       savedUrlInboxDefaultPool && savedUrlInboxDefaultPool.value
         ? parseInt(savedUrlInboxDefaultPool.value, 10)
         : null;
+    const tagsCsv =
+      savedUrlInboxDefaultTags && savedUrlInboxDefaultTags.value
+        ? savedUrlInboxDefaultTags.value.trim()
+        : "";
     const r = await TbccSavedUrlInbox.appendUrl(url, {
       destType: defDest,
       poolId: defDest === "pool" && Number.isFinite(defPool) && defPool > 0 ? defPool : null,
+      tagsCsv,
     });
     if (r.error) return showToast(r.error, "error");
     if (savedUrlInboxManualUrl) savedUrlInboxManualUrl.value = "";
-    await renderSavedUrlInboxList();
-    showToast(r.duplicate ? "Already in inbox." : "Added to inbox.", r.duplicate ? "info" : "success");
+    if (defDest !== "archive") await renderSavedUrlInboxList();
+    const inboxUrl = url.trim();
+    showToast(
+      r.archived
+        ? "Saved to master archive — click to open."
+        : r.duplicate
+          ? "Already in import queue — click to open."
+          : "Added to import queue — click to open Inbox.",
+      r.duplicate ? "info" : "success",
+      r.archived ? { type: "gallery_master_archive" } : !r.archived ? { type: "gallery_inbox", url: inboxUrl } : null
+    );
   });
 savedUrlInboxDefaultPool &&
   savedUrlInboxDefaultPool.addEventListener("change", () => {
@@ -9197,6 +10005,9 @@ savedUrlInboxDefaultPool &&
     if (poolSelect) poolSelect.value = v;
     syncPoolSelectTooltip();
   });
+const btnSavedUrlInboxArchiveSel = document.getElementById("btnSavedUrlInboxArchiveSel");
+btnSavedUrlInboxArchiveSel &&
+  btnSavedUrlInboxArchiveSel.addEventListener("click", () => void archiveCheckedInboxUrls());
 btnSavedUrlInboxImportSel &&
   btnSavedUrlInboxImportSel.addEventListener("click", async () => {
     const picked = await getCheckedInboxRows();
@@ -9223,28 +10034,7 @@ btnSavedUrlInboxRemoveSel &&
     await TbccSavedUrlInbox.setRows(rows);
     await renderSavedUrlInboxList();
   });
-btnSavedUrlInboxClearImported &&
-  btnSavedUrlInboxClearImported.addEventListener("click", async () => {
-    const rows = (await TbccSavedUrlInbox.getRows()).filter((r) => r.status !== "imported");
-    await TbccSavedUrlInbox.setRows(rows);
-    await renderSavedUrlInboxList();
-  });
-const btnSavedUrlInboxSelectAll = document.getElementById("btnSavedUrlInboxSelectAll");
-const btnSavedUrlInboxDeselectAll = document.getElementById("btnSavedUrlInboxDeselectAll");
-const btnSavedUrlInboxExport = document.getElementById("btnSavedUrlInboxExport");
-const btnSavedUrlInboxImport = document.getElementById("btnSavedUrlInboxImport");
-const btnSavedUrlInboxMaster = document.getElementById("btnSavedUrlInboxMaster");
 const savedUrlInboxImportFile = document.getElementById("savedUrlInboxImportFile");
-btnSavedUrlInboxSelectAll &&
-  btnSavedUrlInboxSelectAll.addEventListener("click", () => setInboxChecksAll(true));
-btnSavedUrlInboxDeselectAll &&
-  btnSavedUrlInboxDeselectAll.addEventListener("click", () => setInboxChecksAll(false));
-btnSavedUrlInboxExport &&
-  btnSavedUrlInboxExport.addEventListener("click", () => void exportInboxRows("json"));
-btnSavedUrlInboxImport &&
-  btnSavedUrlInboxImport.addEventListener("click", () => {
-    if (savedUrlInboxImportFile) savedUrlInboxImportFile.click();
-  });
 savedUrlInboxImportFile &&
   savedUrlInboxImportFile.addEventListener("change", async () => {
     const file = savedUrlInboxImportFile.files && savedUrlInboxImportFile.files[0];
@@ -9256,11 +10046,34 @@ savedUrlInboxImportFile &&
       setSavedUrlInboxStatus(String(e.message || e));
     }
   });
-const btnSavedUrlInboxCopyAll = document.getElementById("btnSavedUrlInboxCopyAll");
-btnSavedUrlInboxCopyAll &&
-  btnSavedUrlInboxCopyAll.addEventListener("click", () => void copyAllInboxUrls());
-btnSavedUrlInboxMaster &&
-  btnSavedUrlInboxMaster.addEventListener("click", () => openMasterArchiveSheet(true));
+btnSavedUrlInboxRunAction &&
+  btnSavedUrlInboxRunAction.addEventListener("click", async () => {
+    const action = savedUrlInboxActions ? savedUrlInboxActions.value : "";
+    if (!action) return showToast("Pick an action first.", "info");
+    if (savedUrlInboxActions) savedUrlInboxActions.value = "";
+    if (action === "select_all") return setInboxChecksAll(true);
+    if (action === "deselect_all") return setInboxChecksAll(false);
+    if (action === "remove_checked") {
+      const picked = await getCheckedInboxRows();
+      if (!picked.length) return showToast("Check URLs to remove.", "info");
+      const drop = new Set(picked.map((r) => TbccSavedUrlInbox.rowKey(r)));
+      const rows = (await TbccSavedUrlInbox.getRows()).filter((r) => !drop.has(TbccSavedUrlInbox.rowKey(r)));
+      await TbccSavedUrlInbox.setRows(rows);
+      return renderSavedUrlInboxList();
+    }
+    if (action === "clear_imported") {
+      const rows = (await TbccSavedUrlInbox.getRows()).filter((r) => r.status !== "imported");
+      await TbccSavedUrlInbox.setRows(rows);
+      return renderSavedUrlInboxList();
+    }
+    if (action === "copy_all") return void copyAllInboxUrls();
+    if (action === "export_json") return void exportInboxRows("json");
+    if (action === "import_file") {
+      if (savedUrlInboxImportFile) savedUrlInboxImportFile.click();
+      return;
+    }
+    if (action === "open_archive") return openMasterArchiveSheet(true);
+  });
 const btnMasterArchiveDone = document.getElementById("btnMasterArchiveDone");
 masterArchiveBackdrop &&
   masterArchiveBackdrop.addEventListener("click", () => openMasterArchiveSheet(false));
@@ -9273,6 +10086,11 @@ masterArchiveFilter &&
   });
 masterArchiveKind &&
   masterArchiveKind.addEventListener("change", () => {
+    if (masterArchiveUi) masterArchiveUi.resetPage();
+    void renderMasterArchiveList();
+  });
+masterArchiveTags &&
+  masterArchiveTags.addEventListener("input", () => {
     if (masterArchiveUi) masterArchiveUi.resetPage();
     void renderMasterArchiveList();
   });
@@ -9541,8 +10359,10 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
   }
   setInterval(() => {
     void refreshActiveJobsBar();
-    void refreshSystemHealthHint();
   }, 2500);
+  setInterval(() => {
+    void refreshSystemHealthHint();
+  }, 20000);
   void reconcileImportJobsOnOpen().then(() => refreshActiveJobsBar());
   void refreshSystemHealthHint();
   try {
@@ -9616,7 +10436,7 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
     : [];
   renderTagChipRow();
   await loadAlwaysIncludeCaptionState();
-  const apiOk = await refreshTbccApiOfflineBanner();
+  const apiOk = await syncTbccApiReachability();
   if (typeof TbccSendPromo !== "undefined" && TbccSendPromo.refresh) {
     void TbccSendPromo.refresh(apiOk);
     chrome.storage.local.get(["tbccShowSendPromoStrip"], (local) => {

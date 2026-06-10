@@ -1,4 +1,4 @@
-"""Buffer GraphQL: createPost for X / Instagram / Threads (queue or publish now)."""
+"""Buffer GraphQL: posts, ideas, channels (https://developers.buffer.com/)."""
 
 from __future__ import annotations
 
@@ -28,6 +28,48 @@ mutation CreatePost($input: CreatePostInput!) {
 }
 """
 
+_GET_ORGANIZATIONS_QUERY = """
+query GetOrganizations {
+  account {
+    organizations {
+      id
+      name
+      ownerEmail
+    }
+  }
+}
+"""
+
+_GET_CHANNELS_QUERY = """
+query GetChannels($organizationId: OrganizationId!) {
+  channels(input: { organizationId: $organizationId }) {
+    id
+    name
+    displayName
+    service
+    avatar
+    isQueuePaused
+  }
+}
+"""
+
+_CREATE_IDEA_MUTATION = """
+mutation CreateIdea($input: CreateIdeaInput!) {
+  createIdea(input: $input) {
+    ... on Idea {
+      id
+      content {
+        title
+        text
+      }
+    }
+    ... on MutationError {
+      message
+    }
+  }
+}
+"""
+
 
 def buffer_graphql_url() -> str:
     return (os.environ.get("TBCC_BUFFER_GRAPHQL_URL") or DEFAULT_ENDPOINT).strip().rstrip("/")
@@ -36,6 +78,105 @@ def buffer_graphql_url() -> str:
 def buffer_api_key() -> str | None:
     k = (os.environ.get("TBCC_BUFFER_API_KEY") or "").strip()
     return k or None
+
+
+def buffer_organization_id() -> str | None:
+    return (os.environ.get("TBCC_BUFFER_ORGANIZATION_ID") or "").strip() or None
+
+
+def graphql_request(
+    query: str,
+    *,
+    variables: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    key = buffer_api_key()
+    if not key:
+        raise RuntimeError("TBCC_BUFFER_API_KEY is not set")
+    payload: dict[str, Any] = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(
+            buffer_graphql_url(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
+            json=payload,
+        )
+    try:
+        data = r.json()
+    except json.JSONDecodeError:
+        logger.warning("Buffer GraphQL non-JSON %s: %s", r.status_code, r.text[:300])
+        raise RuntimeError(f"Buffer GraphQL HTTP {r.status_code}") from None
+    if r.status_code >= 400:
+        logger.warning("Buffer GraphQL HTTP %s: %s", r.status_code, str(data)[:500])
+    if data.get("errors"):
+        logger.warning("Buffer GraphQL errors: %s", data.get("errors"))
+    return data
+
+
+def get_organizations() -> list[dict[str, Any]]:
+    data = graphql_request(_GET_ORGANIZATIONS_QUERY)
+    account = (data.get("data") or {}).get("account") if isinstance(data.get("data"), dict) else None
+    if not isinstance(account, dict):
+        return []
+    orgs = account.get("organizations")
+    return [o for o in orgs if isinstance(o, dict)] if isinstance(orgs, list) else []
+
+
+def resolve_organization_id() -> str:
+    oid = buffer_organization_id()
+    if oid:
+        return oid
+    orgs = get_organizations()
+    if not orgs:
+        raise RuntimeError(
+            "No Buffer organizations — check TBCC_BUFFER_API_KEY or set TBCC_BUFFER_ORGANIZATION_ID"
+        )
+    if len(orgs) > 1:
+        logger.warning(
+            "Multiple Buffer orgs; using first (%s). Set TBCC_BUFFER_ORGANIZATION_ID to pin one.",
+            orgs[0].get("name"),
+        )
+    return str(orgs[0].get("id") or "").strip()
+
+
+def get_channels(*, organization_id: str | None = None) -> list[dict[str, Any]]:
+    oid = (organization_id or resolve_organization_id()).strip()
+    data = graphql_request(_GET_CHANNELS_QUERY, variables={"organizationId": oid})
+    chans = (data.get("data") or {}).get("channels") if isinstance(data.get("data"), dict) else None
+    return [c for c in chans if isinstance(c, dict)] if isinstance(chans, list) else []
+
+
+def find_channel_id_by_service(service: str, *, organization_id: str | None = None) -> str | None:
+    want = (service or "").strip().lower()
+    for ch in get_channels(organization_id=organization_id):
+        if str(ch.get("service") or "").strip().lower() == want:
+            cid = str(ch.get("id") or "").strip()
+            if cid:
+                return cid
+    return None
+
+
+def create_idea(
+    title: str,
+    text: str,
+    *,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
+    oid = (organization_id or resolve_organization_id()).strip()
+    variables = {
+        "input": {
+            "organizationId": oid,
+            "content": {
+                "title": (title or "TBCC ship log").strip()[:200],
+                "text": (text or "").strip(),
+            },
+        }
+    }
+    return graphql_request(_CREATE_IDEA_MUTATION, variables=variables)
 
 
 def buffer_target_channel_ids(*, x_primary_only: bool = False) -> list[str]:
@@ -97,29 +238,7 @@ def create_post(
     iu = (image_url or "").strip()
     if iu.startswith("http"):
         inp["assets"] = [{"image": {"url": iu}}]
-    payload = {"query": _CREATE_POST_MUTATION, "variables": {"input": inp}}
-    key = buffer_api_key()
-    if not key:
-        raise RuntimeError("TBCC_BUFFER_API_KEY is not set")
-    url = buffer_graphql_url()
-    with httpx.Client(timeout=30.0) as client:
-        r = client.post(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {key}",
-            },
-            json=payload,
-        )
-    try:
-        data = r.json()
-    except json.JSONDecodeError:
-        logger.warning("Buffer GraphQL non-JSON %s: %s", r.status_code, r.text[:300])
-        raise RuntimeError(f"Buffer GraphQL HTTP {r.status_code}") from None
-    if r.status_code >= 400:
-        logger.warning("Buffer GraphQL HTTP %s: %s", r.status_code, str(data)[:500])
-    if data.get("errors"):
-        logger.warning("Buffer GraphQL errors: %s", data.get("errors"))
+    data = graphql_request(_CREATE_POST_MUTATION, variables={"input": inp})
     cp = (data.get("data") or {}).get("createPost") if isinstance(data.get("data"), dict) else None
     if isinstance(cp, dict) and cp.get("message"):
         logger.warning("Buffer createPost mode=%s: %s", mode, cp.get("message"))

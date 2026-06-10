@@ -84,6 +84,12 @@ def telethon_message_kwargs(html: str | None, *, empty_fallback: str = "") -> di
         fb = empty_fallback or ""
         return {"message": fb} if fb else {}
     text, entities = parse_telethon_html(raw)
+    if entities and not (text or "").strip():
+        # Custom-emoji-only banners parse to empty plain text; Telethon rejects that.
+        text = "🎵"
+    if not (text or "").strip():
+        fb = empty_fallback or "🎵"
+        return {"message": fb}
     if entities:
         return {"message": text, "formatting_entities": entities}
     return {"message": text, "parse_mode": "html"}

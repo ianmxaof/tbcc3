@@ -73,11 +73,18 @@ export function CaptionSnippetLibraryManageButton({ className }: { className?: s
 }
 
 function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { snippets, add, remove, bulkImport } = useCaptionSnippets();
+  const { snippets, add, update, remove, bulkImport } = useCaptionSnippets();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [bulkJson, setBulkJson] = useState("");
   const [flash, setFlash] = useState<string | null>(null);
+
+  const resetForm = () => {
+    setTitle("");
+    setBody("");
+    setEditingId(null);
+  };
 
   if (!open) return null;
 
@@ -138,14 +145,30 @@ function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose:
             className="px-3 py-1.5 rounded bg-cyan-800 text-cyan-100 text-sm hover:bg-cyan-700 disabled:opacity-50"
             disabled={!body.trim()}
             onClick={() => {
+              if (editingId != null && editingId > 0) {
+                void update(editingId, title, body).then(() => {
+                  resetForm();
+                  setFlash("Caption updated.");
+                  window.setTimeout(() => setFlash(null), 3000);
+                });
+                return;
+              }
               void add(title, body).then(() => {
-                setTitle("");
-                setBody("");
+                resetForm();
               });
             }}
           >
-            Save to library
+            {editingId != null ? "Update caption" : "Save to library"}
           </button>
+          {editingId != null ? (
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded border border-slate-600 text-slate-300 text-sm hover:bg-slate-700/50"
+              onClick={resetForm}
+            >
+              Cancel edit
+            </button>
+          ) : null}
         </div>
 
         <div>
@@ -157,7 +180,26 @@ function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose:
               {snippets.map((s) => (
                 <li
                   key={s.id}
-                  className="flex gap-2 items-start justify-between rounded border border-slate-600/80 bg-slate-900/30 p-2"
+                  role="button"
+                  tabIndex={0}
+                  className={`flex gap-2 items-start justify-between rounded border p-2 cursor-pointer transition-colors ${
+                    editingId === s.id
+                      ? "border-cyan-500 bg-cyan-950/25"
+                      : "border-slate-600/80 bg-slate-900/30 hover:border-slate-500"
+                  }`}
+                  onClick={() => {
+                    setEditingId(s.id);
+                    setTitle(s.title || "");
+                    setBody(s.body);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setEditingId(s.id);
+                      setTitle(s.title || "");
+                      setBody(s.body);
+                    }
+                  }}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="text-slate-200 font-medium truncate">{captionSnippetMenuLabel(s)}</div>
@@ -165,7 +207,7 @@ function CaptionSnippetLibraryModal({ open, onClose }: { open: boolean; onClose:
                       {s.body}
                     </pre>
                   </div>
-                  <div className="flex flex-col gap-1 shrink-0 items-end">
+                  <div className="flex flex-col gap-1 shrink-0 items-end" onClick={(e) => e.stopPropagation()}>
                     <button
                       type="button"
                       className="text-xs text-cyan-400 hover:text-cyan-300 px-2 py-0.5 rounded hover:bg-slate-700/50"

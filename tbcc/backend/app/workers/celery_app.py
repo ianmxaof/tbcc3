@@ -38,19 +38,25 @@ celery.conf.include = [
     "app.workers.listening_relay_worker",
     "app.workers.loot_promo_worker",
     "app.workers.import_telegram_worker",
+    "app.workers.myjd_worker",
 ]
 
 celery.conf.task_routes = {
     "app.workers.scraper_worker.*": {"queue": "scrape"},
     "app.workers.scrape_scheduler_worker.*": {"queue": "scrape"},
+    "app.workers.scheduler_worker.*": {"queue": "post"},
     "app.workers.poster_worker.*": {"queue": "post"},
     "app.workers.subscription_worker.*": {"queue": "subscription"},
     "app.workers.grant_access_worker.*": {"queue": "subscription"},
     "app.workers.milestone_worker.*": {"queue": "subscription"},
     "app.workers.landing_bulletin_worker.*": {"queue": "subscription"},
-    "app.workers.listening_relay_worker.*": {"queue": "post"},
+    # Last.fm relay polls on the general worker so TBCC-Celery-Post stays reserved for channel posts.
+    "app.workers.listening_relay_worker.*": {"queue": "celery"},
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
+    "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
+    "app.workers.link_resolver_worker.*": {"queue": "celery"},
+    "app.workers.myjd_worker.*": {"queue": "celery"},
 }
 
 # AOF landing bulletin: task runs every hour UTC; task checks dashboard/env hour (no beat restart needed).
@@ -60,10 +66,19 @@ if os.name == "nt":
     celery.conf.worker_concurrency = 1
 
 
+def _beat_schedule_minutes() -> str:
+    raw = (os.getenv("TBCC_BEAT_SCHEDULE_MINUTES") or "2").strip()
+    try:
+        n = max(1, min(59, int(raw)))
+    except ValueError:
+        n = 2
+    return f"*/{n}"
+
+
 celery.conf.beat_schedule = {
     "schedule-posts": {
         "task": "app.workers.scheduler_worker.run_schedule",
-        "schedule": crontab(minute="*/5"),
+        "schedule": crontab(minute=_beat_schedule_minutes()),
     },
     "cleanup-expired-subscriptions": {
         "task": "app.workers.subscription_worker.cleanup_expired_subscriptions",

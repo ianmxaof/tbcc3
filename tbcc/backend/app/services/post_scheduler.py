@@ -1,7 +1,17 @@
+import os
 from datetime import datetime
-from app.models.scheduled_text_post import ScheduledTextPost
-from app.workers.poster_worker import post_scheduled_text
+
 from sqlalchemy.orm import Session
+
+from app.models.channel import Channel
+from app.models.content_pool import ContentPool
+from app.models.scheduled_text_post import ScheduledTextPost
+from app.workers.poster_worker import post_pool, post_scheduled_text
+
+
+def pool_auto_post_enabled() -> bool:
+    """Pool interval cron via Beat → check_and_schedule. Set TBCC_POOL_AUTO_POST=0 to disable."""
+    return (os.getenv("TBCC_POOL_AUTO_POST") or "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _dedupe_campaign_leaders(posts: list[ScheduledTextPost]) -> list[ScheduledTextPost]:
@@ -20,12 +30,36 @@ def _dedupe_campaign_leaders(posts: list[ScheduledTextPost]) -> list[ScheduledTe
     return out
 
 
-def check_and_schedule(db: Session):
-    # Pool auto-posting is intentionally disabled.
-    # Pool media should be published through scheduled posts only.
+def _schedule_pool_interval_posts(db: Session, now: datetime) -> None:
+    if not pool_auto_post_enabled():
+        return
+    pools = db.query(ContentPool).all()
+    for pool in pools:
+        if getattr(pool, "auto_post_enabled", True) is False:
+            continue
+        channel = (
+            db.query(Channel).filter(Channel.id == pool.channel_id).first()
+            if pool.channel_id
+            else None
+        )
+        if not channel:
+            continue
+        interval = max(1, int(pool.interval_minutes or 60))
+        if pool.last_posted is None:
+            should_post = True
+        else:
+            minutes_since = (now - pool.last_posted).total_seconds() / 60
+            should_post = minutes_since >= interval
+        if should_post:
+            post_pool.delay(pool.id, channel.identifier)
+            pool.last_posted = now
 
-    # Process scheduled posts: one-time (scheduled_at <= now, not sent) or recurring (interval elapsed)
+
+def check_and_schedule(db: Session):
     now = datetime.utcnow()
+    _schedule_pool_interval_posts(db, now)
+
+    # Scheduled posts: one-time (scheduled_at <= now, not sent) or recurring (interval elapsed)
     one_time_due = (
         db.query(ScheduledTextPost)
         .filter(

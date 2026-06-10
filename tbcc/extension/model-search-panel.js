@@ -209,9 +209,15 @@
 
   document.getElementById("btnManageSources")?.addEventListener("click", () => {
     if (window.parent !== window) {
-      window.parent.postMessage({ type: "tbcc-panel-view", view: "options" }, "*");
+      window.parent.postMessage(
+        { type: "tbcc-panel-view", view: "options", scrollTo: "tbcc-add-source" },
+        "*"
+      );
     } else if (chrome.runtime.openOptionsPage) {
-      chrome.runtime.openOptionsPage();
+      chrome.runtime.openOptionsPage(() => {
+        const el = document.getElementById("tbcc-add-source");
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     }
   });
 

@@ -19,10 +19,55 @@ from app.services.import_pipeline import (
 )
 from app.services.media_frame_sample import extract_video_frame_jpeg
 from app.services.media_sniff import maybe_remux_mp4_for_playback
-from app.services.telegram_admin import friendly_telegram_error, run_telegram_io
-from app.services.tbcc_media_url import sanitize_import_source_url
+from app.services.telegram_admin import (
+    friendly_telegram_error,
+    reset_admin_client,
+    reset_import_client,
+    run_telegram_import_io,
+)
+from app.services.media_watermark import skip_watermark_context
 
 logger = logging.getLogger(__name__)
+
+# One event loop per Celery worker process — do not create/close a loop per import job
+# (that leaves Telethon send/recv tasks pending and spams "Task was destroyed but it is pending").
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _worker_event_loop() -> asyncio.AbstractEventLoop:
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_worker_loop)
+    return _worker_loop
+
+
+def _run_on_worker_loop(coro):
+    return _worker_event_loop().run_until_complete(coro)
+
+
+def shutdown_import_worker_async() -> None:
+    """Celery worker shutdown: disconnect Telethon and close the worker loop."""
+    global _worker_loop
+    loop = _worker_loop
+    if loop is None or loop.is_closed():
+        _worker_loop = None
+        return
+    try:
+        if not loop.is_running():
+            loop.run_until_complete(reset_admin_client())
+            loop.run_until_complete(reset_import_client())
+    except Exception:
+        logger.debug("import worker telethon reset on shutdown", exc_info=True)
+    try:
+        loop.close()
+    except Exception:
+        pass
+    _worker_loop = None
+    try:
+        asyncio.set_event_loop(None)
+    except Exception:
+        pass
 
 
 def _prepare_bytes(job: ImportJob, raw: bytes) -> tuple[bytes, str]:
@@ -63,8 +108,20 @@ def _attach_poster_metadata(db, media_id: int, poster_path: str | None) -> None:
     db.commit()
 
 
+def _job_skip_watermark(job: ImportJob) -> bool:
+    if not job.result_json:
+        return False
+    try:
+        parsed = json.loads(job.result_json)
+        if isinstance(parsed, dict) and isinstance(parsed.get("params"), dict):
+            return bool(parsed["params"].get("skip_watermark"))
+    except Exception:
+        pass
+    return False
+
+
 def run_import_job_sync(job_id: str) -> dict:
-    """Celery entry: upload staged bytes to Telegram and finalize job row."""
+    """Celery entry: finalize staged bytes (local pool file or Telegram Saved Messages)."""
     db = SessionLocal()
     job: ImportJob | None = None
     try:
@@ -74,7 +131,10 @@ def run_import_job_sync(job_id: str) -> dict:
         if job.status == "cancelled":
             return {"ok": False, "error": "cancelled", "job_id": job_id}
 
-        update_job(db, job, status="processing", stage="telegram")
+        from app.services.local_media_storage import pool_import_local_enabled, store_pool_media_from_bytes
+
+        pool_local = pool_import_local_enabled() and not job.saved_only
+        update_job(db, job, status="processing", stage="finalize" if pool_local else "telegram")
         staging = Path(job.staging_path or "")
         if not staging.is_file():
             msg = "Staging file missing"
@@ -89,28 +149,62 @@ def run_import_job_sync(job_id: str) -> dict:
         if poster_path:
             update_job(db, job, poster_path=poster_path)
 
-        async def _wrapped(storage):
-            if job.saved_only:
-                await storage.save_to_saved_only(data, media_type, caption=cap)
-                return {"status": "saved_only"}
-            record = await storage.store_from_bytes(data, media_type, source, job.pool_id, db)
-            if record:
-                _attach_poster_metadata(db, record.id, poster_path)
-                return {"status": "imported", "media_id": record.id}
-            return {"status": "skipped", "media_id": None}
-
-        loop = asyncio.new_event_loop()
         try:
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(
-                asyncio.wait_for(
-                    run_telegram_io(_wrapped),
-                    timeout=import_telegram_timeout_s(),
-                )
-            )
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
+            with skip_watermark_context(_job_skip_watermark(job)):
+                if job.saved_only:
+
+                    async def _saved_only(storage):
+                        await storage.save_to_saved_only(data, media_type, caption=cap)
+                        return {"status": "saved_only"}
+
+                    result = _run_on_worker_loop(
+                        asyncio.wait_for(
+                            run_telegram_import_io(_saved_only),
+                            timeout=import_telegram_timeout_s(),
+                        )
+                    )
+                elif pool_local:
+                    record = store_pool_media_from_bytes(
+                        data,
+                        media_type,
+                        source,
+                        job.pool_id,
+                        db,
+                        skip_watermark=_job_skip_watermark(job),
+                    )
+                    if record:
+                        _attach_poster_metadata(db, record.id, poster_path)
+                        result = {"status": "imported", "media_id": record.id}
+                    else:
+                        result = {"status": "skipped", "media_id": None}
+                else:
+
+                    async def _wrapped(storage):
+                        record = await storage.store_from_bytes(
+                            data,
+                            media_type,
+                            source,
+                            job.pool_id,
+                            db,
+                            skip_watermark=_job_skip_watermark(job),
+                        )
+                        if record:
+                            _attach_poster_metadata(db, record.id, poster_path)
+                            return {"status": "imported", "media_id": record.id}
+                        return {"status": "skipped", "media_id": None}
+
+                    result = _run_on_worker_loop(
+                        asyncio.wait_for(
+                            run_telegram_import_io(_wrapped),
+                            timeout=import_telegram_timeout_s(),
+                        )
+                    )
+        except Exception:
+            try:
+                _run_on_worker_loop(reset_import_client())
+            except Exception:
+                logger.debug("reset admin client after import failure", exc_info=True)
+            raise
 
         media_id = result.get("media_id")
         status = result.get("status", "done")

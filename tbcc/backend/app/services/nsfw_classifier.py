@@ -11,6 +11,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -159,3 +160,20 @@ def classify_image_bytes(image_bytes: bytes, *, suffix: str = ".jpg") -> NsfwCla
             path.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def classify_image_path(image_path: Path, *, max_bytes: int = 8_000_000) -> NsfwClassifyResult:
+    """Classify a local image file (watch-folder / offline paths). Requires API + NSFW sidecar for URL fetch."""
+    from pathlib import Path as _Path
+
+    p = _Path(image_path)
+    if not p.is_file():
+        return NsfwClassifyResult("unknown", "", 0.0, False, None)
+    try:
+        data = p.read_bytes()
+    except OSError as e:
+        logger.warning("nsfw classify path read failed: %s", e)
+        return NsfwClassifyResult("unknown", "", 0.0, False, None)
+    if not data:
+        return NsfwClassifyResult("unknown", "", 0.0, False, None)
+    return classify_image_bytes(data, suffix=p.suffix.lower() or ".jpg")

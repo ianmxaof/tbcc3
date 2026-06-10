@@ -4,16 +4,32 @@ import { useState, useEffect, useMemo } from "react";
 import { SchedulePromoSlots } from "./SchedulePromoSlots";
 import { ApprovedMediaPickerStrip } from "./ApprovedMediaPickerStrip";
 import {
-  formatLocalForDashboard,
   formatPtForDashboard,
   formatUtcForDashboard,
+  formatUtcWithLocalHint,
 } from "../utils/formatUtc";
-import { CaptionSnippetInsertSelect, CaptionSnippetLibraryManageButton } from "./CaptionSnippetLibrary";
-import { CustomEmojiInsertSelect, CustomEmojiLibraryManageButton } from "./CustomEmojiLibrary";
 import { CaptionTelegramHtmlField } from "./CaptionTelegramHtmlField";
+import { TbccInsertMenu } from "./TbccInsertMenu";
+import { TbccInsertLibraryToolbar } from "./TbccInsertLibraryToolbar";
 import { BufferXQueueEditor, type BufferXQueueItem } from "./BufferXQueueEditor";
 import { CaptionLlmRewriteFields } from "./CaptionLlmRewriteFields";
 import { SilentTelegramSendOption } from "./SilentTelegramSendOption";
+import { SchedulerOverviewBand } from "./SchedulerOverviewBand";
+import { SchedulerIntervalCountdown, useSchedulerClock } from "./SchedulerIntervalCountdown";
+import {
+  computeSchedulerCountdown,
+  countdownStatusLabel,
+  type SchedulingStackHealth,
+} from "../utils/schedulerIntervalCountdown";
+import { MediaPoolSelect } from "./MediaPoolSelect";
+import {
+  poolSelectFromPost,
+  poolSelectLabel,
+  poolSelectToApi,
+  poolSelectUsesPool,
+  poolSelectUsesSpecificPool,
+  poolAlbumDefaultsFromMap,
+} from "../utils/mediaPoolSelect";
 
 type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
 
@@ -66,6 +82,7 @@ function parseScheduledMediaIds(p: Record<string, unknown>): number[] {
 
 /** Pool, promo URLs, or picked media — something that can be reshuffled / reposted as an album. */
 function scheduledPostHasAlbumOrPool(p: Record<string, unknown>): boolean {
+  if (Boolean(p.pool_collective_random)) return true;
   const pid = p.pool_id != null ? Number(p.pool_id) : 0;
   if (Number.isFinite(pid) && pid > 0) return true;
   const { variants } = parseAlbumVariantsFromPost(p);
@@ -93,17 +110,23 @@ function datetimeLocalToIso(local: string): string {
   return d.toISOString();
 }
 
-function nextRecurringRunIso(lastPostedAt: unknown, intervalMinutes: unknown): string | null {
-  if (!lastPostedAt) return null;
-  const mins = Number(intervalMinutes);
-  if (!Number.isFinite(mins) || mins <= 0) return null;
-  const raw = String(lastPostedAt).trim();
-  const base = /[zZ]|[+-]\d{2}:?\d{2}$/.test(raw)
-    ? new Date(raw)
-    : new Date(raw.includes("T") ? `${raw}Z` : `${raw.replace(" ", "T")}Z`);
-  if (Number.isNaN(base.getTime())) return null;
-  const next = new Date(base.getTime() + mins * 60_000);
-  return next.toISOString();
+const SCHED_COLS = 9;
+
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+async function fetchSchedulingHealth(): Promise<SchedulingStackHealth> {
+  try {
+    const r = await fetch(`${API}/health/system`, { cache: "no-store" });
+    const data = (await r.json()) as { scheduling?: Record<string, unknown> };
+    const s = data.scheduling || {};
+    return {
+      beatRunning: Boolean(s.beat_running),
+      celeryPostRunning: Boolean(s.celery_post_worker_running),
+      schedulingPaused: Boolean(s.scheduling_paused_by_focus),
+    };
+  } catch {
+    return { beatRunning: false, celeryPostRunning: false, schedulingPaused: false };
+  }
 }
 
 /** Match Scheduler.tsx interval presets for edit modal */
@@ -128,12 +151,23 @@ function parseButtonsFromPost(p: Record<string, unknown>): Array<{ text: string;
   return [];
 }
 
+type WeekPost = {
+  id: number;
+  name?: string | null;
+  scheduled_at?: string | null;
+  interval_minutes?: number | null;
+  channel_name?: string | null;
+  campaign_group_id?: string | null;
+};
+
 type Props = {
   /** Only show recurring (interval) jobs — e.g. on Subscriptions tab */
   compactRecurringOnly?: boolean;
+  weekPosts?: WeekPost[];
+  onWeekDayClick?: (isoDate: string) => void;
 };
 
-export function ScheduledPostsList({ compactRecurringOnly }: Props) {
+export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWeekDayClick }: Props) {
   const queryClient = useQueryClient();
 
   const [editOpen, setEditOpen] = useState(false);
@@ -160,6 +194,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const [editAlbumOrderMode, setEditAlbumOrderMode] = useState<"static" | "shuffle" | "carousel">("static");
   /** Set when editing a grouped multi-channel row */
   const [editCampaignHint, setEditCampaignHint] = useState<string | null>(null);
+  const [editCampaignRandomChannel, setEditCampaignRandomChannel] = useState(false);
   const [editButtons, setEditButtons] = useState<Array<{ text: string; url: string }>>([]);
   const [editSendSilent, setEditSendSilent] = useState(false);
   const [editPinAfterSend, setEditPinAfterSend] = useState(false);
@@ -188,7 +223,14 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const { data: scheduledPosts = [] } = useQuery({
     queryKey: ["scheduledPosts"],
     queryFn: () => api.scheduledPosts.list(),
+    refetchInterval: 30_000,
   });
+  const { data: schedulingHealth } = useQuery({
+    queryKey: ["health", "scheduling"],
+    queryFn: fetchSchedulingHealth,
+    refetchInterval: 15_000,
+  });
+  const schedulerNowMs = useSchedulerClock();
   const { data: subscriptionPlansRaw = [] } = useQuery({
     queryKey: ["subscriptionPlans"],
     queryFn: () => api.subscriptionPlans.list(),
@@ -207,7 +249,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
   const { data: editMedia = [] } = useQuery({
     queryKey: ["media", "approved", "scheduled-edit", editPoolId],
     queryFn: () =>
-      editPoolId > 0
+      poolSelectUsesSpecificPool(editPoolId)
         ? api.media.list({ status: "approved", pool_id: editPoolId })
         : api.media.list("approved"),
     enabled: editOpen,
@@ -225,12 +267,18 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       id: number;
       body: Parameters<typeof api.scheduledPosts.update>[1];
     }) => api.scheduledPosts.update(id, body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
+    },
   });
 
   const deleteScheduledPost = useMutation({
     mutationFn: (id: number) => api.scheduledPosts.delete(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
+    },
   });
 
   const triggerScheduledPost = useMutation({
@@ -330,17 +378,27 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     setEditScheduledAt(isoToDatetimeLocal(leader.scheduled_at as string | undefined));
     setEditScheduleRecurring(!!leader.interval_minutes);
     const pid = leader.pool_id != null ? Number(leader.pool_id) : 0;
-    const pool = pid ? (poolMap[String(pid)] as Record<string, unknown> | undefined) : undefined;
+    const pool = pid > 0 ? (poolMap[String(pid)] as Record<string, unknown> | undefined) : undefined;
     const poolDefaultAlbum = Number(pool?.album_size ?? 5);
-    setEditAlbumSize(leader.album_size != null ? Number(leader.album_size) : poolDefaultAlbum);
-    setEditRandomize(leader.pool_randomize != null ? Boolean(leader.pool_randomize) : !!pool?.randomize_queue);
+    setEditAlbumSize(
+      leader.album_size != null
+        ? Number(leader.album_size)
+        : Boolean(leader.pool_collective_random)
+          ? 5
+          : poolDefaultAlbum
+    );
+    setEditRandomize(
+      leader.pool_randomize != null
+        ? Boolean(leader.pool_randomize)
+        : Boolean(leader.pool_collective_random) || !!pool?.randomize_queue
+    );
     setEditPoolOnlyMode(leader.pool_only_mode != null ? Boolean(leader.pool_only_mode) : true);
     setEditMessageThreadId(
       leader.message_thread_id != null && leader.message_thread_id !== undefined
         ? Number(leader.message_thread_id)
         : null
     );
-    setEditPoolId(Number.isFinite(pid) && pid > 0 ? pid : 0);
+    setEditPoolId(poolSelectFromPost(leader));
     const cap = Array.isArray(cv) && cv.length >= 2 ? cv.length : 1;
     const { variants: avFromApi, order: ordFromApi } = parseAlbumVariantsFromPost(leader);
     setEditAlbumVariants(padAlbumVariants(avFromApi, cap));
@@ -375,6 +433,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     setEditCheckoutPlanId(Number.isFinite(cop) && cop > 0 ? cop : 0);
     setEditCheckoutButtonLabel(String(leader.checkout_button_label || ""));
     setEditCheckoutReferralCode(String(leader.checkout_referral_code || ""));
+    setEditCampaignRandomChannel(Boolean(leader.campaign_random_channel));
     setEditUploadMsg(null);
     setEditScheduleError(null);
     setEditOpen(true);
@@ -391,16 +450,17 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
       media_ids: v.media_ids,
     }));
     const isCampaignEdit = Boolean(editing.campaign_group_id);
+    const poolApi = poolSelectToApi(editPoolId);
     const body: Parameters<typeof api.scheduledPosts.update>[1] = {
       name: editName.trim() || undefined,
       content: trimmed[0] || "",
       channel_id: editChannelId || undefined,
       ...(isCampaignEdit ? {} : { message_thread_id: editMessageThreadId }),
-      pool_id: editPoolId > 0 ? editPoolId : null,
+      ...poolApi,
       media_ids: [],
       album_variants: av,
       album_order_mode: editAlbumOrderMode,
-      pool_only_mode: editPoolId > 0 ? editPoolOnlyMode : false,
+      pool_only_mode: poolSelectUsesPool(editPoolId) ? editPoolOnlyMode : false,
     };
     if (trimmed.length >= 2) {
       body.content_variations = trimmed;
@@ -423,7 +483,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
         }
       }
     }
-    if (editPoolId > 0) {
+    if (poolSelectUsesPool(editPoolId)) {
       body.album_size = Math.min(10, Math.max(1, editAlbumSize));
       body.pool_randomize = editRandomize;
     } else {
@@ -456,6 +516,9 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     if (editCheckoutStarsEnabled && (!editCheckoutPlanId || editCheckoutPlanId <= 0)) {
       setEditScheduleError("Stars checkout requires a Commerce product with a Stars price.");
       return;
+    }
+    if (isCampaignEdit) {
+      body.campaign_random_channel = editCampaignRandomChannel;
     }
     await updateScheduled.mutateAsync({ id, body });
     setEditOpen(false);
@@ -503,6 +566,12 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
     return out;
   }, [scheduledPosts, compactRecurringOnly]);
 
+  const thCell = "text-left px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap";
+  const tdCell = "px-2 py-1 text-[11px] leading-snug text-slate-300";
+  const tdCellTop = "px-2 py-1 text-[11px] leading-snug text-slate-300 align-top";
+  const btnSm =
+    "px-1.5 py-0.5 rounded text-[10px] leading-tight font-medium whitespace-nowrap disabled:opacity-50";
+
   return (
     <>
       {editOpen && editing && (
@@ -542,9 +611,25 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   placeholder="Name (optional)"
                 />
                 {editCampaignHint ? (
-                  <p className="text-slate-400 text-sm">
-                    Channels are fixed for this campaign. To change targets, delete the campaign and create a new one.
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-slate-400 text-sm">
+                      Channels are fixed for this campaign. To change targets, delete the campaign and create a new one.
+                    </p>
+                    <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={editCampaignRandomChannel}
+                        onChange={(e) => setEditCampaignRandomChannel(e.target.checked)}
+                      />
+                      <span>
+                        <strong className="text-amber-300">Random channel per interval</strong>
+                        <span className="block text-xs text-slate-500 mt-0.5">
+                          Each run posts to one randomly chosen channel in this campaign, not all at once.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
                 ) : (
                   <>
                     <select
@@ -591,8 +676,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   <span className="block text-slate-400 text-sm">
                     Caption{editVariations.length > 1 ? "s (rotate in order)" : " / text"}
                   </span>
-                  <CaptionSnippetLibraryManageButton />
-                  <CustomEmojiLibraryManageButton />
+                  <TbccInsertLibraryToolbar />
                 </div>
                 <div className="space-y-2">
                   {editVariations.map((line, i) => (
@@ -604,16 +688,11 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                       rows={i === 0 ? 5 : 4}
                       extraActions={
                         <>
-                        <CaptionSnippetInsertSelect
+                        <TbccInsertMenu
+                          channels={channels as Array<Record<string, unknown>>}
+                          pools={pools as Array<Record<string, unknown>>}
                           onInsert={(t) =>
                             setEditVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
-                          }
-                        />
-                        <CustomEmojiInsertSelect
-                          onInsert={(chunk) =>
-                            setEditVariations((prev) =>
-                              prev.map((p, j) => (j === i ? (p ? `${chunk}\n\n${p}` : chunk) : p))
-                            )
                           }
                         />
                         {editVariations.length > 1 && (
@@ -876,28 +955,36 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                   Media pool (optional) — thumbnails are from <strong>approved</strong> items. Choosing a pool filters the
                   grid. When a caption&apos;s album has no explicit picks, the job uses the next batch from this pool.
                 </p>
-                <select
+                <MediaPoolSelect
                   value={editPoolId}
-                  onChange={(e) => {
-                    setEditPoolId(Number(e.target.value));
+                  onChange={(next) => {
+                    setEditPoolId(next);
                     setEditAlbumVariants((prev) => prev.map((v) => ({ ...v, media_ids: [] })));
+                    const defs = poolAlbumDefaultsFromMap(next, poolMap);
+                    setEditAlbumSize(defs.albumSize);
+                    setEditRandomize(defs.randomize);
                   }}
+                  pools={pools as Array<{ id: number; name?: string }>}
                   className="w-full mb-2 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-                >
-                  <option value={0}>No pool (text-only unless media is explicitly picked below)</option>
-                  {(pools as Array<{ id: number; name?: string }>).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name || `Pool ${p.id}`} (media + optional auto-pick)
-                    </option>
-                  ))}
-                </select>
+                />
                 <p className="text-slate-500 text-xs mb-2">
                   Choose <strong>No pool</strong> for text-only recurring posts (links/buttons still work).
                 </p>
-                {editPoolId > 0 && (
+                {poolSelectUsesPool(editPoolId) && (
                   <div className="border border-slate-600 rounded p-3 mb-2 space-y-2 bg-slate-900/40">
-                    <p className="text-slate-400 text-xs">
-                      <strong>This schedule only</strong> — album size & randomize (override the pool defaults for this job).
+                    <p className="text-slate-400 text-xs leading-relaxed">
+                      {poolSelectUsesSpecificPool(editPoolId) ? (
+                        <>
+                          <strong>Album settings</strong> — shared with the pool editor for{" "}
+                          <strong>{String(poolMap[String(editPoolId)]?.name || `Pool ${editPoolId}`)}</strong>. Changing
+                          size or randomize here updates the pool and every Scheduler job using it.
+                        </>
+                      ) : (
+                        <>
+                          <strong>Album settings</strong> for &quot;All pools (random)&quot; — apply to this job only
+                          (no single pool to sync). Each send still picks one pool at random, then builds the album.
+                        </>
+                      )}
                     </p>
                     <div className="flex flex-wrap items-center gap-3">
                       <label className="flex items-center gap-2 text-sm text-slate-300">
@@ -940,9 +1027,9 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     multiple
                     disabled={uploadToPoolEdit.isPending}
                     title={
-                      editPoolId
+                      poolSelectUsesSpecificPool(editPoolId)
                         ? "Imports into the selected pool as pending — approve in Media Library"
-                        : "Choose a specific pool in the dropdown above first (not “All approved”)"
+                        : "Choose a specific pool in the dropdown above first (not “All pools (random)”)"
                     }
                     onChange={(e) => {
                       const pid = editPoolId;
@@ -950,8 +1037,8 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                       const snapshot = input.files?.length ? Array.from(input.files) : [];
                       input.value = "";
                       if (!snapshot.length) return;
-                      if (!pid) {
-                        setEditUploadMsg("Choose a pool above first — uploads go into that pool (not “All approved”).");
+                      if (!poolSelectUsesSpecificPool(pid)) {
+                        setEditUploadMsg("Choose a specific pool above first — uploads need a target pool.");
                         setTimeout(() => setEditUploadMsg(null), 6000);
                         return;
                       }
@@ -965,9 +1052,9 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     {editUploadMsg}
                   </pre>
                 )}
-                {!editPoolId && (
+                {!poolSelectUsesSpecificPool(editPoolId) && (
                   <p className="text-amber-400/90 text-xs mb-2">
-                    Select a pool above to enable this import (pending in Media Library until approved).
+                    Select a specific pool above to enable import (pending in Media Library until approved).
                   </p>
                 )}
                 {editVariations.map((_, vi) => (
@@ -1005,7 +1092,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                 <p className="text-slate-500 text-xs mt-1">
                   {editAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} media pick(s) across caption(s). If{" "}
                   <strong>pool</strong> is set
-                  {editPoolId > 0 && editPoolOnlyMode
+                  {poolSelectUsesPool(editPoolId) && editPoolOnlyMode
                     ? ", pool-only mode is ON and this job always uses pool batch."
                     : " and a caption has no picks, that run uses the pool batch."}
                 </p>
@@ -1040,7 +1127,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
 
       {triggerNotice && (
         <div
-          className={`mb-3 px-3 py-2 rounded text-sm ${
+          className={`mb-2 px-2 py-1 rounded text-[11px] ${
             triggerNotice.kind === "ok" ? "bg-emerald-900/40 text-emerald-200" : "bg-red-900/40 text-red-200"
           }`}
         >
@@ -1048,18 +1135,29 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full border border-slate-600 rounded-lg overflow-hidden">
-          <thead className="bg-slate-700">
-            <tr>
-              <th className="text-left p-3">Name</th>
-              <th className="text-left p-3">Channel</th>
-              <th className="text-left p-3 min-w-[8rem]">Destinations</th>
-              <th className="text-left p-3">Content</th>
-              <th className="text-left p-3 w-[11rem]">Schedule</th>
-              <th className="text-left p-3">Pool</th>
-              <th className="text-left p-3">Status</th>
-              <th className="text-left p-3 min-w-[9rem]">Actions</th>
+      {!compactRecurringOnly && (
+        <SchedulerOverviewBand
+          pools={pools as Array<Record<string, unknown>>}
+          scheduledPosts={scheduledPosts as Array<Record<string, unknown>>}
+          poolMap={poolMap}
+          weekPosts={weekPosts}
+          onWeekDayClick={onWeekDayClick}
+        />
+      )}
+
+      <div className="tbcc-panel overflow-x-auto rounded-lg border border-slate-600/90">
+        <table className="w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="bg-slate-700/95 border-b border-slate-600">
+              <th className={thCell}>Name</th>
+              <th className={thCell}>Channel</th>
+              <th className={`${thCell} min-w-[6.5rem]`}>Destinations</th>
+              <th className={thCell}>Content</th>
+              <th className={`${thCell} w-[6.5rem]`}>Timer</th>
+              <th className={`${thCell} min-w-[5.5rem]`}>Schedule</th>
+              <th className={`${thCell} min-w-[7rem] border-l border-slate-600/50`}>Pool</th>
+              <th className={thCell}>Status</th>
+              <th className={`${thCell} min-w-[7.5rem]`}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1076,18 +1174,29 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                 row.kind === "campaign" ? `campaign-${row.campaign_group_id}` : String(p.id);
               const recurring = !!p.interval_minutes;
               const lastPost = p.last_posted_at;
-              const nextRecurringIso = nextRecurringRunIso(lastPost, p.interval_minutes);
+              const countdownSnap = computeSchedulerCountdown({
+                lastPostedAt: lastPost,
+                intervalMinutes: p.interval_minutes,
+                scheduledAt: p.scheduled_at,
+                sentAt: p.sent_at,
+                autoPausedAt: p.posting_auto_paused_at,
+                nowMs: schedulerNowMs,
+              });
+              const statusUi =
+                countdownSnap != null
+                  ? countdownStatusLabel(countdownSnap, schedulingHealth ?? undefined)
+                  : null;
               const cvRow = p.content_variations;
               const rotating = Array.isArray(cvRow) && cvRow.length >= 2;
               const textPreview = String(p.content || "").slice(0, 40);
               const preview = rotating ? `${cvRow.length} captions (rotating)` : textPreview;
+              const poolSelectId = poolSelectFromPost(p);
               const poolId = p.pool_id != null ? Number(p.pool_id) : 0;
-              const poolName = poolId
-                ? String(
-                    (pools as Array<Record<string, unknown>>).find((x) => Number(x.id) === poolId)?.name ||
-                      poolId
-                  )
-                : "—";
+              const poolRec = poolId > 0 ? poolMap[String(poolId)] : undefined;
+              const poolName = poolSelectLabel(poolSelectId, poolRec ? String(poolRec?.name || poolId) : undefined);
+              const poolApproved = poolRec != null ? Number(poolRec.approved_count ?? 0) : 0;
+              const poolAlbumSize = poolRec != null ? Number(poolRec.album_size ?? 5) : 0;
+              const poolLastRun = poolRec?.last_posted ? String(poolRec.last_posted) : "";
               const attUrls = Array.isArray(p.attachment_urls)
                 ? (p.attachment_urls as string[]).filter((x) => String(x).trim())
                 : [];
@@ -1105,18 +1214,21 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
               return (
                 <tr
                   key={rowKey}
-                  className="border-t border-slate-600 hover:bg-slate-800/50 cursor-pointer"
+                  className="border-t border-slate-700/60 hover:bg-slate-800/40 cursor-pointer"
                   onClick={() => openEditor(p)}
                   title="Click row to edit schedule, caption, and pool album options"
                 >
-                  <td className="p-3">
+                  <td className={tdCell}>
                     {String(p.name || "—")}
                     {row.kind === "campaign" ? (
-                      <span className="ml-2 text-xs text-cyan-400/90">({row.posts.length} ch)</span>
+                      <span className="ml-1 text-[10px] text-cyan-400/90">
+                        ({row.posts.length} ch
+                        {row.posts[0]?.campaign_random_channel ? " · random" : ""})
+                      </span>
                     ) : null}
                   </td>
                   <td
-                    className="p-3 max-w-[12rem]"
+                    className={`${tdCell} max-w-[10rem]`}
                     title={
                       p.message_thread_id != null && p.message_thread_id !== undefined
                         ? `${channelCell} · Topic #${p.message_thread_id}`
@@ -1133,12 +1245,12 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                       ) : null}
                     </div>
                   </td>
-                  <td className="p-3 text-sm align-top">
-                    <div className="flex flex-col gap-1">
-                      <span className="text-slate-300 text-xs">Telegram</span>
+                  <td className={tdCellTop}>
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-slate-400 text-[10px]">Telegram</span>
                       {bufferMirror ? (
                         <span
-                          className="inline-flex w-fit items-center rounded px-1.5 py-0.5 text-xs font-medium bg-sky-900/60 text-sky-300 border border-sky-700/50"
+                          className="inline-flex w-fit items-center rounded px-1 py-px text-[10px] font-medium bg-sky-900/60 text-sky-300 border border-sky-700/50"
                           title={
                             bufferQueueLen > 0
                               ? `${bufferQueueLen} TBCC-stored X caption(s); next Telegram send uses #1, then Buffer queue`
@@ -1154,7 +1266,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                       )}
                       {llmRewrite ? (
                         <span
-                          className="inline-flex w-fit items-center rounded px-1.5 py-0.5 text-xs font-medium bg-violet-900/50 text-violet-300 border border-violet-700/50"
+                          className="inline-flex w-fit items-center rounded px-1 py-px text-[10px] font-medium bg-violet-900/50 text-violet-300 border border-violet-700/50"
                           title={
                             llmMode === "random"
                               ? "LLM may rephrase caption on random sends"
@@ -1167,98 +1279,114 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     </div>
                   </td>
                   <td
-                    className="p-3 text-slate-400 text-sm max-w-xs truncate"
+                    className={`${tdCell} max-w-[9rem] truncate text-slate-400`}
                     title={rotating ? String(cvRow.join(" | ")).slice(0, 500) : String(p.content || "")}
                   >
                     {rotating ? preview : `${textPreview}${String(p.content || "").length > 40 ? "…" : ""}`}
                   </td>
                   <td
-                    className="p-3 text-slate-400 text-sm align-top max-w-[12rem]"
+                    className={`${tdCellTop} w-[6.5rem]`}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <SchedulerIntervalCountdown
+                      lastPostedAt={lastPost}
+                      intervalMinutes={p.interval_minutes}
+                      scheduledAt={p.scheduled_at}
+                      sentAt={p.sent_at}
+                      autoPausedAt={p.posting_auto_paused_at}
+                      scheduling={schedulingHealth ?? undefined}
+                      nowMs={schedulerNowMs}
+                    />
+                  </td>
+                  <td
+                    className={`${tdCellTop} max-w-[5.5rem] text-slate-400`}
                     onClick={(e) => e.stopPropagation()}
                   >
                     {recurring ? (
-                      <details className="group text-xs max-w-[11rem]">
-                        <summary className="cursor-pointer select-none list-none [&::-webkit-details-marker]:hidden flex flex-nowrap items-baseline gap-x-1 min-w-0 leading-tight">
-                          <span className="text-slate-300 font-medium shrink-0">
-                            Every {Number(p.interval_minutes)} min
+                      <span className="text-[10px] text-slate-400">
+                        Every {Number(p.interval_minutes)} min
+                        {lastPost ? (
+                          <span className="block text-slate-500 mt-0.5 truncate" title={formatUtcWithLocalHint(String(lastPost))}>
+                            Last {formatPtForDashboard(String(lastPost))} PT
                           </span>
-                          {nextRecurringIso ? (
-                            <span
-                              className="text-cyan-200/90 truncate min-w-0"
-                              title={formatLocalForDashboard(nextRecurringIso)}
-                            >
-                              · Next {formatLocalForDashboard(nextRecurringIso)}
-                            </span>
-                          ) : (
-                            <span className="text-amber-500/90 shrink-0">· Post now to start</span>
-                          )}
-                        </summary>
-                        {nextRecurringIso ? (
-                          <div className="mt-1.5 pl-2 border-l border-slate-600 space-y-0.5 text-[11px]">
-                            <div className="text-slate-300">
-                              Local: {formatLocalForDashboard(nextRecurringIso)}
-                            </div>
-                            <div className="text-cyan-300/85">PT: {formatPtForDashboard(nextRecurringIso)}</div>
-                            {lastPost ? (
-                              <div className="text-slate-500">Last UTC: {formatUtcForDashboard(String(lastPost))}</div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </details>
+                        ) : (
+                          <span className="block text-amber-500/90 mt-0.5">Awaiting first post</span>
+                        )}
+                      </span>
                     ) : p.scheduled_at ? (
-                      <span className="text-xs">{formatUtcForDashboard(String(p.scheduled_at))}</span>
+                      <span className="text-[10px]" title={formatUtcWithLocalHint(String(p.scheduled_at))}>
+                        {formatPtForDashboard(String(p.scheduled_at))} PT
+                      </span>
                     ) : (
                       "—"
                     )}
                   </td>
                   <td
-                    className="p-3 text-slate-400 text-sm max-w-[10rem]"
-                    title={[poolName, attUrls.length ? `${attUrls.length} promo` : "", flags.join(" · ")].filter(Boolean).join(" · ")}
+                    className={`${tdCell} max-w-[8rem] border-l border-slate-700/50`}
+                    title={
+                      [
+                        poolSelectUsesPool(poolSelectId)
+                          ? poolSelectUsesSpecificPool(poolSelectId)
+                            ? `${poolName} · ${poolApproved}/${poolAlbumSize}`
+                            : poolName
+                          : poolName,
+                        poolLastRun && poolSelectUsesSpecificPool(poolSelectId)
+                          ? `Pool run ${formatUtcForDashboard(poolLastRun)}`
+                          : null,
+                        attUrls.length ? `${attUrls.length} promo` : null,
+                        flags.join(" · "),
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                    }
                   >
-                    <div className="truncate">
-                      {poolName}
-                      {attUrls.length > 0 ? (
-                        <span className="text-slate-500 text-xs"> · {attUrls.length} promo</span>
-                      ) : null}
-                      {flags.length > 0 ? (
-                        <span className="text-slate-500 text-xs"> · {flags.join(" · ")}</span>
-                      ) : null}
-                    </div>
+                    {poolSelectUsesPool(poolSelectId) ? (
+                      <span className="block min-w-0 truncate">
+                        <span className="text-slate-200">{poolName}</span>
+                        {poolSelectUsesSpecificPool(poolSelectId) ? (
+                          <span className={`tabular-nums ${poolApproved > 0 ? "text-cyan-400" : "text-slate-500"}`}>
+                            {" "}
+                            · {poolApproved}/{poolAlbumSize}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                    {attUrls.length > 0 || flags.length > 0 ? (
+                      <span className="text-[10px] text-slate-500 block truncate">
+                        {[attUrls.length ? `${attUrls.length} promo` : null, ...flags].filter(Boolean).join(" · ")}
+                      </span>
+                    ) : null}
                   </td>
-                  <td className="p-3">
-                    {p.posting_auto_paused_at ? (
+                  <td className={tdCell}>
+                    {statusUi ? (
                       <span
-                        className="text-rose-400 text-sm"
+                        className={`text-[10px] font-medium ${statusUi.className}`}
                         title={
                           p.posting_auto_pause_reason
                             ? String(p.posting_auto_pause_reason)
-                            : "Too many send failures in a row; beat will not enqueue until you fix the channel or clear pause (Post now / PATCH clear_auto_pause)."
+                            : statusUi.title
                         }
                       >
-                        Auto-paused
+                        {statusUi.label}
                       </span>
-                    ) : recurring ? (
-                      lastPost ? (
-                        <span className="text-emerald-400 text-sm">Running</span>
-                      ) : (
-                        <span className="text-amber-400 text-sm">Start with Post now</span>
-                      )
-                    ) : p.sent_at ? (
-                      <span className="text-emerald-400 text-sm">Sent</span>
                     ) : (
-                      <span className="text-amber-400 text-sm">Pending</span>
+                      <span className="text-slate-500 text-[10px]">—</span>
                     )}
                   </td>
-                  <td className="p-3 flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+                  <td className={`${tdCell} flex flex-wrap gap-1`} onClick={(e) => e.stopPropagation()}>
                     {(recurring || !p.sent_at) && (
                       <button
                         type="button"
                         onClick={() => triggerScheduledPost.mutate({ id: Number(p.id) })}
                         disabled={triggerScheduledPost.isPending}
-                        className="px-2 py-1 bg-slate-600 text-slate-200 rounded text-sm hover:bg-slate-500"
+                        className={`${btnSm} bg-slate-600 text-slate-200 hover:bg-slate-500`}
                         title={
                           row.kind === "campaign"
-                            ? "Queues one Celery run for all channels in this campaign"
+                            ? row.posts[0]?.campaign_random_channel
+                              ? "Queues one send to a random channel in this campaign"
+                              : "Queues one Celery run for all channels in this campaign"
                             : undefined
                         }
                       >
@@ -1270,7 +1398,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                           type="button"
                           onClick={() => triggerScheduledPost.mutate({ id: Number(p.id), reshuffle: true })}
                           disabled={triggerScheduledPost.isPending}
-                          className="px-2 py-1 bg-violet-800/90 text-violet-100 rounded text-sm hover:bg-violet-700/90"
+                          className={`${btnSm} bg-violet-800/90 text-violet-100 hover:bg-violet-700/90`}
                           title={
                             row.kind === "campaign"
                               ? "Queue send to all campaign channels with promo/media order randomized for this run only (new Telegram messages). For one-time jobs that already ran, this is how you repost."
@@ -1283,7 +1411,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
                     <button
                       onClick={() => deleteScheduledPost.mutate(Number(p.id))}
                       disabled={deleteScheduledPost.isPending}
-                      className="px-2 py-1 bg-red-800/50 text-red-200 rounded text-sm hover:bg-red-700/50"
+                      className={`${btnSm} bg-red-900/60 text-red-200/90 hover:bg-red-800/60`}
                     >
                       Delete
                     </button>
@@ -1293,7 +1421,7 @@ export function ScheduledPostsList({ compactRecurringOnly }: Props) {
             })}
             {displayRows.length === 0 && (
               <tr>
-                <td colSpan={7} className="p-4 text-slate-500 text-center">
+                <td colSpan={SCHED_COLS} className="px-2 py-3 text-[11px] text-slate-500 text-center">
                   {compactRecurringOnly ? "No recurring posting jobs." : "No scheduled posts."}
                 </td>
               </tr>

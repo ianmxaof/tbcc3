@@ -122,6 +122,7 @@
       body.appendChild(head);
 
       const summaryText =
+        (e.description && String(e.description).trim()) ||
         (e.summary && String(e.summary).trim()) ||
         (e.kind === "url" && e.note && !String(e.note).startsWith("ref:") ? String(e.note).trim() : "");
       if (summaryText) {

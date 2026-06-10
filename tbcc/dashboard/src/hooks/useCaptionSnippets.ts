@@ -141,6 +141,20 @@ export function useCaptionSnippets() {
     [refresh]
   );
 
+  const update = useCallback(
+    async (id: number, title: string, body: string) => {
+      const trimmed = body.trim();
+      if (!trimmed || id < 0) return;
+      try {
+        await api.captionSnippets.patch(id, { title: title.trim() || null, body: trimmed });
+        await refresh();
+      } catch {
+        /* ignore */
+      }
+    },
+    [refresh]
+  );
+
   const bulkImport = useCallback(
     async (items: Array<{ title?: string | null; body?: string }>) => {
       const cleaned = items
@@ -161,5 +175,5 @@ export function useCaptionSnippets() {
     [refresh]
   );
 
-  return { snippets, add, remove, bulkImport };
+  return { snippets, add, update, remove, bulkImport };
 }

@@ -13,6 +13,11 @@ class CaptionSnippetCreate(BaseModel):
     body: str = Field(..., min_length=1)
 
 
+class CaptionSnippetUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=256)
+    body: str | None = Field(default=None, min_length=1)
+
+
 class CaptionSnippetOut(BaseModel):
     id: int
     title: str | None
@@ -54,6 +59,26 @@ def create_caption_snippet(data: CaptionSnippetCreate, db: Session = Depends(get
     title = (data.title or "").strip() or None
     row = CaptionSnippet(title=title, body=body[:16000])
     db.add(row)
+    db.commit()
+    db.refresh(row)
+    return CaptionSnippetOut.model_validate(row)
+
+
+@router.patch("/{snippet_id}", response_model=CaptionSnippetOut)
+def update_caption_snippet(
+    snippet_id: int, data: CaptionSnippetUpdate, db: Session = Depends(get_db)
+):
+    row = db.query(CaptionSnippet).filter(CaptionSnippet.id == snippet_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    if data.title is not None:
+        title = (data.title or "").strip() or None
+        row.title = title[:256] if title else None
+    if data.body is not None:
+        body = (data.body or "").strip()
+        if not body:
+            raise HTTPException(status_code=400, detail="body required")
+        row.body = body[:16000]
     db.commit()
     db.refresh(row)
     return CaptionSnippetOut.model_validate(row)

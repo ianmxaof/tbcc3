@@ -8,6 +8,19 @@
   } catch (_) {}
 })();
 
+function tbccScrollOptionsTo(id) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+window.addEventListener("message", (ev) => {
+  if (!ev.data || ev.data.type !== "tbcc-options-scroll") return;
+  const id = String(ev.data.id || "").trim();
+  if (!id) return;
+  tbccScrollOptionsTo(id);
+  window.setTimeout(() => tbccScrollOptionsTo(id), 350);
+});
+
 const STORAGE_ENABLED = "tbccModelSearchEnabledSites";
 const STORAGE_MODE = "tbccModelSearchOpenMode";
 const STORAGE_REVERSE_ENABLED = "tbccReverseImageEnabledSites";
@@ -16,6 +29,7 @@ const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
 const STORAGE_CUSTOM_ADAPTERS = "tbccCustomGalleryAdapters";
 const STORAGE_THEME = "tbccThemePreset";
 const STORAGE_PAYMENT_BOT_USERNAME = "tbccPaymentBotUsername";
+const STORAGE_MACRO_SEARCH_BOT_USERNAME = "tbccMacroSearchBotUsername";
 /** Keep in sync with STORAGE_SAVED_VIDEO_URLS in background.js */
 const STORAGE_SAVED_VIDEO_URLS = "tbccSavedVideoUrls";
 const SAVED_VIDEO_URLS_CAP = 600;
@@ -601,18 +615,22 @@ async function refreshModelSearchUi() {
 })();
 
 (function () {
-  const el = document.getElementById("tbccPaymentBotUsername");
-  if (!el) return;
-  chrome.storage.local.get([STORAGE_PAYMENT_BOT_USERNAME], (data) => {
-    el.value = data?.[STORAGE_PAYMENT_BOT_USERNAME] || "";
-  });
-  el.addEventListener("blur", () => {
-    const next = String(el.value || "").trim().replace(/^@+/, "");
-    chrome.storage.local.set({ [STORAGE_PAYMENT_BOT_USERNAME]: next }, () => {
-      setStatus("Saved.");
-      setTimeout(() => setStatus(""), 1600);
+  function wireBotUsernameInput(id, storageKey) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    chrome.storage.local.get([storageKey], (data) => {
+      el.value = data?.[storageKey] || "";
     });
-  });
+    el.addEventListener("blur", () => {
+      const next = String(el.value || "").trim().replace(/^@+/, "");
+      chrome.storage.local.set({ [storageKey]: next }, () => {
+        setStatus("Saved.");
+        setTimeout(() => setStatus(""), 1600);
+      });
+    });
+  }
+  wireBotUsernameInput("tbccMacroSearchBotUsername", STORAGE_MACRO_SEARCH_BOT_USERNAME);
+  wireBotUsernameInput("tbccPaymentBotUsername", STORAGE_PAYMENT_BOT_USERNAME);
 })();
 
 if (btnClearHistory) {

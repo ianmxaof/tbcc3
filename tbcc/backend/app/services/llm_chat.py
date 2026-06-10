@@ -1,10 +1,11 @@
 """
 Configurable chat completions for the generic LLM Telegram bridge (llm_chat_bot).
 
-Providers: OpenAI Chat Completions API, or local Ollama /api/chat.
+Providers: OpenAI, OpenRouter (OpenAI-compatible), or local Ollama /api/chat.
 
 Env (llm_chat_bot):
-  TBCC_LLM_CHAT_PROVIDER — openai | ollama (default: ollama)
+  TBCC_LLM_CHAT_PROVIDER — openai | openrouter | ollama (default: ollama)
+  TBCC_OPENROUTER_API_KEY + TBCC_OPENROUTER_CHAT_MODEL (or TBCC_LLM_MODEL)
   TBCC_OPENAI_API_KEY / TBCC_LLM_CHAT_OPENAI_MODEL / TBCC_LLM_CHAT_MAX_TOKENS / TBCC_LLM_CHAT_TEMPERATURE
   TBCC_OLLAMA_BASE_URL (default http://127.0.0.1:11434) / TBCC_OLLAMA_MODEL (default llama3.2)
 """
@@ -40,6 +41,13 @@ def _openai_model() -> str:
     return (os.getenv("TBCC_LLM_CHAT_OPENAI_MODEL") or os.getenv("TBCC_LLM_MODEL") or "gpt-4o-mini").strip()
 
 
+def _openrouter_model() -> str:
+    from app.services.llm_completions import resolve_text_model
+
+    explicit = (os.getenv("TBCC_LLM_CHAT_OPENROUTER_MODEL") or os.getenv("TBCC_OPENROUTER_MODEL") or "").strip()
+    return resolve_text_model(explicit or None)
+
+
 def _max_tokens() -> int:
     raw = (os.getenv("TBCC_LLM_CHAT_MAX_TOKENS") or "512").strip()
     try:
@@ -71,6 +79,10 @@ def provider_configured() -> bool:
     p = _provider()
     if p == "openai":
         return bool(_openai_key())
+    if p == "openrouter":
+        from app.services.llm_completions import openrouter_api_key
+
+        return bool(openrouter_api_key())
     if p in ("ollama", "local"):
         return True
     return False
@@ -84,6 +96,8 @@ async def complete_llm_chat(messages: list[dict[str, str]]) -> str:
         return await _complete_ollama(messages)
     if p == "openai":
         return await _complete_openai(messages)
+    if p == "openrouter":
+        return await _complete_openrouter(messages)
     raise RuntimeError(f"Unknown TBCC_LLM_CHAT_PROVIDER: {p}")
 
 
@@ -145,3 +159,18 @@ async def _complete_openai(messages: list[dict[str, str]]) -> str:
     if not text:
         raise RuntimeError("OpenAI returned empty content")
     return text
+
+
+async def _complete_openrouter(messages: list[dict[str, str]]) -> str:
+    from app.services.llm_completions import complete_chat_text_async, openrouter_api_key
+
+    if not openrouter_api_key():
+        raise RuntimeError("Set TBCC_OPENROUTER_API_KEY for OpenRouter provider")
+
+    return await complete_chat_text_async(
+        messages,
+        model=_openrouter_model(),
+        max_tokens=_max_tokens(),
+        temperature=_temperature(),
+        timeout=120.0,
+    )

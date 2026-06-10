@@ -76,7 +76,7 @@
     if (!p.enabled || !p.images || !p.images.length) {
       const empty = document.createElement("p");
       empty.className = "send-promo-strip-empty";
-      empty.textContent = "Upload a promo tile (logo, profile card) — appended last on each batch send.";
+      empty.textContent = "Upload a promo tile (logo, profile card) — included in the last album of each batch send.";
       strip.appendChild(empty);
       return;
     }
@@ -216,6 +216,103 @@
     }
   }
 
+  const TELEGRAM_ALBUM_MAX = 10;
+
+  function planAlbumBatchSizes(batchCount, includePromoTail, maxSize) {
+    const n = Math.max(0, Number(batchCount) || 0);
+    const max = Math.max(1, Number(maxSize) || TELEGRAM_ALBUM_MAX);
+    if (!includePromoTail) {
+      if (n === 0) return [];
+      const sizes = [];
+      for (let i = 0; i < n; i += max) sizes.push(Math.min(max, n - i));
+      return sizes;
+    }
+    if (n === 0) return [0];
+    const k = Math.ceil((n + 1) / max);
+    const sizes = [];
+    let i = 0;
+    for (let albumIdx = 0; albumIdx < k; albumIdx++) {
+      const isLast = albumIdx === k - 1;
+      if (isLast) {
+        sizes.push(n - i);
+      } else {
+        let take = max;
+        const prefixFull = (k - 1) * max;
+        const remainder = n - prefixFull;
+        if (albumIdx === k - 2 && remainder === 0) take = max - 1;
+        sizes.push(take);
+        i += take;
+      }
+    }
+    return sizes;
+  }
+
+  class AlbumSendPlanner {
+    constructor(batchCount, includePromo, maxSize) {
+      this.includePromo = !!includePromo;
+      this.maxSize = maxSize || TELEGRAM_ALBUM_MAX;
+      if (!this.includePromo) {
+        this.sizes = planAlbumBatchSizes(batchCount, false, this.maxSize);
+      } else {
+        this.sizes = planAlbumBatchSizes(batchCount, true, this.maxSize);
+      }
+      this.idx = 0;
+      this.pos = 0;
+    }
+
+    take(available) {
+      const left = Math.max(0, Number(available) || 0);
+      if (!left) return 0;
+      if (!this.sizes.length) return Math.min(this.maxSize, left);
+      if (this.idx >= this.sizes.length) return Math.min(this.maxSize, left);
+      const need = this.sizes[this.idx] - this.pos;
+      return Math.min(need, left);
+    }
+
+    appendPromoAfterChunk(take) {
+      if (!this.includePromo || this.idx >= this.sizes.length) return false;
+      const isLast = this.idx === this.sizes.length - 1;
+      const completes = this.pos + take >= this.sizes[this.idx];
+      return isLast && completes;
+    }
+
+    advance(take) {
+      if (!this.sizes.length) return;
+      this.pos += take;
+      if (this.pos >= this.sizes[this.idx]) {
+        this.idx += 1;
+        this.pos = 0;
+      }
+    }
+
+    needsPromoOnlySend() {
+      return this.includePromo && this.sizes.length === 1 && this.sizes[0] === 0;
+    }
+  }
+
+  function sliceNextAlbumChunk(items, start, planner) {
+    const take = planner.take(items.length - start);
+    if (take <= 0) return { chunk: [], next: start, appendPromo: false };
+    const chunk = items.slice(start, start + take);
+    const appendPromo = planner.appendPromoAfterChunk(take);
+    planner.advance(take);
+    return { chunk, next: start + take, appendPromo };
+  }
+
+  async function prepareAlbumTail() {
+    if (!(await shouldAppendTail())) return { pack: null, pending: false, planner: null };
+    const pack = await fetchActiveBlob();
+    return {
+      pack,
+      pending: !!pack,
+      planner: null,
+    };
+  }
+
+  function createAlbumSendPlanner(batchCount, includePromo) {
+    return new AlbumSendPlanner(batchCount, includePromo, TELEGRAM_ALBUM_MAX);
+  }
+
   async function sendSavedTail(poolId, appendCaptionToForm, appendErr, bump) {
     if (!(await shouldAppendTail())) return false;
     const pack = await fetchActiveBlob();
@@ -232,7 +329,7 @@
       } catch (_) {}
       if (data.status === "saved_only" && !data.error) {
         if (typeof bump === "function") bump();
-        if (global.showToast) global.showToast("Send promo tile appended.", "info");
+        if (global.showToast) global.showToast("Send promo tile sent.", "info");
         return true;
       }
       if (appendErr) appendErr(data.error || "Send promo tail failed");
@@ -266,9 +363,14 @@
   global.TbccSendPromo = {
     refresh,
     shouldAppend: shouldAppendTail,
+    prepareAlbumTail,
+    createAlbumSendPlanner,
+    sliceNextAlbumChunk,
+    planAlbumBatchSizes,
     sendSavedTail,
     importMediaId,
     bindUi,
+    TELEGRAM_ALBUM_MAX,
   };
 
   if (document.readyState === "loading") {

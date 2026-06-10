@@ -1,0 +1,12 @@
+{
+  "categories": [
+    {"slug": "milf", "name": "MILF", "prompts": ["MILF mature woman"], "group": "body"},
+    {"slug": "latina", "name": "Latina", "prompts": ["Latina woman"], "group": "ethnicity"},
+    {"slug": "asian", "name": "Asian", "prompts": ["Asian woman"], "group": "ethnicity"},
+    {"slug": "amateur", "name": "Amateur", "prompts": ["amateur homemade photo"], "group": "style"},
+    {"slug": "cosplay", "name": "Cosplay", "prompts": ["cosplay costume"], "group": "niche"},
+    {"slug": "hentai", "name": "Hentai", "prompts": ["anime hentai illustration"], "group": "style"},
+    {"slug": "solo", "name": "Solo", "prompts": ["solo model photo"], "group": "act"},
+    {"slug": "threesome", "name": "Threesome", "prompts": ["threesome scene"], "group": "act"}
+  ]
+}

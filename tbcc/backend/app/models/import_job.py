@@ -19,6 +19,7 @@ class ImportJob(Base):
     __tablename__ = "import_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="bytes")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     stage: Mapped[str] = mapped_column(String(32), nullable=False, default="stored")
     pool_id: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

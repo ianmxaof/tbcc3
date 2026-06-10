@@ -41,12 +41,28 @@
   const tracked = [];
   let tbccLastContextUsername = "";
   const STORAGE_LAST_COPIED_USERNAME = "tbccLastCopiedUsername";
+  const STORAGE_PAGE_MENU_ITEMS = "tbccPageMenuItems";
   const TBCC_PAGE_MENU_ID = "tbcc-page-media-menu";
+  const DEFAULT_PAGE_MENU_ITEMS = {
+    "save-archive": true,
+    "save-archive-all": true,
+    "save-pool": true,
+    "save-saved": true,
+    "download-url": true,
+    "download-frame": true,
+    "toggle-select": true,
+    "copy-url": true,
+    "open-url": true,
+    "reverse-image": true,
+    "lookup-username": true,
+  };
+  let pageMenuItems = { ...DEFAULT_PAGE_MENU_ITEMS };
   let tbccPageMenu = null;
   let tbccPageMenuUrl = "";
   let tbccPageMenuFrameUrl = "";
   let tbccPageMenuEl = null;
   let tbccPageMenuOpenedAt = 0;
+  let tbccPageMenuUsername = "";
   let pageMediaMenuEnabled = true;
   let rightClickFallbackCtx = null;
   const tbccIsRedgifsHost = /(^|\.)redgifs\.com$/i.test(location.hostname || "");
@@ -58,13 +74,21 @@
   }
 
   function normalizeUsernameCandidate(raw) {
+    const f = globalThis.TbccUsernameFilter;
+    if (f && typeof f.normalizeUsernameCandidate === "function") return f.normalizeUsernameCandidate(raw);
     if (!raw) return "";
-    let s = String(raw).trim();
-    s = s.replace(/^@+/, "");
-    s = s.replace(/^[^\w]+|[^\w.:-]+$/g, "");
-    if (!s) return "";
+    let s = String(raw).trim().replace(/^@+/, "");
     if (!/^[a-zA-Z0-9._-]{2,64}$/.test(s)) return "";
     return s;
+  }
+
+  function acceptedContextUsername(raw) {
+    const f = globalThis.TbccUsernameFilter;
+    const ref = String(location.href || "").split("#")[0];
+    if (f && typeof f.acceptUsernameForArchive === "function") {
+      return f.acceptUsernameForArchive(raw, { source: "context_menu", ref }) || "";
+    }
+    return normalizeUsernameCandidate(raw);
   }
 
   function extractUsernameFromText(text) {
@@ -127,14 +151,25 @@
   }
 
   async function storeLastCopiedUsername(username) {
-    const clean = normalizeUsernameCandidate(username);
+    const ref = String(location.href || "").split("#")[0];
+    const f = globalThis.TbccUsernameFilter;
+    const clean =
+      f && typeof f.acceptUsernameForArchive === "function"
+        ? f.acceptUsernameForArchive(username, { source: "copy", ref })
+        : normalizeUsernameCandidate(username);
     if (!clean) return;
     await storageLocalSet({
       [STORAGE_LAST_COPIED_USERNAME]: clean,
       tbccLastCopiedUsernameAt: Date.now(),
     });
     try {
-      chrome.runtime.sendMessage({ action: "tbcc-record-username-archive", username: clean });
+      chrome.runtime.sendMessage({
+        action: "tbcc-record-username-archive",
+        username: clean,
+        source: "copy",
+        ref,
+        pageUrl: ref,
+      });
     } catch (_) {}
   }
 
@@ -525,18 +560,77 @@
     return out;
   }
 
+  function pageMenuItemEnabled(act) {
+    if (!act) return false;
+    if (act === "lookup-username") return pageMenuItems["lookup-username"] !== false;
+    return pageMenuItems[act] !== false;
+  }
+
+  function isImageMediaUrl(url, el) {
+    if (el) {
+      const tag = (el.tagName || "").toUpperCase();
+      if (tag === "IMG" || tag === "CANVAS") return true;
+      if (tag === "VIDEO") {
+        try {
+          const poster = el.getAttribute && el.getAttribute("poster");
+          if (poster && /^https?:\/\//i.test(poster)) return true;
+        } catch (_) {}
+        return false;
+      }
+    }
+    const u = String(url || "").trim();
+    if (!u) return false;
+    if (/^data:image\//i.test(u)) return true;
+    if (!/^https?:\/\//i.test(u)) return false;
+    const path = u.split("#")[0].split("?")[0];
+    return /\.(jpe?g|png|gif|webp|bmp|avif)(\?|$)/i.test(path);
+  }
+
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
     const s = document.createElement("style");
     s.id = STYLE_ID;
     s.textContent =
       ".tbcc-page-overlay-cb{position:fixed;z-index:2147483647;width:20px;height:20px;cursor:pointer;accent-color:#89b4fa;pointer-events:auto;box-sizing:border-box;margin:0;padding:0;}" +
-      ".tbcc-page-menu{position:fixed;z-index:2147483647;min-width:168px;background:#f4f4f4;color:#1f1f1f;border:1px solid #c8c8c8;border-radius:6px;padding:3px;box-shadow:0 4px 12px rgba(0,0,0,.28);font:12px/1.25 'Segoe UI',Tahoma,sans-serif;}" +
+      ".tbcc-page-menu{position:fixed;z-index:2147483647;margin:0;padding:0;border:0;background:transparent;font:12px/1.25 'Segoe UI',Tahoma,sans-serif;}" +
       ".tbcc-page-menu[hidden]{display:none!important;}" +
-      ".tbcc-page-menu button{display:block;width:100%;text-align:left;background:transparent;border:0;color:inherit;padding:4px 8px;border-radius:4px;cursor:pointer;}" +
-      ".tbcc-page-menu button:hover{background:#dbeafe;}" +
-      ".tbcc-page-menu .tbcc-page-menu-title{opacity:.72;padding:3px 8px 4px 8px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}";
+      ".tbcc-page-menu__inner{min-width:188px;max-width:min(88vw,280px);padding:5px;border-radius:6px;border:1px solid rgba(255,255,255,.1);background:#1a1a22;box-shadow:0 8px 28px rgba(0,0,0,.55);color:#e8e8ef;}" +
+      ".tbcc-page-menu__inner button{display:block;width:100%;text-align:left;background:transparent;border:0;color:inherit;padding:6px 9px;border-radius:5px;cursor:pointer;font:inherit;font-size:12px;}" +
+      ".tbcc-page-menu__inner button:hover{background:rgba(255,255,255,.08);}";
     (document.head || document.documentElement).appendChild(s);
+  }
+
+  function populatePageMenu(menu) {
+    const inner = menu.querySelector(".tbcc-page-menu__inner") || menu;
+    inner.querySelectorAll("button[data-act]").forEach((b) => b.remove());
+    const items = [
+      { act: "save-archive", label: "Save URL to master archive" },
+      { act: "save-archive-all", label: "Save all video URLs to master archive" },
+      { act: "save-pool", label: "Save to pool" },
+      { act: "save-saved", label: "Save to Saved Messages" },
+      { act: "download-url", label: "Download media" },
+      { act: "download-frame", label: "Download frame" },
+      { act: "toggle-select", label: "Toggle overlay select" },
+      { act: "copy-url", label: "Copy media URL" },
+      { act: "open-url", label: "Open media URL" },
+    ];
+    if (isImageMediaUrl(tbccPageMenuUrl, tbccPageMenuEl)) {
+      items.push({ act: "reverse-image", label: "Reverse image search" });
+    }
+    if (tbccPageMenuUsername) {
+      items.push({
+        act: "lookup-username",
+        label: "Look up username (@" + tbccPageMenuUsername + ")",
+      });
+    }
+    for (const item of items) {
+      if (!pageMenuItemEnabled(item.act)) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.act = item.act;
+      btn.textContent = item.label;
+      inner.appendChild(btn);
+    }
   }
 
   function ensurePageMenu() {
@@ -547,15 +641,9 @@
     root.id = TBCC_PAGE_MENU_ID;
     root.className = "tbcc-page-menu";
     root.hidden = true;
-    root.innerHTML =
-      '<div class="tbcc-page-menu-title">TBCC Media</div>' +
-      '<button type="button" data-act="download-url">Download media</button>' +
-      '<button type="button" data-act="download-frame">Download frame</button>' +
-      '<button type="button" data-act="save-pool">Save to pool</button>' +
-      '<button type="button" data-act="save-saved">Save to Saved Messages</button>' +
-      '<button type="button" data-act="toggle-select">Toggle overlay select</button>' +
-      '<button type="button" data-act="copy-url">Copy media URL</button>' +
-      '<button type="button" data-act="open-url">Open media URL</button>';
+    const inner = document.createElement("div");
+    inner.className = "tbcc-page-menu__inner";
+    root.appendChild(inner);
     root.addEventListener("click", (e) => {
       const btn = e.target && e.target.closest ? e.target.closest("button[data-act]") : null;
       if (!btn) return;
@@ -573,6 +661,7 @@
     tbccPageMenuUrl = "";
     tbccPageMenuFrameUrl = "";
     tbccPageMenuEl = null;
+    tbccPageMenuUsername = "";
   }
 
   /**
@@ -635,14 +724,14 @@
     return copyTextViaExecCommand(s);
   }
 
-  function openPageMenu(x, y, url, el, frameUrl) {
+  function openPageMenu(x, y, url, el, frameUrl, username) {
     const menu = ensurePageMenu();
     if (!menu || !url) return;
     tbccPageMenuUrl = url;
     tbccPageMenuFrameUrl = frameUrl || url;
     tbccPageMenuEl = el || null;
-    const title = menu.querySelector(".tbcc-page-menu-title");
-    if (title) title.textContent = "TBCC Media: " + String(url).replace(/^https?:\/\//i, "").slice(0, 80);
+    tbccPageMenuUsername = username || "";
+    populatePageMenu(menu);
     menu.hidden = false;
     menu.style.left = "0px";
     menu.style.top = "0px";
@@ -748,6 +837,83 @@
             },
             () => resolve()
           );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "save-archive") {
+      const saveUrl = url || String(location.href || "").split("#")[0];
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-page-menu-archive-url",
+              url: saveUrl,
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "save-archive-all") {
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-page-menu-archive-all-videos",
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "lookup-username") {
+      const u = tbccPageMenuUsername;
+      if (!u) return;
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-record-username-archive",
+              username: u,
+              source: "user_pick",
+              ref: location.href.split("#")[0],
+              pageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: "tbcc-launch-model-search-tabs", username: u }, () => resolve());
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "reverse-image") {
+      let searchUrl = url;
+      try {
+        const resolved = await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-resolve-copy-media-url",
+              url,
+              pageUrl: location.href.split("#")[0],
+            },
+            (r) => {
+              if (chrome.runtime.lastError) resolve(url);
+              else resolve((r && r.url) || url);
+            }
+          );
+        });
+        if (resolved) searchUrl = resolved;
+      } catch (_) {}
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage({ action: "tbcc-launch-reverse-image", url: searchUrl }, () => resolve());
         });
       } catch (_) {}
     }
@@ -965,7 +1131,9 @@
   }
 
   function tryOpenTbccMenuFromEvent(e) {
-    tbccLastContextUsername = resolveContextUsername(e.target) || "";
+    const rawUser = resolveContextUsername(e.target) || "";
+    tbccLastContextUsername = rawUser;
+    const acceptedUser = acceptedContextUsername(rawUser);
     if (!shouldUseCustomPageMenuForEvent(e)) return false;
     const x = e.clientX || 0;
     const y = e.clientY || 0;
@@ -983,7 +1151,7 @@
     }
     e.preventDefault();
     e.stopPropagation();
-    openPageMenu(x + 2, y + 2, mediaUrl, mediaEl, frameUrl);
+    openPageMenu(x + 2, y + 2, mediaUrl, mediaEl, frameUrl, acceptedUser);
     return true;
   }
 
@@ -1108,12 +1276,17 @@
       tearDown();
       return;
     }
-    const { tbccOverlayMode, tbccPageMediaMenuEnabled } = await storageLocalGet([
+    const { tbccOverlayMode, tbccPageMediaMenuEnabled, tbccPageMenuItems } = await storageLocalGet([
       "tbccOverlayMode",
       "tbccPageMediaMenuEnabled",
+      STORAGE_PAGE_MENU_ITEMS,
     ]);
     overlayMode = !!tbccOverlayMode;
     pageMediaMenuEnabled = tbccIsRedgifsHost ? true : tbccPageMediaMenuEnabled !== false;
+    pageMenuItems = {
+      ...DEFAULT_PAGE_MENU_ITEMS,
+      ...(tbccPageMenuItems && typeof tbccPageMenuItems === "object" ? tbccPageMenuItems : {}),
+    };
     if (overlayMode) await buildOverlay();
     else tearDown();
   }
@@ -1132,6 +1305,14 @@
     if (changes.tbccPageMediaMenuEnabled) {
       pageMediaMenuEnabled = tbccIsRedgifsHost ? true : changes.tbccPageMediaMenuEnabled.newValue !== false;
       if (!pageMediaMenuEnabled) closePageMenu();
+    }
+    if (changes[STORAGE_PAGE_MENU_ITEMS]) {
+      const next = changes[STORAGE_PAGE_MENU_ITEMS].newValue;
+      pageMenuItems = {
+        ...DEFAULT_PAGE_MENU_ITEMS,
+        ...(next && typeof next === "object" ? next : {}),
+      };
+      if (tbccPageMenu && !tbccPageMenu.hidden) populatePageMenu(tbccPageMenu);
     }
   });
 
@@ -1240,7 +1421,8 @@
           if (redFull && /^https?:\/\//i.test(redFull)) mediaUrl = redFull;
         }
         if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) mediaUrl = String(location.href || "").split("#")[0];
-        openPageMenu(data.x + 2, data.y + 2, mediaUrl, data.ctx.el, frameUrl);
+        const acceptedUser = acceptedContextUsername(tbccLastContextUsername || resolveContextUsername(data.ctx.el));
+        openPageMenu(data.x + 2, data.y + 2, mediaUrl, data.ctx.el, frameUrl, acceptedUser);
       },
       true
     );

@@ -8,6 +8,7 @@ from app.schemas.common import orm_to_dict
 from app.models.content_pool import ContentPool
 from app.models.media import Media
 from app.services.pool_cleanup import cascade_delete_pool
+from app.services.pool_schedule_sync import sync_pool_album_settings_to_schedules
 
 router = APIRouter()
 
@@ -134,6 +135,12 @@ def update_pool(pool_id: int, body: PoolUpdate, db: Session = Depends(get_db)):
         p.route_nsfw_tiers = t or None
     if body.route_priority is not None:
         p.route_priority = int(body.route_priority)
+    sync_pool_album_settings_to_schedules(
+        db,
+        pool_id,
+        album_size=body.album_size,
+        randomize_queue=body.randomize_queue,
+    )
     db.commit()
     db.refresh(p)
     d = orm_to_dict(p)

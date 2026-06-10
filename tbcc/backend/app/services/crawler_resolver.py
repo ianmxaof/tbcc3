@@ -168,6 +168,100 @@ def _album_id_from_url(url: str) -> str | None:
         return None
 
 
+_EROME_RESERVED_SEGMENTS = frozenset({
+    "a",
+    "search",
+    "explore",
+    "popular",
+    "hot",
+    "login",
+    "register",
+    "oauth",
+    "api",
+    "static",
+    "video",
+    "m",
+    "i",
+    "privacy",
+    "terms",
+    "dmca",
+    "contact",
+})
+
+_EROME_ALBUM_LINK_RE = re.compile(
+    r"""(?:href|data-url)=["'](?:https?://(?:www\.)?erome\.com)?/a/([A-Za-z0-9_-]+)""",
+    flags=re.I,
+)
+_EROME_ALBUM_DIRECT_RE = re.compile(
+    r"https?://(?:www\.)?erome\.com/a/([A-Za-z0-9_-]+)",
+    flags=re.I,
+)
+
+
+def _classify_erome_url(url: str) -> Literal["album", "profile", "search", "other"]:
+    try:
+        parsed = urlparse(url)
+        path = (parsed.path or "").strip("/")
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 2 and parts[0].lower() == "a":
+            return "album"
+        if parts and parts[0].lower() == "search":
+            return "search"
+        if parts and parts[0].lower() not in _EROME_RESERVED_SEGMENTS:
+            return "profile"
+    except Exception:
+        pass
+    return "other"
+
+
+def _normalize_erome_album_url(album_id: str) -> str:
+    return f"https://www.erome.com/a/{album_id}"
+
+
+def _extract_erome_album_urls(page: str, base_url: str | None = None) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for pattern in (_EROME_ALBUM_LINK_RE, _EROME_ALBUM_DIRECT_RE):
+        for m in pattern.finditer(page or ""):
+            album_id = m.group(1)
+            if not album_id or album_id in seen:
+                continue
+            seen.add(album_id)
+            out.append(_normalize_erome_album_url(album_id))
+    return out
+
+
+def _erome_listing_page_urls(url: str, page_html: str, max_pages: int) -> list[str]:
+    """Return listing URLs to fetch (current + pagination hints)."""
+    from urllib.parse import parse_qs, urlencode, urlunparse
+
+    urls = [url]
+    if max_pages <= 1:
+        return urls
+    try:
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        for m in re.finditer(r'href=["\']([^"\']*\?[^"\']*page=(\d+)[^"\']*)["\']', page_html, flags=re.I):
+            page_num = int(m.group(2))
+            if 1 < page_num <= max_pages:
+                candidate = _clean_url(html.unescape(m.group(1)))
+                if candidate.startswith("/"):
+                    candidate = base + candidate
+                if candidate.startswith("http") and candidate not in urls:
+                    urls.append(candidate)
+        for n in range(2, max_pages + 1):
+            qs = parse_qs(parsed.query)
+            qs["page"] = [str(n)]
+            synthetic = urlunparse(
+                (parsed.scheme, parsed.netloc, parsed.path, "", urlencode(qs, doseq=True), "")
+            )
+            if synthetic not in urls:
+                urls.append(synthetic)
+    except Exception:
+        pass
+    return urls[:max_pages]
+
+
 async def _fetch_erome_album(url: str) -> tuple[str, list[str]]:
     warnings: list[str] = []
     async with httpx.AsyncClient(follow_redirects=True, timeout=45.0, headers=_browser_headers()) as client:
@@ -185,9 +279,107 @@ async def _fetch_erome_album(url: str) -> tuple[str, list[str]]:
     return last_response.text, warnings
 
 
+async def resolve_erome_listing(
+    url: str,
+    limit: int = 500,
+    *,
+    max_listing_pages: int = 5,
+    max_albums: int = 40,
+) -> CrawlerResult:
+    """Profile or search page → discover album links → resolve each album's media."""
+    if not _is_erome_url(url):
+        raise ValueError("Erome listing crawler expects an erome.com URL.")
+
+    kind = _classify_erome_url(url)
+    if kind not in ("profile", "search"):
+        raise ValueError(
+            "Erome listing crawler expects a user profile (https://www.erome.com/<user>) "
+            "or search URL (https://www.erome.com/search?q=…)."
+        )
+
+    warnings: list[str] = []
+    listing_pages = max(1, min(max_listing_pages, 20))
+    album_cap = max(1, min(max_albums, 200))
+
+    first_html, fetch_warnings = await _fetch_erome_album(url)
+    warnings.extend(fetch_warnings)
+    page_urls = _erome_listing_page_urls(url, first_html, listing_pages)
+
+    album_urls: list[str] = []
+    seen_albums: set[str] = set()
+    title = _extract_title(first_html)
+
+    for page_url in page_urls:
+        if page_url == url:
+            page_html = first_html
+        else:
+            await _rate_limit("erome.com", 1.2)
+            page_html, more = await _fetch_erome_album(page_url)
+            warnings.extend(more)
+        for album in _extract_erome_album_urls(page_html, page_url):
+            if album in seen_albums:
+                continue
+            seen_albums.add(album)
+            album_urls.append(album)
+            if len(album_urls) >= album_cap:
+                break
+        if len(album_urls) >= album_cap:
+            break
+
+    if not album_urls:
+        warnings.append(
+            f"No album links found on this Erome {kind} page. "
+            "Open the page in a browser to confirm it lists galleries."
+        )
+        return CrawlerResult(
+            adapter="erome",
+            source_url=url,
+            title=title,
+            items=[],
+            warnings=warnings,
+        )
+
+    warnings.append(
+        f"Erome {kind}: resolving up to {len(album_urls)} album(s) from {len(page_urls)} listing page(s)."
+    )
+
+    items: list[CrawlerMediaItem] = []
+    item_urls: set[str] = set()
+    for i, album_url in enumerate(album_urls):
+        if limit > 0 and len(items) >= limit:
+            break
+        await _rate_limit("erome.com", 1.0)
+        try:
+            album_result = await resolve_erome_album(
+                album_url, limit=max(1, limit - len(items)) if limit > 0 else 0
+            )
+        except Exception as exc:
+            warnings.append(f"Album {album_url} failed: {exc.__class__.__name__}: {exc}")
+            continue
+        warnings.extend(album_result.warnings)
+        for it in album_result.items:
+            if it.url in item_urls:
+                continue
+            item_urls.add(it.url)
+            items.append(it)
+        if (i + 1) % 10 == 0:
+            logger.info("Erome listing %s: resolved %d/%d albums, %d items", kind, i + 1, len(album_urls), len(items))
+
+    if not items:
+        warnings.append("Album links were found but no direct media URLs could be extracted.")
+
+    return CrawlerResult(
+        adapter="erome",
+        source_url=url,
+        title=title,
+        items=items,
+        warnings=warnings,
+    )
+
+
 async def resolve_erome_album(url: str, limit: int = 250) -> CrawlerResult:
-    if not _is_erome_url(url) or "/a/" not in urlparse(url).path:
-        raise ValueError("Erome crawler expects an album URL like https://www.erome.com/a/<id>.")
+    if not _is_erome_url(url) or _classify_erome_url(url) != "album":
+        raise ValueError("Erome album crawler expects an album URL like https://www.erome.com/a/<id>.")
 
     page, warnings = await _fetch_erome_album(url)
     album_id = _album_id_from_url(url)
@@ -763,7 +955,7 @@ async def resolve_generic(
 
 
 def _detect_adapter(url: str) -> CrawlerAdapter:
-    if _is_erome_url(url) and "/a/" in urlparse(url).path:
+    if _is_erome_url(url) and _classify_erome_url(url) in ("album", "profile", "search"):
         return "erome"
     if _is_bunkr_url(url):
         return "bunkr"
@@ -785,7 +977,9 @@ async def resolve_crawler_url(
     selected = adapter if adapter != "auto" else _detect_adapter(clean)
 
     if selected == "erome":
-        return asdict(await resolve_erome_album(clean, limit=limit))
+        if _classify_erome_url(clean) == "album":
+            return asdict(await resolve_erome_album(clean, limit=limit))
+        return asdict(await resolve_erome_listing(clean, limit=limit))
     if selected == "bunkr":
         return asdict(await resolve_bunkr_album(clean, cookies=cookies, limit=limit))
     if selected == "onlyfans":

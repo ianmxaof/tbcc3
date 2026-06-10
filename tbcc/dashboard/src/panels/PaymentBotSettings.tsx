@@ -336,10 +336,12 @@ export function PaymentBotSettingsPanel() {
         </div>
 
         <div className="border border-slate-700 rounded-lg p-3 bg-slate-900/30">
-          <h3 className="text-sm font-semibold text-slate-200 mb-2">Video finder</h3>
+          <h3 className="text-sm font-semibold text-slate-200 mb-2">Macro / video search</h3>
           <p className="text-xs text-slate-400 mb-3">
-            Powers `/videofind &lt;username&gt;` in the payment bot. Each source URL must include{" "}
-            <code>{"{username}"}</code>.
+            Powers <code>/macrosearch</code> and <code>/videofind</code> in the payment bot. Built-in macro
+            sources come from <code>extension/model-search-sites.json</code> (same as the TBCC extension).
+            Add more via Telegram <code>/macroaddsource</code> (admin) or override legacy per-source JSON below.
+            Each URL must include <code>{"{username}"}</code>.
           </p>
           <label className="flex items-center gap-2 text-sm text-slate-200 mb-3">
             <input

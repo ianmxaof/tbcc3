@@ -14,6 +14,7 @@ from app.models.channel import Channel
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.scheduled_post_service import _checkout_deep_link_payload
 from app.workers.poster_worker import post_scheduled_text
+from app.services.pool_schedule_sync import sync_schedule_album_settings_to_pool
 
 router = APIRouter()
 
@@ -79,7 +80,7 @@ def _has_media_or_promo(body) -> bool:
     mids = getattr(body, "media_ids", None)
     if mids:
         return True
-    if getattr(body, "pool_id", None):
+    if getattr(body, "pool_id", None) or getattr(body, "pool_collective_random", False):
         return True
     return False
 
@@ -184,8 +185,14 @@ def _patch_scheduled_post_core(
         post.interval_minutes = None
     if hasattr(body, "media_ids") and body.media_ids is not None:
         post.media_ids = json.dumps(body.media_ids)
-    if hasattr(body, "pool_id"):
+    if "pool_collective_random" in fs:
+        post.pool_collective_random = bool(body.pool_collective_random)
+        if post.pool_collective_random:
+            post.pool_id = None
+    if "pool_id" in fs:
         post.pool_id = body.pool_id
+        if body.pool_id:
+            post.pool_collective_random = False
     if hasattr(body, "buttons") and body.buttons is not None:
         post.buttons = json.dumps(body.buttons)
     if "album_size" in fs:
@@ -194,7 +201,8 @@ def _patch_scheduled_post_core(
     if "pool_randomize" in fs:
         post.pool_randomize = body.pool_randomize
     if "pool_only_mode" in fs:
-        post.pool_only_mode = bool(body.pool_only_mode) if post.pool_id else False
+        uses_pool = bool(post.pool_id) or bool(getattr(post, "pool_collective_random", False))
+        post.pool_only_mode = bool(body.pool_only_mode) if uses_pool else False
     if "album_variants" in fs:
         av = _normalize_album_variants(body.album_variants)
         post.album_variants_json = json.dumps(av) if av else None
@@ -257,6 +265,8 @@ def _patch_scheduled_post_core(
         raw_q = body.buffer_x_queue
         dumped = [x.model_dump() for x in raw_q] if raw_q else []
         post.set_buffer_x_queue(_normalize_buffer_x_queue(dumped))
+    if "campaign_random_channel" in fs:
+        post.campaign_random_channel = bool(body.campaign_random_channel)
 
 
 class BufferXQueueItem(BaseModel):
@@ -277,6 +287,10 @@ class ScheduledPostCreate(BaseModel):
     interval_minutes: int | None = Field(default=None, description="Required for recurring")
     media_ids: list[int] | None = None
     pool_id: int | None = None
+    pool_collective_random: bool = Field(
+        default=False,
+        description="Each send randomly picks one content pool (pool_id must be unset).",
+    )
     buttons: list[dict] | None = None
     # When pool_id is set: per-job album size / randomize (overrides pool defaults if set)
     album_size: int | None = None
@@ -310,6 +324,10 @@ class ScheduledPostCreate(BaseModel):
     )
     caption_llm_rewrite_interval: int | None = Field(None, ge=1, le=100)
     caption_llm_rewrite_probability: float | None = Field(None, ge=0.0, le=1.0)
+    campaign_random_channel: bool = Field(
+        default=False,
+        description="Multi-channel only: each run posts to one randomly chosen channel from channel_ids.",
+    )
 
 
 class ScheduledPostUpdate(BaseModel):
@@ -325,6 +343,7 @@ class ScheduledPostUpdate(BaseModel):
     )
     media_ids: list[int] | None = None
     pool_id: int | None = None
+    pool_collective_random: bool | None = None
     buttons: list[dict] | None = None
     album_size: int | None = None
     pool_randomize: bool | None = None
@@ -346,6 +365,7 @@ class ScheduledPostUpdate(BaseModel):
     caption_llm_rewrite_mode: str | None = None
     caption_llm_rewrite_interval: int | None = Field(None, ge=1, le=100)
     caption_llm_rewrite_probability: float | None = Field(None, ge=0.0, le=1.0)
+    campaign_random_channel: bool | None = None
 
 
 def _resolve_create_channel_ids(body: ScheduledPostCreate) -> list[int]:
@@ -409,22 +429,33 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
             if not c:
                 raise HTTPException(400, f"Channel id {cid} not found")
         campaign_group_id = str(uuid.uuid4()) if len(ch_ids) > 1 else None
+        random_channel = bool(body.campaign_random_channel) and len(ch_ids) > 1
+        if body.campaign_random_channel and len(ch_ids) < 2:
+            raise HTTPException(
+                400,
+                "campaign_random_channel requires at least two channels (channel_ids)",
+            )
+        if body.pool_id and body.pool_collective_random:
+            raise HTTPException(400, "pool_id and pool_collective_random are mutually exclusive")
+        uses_pool = bool(body.pool_id) or bool(body.pool_collective_random)
         created: list[ScheduledTextPost] = []
         for cid in ch_ids:
             post = ScheduledTextPost(
                 name=body.name,
                 channel_id=cid,
                 campaign_group_id=campaign_group_id,
+                campaign_random_channel=random_channel,
                 message_thread_id=body.message_thread_id,
                 content=content_val,
                 scheduled_at=body.scheduled_at,
                 interval_minutes=body.interval_minutes,
                 media_ids=json.dumps(body.media_ids) if body.media_ids else None,
                 pool_id=body.pool_id if body.pool_id else None,
+                pool_collective_random=bool(body.pool_collective_random) and not body.pool_id,
                 buttons=json.dumps(body.buttons) if body.buttons else None,
                 album_size=asize,
                 pool_randomize=body.pool_randomize,
-                pool_only_mode=bool(body.pool_only_mode) if body.pool_id else False,
+                pool_only_mode=bool(body.pool_only_mode) if uses_pool else False,
                 content_variations=variations_json,
                 caption_rotation_index=None,
                 attachment_urls_json=None if av_norm else (json.dumps(att_urls) if att_urls else None),
@@ -462,6 +493,12 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
             created.append(post)
         for p in created:
             _assert_checkout_row_ok(p, db)
+        synced_pools: set[int] = set()
+        for p in created:
+            pid = p.pool_id
+            if pid and int(pid) not in synced_pools:
+                sync_schedule_album_settings_to_pool(p, db)
+                synced_pools.add(int(pid))
         db.commit()
         result_posts = []
         for p in created:
@@ -497,6 +534,7 @@ def update_scheduled_campaign(campaign_group_id: str, body: ScheduledPostUpdate,
         _patch_scheduled_post_core(p, body, fs, allow_channel_id=False)
     for p in rows:
         _assert_checkout_row_ok(p, db)
+    sync_schedule_album_settings_to_pool(rows[0], db)
     db.commit()
     result_posts = []
     for p in rows:
@@ -581,6 +619,7 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
             _patch_scheduled_post_core(p, body, fs, allow_channel_id=False)
         for p in rows:
             _assert_checkout_row_ok(p, db)
+        sync_schedule_album_settings_to_pool(rows[0], db)
         db.commit()
         result_posts = []
         for p in rows:
@@ -592,6 +631,7 @@ def update_scheduled_post(post_id: int, body: ScheduledPostUpdate, db: Session =
         return {"posts": result_posts, "campaign_group_id": cg}
     _patch_scheduled_post_core(post, body, fs, allow_channel_id=True)
     _assert_checkout_row_ok(post, db)
+    sync_schedule_album_settings_to_pool(post, db)
     db.commit()
     db.refresh(post)
     d = scheduled_post_to_api_dict(post)

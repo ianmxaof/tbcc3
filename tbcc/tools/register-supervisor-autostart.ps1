@@ -25,12 +25,24 @@ if ($Unregister) {
   exit 0
 }
 
+$iconPath = Join-Path (Split-Path $toolsDir -Parent) "extension\icons\favicon.ico"
+
 $wsh = New-Object -ComObject WScript.Shell
 $sc = $wsh.CreateShortcut($shortcutPath)
-$sc.TargetPath = "powershell.exe"
-$sc.Arguments = '-NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $supervisor + '"'
+$launcherBat = Join-Path $toolsDir "Launch-TBCC-Supervisor.bat"
+if (Test-Path -LiteralPath $launcherBat) {
+  $sc.TargetPath = $launcherBat
+  $sc.Arguments = ""
+} else {
+  $sc.TargetPath = "powershell.exe"
+  $sc.Arguments = '-NoProfile -Sta -WindowStyle Hidden -ExecutionPolicy Bypass -Command "& { $env:TBCC_SUPERVISOR_TRAY=''1''; & ''' + $supervisor + ''' }"'
+}
+$sc.WindowStyle = 7
 $sc.WorkingDirectory = $toolsDir
 $sc.Description = "TBCC tray - cold start and service restarts"
+if (Test-Path -LiteralPath $iconPath) {
+  $sc.IconLocation = "$iconPath,0"
+}
 $sc.Save()
 
 Write-Host "Created Startup shortcut:" -ForegroundColor Green

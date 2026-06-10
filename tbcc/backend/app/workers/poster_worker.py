@@ -1,12 +1,13 @@
 import asyncio
 import logging
 import os
+import random
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from app.workers.celery_app import celery
-from app.utils.telegram_peer import normalize_telethon_peer_identifier
+from app.utils.telegram_peer import normalize_telethon_peer_identifier, resolve_poster_peer
 from app.utils.telethon_session import (
     admin_session_stem,
     configure_telethon_sqlite_session,
@@ -31,6 +32,16 @@ def _begin_poster_async_task() -> None:
 
 async def _poster_task_finally() -> None:
     await _reset_poster_client()
+
+
+def _campaign_random_channel_enabled(leader) -> bool:
+    return bool(getattr(leader, "campaign_random_channel", False))
+
+
+def _pick_one_campaign_target(eligible: set[int]) -> set[int]:
+    if not eligible:
+        return set()
+    return {random.choice(list(eligible))}
 
 
 def _is_recurring_due_now(post, now_utc: datetime) -> bool:
@@ -295,6 +306,9 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False, manual_trig
                                     campaign_group_id,
                                 )
                                 return
+                            random_channel = _campaign_random_channel_enabled(leader)
+                            if random_channel:
+                                due_targets = _pick_one_campaign_target(due_targets)
                             campaign_result = await send_scheduled_campaign(
                                 client,
                                 leader,
@@ -309,29 +323,36 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False, manual_trig
                             for p in siblings:
                                 p.caption_rotation_index = leader.caption_rotation_index
                                 p.album_carousel_index = leader.album_carousel_index
-                                if int(p.id) in sent_ids and is_recurring:
+                                if random_channel and is_recurring:
+                                    # One interval tick = one random pick (success or failure).
+                                    p.last_posted_at = now
+                                elif int(p.id) in sent_ids and is_recurring:
                                     p.last_posted_at = now
                                 elif int(p.id) in sent_ids:
                                     p.sent_at = now
                             from app.services.post_analytics import record_post_outbound_event
 
                             for p in siblings:
+                                pid = int(p.id)
+                                if random_channel and pid not in sent_ids and pid not in failed_ids:
+                                    continue
                                 record_post_outbound_event(
                                     db,
                                     event_type="scheduled_post_sent",
                                     channel_id=p.channel_id,
                                     scheduled_post_id=p.id,
-                                    ok=int(p.id) in sent_ids,
+                                    ok=pid in sent_ids,
                                     error_message=(
                                         "campaign partial failure"
-                                        if int(p.id) in failed_ids
+                                        if pid in failed_ids
                                         else None
                                     ),
                                 )
                             # Throttle recurring failures: otherwise first-run failures are retried every beat tick.
-                            for p in siblings:
-                                if int(p.id) in failed_ids and p.interval_minutes:
-                                    p.last_posted_at = now
+                            if not (random_channel and is_recurring):
+                                for p in siblings:
+                                    if int(p.id) in failed_ids and p.interval_minutes:
+                                        p.last_posted_at = now
                             for p in siblings:
                                 if int(p.id) in sent_ids:
                                     _clear_auto_pause_fields(p)
@@ -341,16 +362,15 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False, manual_trig
                             )
                             db.commit()
                             logger.info(
-                                "Campaign %s sent=%s failed=%s%s",
+                                "Campaign %s sent=%s failed=%s%s%s",
                                 campaign_group_id,
                                 len(sent_ids),
                                 len(failed_ids),
                                 " (reshuffle)" if reshuffle_album else "",
+                                " (random channel)" if random_channel else "",
                             )
                             leader = siblings[0]
-                            if int(leader.id) in sent_ids and getattr(
-                                leader, "buffer_mirror_enabled", False
-                            ):
+                            if sent_ids and getattr(leader, "buffer_mirror_enabled", False):
                                 _after_telegram_buffer_mirror(
                                     int(leader.id), manual_trigger=manual_trigger
                                 )
@@ -367,7 +387,12 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False, manual_trig
                         else:
                             channel = db.query(Channel).filter(Channel.id == post.channel_id).first()
                             await send_scheduled_post(
-                                client, channel.identifier, post, db, reshuffle_album=reshuffle_album
+                                client,
+                                channel.identifier,
+                                post,
+                                db,
+                                reshuffle_album=reshuffle_album,
+                                invite_fallback=getattr(channel, "invite_link", None),
                             )
                             now = datetime.utcnow()
                             if is_recurring:
@@ -492,23 +517,23 @@ def post_listening_relay_message(
             if not ch:
                 logger.warning("post_listening_relay_message: channel %s not found", channel_id)
                 return
-            peer = normalize_telethon_peer_identifier(ch.identifier)
-            silent_kw = {"silent": True} if send_silent else {}
             max_attempts = max(1, int(os.getenv("TBCC_POSTER_MAX_ATTEMPTS", "3")))
             attempt = 0
             while True:
                 attempt += 1
                 try:
                     client = await _get_poster_client()
-                    from app.services.telegram_custom_emoji import telethon_message_kwargs
-
-                    mk = telethon_message_kwargs(body[:4096])
-                    sent = await client.send_message(
-                        peer,
-                        reply_to=message_thread_id,
-                        **silent_kw,
-                        **mk,
+                    peer = await resolve_poster_peer(
+                        client,
+                        ch.identifier,
+                        invite_fallback=getattr(ch, "invite_link", None),
                     )
+                    from app.services.scheduled_post_service import _apply_telethon_html_to_kwargs
+
+                    silent_kw = {"silent": True} if send_silent else {}
+                    msg_kw: dict = {"reply_to": message_thread_id, **silent_kw}
+                    _apply_telethon_html_to_kwargs(msg_kw, body[:4096], field="message")
+                    sent = await client.send_message(peer, **msg_kw)
                     if followups:
                         reply_anchor = getattr(sent, "id", None) or message_thread_id
                         await send_relay_copy_followups(
@@ -555,9 +580,17 @@ def post_pool(pool_id: int, channel_identifier: str):
         try:
             db = SessionLocal()
             try:
+                from app.models.channel import Channel
+
                 pool = db.query(ContentPool).filter(ContentPool.id == pool_id).first()
                 album_size = pool.album_size if pool else 5
                 randomize = bool(pool and getattr(pool, "randomize_queue", False))
+                ch = (
+                    db.query(Channel).filter(Channel.id == pool.channel_id).first()
+                    if pool and pool.channel_id
+                    else None
+                )
+                invite_fb = getattr(ch, "invite_link", None) if ch else None
                 logger.info(
                     "Posting pool %s to %s (album_size=%s randomize=%s)",
                     pool_id,
@@ -571,7 +604,9 @@ def post_pool(pool_id: int, channel_identifier: str):
                     attempt += 1
                     try:
                         client = await _get_poster_client()
-                        peer = normalize_telethon_peer_identifier(channel_identifier)
+                        peer = await resolve_poster_peer(
+                            client, channel_identifier, invite_fallback=invite_fb
+                        )
                         await post_pool_albums(
                             client,
                             peer,

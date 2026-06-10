@@ -5,17 +5,29 @@ import { Growth } from "./Growth";
 import { WatchFolder } from "./WatchFolder";
 import { PaymentBotSettingsPanel } from "./PaymentBotSettings";
 import { LootOverseerSettingsPanel } from "./LootOverseerSettings";
+import { SecretarySettingsPanel } from "./SecretarySettingsPanel";
 
-type Tab = "shop" | "settings" | "loot" | "referrals" | "monitor" | "watch";
+type Tab = "shop" | "settings" | "loot" | "secretary" | "referrals" | "monitor" | "watch";
 
 export function BotsPanel() {
-  const [tab, setTab] = useState<Tab>("shop");
+  const [tab, setTab] = useState<Tab>(() => {
+    try {
+      const saved = sessionStorage.getItem("tbccBotsTab");
+      if (saved === "secretary" || saved === "loot" || saved === "settings" || saved === "shop" || saved === "referrals" || saved === "monitor" || saved === "watch") {
+        sessionStorage.removeItem("tbccBotsTab");
+        return saved as Tab;
+      }
+    } catch {
+      /* ignore */
+    }
+    return "shop";
+  });
 
   return (
     <div>
       <h1 className="text-2xl font-semibold mb-2">Bots</h1>
       <p className="text-slate-400 mb-6 max-w-2xl">
-        Configure what your Telegram payment bot sells, the loot overseer bot, payment bot runtime behavior, referral/landing copy, and worker processes.
+        Configure what your Telegram payment bot sells, the loot overseer bot, secretary / Format Engine, payment bot runtime behavior, referral/landing copy, and worker processes.
       </p>
 
       <div className="flex gap-1 mb-6 border-b border-slate-700 flex-wrap">
@@ -51,6 +63,17 @@ export function BotsPanel() {
           }`}
         >
           Loot overseer
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("secretary")}
+          className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+            tab === "secretary"
+              ? "border-cyan-500 text-cyan-400 bg-slate-800/80"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Secretary / FAQ
         </button>
         <button
           type="button"
@@ -93,6 +116,8 @@ export function BotsPanel() {
         <PaymentBotSettingsPanel />
       ) : tab === "loot" ? (
         <LootOverseerSettingsPanel />
+      ) : tab === "secretary" ? (
+        <SecretarySettingsPanel />
       ) : tab === "referrals" ? (
         <Growth />
       ) : tab === "watch" ? (

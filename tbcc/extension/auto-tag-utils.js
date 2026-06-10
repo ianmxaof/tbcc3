@@ -58,6 +58,53 @@
     "page",
   ]);
 
+  /** Scrape-site / platform tokens — admin metadata only, not public captions or #hashtags. */
+  const TRACE_SOURCE_MARKERS = [
+    "erome",
+    "onlyfans",
+    "motherless",
+    "coomer",
+    "kemono",
+    "redgifs",
+    "motherlessmedia",
+    "fapello",
+    "bunkr",
+    "bunkrr",
+    "spankbang",
+    "bestcam",
+    "cumcams",
+    "chaturbate",
+    "stripchat",
+    "bongacams",
+    "cam4",
+    "livejasmin",
+    "myfreecams",
+    "camsoda",
+    "camwhores",
+    "recurbate",
+    "pornhub",
+    "xvideos",
+    "xhamster",
+    "reddit",
+    "x-twitter",
+    "twitter",
+  ];
+
+  function isTraceSourceLabel(label) {
+    const s = String(label || "")
+      .trim()
+      .toLowerCase()
+      .replace(/^#+/u, "")
+      .replace(/\s+/gu, "");
+    if (!s) return false;
+    if (s.startsWith("src-")) return true;
+    if (/^[\w.-]+\.[a-z]{2,}$/i.test(String(label || "").trim()) && !String(label).includes(" ")) return true;
+    for (const needle of TRACE_SOURCE_MARKERS) {
+      if (s === needle || s.includes(needle)) return true;
+    }
+    return false;
+  }
+
   function hexishRatio(alnum) {
     if (!alnum) return 0;
     return (alnum.match(/[0-9a-f]/gi) || []).length / alnum.length;
@@ -134,7 +181,6 @@
       const parts = path.split("/").filter(Boolean);
 
       if (host.includes("onlyfans.com")) {
-        tags.push("onlyfans");
         const p = parts.join("/");
         let creator = "";
         if (parts[0] === "u" && parts[1]) creator = parts[1];
@@ -143,26 +189,17 @@
         if (/\/posts\//i.test(path) || parts.includes("posts")) tags.push("post");
         else if (creator) tags.push("profile");
       } else if (host.includes("erome.com")) {
-        tags.push("erome");
         if (parts[0] === "a" && parts[1]) tags.push("album");
       } else if (host.includes("reddit.com")) {
-        tags.push("reddit");
         const i = parts.indexOf("r");
         if (i >= 0 && parts[i + 1] && !isJunkAutoTagToken(parts[i + 1])) tags.push(parts[i + 1]);
-      } else if (host.includes("redgifs.com")) {
-        tags.push("redgifs");
-      }
-
-      const hostSite = host.split(".")[0];
-      if (hostSite && hostSite.length >= 4 && !isJunkAutoTagToken(hostSite) && !tags.includes(hostSite)) {
-        if (!/^(cdn|media|static|www)$/.test(hostSite)) tags.push(hostSite);
       }
     } catch (_) {}
     const out = [];
     const seen = Object.create(null);
     for (const t of tags) {
       const s = String(t || "").trim();
-      if (!s || isJunkAutoTagToken(s)) continue;
+      if (!s || isJunkAutoTagToken(s) || isTraceSourceLabel(s)) continue;
       const k = s.toLowerCase();
       if (seen[k]) continue;
       seen[k] = 1;
@@ -188,7 +225,7 @@
   function filterReadableTagHints(hints) {
     return (hints || []).filter((h) => {
       const n = normalizeAutoTagCandidate(h);
-      return n && !isJunkAutoTagToken(n);
+      return n && !isJunkAutoTagToken(n) && !isTraceSourceLabel(n);
     });
   }
 
@@ -196,6 +233,7 @@
     SHORT_OK,
     STOPWORDS,
     isJunkAutoTagToken,
+    isTraceSourceLabel,
     looksLikeRandomCdnSlug,
     isCdnOrMediaAssetUrl,
     extractSemanticTagsFromUrl,

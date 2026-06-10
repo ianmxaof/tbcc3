@@ -176,7 +176,7 @@ def _load_copy_media(db: Session, mids: list[int], order_mode: str) -> list[Medi
 
 async def send_relay_copy_followups(
     client: TelegramClient,
-    channel_identifier: str,
+    channel_identifier: str | Any,
     *,
     reply_anchor: int | None,
     followups: list[RelayCopyFollowup],
@@ -185,7 +185,11 @@ async def send_relay_copy_followups(
 ) -> None:
     if not followups:
         return
-    peer = normalize_telethon_peer_identifier(channel_identifier)
+    if isinstance(channel_identifier, str):
+        peer = normalize_telethon_peer_identifier(channel_identifier)
+    else:
+        # Caller may pass a Telethon entity already resolved (e.g. poster_worker).
+        peer = channel_identifier
     silent_kw = {"silent": True} if send_silent else {}
     anchor = reply_anchor
     for fu in followups:

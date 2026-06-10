@@ -2,9 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { CaptionSnippetLibraryManageButton } from "../components/CaptionSnippetLibrary";
-import { CustomEmojiLibraryManageButton } from "../components/CustomEmojiLibrary";
-import { ChannelInviteLinkButtons } from "../components/ChannelInviteLinkButtons";
+import { TbccInsertLibraryToolbar } from "../components/TbccInsertLibraryToolbar";
 import { PromoAffiliateLinksPopover } from "../components/PromoAffiliateLinksPopover";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
 import type { ListeningRelaySettings, RelaySlotExtra } from "../api";
@@ -251,7 +249,7 @@ function GallerySendPromoSection() {
     <section className="h-full border border-amber-800/40 rounded-lg p-6 bg-amber-950/10">
       <h2 className="text-lg font-medium text-amber-100 mb-1">Gallery send promo</h2>
       <p className="text-slate-400 text-sm mb-4">
-        Closing tile appended <strong className="text-slate-300">last</strong> on gallery batch sends (Saved Messages,
+        Closing tile included in the <strong className="text-slate-300">last album</strong> of gallery batch sends (Saved Messages,
         channel, group, topic) — like a logo card at the end of a Fapello album. Gallery toolbar ★ to pick the active
         tile; extension option <strong className="text-slate-300">Append</strong> in Send settings.
       </p>
@@ -332,6 +330,7 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
   }
   const qc = useQueryClient();
   const channelsQ = useQuery({ queryKey: ["channels"], queryFn: () => api.channels.list() });
+  const poolsQ = useQuery({ queryKey: ["pools"], queryFn: () => api.pools.list() });
   const relayQ = useQuery({
     queryKey: ["listeningRelay"],
     queryFn: () => api.listeningRelay.get(),
@@ -792,11 +791,11 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2 mb-2 -mt-2">
-            <PromoAffiliateLinksPopover />
-            <CaptionSnippetLibraryManageButton />
-            <CustomEmojiLibraryManageButton />
+            <TbccInsertLibraryToolbar />
           </div>
           <RelayTemplateSlotsEditor
+            channels={(channelsQ.data ?? []) as Array<Record<string, unknown>>}
+            pools={(poolsQ.data ?? []) as Array<Record<string, unknown>>}
             templateHint={TEMPLATE_HINT}
             rotationActive={templateVariants.filter((x) => String(x).trim()).length >= 2}
             templateVariants={templateVariants}
@@ -931,6 +930,12 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
                     </span>
                   ))}
                 </div>
+                <input
+                  value={asciiUploadName}
+                  onChange={(e) => setAsciiUploadName(e.target.value)}
+                  placeholder="Name"
+                  className="w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200"
+                />
                 <textarea
                   rows={6}
                   value={asciiUploadBody}
@@ -941,12 +946,6 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
                   className="w-full font-mono text-xs bg-slate-900 border border-slate-600 rounded px-2 py-1 text-slate-200"
                 />
                 <div className="flex gap-2 items-center">
-                  <input
-                    value={asciiUploadName}
-                    onChange={(e) => setAsciiUploadName(e.target.value)}
-                    placeholder="Name"
-                    className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200"
-                  />
                   <button
                     type="button"
                     className="text-xs px-3 py-1 rounded bg-violet-700 text-white hover:bg-violet-600"
@@ -969,20 +968,6 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
                 </div>
               </div>
             </div>
-            <ChannelInviteLinkButtons
-              channels={channels as Array<Record<string, unknown>>}
-              summaryPrefix="Quick insert — channel invite link → template #1"
-              onInsertLink={(link) => {
-                setEdited(true);
-                setTemplateVariants((prev) => {
-                  const next = [...prev];
-                  while (next.length < 1) next.push("");
-                  const cur = next[0] || "";
-                  next[0] = cur.trim() ? `${cur.trim()}\n\n${link}` : link;
-                  return next;
-                });
-              }}
-            />
             <SilentTelegramSendOption
               checked={sendSilent}
               onChange={(v) => {
@@ -1178,10 +1163,14 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
       <GallerySendPromoSection />
       <ZipBundlePromoSection />
 
-      <section className="h-full border border-slate-700 rounded-lg p-6 bg-slate-900/40 overflow-visible">
+      <section
+        id="promo-affiliate-links"
+        className="h-full border border-slate-700 rounded-lg p-6 bg-slate-900/40 overflow-visible"
+      >
         <h2 className="text-lg font-medium text-slate-100 mb-1">Promo affiliate links</h2>
         <p className="text-slate-400 text-sm mb-4">
-          Curated tracking URLs for scheduled posts and relay templates. Use the picker beside caption tools, or bulk-import
+          Curated tracking URLs for scheduled posts and relay templates. Use the unified <strong className="text-slate-300">Insert…</strong> menu
+          on caption fields, or bulk-import
           JSON (same shape as{" "}
           <code className="text-slate-500">{`POST /promo-affiliate-links/bulk`}</code>
           ). Optional <code className="text-slate-500">short_url</code> per row is used first when you insert from the

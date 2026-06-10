@@ -3,7 +3,7 @@ Shared Telethon client for admin imports — avoids connect/disconnect on every 
 (large latency) and serializes Telegram I/O to avoid session races.
 
 On "wrong session ID" / connection drops: resets the client once and retries.
-Only one process should use admin.session at a time (stop admin_bot / scraper if API imports fail).
+Cross-process access is serialized via Redis (TBCC_TELEGRAM_LOCK_*); Celery and the API queue automatically.
 """
 from __future__ import annotations
 
@@ -20,10 +20,15 @@ from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, ImageProcessFai
 from app.services.telegram_storage import TelegramStorage
 from app.utils.telethon_session import (
     admin_session_stem,
+    album_composer_session_stem,
     configure_telethon_sqlite_session,
     graceful_telethon_disconnect,
+    import_session_stem,
+    import_sessions_share_admin_file,
     poster_session_stem,
     sqlite_busy_timeout_ms,
+    telethon_disconnect_admin_after_io,
+    telethon_disconnect_import_after_io,
     telethon_sessions_share_file,
 )
 
@@ -32,6 +37,10 @@ logger = logging.getLogger(__name__)
 _init_lock = asyncio.Lock()
 _import_lock = asyncio.Lock()
 _client: TelegramClient | None = None
+
+_album_init_lock = asyncio.Lock()
+_album_import_lock = asyncio.Lock()
+_album_client: TelegramClient | None = None
 
 T = TypeVar("T")
 
@@ -88,11 +97,27 @@ def friendly_telegram_error(exc: BaseException) -> str:
                 f"Set TBCC_POSTER_TELEGRAM_SESSION={poster} and TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1 "
                 "in tbcc/.env, restart API + Celery, then retry."
             )
+        import_stem = Path(import_session_stem()).name
+        if import_sessions_share_admin_file():
+            return (
+                "Telegram is busy — another TBCC task is using the admin account session "
+                f"({Path(_telegram_session_path()).name}.session). "
+                "TBCC queues and retries automatically; try again in a few seconds. "
+                "If this repeats, open TBCC-Celery for a stuck import job or restart TBCC-Celery "
+                f"(poster uses {poster}.session and should not block this). "
+                f"Set TBCC_IMPORT_TELEGRAM_SESSION={import_stem} and "
+                "TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION=1 to offload bulk imports."
+            )
         return (
-            "Telegram session file is locked (another TBCC process is using "
-            f"{Path(_telegram_session_path()).name}.session). "
-            "Stop scraper_bot briefly, or wait — the API retries automatically. "
-            f"Poster workers should use a separate session ({poster}.session)."
+            "Telegram is busy — another TBCC task is using the admin account session "
+            f"({Path(_telegram_session_path()).name}.session). "
+            "TBCC queues and retries automatically; try again in a few seconds. "
+            f"Bulk imports use {import_stem}.session and should not block dashboard thumbnails."
+        )
+    if "timed out" in low and "telegram admin session" in low:
+        return (
+            "Telegram session busy (another TBCC worker has admin.session). "
+            "Retry in a few seconds, or restart TBCC-Celery if this persists."
         )
     if "connection to telegram failed" in low or "server closed the connection" in low:
         return f"Telegram connection dropped — retry in a few seconds. ({msg[:120]})"
@@ -167,11 +192,7 @@ async def _ensure_admin_client() -> TelegramClient:
                 logger.warning("admin reconnect failed; resetting session client", exc_info=True)
             old = _client
             _client = None
-            try:
-                await old.disconnect()
-            except Exception:
-                pass
-            await asyncio.sleep(0.5)
+            await graceful_telethon_disconnect(old, pause_s=0.25)
         _client = await _connect_admin_client()
         return _client
 
@@ -182,26 +203,47 @@ async def get_telegram_storage() -> TelegramStorage:
     return TelegramStorage(client)
 
 
-async def run_telegram_io(fn: Callable[[TelegramStorage], Awaitable[T]]) -> T:
+async def run_telegram_io(
+    fn: Callable[[TelegramStorage], Awaitable[T]],
+    *,
+    lock_timeout_s: float | None = None,
+    max_attempts: int | None = None,
+) -> T:
     """
-    Run ``await fn(storage)`` under import_lock.
+    Run ``await fn(storage)`` under import_lock + cross-process Redis session lock.
     Retries with backoff on session/connection/SQLite lock errors (TBCC_TELEGRAM_IO_MAX_ATTEMPTS).
     """
+    from app.services.telethon_session_lock import (
+        acquire_admin_session_lock_async,
+        release_admin_session_lock_async,
+    )
+
     last_err: BaseException | None = None
-    max_attempts = _telegram_io_max_attempts()
-    for attempt in range(max_attempts):
+    attempts = max_attempts if max_attempts is not None else _telegram_io_max_attempts()
+    if lock_timeout_s is not None:
+        attempts = min(attempts, 2)
+    for attempt in range(attempts):
+        lock_token = ""
         try:
+            lock_token = await acquire_admin_session_lock_async(lock_timeout_s)
             async with _import_lock:
                 storage = await get_telegram_storage()
                 return await fn(storage)
         except Exception as e:
             last_err = e
-            if attempt + 1 < max_attempts and _is_telethon_recoverable_error(e):
+            if "database is locked" in str(e).lower():
+                try:
+                    from app.services.focus_profile import record_session_stress_event
+
+                    record_session_stress_event("admin_io")
+                except Exception:
+                    pass
+            if attempt + 1 < attempts and _is_telethon_recoverable_error(e):
                 delay = _telegram_io_backoff_seconds(attempt)
                 logger.warning(
                     "Telegram admin I/O failed (attempt %s/%s): %s — reset client, retry in %.1fs",
                     attempt + 1,
-                    max_attempts,
+                    attempts,
                     e,
                     delay,
                 )
@@ -209,17 +251,332 @@ async def run_telegram_io(fn: Callable[[TelegramStorage], Awaitable[T]]) -> T:
                 await asyncio.sleep(delay)
                 continue
             raise
+        finally:
+            if lock_token:
+                await release_admin_session_lock_async(lock_token)
+            if telethon_disconnect_admin_after_io():
+                try:
+                    await reset_admin_client()
+                except Exception:
+                    logger.debug("post-I/O admin client reset failed", exc_info=True)
     if last_err is not None:
         raise last_err
     raise RuntimeError("Telegram I/O failed without exception")
 
 
+def album_composer_lock_timeout_s() -> float:
+    raw = (os.getenv("TBCC_ALBUM_COMPOSER_LOCK_TIMEOUT_S") or "12").strip()
+    try:
+        return max(3.0, min(30.0, float(raw)))
+    except ValueError:
+        return 12.0
+
+
+async def run_telegram_io_interactive(fn: Callable[[TelegramStorage], Awaitable[T]]) -> T:
+    """Album Composer / interactive sends — dedicated session, no Celery lock wait."""
+    return await run_telegram_album_composer_io(fn)
+
+
+def _try_bootstrap_album_from_admin() -> bool:
+    """Copy admin.session -> admin_album.session (opt-in via TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION)."""
+    flag = os.getenv("TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return False
+    admin_stem = admin_session_stem()
+    album_stem = album_composer_session_stem()
+    if os.path.normcase(os.path.normpath(admin_stem)) == os.path.normcase(os.path.normpath(album_stem)):
+        return False
+    admin_path = admin_stem + ".session"
+    album_path = album_stem + ".session"
+    if not os.path.isfile(admin_path):
+        logger.warning(
+            "TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION is set but admin.session not found (%s)",
+            admin_path,
+        )
+        return False
+    try:
+        import sqlite3
+
+        src = sqlite3.connect(admin_path)
+        dst = sqlite3.connect(album_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        logger.info(
+            "Bootstrapped album composer Telethon session from %s -> %s",
+            admin_path,
+            album_path,
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to bootstrap album composer session from admin.session")
+        return False
+
+
+async def reset_album_client() -> None:
+    global _album_client
+    async with _album_init_lock:
+        c = _album_client
+        _album_client = None
+    if c is not None:
+        await graceful_telethon_disconnect(c)
+
+
+async def _connect_album_client() -> TelegramClient:
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        raise RuntimeError("Telegram API not configured")
+    stem = album_composer_session_stem()
+    album_path = stem + ".session"
+    if not os.path.isfile(album_path):
+        _try_bootstrap_album_from_admin()
+    client = TelegramClient(stem, int(os.environ["API_ID"]), os.environ["API_HASH"])
+    await client.connect()
+    configure_telethon_sqlite_session(client)
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError(
+            f"Telegram album composer session is not logged in ({Path(stem).name}.session). "
+            "Set TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION=1 and restart, or run login_telethon_sessions.py"
+        )
+    return client
+
+
+async def _ensure_album_client() -> TelegramClient:
+    global _album_client
+    async with _album_init_lock:
+        if _album_client is not None and _album_client.is_connected():
+            return _album_client
+        if _album_client is not None:
+            try:
+                await _album_client.connect()
+                configure_telethon_sqlite_session(_album_client)
+                if await _album_client.is_user_authorized():
+                    return _album_client
+            except Exception:
+                logger.warning("album composer reconnect failed; resetting session client", exc_info=True)
+            old = _album_client
+            _album_client = None
+            await graceful_telethon_disconnect(old, pause_s=0.25)
+        _album_client = await _connect_album_client()
+        return _album_client
+
+
+async def get_album_telegram_storage() -> TelegramStorage:
+    client = await _ensure_album_client()
+    return TelegramStorage(client)
+
+
+async def run_telegram_album_composer_io(
+    fn: Callable[[TelegramStorage], Awaitable[T]],
+    *,
+    max_attempts: int = 3,
+) -> T:
+    """
+    Album Composer hot path — uses admin_album.session (separate SQLite file).
+    Does NOT wait on tbcc:lock:admin_telegram_session (Celery import queue).
+    """
+    last_err: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            async with _album_import_lock:
+                storage = await get_album_telegram_storage()
+                return await fn(storage)
+        except Exception as e:
+            last_err = e
+            if attempt + 1 < max_attempts and _is_telethon_recoverable_error(e):
+                delay = _telegram_io_backoff_seconds(attempt)
+                logger.warning(
+                    "Album composer Telethon I/O failed (attempt %s/%s): %s — retry in %.1fs",
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                    delay,
+                )
+                await reset_album_client()
+                await asyncio.sleep(delay)
+                continue
+            raise
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Album composer Telegram I/O failed without exception")
+
+
+_import_init_lock = asyncio.Lock()
+_import_work_lock = asyncio.Lock()
+_import_client: TelegramClient | None = None
+
+
+def _try_bootstrap_import_from_admin() -> bool:
+    """Copy admin.session -> admin_import.session (opt-in via TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION)."""
+    flag = os.getenv("TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return False
+    admin_stem = admin_session_stem()
+    import_stem = import_session_stem()
+    if os.path.normcase(os.path.normpath(admin_stem)) == os.path.normcase(os.path.normpath(import_stem)):
+        return False
+    admin_path = admin_stem + ".session"
+    import_path = import_stem + ".session"
+    if not os.path.isfile(admin_path):
+        logger.warning(
+            "TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION is set but admin.session not found (%s)",
+            admin_path,
+        )
+        return False
+    try:
+        import sqlite3
+
+        src = sqlite3.connect(admin_path)
+        dst = sqlite3.connect(import_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        logger.info(
+            "Bootstrapped import Telethon session from %s -> %s",
+            admin_path,
+            import_path,
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to bootstrap import session from admin.session")
+        return False
+
+
+async def reset_import_client() -> None:
+    global _import_client
+    async with _import_init_lock:
+        c = _import_client
+        _import_client = None
+    if c is not None:
+        await graceful_telethon_disconnect(c)
+
+
+async def _connect_import_client() -> TelegramClient:
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        raise RuntimeError("Telegram API not configured")
+    stem = import_session_stem()
+    import_path = stem + ".session"
+    if not os.path.isfile(import_path):
+        _try_bootstrap_import_from_admin()
+    client = TelegramClient(stem, int(os.environ["API_ID"]), os.environ["API_HASH"])
+    await client.connect()
+    configure_telethon_sqlite_session(client)
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError(
+            f"Telegram import session is not logged in ({Path(stem).name}.session). "
+            "Set TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION=1 and restart, or run login_telethon_sessions.py"
+        )
+    return client
+
+
+async def _ensure_import_client() -> TelegramClient:
+    global _import_client
+    async with _import_init_lock:
+        if _import_client is not None and _import_client.is_connected():
+            return _import_client
+        if _import_client is not None:
+            try:
+                await _import_client.connect()
+                configure_telethon_sqlite_session(_import_client)
+                if await _import_client.is_user_authorized():
+                    return _import_client
+            except Exception:
+                logger.warning("import session reconnect failed; resetting session client", exc_info=True)
+            old = _import_client
+            _import_client = None
+            await graceful_telethon_disconnect(old, pause_s=0.25)
+        _import_client = await _connect_import_client()
+        return _import_client
+
+
+async def get_import_telegram_storage() -> TelegramStorage:
+    client = await _ensure_import_client()
+    return TelegramStorage(client)
+
+
+async def run_telegram_import_io(
+    fn: Callable[[TelegramStorage], Awaitable[T]],
+    *,
+    lock_timeout_s: float | None = None,
+    max_attempts: int | None = None,
+) -> T:
+    """
+    Bulk import hot path — uses admin_import.session when configured separately from admin.
+    Falls back to run_telegram_io when import shares admin.session.
+    Uses its own Redis lock so Celery imports do not block dashboard thumbnails.
+    """
+    if import_sessions_share_admin_file():
+        return await run_telegram_io(fn, lock_timeout_s=lock_timeout_s, max_attempts=max_attempts)
+
+    from app.services.telethon_session_lock import (
+        acquire_import_session_lock_async,
+        release_import_session_lock_async,
+    )
+
+    last_err: BaseException | None = None
+    attempts = max_attempts if max_attempts is not None else _telegram_io_max_attempts()
+    if lock_timeout_s is not None:
+        attempts = min(attempts, 2)
+    for attempt in range(attempts):
+        lock_token = ""
+        try:
+            lock_token = await acquire_import_session_lock_async(lock_timeout_s)
+            async with _import_work_lock:
+                storage = await get_import_telegram_storage()
+                return await fn(storage)
+        except Exception as e:
+            last_err = e
+            if "database is locked" in str(e).lower():
+                try:
+                    from app.services.focus_profile import record_session_stress_event
+
+                    record_session_stress_event("import_io")
+                except Exception:
+                    pass
+            if attempt + 1 < attempts and _is_telethon_recoverable_error(e):
+                delay = _telegram_io_backoff_seconds(attempt)
+                logger.warning(
+                    "Telegram import I/O failed (attempt %s/%s): %s — reset client, retry in %.1fs",
+                    attempt + 1,
+                    attempts,
+                    e,
+                    delay,
+                )
+                await reset_import_client()
+                await asyncio.sleep(delay)
+                continue
+            raise
+        finally:
+            if lock_token:
+                await release_import_session_lock_async(lock_token)
+            if telethon_disconnect_import_after_io():
+                try:
+                    await reset_import_client()
+                except Exception:
+                    logger.debug("post-I/O import client reset failed", exc_info=True)
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Telegram import I/O failed without exception")
+
+
 async def run_telegram_client_io(fn: Callable[[TelegramClient], Awaitable[T]]) -> T:
     """Same retry/lock semantics as run_telegram_io but for raw Telethon client callbacks."""
+    from app.services.telethon_session_lock import (
+        acquire_admin_session_lock_async,
+        release_admin_session_lock_async,
+    )
+
     last_err: BaseException | None = None
     max_attempts = _telegram_io_max_attempts()
     for attempt in range(max_attempts):
+        lock_token = ""
         try:
+            lock_token = await acquire_admin_session_lock_async()
             async with _import_lock:
                 client = await _ensure_admin_client()
                 return await fn(client)
@@ -238,6 +595,14 @@ async def run_telegram_client_io(fn: Callable[[TelegramClient], Awaitable[T]]) -
                 await asyncio.sleep(delay)
                 continue
             raise
+        finally:
+            if lock_token:
+                await release_admin_session_lock_async(lock_token)
+            if telethon_disconnect_admin_after_io():
+                try:
+                    await reset_admin_client()
+                except Exception:
+                    logger.debug("post-I/O admin client reset failed", exc_info=True)
     if last_err is not None:
         raise last_err
     raise RuntimeError("Telegram client I/O failed without exception")
@@ -257,7 +622,9 @@ async def check_admin_telegram_session() -> dict:
             "username": username,
             "session": Path(_telegram_session_path()).name,
             "poster_session": Path(poster_session_stem()).name,
+            "import_session": Path(import_session_stem()).name,
             "sessions_share_file": telethon_sessions_share_file(),
+            "import_shares_admin_file": import_sessions_share_admin_file(),
             "sqlite_busy_timeout_ms": sqlite_busy_timeout_ms(),
         }
     except Exception as e:

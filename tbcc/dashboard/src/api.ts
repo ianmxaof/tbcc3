@@ -17,6 +17,28 @@ const BULK_STATUS_CHUNK_SIZE = 200;
 const BULK_MOVE_POOL_CHUNK_SIZE = 120;
 /** Yield between chunks so thumbnail / other API traffic can finish and release SQLite locks. */
 const BULK_CHUNK_GAP_MS = 200;
+/** Channel/topic imports run on Celery — poll until done (50–200 items can take many minutes). */
+const CHANNEL_IMPORT_POLL_INTERVAL_MS = 2500;
+const CHANNEL_IMPORT_MAX_WAIT_MS = 3_600_000;
+
+export type ImportJobPollResult = {
+  job_id?: string;
+  job_kind?: string;
+  status?: string;
+  stage?: string;
+  pool_id?: number;
+  error?: string | null;
+  poll_url?: string;
+  async?: boolean;
+  params?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+};
+
+const IMPORT_JOB_TERMINAL = new Set(["done", "failed", "skipped", "cancelled"]);
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function isTimedOutFetchError(e: unknown): boolean {
   if (e instanceof DOMException && (e.name === "AbortError" || e.name === "TimeoutError")) return true;
@@ -121,6 +143,50 @@ export type WatchFolderStatus =
     };
 
 export type PaymentBotMenuButton = { label: string; action: string };
+export type SecretarySettingsEffective = {
+  format_engine_enabled: boolean;
+  llm_refine_on_phase_change: boolean;
+  rag_enabled: boolean;
+  rag_top_k: number;
+  system_prompt_extra: string;
+  message_retention: number;
+  llm_history: number;
+  rag_embeddings: boolean;
+};
+
+export type SecretaryUserContext = {
+  id: number;
+  telegram_user_id: number;
+  telegram_username: string | null;
+  current_phase: string;
+  emotional_summary: string | null;
+  message_count: number;
+  last_user_at: string | null;
+  last_assistant_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  interaction_format: Record<string, unknown>;
+  messages?: Array<{
+    id: number;
+    role: string;
+    content: string;
+    emotion: Record<string, unknown> | null;
+    created_at: string | null;
+  }>;
+};
+
+export type SecretaryKnowledgeEntry = {
+  id: number;
+  title: string | null;
+  body: string;
+  tags: string | null;
+  source_path: string | null;
+  chunk_index: number | null;
+  is_active: boolean;
+  has_embedding?: boolean;
+  created_at: string | null;
+};
+
 export type PaymentBotSettings = {
   main_menu: PaymentBotMenuButton[][];
   welcome_html: string;
@@ -278,7 +344,11 @@ export type CaptureArchiveEntry = {
   source?: string;
   ref?: string;
   note?: string;
+  description?: string;
+  tags?: string;
   origin?: string;
+  status?: string;
+  submitted_by?: string;
   summary?: string;
   added_at?: string | null;
   addedAt?: number | null;
@@ -290,6 +360,7 @@ export type CaptureArchiveEntryInput = {
   source?: string;
   ref?: string;
   note?: string;
+  tags?: string;
   origin?: string;
   added_at?: string | null;
   addedAt?: number | null;
@@ -443,6 +514,11 @@ export const api = {
       }),
     delete: (id: number) =>
       fetchApi<{ deleted: boolean; id: number }>(`/caption-snippets/${id}`, { method: "DELETE" }),
+    patch: (id: number, body: { title?: string | null; body?: string }) =>
+      fetchApi<{ id: number; title: string | null; body: string }>(`/caption-snippets/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
   },
   promoAffiliateLinks: {
     list: (opts?: { sort?: string; active_only?: boolean }) => {
@@ -562,13 +638,14 @@ export const api = {
       file: File,
       poolId: number,
       source?: string,
-      opts?: { savedOnly?: boolean; caption?: string }
+      opts?: { savedOnly?: boolean; caption?: string; /** Bypass Celery fast-import queue (dashboard uploads). */ sync?: boolean }
     ) => {
       const form = new FormData();
       form.append("file", file);
       form.append("pool_id", String(poolId));
       form.append("saved_only", opts?.savedOnly ? "true" : "false");
       form.append("source", source || "dashboard:upload");
+      if (opts?.sync) form.append("sync", "true");
       if (opts?.caption?.trim()) form.append("caption", opts.caption.trim());
       let res: Response;
       try {
@@ -618,16 +695,106 @@ export const api = {
       return data;
     },
     /** Index existing media in Telegram Saved Messages into a pool (admin Telethon session). */
-    fromSaved: (poolId: number, limit?: number) =>
+    fromSaved: (
+      poolId: number,
+      limit?: number,
+      options?: { applyWatermark?: boolean; watermark?: Record<string, unknown> }
+    ) =>
       fetchApi<{
         status?: string;
         indexed?: number;
         skipped_duplicates_or_unsupported?: number;
         messages_scanned?: number;
+        watermarked?: boolean;
         error?: string;
       }>("/import/from-saved", {
         method: "POST",
-        body: JSON.stringify({ pool_id: poolId, limit: limit ?? 50 }),
+        body: JSON.stringify({
+          pool_id: poolId,
+          limit: limit ?? 50,
+          apply_watermark: options?.applyWatermark === true,
+          watermark: options?.watermark,
+        }),
+      }),
+    getImportJob: (jobId: string) =>
+      fetchApi<ImportJobPollResult>(`/import/jobs/${encodeURIComponent(jobId)}`, { timeoutMs: 20_000 }),
+    pollImportJob: async (
+      jobId: string,
+      options?: { onUpdate?: (job: ImportJobPollResult) => void; maxWaitMs?: number; intervalMs?: number }
+    ): Promise<ImportJobPollResult> => {
+      const deadline = Date.now() + (options?.maxWaitMs ?? CHANNEL_IMPORT_MAX_WAIT_MS);
+      const interval = options?.intervalMs ?? CHANNEL_IMPORT_POLL_INTERVAL_MS;
+      for (;;) {
+        const job = await api.import.getImportJob(jobId);
+        options?.onUpdate?.(job);
+        if (job.error === "not_found") {
+          throw new Error("Import job not found (server restarted?)");
+        }
+        const status = String(job.status || "");
+        if (IMPORT_JOB_TERMINAL.has(status)) {
+          if (status === "failed" && job.error) throw new Error(String(job.error));
+          if (status === "cancelled") throw new Error(job.error ? String(job.error) : "Import cancelled");
+          return job;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(
+            "Import still running after 60 minutes. Check Celery (telegram queue) and GET /import/jobs/" + jobId
+          );
+        }
+        await sleepMs(interval);
+      }
+    },
+    /** Import from a Telegram channel/group (admin session must have access). Queued on Celery by default. */
+    fromChannel: (body: {
+      pool_id: number;
+      channel: string;
+      limit?: number;
+      media_types?: "both" | "photos" | "videos";
+      message_thread_id?: number | null;
+      topic_title?: string;
+    }) =>
+      fetchApi<
+        ImportJobPollResult & {
+          status?: string;
+          stored?: number;
+          skipped_duplicate?: number;
+          skipped_media_type?: number;
+          skipped_no_media?: number;
+          messages_scanned?: number;
+          message_thread_id?: number | null;
+          error?: string;
+        }
+      >("/import/from-channel", {
+        method: "POST",
+        body: JSON.stringify(body),
+        timeoutMs: 30_000,
+      }),
+    forumTopicsForChannel: (channel: string) =>
+      fetchApi<{ topics: Array<{ id: number; title: string }>; error?: string | null }>(
+        `/import/forum-topics?${new URLSearchParams({ channel: channel.trim() })}`
+      ),
+    fromChannelBatch: (body: {
+      channel: string;
+      limit?: number;
+      media_types?: "both" | "photos" | "videos";
+      imports: Array<{
+        message_thread_id: number;
+        pool_id: number;
+        topic_title?: string;
+        limit?: number;
+        media_types?: "both" | "photos" | "videos";
+      }>;
+    }) =>
+      fetchApi<{
+        status?: string;
+        async?: boolean;
+        jobs?: ImportJobPollResult[];
+        results?: Array<Record<string, unknown>>;
+        error?: string;
+      }>("/import/from-channel-batch", {
+        method: "POST",
+        body: JSON.stringify(body),
+        timeoutMs: 60_000,
       }),
   },
   sources: {
@@ -764,6 +931,44 @@ export const api = {
         { method: "POST", body: "{}" }
       ),
   },
+  automation: {
+    overview: () => fetchApi<{
+      scraper: {
+        authorized: boolean;
+        pending_login?: boolean;
+        user?: { username?: string; first_name?: string };
+        error?: string;
+      };
+      scheduler: {
+        total_posts: number;
+        recurring_posts: number;
+        pool_auto_post_enabled?: boolean;
+        beat_running?: boolean;
+        celery_worker_running?: boolean;
+        celery_post_worker_running?: boolean;
+        scheduling_paused_by_focus?: boolean;
+        focus_profile?: string;
+        queues?: Record<string, { length?: number; sample_tasks?: Record<string, number> }>;
+      };
+      bots: Record<
+        string,
+        {
+          label: string;
+          module: string;
+          username?: string;
+          status: string;
+          pid?: number | null;
+          adapter?: string;
+        }
+      >;
+      format_engine: {
+        settings: SecretarySettingsEffective;
+        user_contexts_total: number;
+        phases: Record<string, number>;
+        knowledge_chunks_active: number;
+      };
+    }>("/automation/overview"),
+  },
   subscriptions: {
     list: (status?: string) =>
       fetchApi<Array<Record<string, unknown>>>(status ? `/subscriptions?status=${status}` : "/subscriptions"),
@@ -860,6 +1065,82 @@ export const api = {
         "/loot-bot-settings/buffer-test-post",
         { method: "POST", body: JSON.stringify(body ?? {}) }
       ),
+  },
+  secretary: {
+    settings: {
+      get: () =>
+        fetchApi<{ effective: SecretarySettingsEffective; overrides: Record<string, unknown> }>(
+          "/secretary-settings"
+        ),
+      patch: (body: Partial<SecretarySettingsEffective>) =>
+        fetchApi<{ ok: boolean; effective: SecretarySettingsEffective; overrides: Record<string, unknown> }>(
+          "/secretary-settings",
+          { method: "PATCH", body: JSON.stringify(body) }
+        ),
+      testReply: (body: {
+        message: string;
+        telegram_user_id?: number | null;
+        include_format_engine?: boolean;
+        include_rag?: boolean;
+      }) =>
+        fetchApi<{
+          reply: string;
+          context_suffix_preview: string;
+          rag_hits: Array<{ id: number; title: string | null; body: string; score: number }>;
+        }>("/secretary-settings/test-reply", { method: "POST", body: JSON.stringify(body) }),
+    },
+    contexts: {
+      list: (params?: { q?: string; phase?: string; limit?: number; offset?: number }) => {
+        const sp = new URLSearchParams();
+        if (params?.q) sp.set("q", params.q);
+        if (params?.phase) sp.set("phase", params.phase);
+        if (params?.limit != null) sp.set("limit", String(params.limit));
+        if (params?.offset != null) sp.set("offset", String(params.offset));
+        const q = sp.toString();
+        return fetchApi<{ total: number; items: SecretaryUserContext[] }>(
+          `/secretary-contexts${q ? `?${q}` : ""}`
+        );
+      },
+      get: (id: number, messageLimit?: number) => {
+        const sp = messageLimit != null ? `?message_limit=${messageLimit}` : "";
+        return fetchApi<SecretaryUserContext>(`/secretary-contexts/${id}${sp}`);
+      },
+      reset: (id: number) =>
+        fetchApi<{ ok: boolean; context: SecretaryUserContext }>(`/secretary-contexts/${id}/reset`, {
+          method: "POST",
+        }),
+      patchPhase: (id: number, current_phase: string) =>
+        fetchApi<{ ok: boolean; context: SecretaryUserContext }>(`/secretary-contexts/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ current_phase }),
+        }),
+    },
+    knowledge: {
+      list: (q?: string) => {
+        const sp = q ? `?q=${encodeURIComponent(q)}` : "";
+        return fetchApi<SecretaryKnowledgeEntry[]>(`/secretary-knowledge${sp}`);
+      },
+      create: (body: { title?: string; body: string; tags?: string; is_active?: boolean }) =>
+        fetchApi<{ id: number; title: string | null }>("/secretary-knowledge", {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+      delete: (id: number) =>
+        fetchApi<{ deleted: boolean; id: number }>(`/secretary-knowledge/${id}`, { method: "DELETE" }),
+      importDocs: () =>
+        fetchApi<{ files: number; chunks: number; error?: string }>("/secretary-knowledge/import-docs", {
+          method: "POST",
+        }),
+      reindexEmbeddings: () =>
+        fetchApi<{ updated: number; total?: number; error?: string }>("/secretary-knowledge/reindex-embeddings", {
+          method: "POST",
+        }),
+      search: (q: string, top_k?: number) =>
+        fetchApi<{ query: string; hits: Array<{ id: number; title: string | null; body: string; score: number }> }>(
+          "/secretary-knowledge/search",
+          { method: "POST", body: JSON.stringify({ q, top_k }) }
+        ),
+    },
   },
   emojiFactory: {
     prerequisites: () =>
@@ -1064,6 +1345,28 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
+  },
+  watermarkSettings: {
+    get: () =>
+      fetchApi<{
+        effective: Record<string, unknown>;
+        overrides: Record<string, unknown>;
+      }>("/watermark-settings"),
+    patch: (body: {
+      enabled?: boolean | null;
+      text_primary?: string | null;
+      text_secondary?: string | null;
+      text_tertiary?: string | null;
+      opacity?: number | null;
+      color?: string | null;
+      strip_previous?: boolean | null;
+      apply_on_saved_import?: boolean | null;
+      apply_on_album_composer?: boolean | null;
+    }) =>
+      fetchApi<{ ok: boolean; effective: Record<string, unknown>; overrides: Record<string, unknown> }>(
+        "/watermark-settings",
+        { method: "PATCH", body: JSON.stringify(body) }
+      ),
   },
   gallerySendPromo: {
     get: () =>
@@ -1400,7 +1703,8 @@ export const api = {
       scheduled_at?: string;
       interval_minutes?: number;
       media_ids?: number[];
-      pool_id?: number;
+      pool_id?: number | null;
+      pool_collective_random?: boolean;
       buttons?: Array<{ text: string; url: string }>;
       album_size?: number;
       pool_randomize?: boolean;
@@ -1426,6 +1730,8 @@ export const api = {
       caption_llm_rewrite_mode?: "random" | "interval" | null;
       caption_llm_rewrite_interval?: number | null;
       caption_llm_rewrite_probability?: number | null;
+      /** Multi-channel: each run posts to one random channel from channel_ids. */
+      campaign_random_channel?: boolean;
     }) =>
       fetchApi<{ posts: Array<Record<string, unknown>>; campaign_group_id: string | null }>(
         "/scheduled-posts",
@@ -1443,6 +1749,7 @@ export const api = {
         interval_minutes?: number | null;
         media_ids?: number[];
         pool_id?: number | null;
+        pool_collective_random?: boolean | null;
         buttons?: Array<{ text: string; url: string }>;
         album_size?: number | null;
         pool_randomize?: boolean | null;
@@ -1465,6 +1772,7 @@ export const api = {
         caption_llm_rewrite_mode?: "random" | "interval" | null;
         caption_llm_rewrite_interval?: number | null;
         caption_llm_rewrite_probability?: number | null;
+        campaign_random_channel?: boolean | null;
       }>
     ) =>
       fetchApi<Record<string, unknown>>(`/scheduled-posts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -1487,6 +1795,7 @@ export const api = {
   archive: {
     list: (params?: {
       q?: string;
+      tags?: string;
       kind?: "" | "url" | "username";
       username?: string;
       page?: number;
@@ -1496,11 +1805,14 @@ export const api = {
       order?: "asc" | "desc";
       sort2?: string;
       order2?: "asc" | "desc";
+      status?: "approved" | "pending" | "rejected";
     }) => {
       const sp = new URLSearchParams();
       if (params?.q) sp.set("q", params.q);
+      if (params?.tags) sp.set("tags", params.tags);
       if (params?.kind) sp.set("kind", params.kind);
       if (params?.username) sp.set("username", params.username);
+      if (params?.status) sp.set("status", params.status);
       sp.set("page", String(params?.page ?? 1));
       sp.set("page_size", String(Math.min(100, params?.page_size ?? 100)));
       if (params?.include_media === false) sp.set("include_media", "false");
@@ -1520,11 +1832,60 @@ export const api = {
     syncBundle: () =>
       fetchApi<{ entries: CaptureArchiveEntry[]; total: number }>("/archive/entries/sync-bundle"),
     handles: () => fetchApi<{ handles: string[] }>("/archive/entries/handles"),
-    bulk: (entries: CaptureArchiveEntryInput[], merge = true) =>
-      fetchApi<{ ok: boolean; added: number; total: number }>("/archive/entries/bulk", {
+    bulk: (entries: CaptureArchiveEntryInput[], merge = true, autoTag = false) =>
+      fetchApi<{ ok: boolean; added: number; total: number; auto_tag?: { enriched?: number } }>(
+        "/archive/entries/bulk",
+        {
+          method: "POST",
+          body: JSON.stringify({ entries, merge, auto_tag: autoTag }),
+        }
+      ),
+    insertMenu: async (params?: { limit?: number; q?: string }) => {
+      const limit = Math.min(params?.limit ?? 200, 500);
+      const sp = new URLSearchParams();
+      sp.set("limit", String(limit));
+      if (params?.q) sp.set("q", params.q);
+      type Row = { id: number; url: string; label: string; description?: string; tags?: string };
+      try {
+        return await fetchApi<{ items: Row[]; total: number }>(`/archive/entries/insert-menu?${sp.toString()}`);
+      } catch {
+        const items: Row[] = [];
+        for (let page = 1; page <= 5 && items.length < limit; page++) {
+          const list = await fetchApi<{
+            items: CaptureArchiveEntry[];
+            total_pages: number;
+          }>(`/archive/entries?kind=url&page=${page}&page_size=100&include_media=false`);
+          for (const e of list.items || []) {
+            if (e.kind !== "url") continue;
+            if (e.status && e.status !== "approved") continue;
+            const label = String(e.description || e.summary || e.value || "").trim();
+            items.push({
+              id: Number(e.id) || 0,
+              url: e.value,
+              label: label.slice(0, 80),
+              description: e.description || e.summary || "",
+              tags: e.tags || "",
+            });
+            if (items.length >= limit) break;
+          }
+          if (page >= (list.total_pages || 1)) break;
+        }
+        return { items, total: items.length };
+      }
+    },
+    autoTagEntry: (entryId: number, opts?: { force?: boolean; fast?: boolean }) =>
+      fetchApi<{ ok: boolean; entry?: CaptureArchiveEntry }>(`/archive/entries/${entryId}/auto-tag`, {
         method: "POST",
-        body: JSON.stringify({ entries, merge }),
+        body: JSON.stringify(opts ?? {}),
       }),
+    bulkAutoTag: (opts?: { ids?: number[]; missing_only?: boolean; limit?: number; force?: boolean }) =>
+      fetchApi<{ ok: boolean; enriched: number; skipped: number; scanned: number }>(
+        "/archive/entries/bulk/auto-tag",
+        {
+          method: "POST",
+          body: JSON.stringify(opts ?? { missing_only: true }),
+        }
+      ),
     syncFromMedia: () =>
       fetchApi<{ ok: boolean; added: number; scanned: number }>("/archive/entries/sync-from-media", {
         method: "POST",
@@ -1534,6 +1895,13 @@ export const api = {
         `/archive/entries?confirm=${encodeURIComponent(confirm)}`,
         { method: "DELETE" }
       ),
+    governEntry: (entryId: number, status: "approved" | "rejected" | "pending", reviewedBy?: string) =>
+      fetchApi<{ ok: boolean; entry: CaptureArchiveEntry }>(`/archive/entries/${entryId}/governance`, {
+        method: "POST",
+        body: JSON.stringify({ status, reviewed_by: reviewedBy }),
+      }),
+    pendingGovernance: () =>
+      fetchApi<{ items: CaptureArchiveEntry[]; total: number }>("/archive/governance/pending"),
     exportDownloadUrl: (
       format: "json" | "csv" | "txt",
       params?: { q?: string; kind?: string; sort?: string; order?: string; sort2?: string; order2?: string }
@@ -1547,5 +1915,19 @@ export const api = {
       if (params?.order2) sp.set("order2", params.order2);
       return `${API_BASE}/archive/entries/export?${sp.toString()}`;
     },
+  },
+  extensionContextMenu: {
+    get: () =>
+      fetchApi<{ pageMenu: Record<string, boolean>; labels: Record<string, string> }>(
+        "/extension/context-menu"
+      ),
+    patch: (pageMenu: Record<string, boolean>) =>
+      fetchApi<{ pageMenu: Record<string, boolean>; labels: Record<string, string> }>(
+        "/extension/context-menu",
+        {
+          method: "PATCH",
+          body: JSON.stringify({ pageMenu }),
+        }
+      ),
   },
 };

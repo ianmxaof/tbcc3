@@ -15,12 +15,15 @@
 
   function normalizeEntry(raw) {
     const kind = raw && raw.kind === "username" ? "username" : "url";
-    const value =
+    let value =
       kind === "username"
         ? String((raw && raw.value) || "")
             .trim()
             .replace(/^@+/, "")
         : String((raw && raw.value) || "").trim();
+    if (kind === "username" && typeof TbccUsernameFilter !== "undefined") {
+      value = TbccUsernameFilter.normalizeUsernameCandidate(value) || "";
+    }
     if (!value) return null;
     if (kind === "username" && !/^[a-zA-Z0-9._-]{2,64}$/.test(value)) return null;
     if (kind === "url" && !/^https?:\/\//i.test(value)) return null;
@@ -31,6 +34,8 @@
       source: raw && raw.source ? String(raw.source).slice(0, 80) : "",
       ref: raw && raw.ref ? String(raw.ref).slice(0, 500) : "",
       note: raw && raw.note ? String(raw.note).slice(0, 400) : "",
+      description: raw && raw.description ? String(raw.description).slice(0, 400) : "",
+      tags: raw && raw.tags ? String(raw.tags).slice(0, 500) : raw && raw.tagsCsv ? String(raw.tagsCsv).slice(0, 500) : "",
     };
   }
 
@@ -52,11 +57,12 @@
     if (e.ref) parts.push("ref: " + String(e.ref).slice(0, 120));
     const when = formatEntryWhen(e.addedAt);
     if (when) parts.push(when);
+    if (e.tags) parts.push("tags: " + String(e.tags).slice(0, 80));
     if (e.note) parts.push(e.note);
     return parts.join(" · ");
   }
 
-  const SORT_FIELDS = ["addedAt", "value", "host", "source", "kind", "summary"];
+  const SORT_FIELDS = ["addedAt", "value", "host", "source", "kind", "summary", "tags"];
 
   function entryHost(e) {
     if (!e || e.kind !== "url") return "";
@@ -74,10 +80,14 @@
     if (f === "kind") return e.kind === "username" ? 1 : 0;
     if (f === "host") return entryHost(e);
     if (f === "summary") {
-      const s = (e.summary && String(e.summary).trim()) || (e.note && !String(e.note).startsWith("ref:") ? String(e.note).trim() : "");
+      const s =
+        (e.description && String(e.description).trim()) ||
+        (e.summary && String(e.summary).trim()) ||
+        (e.note && !String(e.note).startsWith("ref:") ? String(e.note).trim() : "");
       return s.toLowerCase();
     }
     if (f === "source") return String(e.source || "").toLowerCase();
+    if (f === "tags") return String(e.tags || "").toLowerCase();
     return String(e.value || "").toLowerCase();
   }
 
@@ -113,8 +123,18 @@
   function filterEntries(entries, opts) {
     const q = opts && opts.q ? String(opts.q).trim().toLowerCase() : "";
     const kind = opts && opts.kind ? String(opts.kind).trim() : "";
+    const tagsFilter = opts && opts.tags ? String(opts.tags).trim().toLowerCase() : "";
     let rows = (entries || []).map(normalizeEntry).filter(Boolean);
     if (kind) rows = rows.filter((e) => e.kind === kind);
+    if (tagsFilter) {
+      const tokens = tagsFilter.split(",").map((t) => t.trim()).filter(Boolean);
+      if (tokens.length) {
+        rows = rows.filter((e) => {
+          const hay = String(e.tags || "").toLowerCase();
+          return tokens.every((t) => hay.includes(t));
+        });
+      }
+    }
     if (q) {
       rows = rows.filter(
         (e) =>
@@ -122,6 +142,7 @@
           (e.source || "").toLowerCase().includes(q) ||
           (e.ref || "").toLowerCase().includes(q) ||
           (e.note || "").toLowerCase().includes(q) ||
+          (e.tags || "").toLowerCase().includes(q) ||
           entryHost(e).includes(q)
       );
     }
@@ -169,12 +190,13 @@
             source: e.source,
             ref: e.ref,
             note: e.note,
+            tags: e.tags,
             added_at: e.addedAt,
             origin: "extension",
           })),
           merge: true,
         }),
-      });
+      }).catch(() => {});
     } catch (_) {}
   }
 
@@ -222,7 +244,10 @@
           value: raw.value,
           source: raw.source,
           ref: raw.ref,
-          note: raw.note || raw.summary,
+          note: raw.note,
+          description: raw.description,
+          tags: raw.tags,
+          summary: raw.summary,
           addedAt: raw.addedAt || raw.added_at,
         })
       );
@@ -300,6 +325,7 @@
       source: opts && opts.source,
       ref: opts && opts.ref,
       note: opts && opts.note,
+      tags: opts && (opts.tags || opts.tagsCsv),
     });
     if (!e) return { ok: false };
     const rows = await getEntries();
@@ -344,11 +370,11 @@
   }
 
   function exportCsv(entries) {
-    const lines = ["kind,value,addedAt,source,ref,note"];
+    const lines = ["kind,value,addedAt,source,ref,note,tags"];
     for (const e of entries) {
       const esc = (s) => '"' + String(s || "").replace(/"/g, '""') + '"';
       lines.push(
-        [e.kind, e.value, e.addedAt, e.source, e.ref, e.note].map(esc).join(",")
+        [e.kind, e.value, e.addedAt, e.source, e.ref, e.note, e.tags].map(esc).join(",")
       );
     }
     return lines.join("\n");

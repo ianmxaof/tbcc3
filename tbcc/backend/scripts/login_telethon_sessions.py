@@ -1,9 +1,9 @@
 """
-Interactive Telethon login for TBCC: admin session + poster session copy.
+Interactive Telethon login for TBCC: admin session + poster/import session copies.
 
-- Writes/updates the admin session (imports, Saved Messages, channel access).
-- Copies that SQLite session to the poster session file (scheduled posts, pool posts)
-  so Celery does not share one locked DB with the API process.
+- Writes/updates the admin session (dashboard thumbnails, light Telegram reads).
+- Copies that SQLite session to poster + import session files so Celery/API imports
+  do not share one locked DB with dashboard previews.
 
 Prereqs: tbcc/.env with API_ID and API_HASH (from https://my.telegram.org).
 
@@ -13,7 +13,7 @@ Usage (must be an interactive terminal — Telegram will ask for phone / code):
   python scripts/login_telethon_sessions.py
 
 Options:
-  --copy-only     Skip login; copy existing admin.session -> poster session only.
+  --copy-only     Skip login; copy existing admin.session -> poster/import sessions only.
 """
 from __future__ import annotations
 
@@ -33,26 +33,27 @@ load_dotenv(_root.parent / ".env", override=True)
 
 from telethon import TelegramClient
 
-from app.utils.telethon_session import admin_session_stem, poster_session_stem
+from app.utils.telethon_session import admin_session_stem, import_session_stem, poster_session_stem
 
 
-def _copy_session_db(admin_stem: str, poster_stem: str) -> None:
+def _copy_session_db(admin_stem: str, target_stem: str, label: str) -> None:
     admin_path = f"{admin_stem}.session"
-    poster_path = f"{poster_stem}.session"
+    target_path = f"{target_stem}.session"
     if not os.path.isfile(admin_path):
         raise SystemExit(f"Admin session not found: {admin_path}")
     if os.path.normcase(os.path.normpath(admin_stem)) == os.path.normcase(
-        os.path.normpath(poster_stem)
+        os.path.normpath(target_stem)
     ):
-        raise SystemExit("Admin and poster session paths are the same; nothing to copy.")
+        print(f"Skip {label}: admin and target session paths are the same.")
+        return
     src = sqlite3.connect(admin_path)
-    dst = sqlite3.connect(poster_path)
+    dst = sqlite3.connect(target_path)
     try:
         src.backup(dst)
     finally:
         dst.close()
         src.close()
-    print(f"Copied {admin_path} -> {poster_path}")
+    print(f"Copied {admin_path} -> {target_path} ({label})")
 
 
 async def _login_admin() -> None:
@@ -73,25 +74,29 @@ async def _login_admin() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Telethon login for TBCC admin + poster sessions")
+    parser = argparse.ArgumentParser(description="Telethon login for TBCC admin + derived sessions")
     parser.add_argument(
         "--copy-only",
         action="store_true",
-        help="Only copy admin session to poster (no interactive login)",
+        help="Only copy admin session to poster/import (no interactive login)",
     )
     args = parser.parse_args()
 
     admin_stem = admin_session_stem()
     poster_stem = poster_session_stem()
+    import_stem = import_session_stem()
 
     if args.copy_only:
-        _copy_session_db(admin_stem, poster_stem)
+        _copy_session_db(admin_stem, poster_stem, "poster")
+        _copy_session_db(admin_stem, import_stem, "import")
         print("Done (--copy-only). Restart Celery and the API if they are running.")
         return
 
     asyncio.run(_login_admin())
     print(f"Poster session file: {poster_stem}.session")
-    _copy_session_db(admin_stem, poster_stem)
+    print(f"Import session file: {import_stem}.session")
+    _copy_session_db(admin_stem, poster_stem, "poster")
+    _copy_session_db(admin_stem, import_stem, "import")
     print("Done. Restart Celery and the API so workers pick up the new session files.")
 
 

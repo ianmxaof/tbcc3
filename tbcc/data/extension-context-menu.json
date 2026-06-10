@@ -1,0 +1,15 @@
+{
+  "pageMenu": {
+    "save-archive": true,
+    "save-archive-all": true,
+    "save-pool": true,
+    "save-saved": true,
+    "download-url": true,
+    "download-frame": true,
+    "toggle-select": true,
+    "copy-url": true,
+    "open-url": true,
+    "reverse-image": true,
+    "lookup-username": true
+  }
+}

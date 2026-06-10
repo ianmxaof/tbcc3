@@ -8,6 +8,11 @@ type Conflict = {
   action_label?: string;
 };
 
+type FocusState = {
+  state?: { profile?: string; reason?: string; since?: string; auto?: boolean };
+  evaluation?: { suggested_profile?: string | null; lock_events?: number };
+};
+
 type SystemHealth = {
   ok?: boolean;
   conflicts?: Conflict[];
@@ -15,6 +20,7 @@ type SystemHealth = {
   import_pipeline?: { active_jobs?: number };
   ports?: Record<string, boolean | number>;
   fixable_count?: number;
+  focus?: FocusState | null;
 };
 
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
@@ -49,6 +55,22 @@ export function SystemHealthBanner() {
     return () => clearInterval(t);
   }, [load]);
 
+  const applyFocus = async (profile: string) => {
+    setFixing(`focus:${profile}`);
+    try {
+      const r = await fetch(`${API}/ops/focus`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile, reason: "Dashboard focus apply" }),
+      });
+      if (r.ok) await load();
+    } catch {
+      /* ignore */
+    } finally {
+      setFixing(null);
+    }
+  };
+
   const runRemediate = async (codes?: string[]) => {
     setFixing(codes?.join(",") ?? "all");
     try {
@@ -71,7 +93,9 @@ export function SystemHealthBanner() {
 
   if (dismissed || !health) return null;
   const conflicts = health.conflicts || [];
-  if (health.ok && conflicts.length === 0) return null;
+  const focusProfile = health.focus?.state?.profile || "off";
+  const focusActive = focusProfile !== "off";
+  if (health.ok && conflicts.length === 0 && !focusActive) return null;
 
   const critical = conflicts.filter((c) => c.severity === "critical");
   const fixable = conflicts.filter((c) => c.action);
@@ -121,8 +145,45 @@ export function SystemHealthBanner() {
                 Active import jobs: {health.import_pipeline.active_jobs}
               </p>
             )}
+          {focusActive ? (
+            <p className="mt-2 text-xs font-medium text-cyan-200/90">
+              Focus profile: <span className="font-mono">{focusProfile}</span>
+              {health.focus?.state?.auto ? " (auto)" : ""}
+              {health.focus?.state?.reason ? ` — ${health.focus.state.reason}` : ""}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col gap-1 shrink-0">
+          {!apiDown ? (
+            <>
+              <button
+                type="button"
+                className="text-xs px-2 py-1 rounded bg-cyan-900/80 hover:bg-cyan-800 text-cyan-50 disabled:opacity-50"
+                disabled={fixing !== null}
+                onClick={() => void applyFocus("import_burst")}
+              >
+                Focus: import burst
+              </button>
+              <button
+                type="button"
+                className="text-xs px-2 py-1 rounded bg-cyan-900/60 hover:bg-cyan-800 text-cyan-50 disabled:opacity-50"
+                disabled={fixing !== null}
+                onClick={() => void applyFocus("telegram_relief")}
+              >
+                Focus: Telegram relief
+              </button>
+              {focusActive ? (
+                <button
+                  type="button"
+                  className="text-xs px-2 py-1 rounded border border-cyan-700/60 hover:bg-cyan-950/50 disabled:opacity-50"
+                  disabled={fixing !== null}
+                  onClick={() => void applyFocus("off")}
+                >
+                  End focus (restore)
+                </button>
+              ) : null}
+            </>
+          ) : null}
           {fixable.length > 0 && !apiDown ? (
             <button
               type="button"

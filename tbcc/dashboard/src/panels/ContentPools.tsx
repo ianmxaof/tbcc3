@@ -133,6 +133,7 @@ export function ContentPools() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["pools"] });
+      queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
       setEditOpen(false);
     },
   });
@@ -372,9 +373,9 @@ export function ContentPools() {
               </option>
             ))}
           </select>
-          <div className="flex gap-4">
+          <div className="flex gap-4 flex-wrap items-center">
             <label className="flex items-center gap-2">
-              <span className="text-slate-400">Album size</span>
+              <span className="text-slate-400">Default album size</span>
               <input
                 type="number"
                 min={1}
@@ -385,13 +386,14 @@ export function ContentPools() {
               />
             </label>
             <label className="flex items-center gap-2">
-              <span className="text-slate-400">Interval (min)</span>
+              <span className="text-slate-400">Auto-post interval (min)</span>
               <input
                 type="number"
                 min={1}
                 value={intervalMinutes}
                 onChange={(e) => setIntervalMinutes(Number(e.target.value))}
                 className="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
+                title="Separate from Scheduler job intervals"
               />
             </label>
             <label className="flex items-center gap-2 text-slate-300 text-sm">
@@ -400,7 +402,7 @@ export function ContentPools() {
                 checked={autoPostEnabled}
                 onChange={(e) => setAutoPostEnabled(e.target.checked)}
               />
-              Auto-post by pool interval
+              Standalone auto-post
             </label>
             <label className="flex items-center gap-2 text-slate-300 text-sm">
               <input
@@ -408,7 +410,7 @@ export function ContentPools() {
                 checked={randomizeQueue}
                 onChange={(e) => setRandomizeQueue(e.target.checked)}
               />
-              Randomize album picks
+              Randomize media picks
             </label>
           </div>
           <label className="block text-xs text-slate-400">
@@ -480,7 +482,7 @@ export function ContentPools() {
               </select>
               <div className="flex gap-4 flex-wrap">
                 <label className="flex items-center gap-2 text-sm">
-                  <span className="text-slate-400">Album size</span>
+                  <span className="text-slate-400">Default album size</span>
                   <input
                     type="number"
                     min={1}
@@ -488,34 +490,51 @@ export function ContentPools() {
                     value={editAlbumSize}
                     onChange={(e) => setEditAlbumSize(Number(e.target.value))}
                     className="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
+                    title="Shared with Scheduler jobs that use this pool"
                   />
                 </label>
                 <label className="flex items-center gap-2 text-sm">
-                  <span className="text-slate-400">Interval (min)</span>
+                  <span className="text-slate-400">Auto-post interval (min)</span>
                   <input
                     type="number"
                     min={1}
                     value={editInterval}
                     onChange={(e) => setEditInterval(Number(e.target.value))}
                     className="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
+                    title="Not the Scheduler job interval — only for standalone auto-post below"
                   />
                 </label>
               </div>
-              <label className="flex items-center gap-2 text-slate-300 text-sm">
+              <p className="text-slate-500 text-xs leading-relaxed">
+                <strong className="text-slate-400">Album size</strong> and{" "}
+                <strong className="text-slate-400">randomize picks</strong> stay in sync with Scheduler jobs using this
+                pool. <strong className="text-slate-400">Auto-post interval</strong> is separate — it does{" "}
+                <em>not</em> change Scheduler timing.
+              </p>
+              <label className="flex items-start gap-2 text-slate-300 text-sm">
                 <input
                   type="checkbox"
+                  className="mt-0.5"
                   checked={editAutoPostEnabled}
                   onChange={(e) => setEditAutoPostEnabled(e.target.checked)}
                 />
-                Auto-post by pool interval
+                <span>
+                  <strong>Standalone auto-post</strong> — post albums from this pool on the interval above, with no
+                  caption (bypasses Scheduler). Most setups use Scheduler only; leave unchecked.
+                </span>
               </label>
-              <label className="flex items-center gap-2 text-slate-300 text-sm">
+              <label className="flex items-start gap-2 text-slate-300 text-sm">
                 <input
                   type="checkbox"
+                  className="mt-0.5"
                   checked={editRandomize}
                   onChange={(e) => setEditRandomize(e.target.checked)}
                 />
-                Randomize which approved items scheduler picks for each album
+                <span>
+                  <strong>Randomize media picks</strong> within this pool (shuffle approved items each album). Not the
+                  same as Scheduler&apos;s &quot;All pools (random)&quot; — that chooses <em>which pool</em>, this chooses{" "}
+                  <em>which files</em> inside one pool.
+                </span>
               </label>
               <label className="block text-xs text-slate-400">
                 Auto-route tag slugs (optional)
@@ -585,7 +604,7 @@ export function ContentPools() {
               <th className="text-left p-3">Channel ID</th>
               <th className="text-left p-3">Queued</th>
               <th className="text-left p-3">Album size</th>
-              <th className="text-left p-3">Interval (min)</th>
+              <th className="text-left p-3">Auto-post interval (min)</th>
               <th className="text-left p-3">Last posted</th>
               <th className="text-left p-3">Actions</th>
             </tr>
@@ -651,17 +670,23 @@ export function ContentPools() {
                 <td className="p-3">
                   {String(p.interval_minutes)}
                   {p.auto_post_enabled === false ? (
-                    <span className="ml-2 text-xs text-rose-400" title="Pool interval auto-post disabled">
-                      paused
+                    <span
+                      className="ml-2 text-xs text-slate-400"
+                      title="Standalone auto-post is off (Scheduler jobs are unaffected)"
+                    >
+                      standalone off
                     </span>
                   ) : (
-                    <span className="ml-2 text-xs text-emerald-400" title="Pool interval auto-post enabled">
-                      auto
+                    <span
+                      className="ml-2 text-xs text-amber-400/90"
+                      title="Standalone auto-post is on — posts raw albums on this interval, bypasses Scheduler"
+                    >
+                      standalone on
                     </span>
                   )}
                   {p.randomize_queue ? (
-                    <span className="ml-2 text-xs text-amber-400" title="Randomize enabled">
-                      shuf
+                    <span className="ml-2 text-xs text-cyan-400/80" title="Randomize media picks within this pool">
+                      random picks
                     </span>
                   ) : null}
                 </td>

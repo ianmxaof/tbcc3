@@ -31,6 +31,21 @@ Worker must consume: `celery,post,scrape,subscription,telegram` (see `start.ps1`
 
 - `scripts/tbcc-cleanup-orphans.ps1` — kill uvicorn `multiprocessing-fork` workers blocking :8000
 - `scripts/tbcc-stack-preflight.ps1` — Redis/Postgres/orphan checks before cold start
+- `scripts/show-tbcc-processes.ps1` — map `python.exe` rows to TBCC-* services (RAM, ports, API `/health/system`); `-Watch -IntervalSec 5` to refresh
+
+### Process / network monitoring (Windows)
+
+| What you need | Where |
+|---------------|--------|
+| Named services vs generic `python.exe` | `.\scripts\show-tbcc-processes.ps1` or Windows Terminal tabs titled `TBCC-*` (`start.ps1 -Full -WtTabs`) |
+| Per-service up/down | Tray `tbcc\tools\tbcc-supervisor.ps1` |
+| Errors across tabs | `TBCC-Errors` tab / `.tbcc-run\error-hub.log` |
+| Breaking conflict / hub alert toasts | `GET /ops/alerts/poll` — extension, dashboard, tray supervisor |
+| Session lock, import queue, Redis | Dashboard system health banner → `GET /health/system` |
+| Which PID is using bandwidth | `resmon.exe` → **Network** → sort **Total (B/sec)**; or Task Manager **Details** → enable **Command line** |
+| Docker | Only **Postgres + Redis** for TBCC; `docker ps`. Host Python (API, Celery, bots, NSFW, CLIP) is outside Docker. |
+
+Watch-folder organizer is a **separate** process (`python -m app.services.watch_folder_organizer`); it appears as `TBCC-WatchOrganizer` in the process monitor when running.
 
 ### Full stack defaults
 

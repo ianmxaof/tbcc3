@@ -1,16 +1,168 @@
+/* global chrome, TbccCollected */
 const API_BASE = "http://localhost:8000";
-const STORAGE_COLLECTED = "tbcc_collected";
 
 let items = [];
 let selected = new Set();
+let filterCollectionId = "";
 
 const gridEl = document.getElementById("grid");
 const emptyEl = document.getElementById("empty");
 const countEl = document.getElementById("count");
 const selectAllCb = document.getElementById("selectAll");
 const poolSelect = document.getElementById("poolSelect");
-const btnSend = document.getElementById("btnSend");
-const btnDelete = document.getElementById("btnDelete");
+const destModeEl = document.getElementById("destMode");
+const tagsInput = document.getElementById("tagsInput");
+const noteInput = document.getElementById("noteInput");
+const batchLabel = document.getElementById("batchLabel");
+const captionInput = document.getElementById("captionInput");
+const btnApplyMeta = document.getElementById("btnApplyMeta");
+const btnStageDest = document.getElementById("btnStageDest");
+const btnStageAndSend = document.getElementById("btnStageAndSend");
+const btnRemove = document.getElementById("btnRemove");
+const btnClearAll = document.getElementById("btnClearAll");
+const statusLine = document.getElementById("statusLine");
+const batchPills = document.getElementById("batchPills");
+
+function setStatus(text) {
+  if (statusLine) statusLine.textContent = text || "";
+}
+
+function visibleItems() {
+  if (!filterCollectionId) return items;
+  return items.filter((it) => it.collectionId === filterCollectionId);
+}
+
+function updateToolbar() {
+  const n = selected.size;
+  countEl.textContent = String(n);
+  const disabled = n === 0;
+  btnApplyMeta.disabled = disabled;
+  btnStageDest.disabled = disabled;
+  btnStageAndSend.disabled = disabled;
+  btnRemove.disabled = disabled;
+  const vis = visibleItems();
+  selectAllCb.checked = vis.length > 0 && vis.every((it) => selected.has(TbccCollected.collectedItemKey(it)));
+}
+
+function renderBatchPills() {
+  if (!batchPills) return;
+  const batches = TbccCollected.listCollectionLabels(items);
+  if (!batches.length) {
+    batchPills.hidden = true;
+    batchPills.innerHTML = "";
+    return;
+  }
+  batchPills.hidden = false;
+  batchPills.innerHTML = "";
+  const allBtn = document.createElement("button");
+  allBtn.type = "button";
+  allBtn.className = "batch-pill" + (!filterCollectionId ? " active" : "");
+  allBtn.textContent = "All (" + items.length + ")";
+  allBtn.addEventListener("click", () => {
+    filterCollectionId = "";
+    selected.clear();
+    render();
+  });
+  batchPills.appendChild(allBtn);
+  for (const b of batches) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "batch-pill" + (filterCollectionId === b.id ? " active" : "");
+    btn.textContent = (b.label || b.id) + " (" + b.count + ")";
+    btn.addEventListener("click", () => {
+      filterCollectionId = b.id;
+      selected.clear();
+      render();
+    });
+    batchPills.appendChild(btn);
+  }
+}
+
+function render() {
+  const vis = visibleItems();
+  gridEl.innerHTML = "";
+  if (!items.length) {
+    emptyEl.style.display = "block";
+    updateToolbar();
+    renderBatchPills();
+    return;
+  }
+  emptyEl.style.display = vis.length ? "none" : "block";
+  vis.forEach((item) => {
+    const key = TbccCollected.collectedItemKey(item);
+    const div = document.createElement("div");
+    div.className = "cell" + (selected.has(key) ? " selected" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = selected.has(key);
+    cb.addEventListener("click", (e) => e.stopPropagation());
+    cb.addEventListener("change", () => {
+      if (cb.checked) selected.add(key);
+      else selected.delete(key);
+      div.classList.toggle("selected", cb.checked);
+      updateToolbar();
+    });
+    div.appendChild(cb);
+    if (item.collectionLabel || item.collectionId) {
+      const badge = document.createElement("div");
+      badge.className = "cell-badge";
+      badge.textContent = (item.collectionLabel || "batch").slice(0, 12);
+      div.appendChild(badge);
+    }
+    const thumb = item.thumbUrl && /^https?:\/\//i.test(item.thumbUrl) ? item.thumbUrl : item.url;
+    if (item.mediaType === "video" && /^https?:\/\//i.test(thumb)) {
+      const v = document.createElement("video");
+      v.src = thumb;
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = "metadata";
+      div.appendChild(v);
+    } else {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.referrerPolicy = "no-referrer";
+      img.src = thumb;
+      img.onerror = () => {
+        const ph = document.createElement("div");
+        ph.className = "placeholder";
+        ph.textContent = item.sourceHost || "media";
+        div.appendChild(ph);
+        img.remove();
+      };
+      div.appendChild(img);
+    }
+    const meta = document.createElement("div");
+    meta.className = "cell-meta";
+    const fname = (() => {
+      try {
+        return decodeURIComponent(new URL(item.url).pathname.split("/").pop() || "media");
+      } catch (_) {
+        return "media";
+      }
+    })();
+    const tagBit = (item.tags && item.tags.length ? item.tags.slice(0, 3).join(", ") : "") || "";
+    meta.textContent = [fname.slice(0, 28), item.sourceHost, tagBit].filter(Boolean).join(" · ");
+    div.appendChild(meta);
+    div.addEventListener("click", (e) => {
+      if (e.target === cb) return;
+      cb.checked = !cb.checked;
+      if (cb.checked) selected.add(key);
+      else selected.delete(key);
+      div.classList.toggle("selected", cb.checked);
+      updateToolbar();
+    });
+    gridEl.appendChild(div);
+  });
+  updateToolbar();
+  renderBatchPills();
+}
+
+async function loadCollected() {
+  items = await TbccCollected.getItems();
+  selected.clear();
+  render();
+  setStatus(items.length ? items.length + " item(s) in collection." : "");
+}
 
 async function loadPools() {
   try {
@@ -28,83 +180,118 @@ async function loadPools() {
   } catch (_) {}
 }
 
-async function loadCollected() {
-  const raw = await new Promise((r) => chrome.storage.local.get(STORAGE_COLLECTED, (o) => r(o[STORAGE_COLLECTED])));
-  items = Array.isArray(raw) ? raw : [];
-  selected.clear();
-  render();
+function getSelectedItems() {
+  return visibleItems().filter((it) => selected.has(TbccCollected.collectedItemKey(it)));
 }
 
-function render() {
-  gridEl.innerHTML = "";
-  if (items.length === 0) {
-    emptyEl.style.display = "block";
-    countEl.textContent = "0";
-    selectAllCb.checked = false;
-    btnSend.disabled = true;
-    return;
-  }
-  emptyEl.style.display = "none";
-  items.forEach((item, idx) => {
-    const key = item.url || idx;
-    const div = document.createElement("div");
-    div.className = "cell" + (selected.has(key) ? " selected" : "");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = selected.has(key);
-    cb.addEventListener("change", () => { if (cb.checked) selected.add(key); else selected.delete(key); div.classList.toggle("selected", cb.checked); updateCount(); });
-    div.appendChild(cb);
-    const img = document.createElement("img");
-    img.alt = "";
-    img.referrerPolicy = "no-referrer";
-    img.src = item.url;
-    img.onerror = () => { const ph = document.createElement("div"); ph.className = "placeholder"; ph.textContent = "—"; div.appendChild(ph); img.remove(); };
-    div.appendChild(img);
-    div.addEventListener("click", (e) => { if (e.target === cb) return; cb.checked = !cb.checked; if (cb.checked) selected.add(key); else selected.delete(key); div.classList.toggle("selected", cb.checked); updateCount(); });
-    gridEl.appendChild(div);
+async function applyMetaToSelected() {
+  const picked = getSelectedItems();
+  if (!picked.length) return;
+  const tags = TbccCollected.parseTagsCsv(tagsInput && tagsInput.value);
+  const note = noteInput && noteInput.value ? noteInput.value.trim() : "";
+  const label = batchLabel && batchLabel.value ? batchLabel.value.trim() : "";
+  const batchId = label ? "batch_" + label.replace(/\s+/g, "-").slice(0, 40) : "";
+  const keys = new Set(picked.map((it) => TbccCollected.collectedItemKey(it)));
+  items = items.map((it) => {
+    if (!keys.has(TbccCollected.collectedItemKey(it))) return it;
+    const mergedTags = [...new Set([...(it.tags || []), ...tags])];
+    return TbccCollected.normalizeCollectedItem({
+      ...it,
+      tags: mergedTags,
+      note: note || it.note,
+      collectionId: batchId || it.collectionId,
+      collectionLabel: label || it.collectionLabel,
+    });
   });
-  updateCount();
-  selectAllCb.checked = items.length > 0 && items.every((_, i) => selected.has(items[i].url || i));
+  await TbccCollected.setItems(items);
+  render();
+  setStatus("Updated " + picked.length + " item(s).");
 }
 
-function updateCount() {
-  countEl.textContent = selected.size;
-  btnSend.disabled = selected.size === 0;
+function postStageToParent(toSend, autoSend) {
+  const payload = {
+    type: "tbcc-collected-stage-dest",
+    items: toSend,
+    destMode: destModeEl ? destModeEl.value : "saved",
+    tagsCsv: tagsInput ? tagsInput.value.trim() : "",
+    caption: captionInput ? captionInput.value.trim() : "",
+    poolId: poolSelect && poolSelect.value ? parseInt(poolSelect.value, 10) : null,
+    autoSend: !!autoSend,
+  };
+  try {
+    window.parent.postMessage(payload, "*");
+  } catch (e) {
+    setStatus(String(e.message || e));
+  }
 }
 
 selectAllCb.addEventListener("change", () => {
-  if (selectAllCb.checked) items.forEach((it, i) => selected.add(it.url || i));
+  const vis = visibleItems();
+  if (selectAllCb.checked) vis.forEach((it) => selected.add(TbccCollected.collectedItemKey(it)));
   else selected.clear();
   render();
 });
 
-poolSelect.addEventListener("change", () => { if (poolSelect.value) chrome.storage.local.set({ tbccPoolId: parseInt(poolSelect.value, 10) }); });
-
-btnSend.addEventListener("click", async () => {
-  if (selected.size === 0) return;
-  const poolId = parseInt(poolSelect.value, 10) || 1;
-  const toSend = items.filter((it, i) => selected.has(it.url || i));
-  btnSend.disabled = true;
-  for (const it of toSend) {
-    try {
-      const r = await fetch(it.url, { mode: "cors", credentials: "omit" });
-      const blob = await r.blob();
-      const form = new FormData();
-      form.append("file", blob, "media");
-      form.append("pool_id", String(poolId));
-      form.append("saved_only", "false");
-      form.append("source", "extension:gallery-view");
-      await fetch(API_BASE + "/import/bytes", { method: "POST", body: form });
-    } catch (_) {}
-  }
-  btnSend.disabled = false;
+poolSelect.addEventListener("change", () => {
+  if (poolSelect.value) chrome.storage.local.set({ tbccPoolId: parseInt(poolSelect.value, 10) });
 });
 
-btnDelete.addEventListener("click", () => {
-  if (selected.size === 0) return;
-  const keep = items.filter((it, i) => !selected.has(it.url || i));
-  chrome.storage.local.set({ [STORAGE_COLLECTED]: keep }, () => loadCollected());
+if (destModeEl) {
+  destModeEl.addEventListener("change", () => {
+    chrome.storage.local.set({ tbccCollectedDestMode: destModeEl.value });
+  });
+}
+
+btnApplyMeta.addEventListener("click", () => void applyMetaToSelected());
+
+btnStageDest.addEventListener("click", () => {
+  const toSend = getSelectedItems();
+  if (!toSend.length) return;
+  postStageToParent(toSend, false);
+  setStatus("Opened Dest on main gallery — review caption/tags, then Send.");
 });
 
-loadPools();
-loadCollected();
+btnStageAndSend.addEventListener("click", () => {
+  const toSend = getSelectedItems();
+  if (!toSend.length) return;
+  postStageToParent(toSend, true);
+  setStatus("Sending from main gallery…");
+});
+
+btnRemove.addEventListener("click", async () => {
+  const keys = [...selected];
+  if (!keys.length) return;
+  await TbccCollected.removeKeys(keys);
+  selected.clear();
+  await loadCollected();
+});
+
+btnClearAll.addEventListener("click", async () => {
+  if (!items.length) return;
+  if (!confirm("Clear all collected media?")) return;
+  await TbccCollected.setItems([]);
+  selected.clear();
+  filterCollectionId = "";
+  await loadCollected();
+  setStatus("Collection cleared.");
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[TbccCollected.STORAGE_COLLECTED]) return;
+  void loadCollected();
+});
+
+void loadPools();
+void (async () => {
+  try {
+    const { tbccCollectedDestMode } = await chrome.storage.local.get("tbccCollectedDestMode");
+    if (
+      destModeEl &&
+      tbccCollectedDestMode &&
+      [...destModeEl.options].some((o) => o.value === tbccCollectedDestMode)
+    ) {
+      destModeEl.value = tbccCollectedDestMode;
+    }
+  } catch (_) {}
+  await loadCollected();
+})();

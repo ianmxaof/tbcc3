@@ -1,17 +1,26 @@
 TBCC extension icons (Chrome toolbar + gallery favicon)
 
-Generated from docs/tbcc-icon-master.png (lightning + hexagon mark).
+Vector source: tbcc-mark.svg (flat stroke, no gradient — 16px-safe).
 
-PNG sizes:
-  icon16.png   — toolbar, notifications, context (manifest required)
+Two PNG sets (regenerate via scripts/build-icons.py):
+
+  icons/                  — with #1e1e2e background (gallery favicon, manifest listing, favicon.ico)
+  icons/transparent/      — no background (Chrome toolbar, notifications)
+
+PNG sizes (both sets):
+  icon16.png   — toolbar, notifications, context
   icon32.png   — gallery favicon (high-DPI tabs)
   icon48.png   — extension management + gallery favicon
   icon128.png  — Chrome Web Store listing (manifest required)
+  icon256.png  — hi-DPI source; embedded in favicon.ico for Windows tray/shortcuts
 
-  favicon.ico  — multi-size ICO (16, 32, 48) for gallery.html <link rel="icon">
+  favicon.ico  — multi-size ICO (16–256) with background, for gallery.html + TBCC Supervisor tray
 
-Regenerate after art changes:
+Regenerate:
   cd tbcc/extension
-  python scripts/build-icons.py path/to/master.png
+  python scripts/build-icons.py
+  python scripts/build-icons.py --mark-bleed 0.94   # zoom mark slightly if needed
 
-Manifest references: icon16, icon48, icon128 (see manifest.json).
+Manifest:
+  action.default_icon → icons/transparent/
+  icons (store)       → icons/ (with background)

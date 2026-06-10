@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Scheduler } from "./Scheduler";
 import { Sources } from "./Sources";
+import { AutomationBotsPanel } from "./AutomationBotsPanel";
 
-type AutomationTab = "publish" | "ingest";
+type AutomationTab = "publish" | "ingest" | "bots";
 
 function tabFromPath(pathname: string): AutomationTab {
+  if (pathname.includes("/bots")) return "bots";
   if (pathname.includes("/ingest") || pathname === "/sources") return "ingest";
   return "publish";
 }
@@ -25,23 +27,29 @@ export function AutomationPanel() {
 
   function selectTab(next: AutomationTab) {
     setTab(next);
-    navigate(next === "ingest" ? "/scheduler/ingest" : "/scheduler", { replace: true });
+    const path =
+      next === "ingest" ? "/scheduler/ingest" : next === "bots" ? "/scheduler/bots" : "/scheduler";
+    navigate(path, { replace: true });
   }
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-2">Automation</h1>
-      <p className="text-slate-400 mb-4 max-w-3xl text-sm">
-        <strong className="text-slate-300">Publish</strong> sends approved pool media to your channels on a schedule.{" "}
-        <strong className="text-slate-300">Ingest</strong> pulls media from Telegram channels into pools. Log in once,
-        add one source per channel, set schedules, then use Scrape now or Celery Beat.
-      </p>
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <h1 className="text-base font-semibold tracking-tight text-slate-100">Automation</h1>
+        <p className="text-[10px] leading-snug text-slate-500">
+          <strong className="text-slate-400">Publish</strong> · schedule out
+          <span className="mx-1 text-slate-600">|</span>
+          <strong className="text-slate-400">Ingest</strong> · scrape in
+          <span className="mx-1 text-slate-600">|</span>
+          <strong className="text-slate-400">Bots</strong> · workers
+        </p>
+      </div>
 
-      <div className="flex gap-1 mb-6 border-b border-slate-700 flex-wrap">
+      <div className="mb-3 flex flex-wrap gap-0.5 border-b border-slate-700">
         <button
           type="button"
           onClick={() => selectTab("publish")}
-          className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+          className={`px-3 py-1.5 text-xs font-medium rounded-t-md border-b-2 -mb-px transition-colors ${
             tab === "publish"
               ? "border-cyan-500 text-cyan-400 bg-slate-800/80"
               : "border-transparent text-slate-400 hover:text-slate-200"
@@ -52,7 +60,7 @@ export function AutomationPanel() {
         <button
           type="button"
           onClick={() => selectTab("ingest")}
-          className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+          className={`px-3 py-1.5 text-xs font-medium rounded-t-md border-b-2 -mb-px transition-colors ${
             tab === "ingest"
               ? "border-cyan-500 text-cyan-400 bg-slate-800/80"
               : "border-transparent text-slate-400 hover:text-slate-200"
@@ -60,9 +68,20 @@ export function AutomationPanel() {
         >
           Ingest from channels
         </button>
+        <button
+          type="button"
+          onClick={() => selectTab("bots")}
+          className={`px-3 py-1.5 text-xs font-medium rounded-t-md border-b-2 -mb-px transition-colors ${
+            tab === "bots"
+              ? "border-cyan-500 text-cyan-400 bg-slate-800/80"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Bots &amp; workers
+        </button>
       </div>
 
-      {tab === "publish" ? <Scheduler embedded /> : <Sources embedded />}
+      {tab === "publish" ? <Scheduler embedded /> : tab === "ingest" ? <Sources embedded /> : <AutomationBotsPanel />}
     </div>
   );
 }

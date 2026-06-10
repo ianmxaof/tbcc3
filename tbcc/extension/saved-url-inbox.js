@@ -16,7 +16,11 @@
           ? parseInt(raw.targetPoolId, 10)
           : null;
     const destType =
-      raw && raw.destType === "loot_modifier" ? "loot_modifier" : "pool";
+      raw && raw.destType === "loot_modifier"
+        ? "loot_modifier"
+        : raw && raw.destType === "archive"
+          ? "archive"
+          : "pool";
     let modifierId =
       raw && raw.modifierId != null && raw.modifierId !== ""
         ? parseInt(raw.modifierId, 10)
@@ -79,14 +83,37 @@
     return capped;
   }
 
+  async function appendToArchive(url, opts) {
+    const clean = String(url || "").trim();
+    if (!/^https?:\/\//i.test(clean)) return { ok: false, error: "Need an http(s) URL." };
+    const arch = global.TbccMasterArchive;
+    if (!arch || !arch.recordUrl) return { ok: false, error: "Master archive module not loaded." };
+    const tagsCsv = opts && opts.tagsCsv ? String(opts.tagsCsv).trim() : "";
+    const note = opts && opts.note ? String(opts.note).trim() : "";
+    await arch.recordUrl(clean, {
+      source: (opts && opts.source) || "inbox",
+      ref: opts && opts.ref ? String(opts.ref) : "",
+      note,
+      tags: tagsCsv,
+    });
+    return { ok: true, duplicate: false, archived: true };
+  }
+
   async function appendUrl(url, opts) {
     const clean = String(url || "").trim();
     if (!/^https?:\/\//i.test(clean)) return { ok: false, error: "Need an http(s) URL." };
+    const destType =
+      opts && opts.destType === "loot_modifier"
+        ? "loot_modifier"
+        : opts && opts.destType === "archive"
+          ? "archive"
+          : "pool";
+    if (destType === "archive") {
+      return appendToArchive(clean, opts);
+    }
     const rows = await getRows();
     const dup = rows.some((x) => x.url === clean);
     if (dup) return { ok: true, duplicate: true };
-    const destType =
-      opts && opts.destType === "loot_modifier" ? "loot_modifier" : "pool";
     const poolId =
       opts && opts.poolId != null && opts.poolId !== ""
         ? parseInt(opts.poolId, 10)
@@ -121,6 +148,7 @@
     rowKey,
     getRows,
     setRows,
+    appendToArchive,
     appendUrl,
   };
 })(typeof globalThis !== "undefined" ? globalThis : window);

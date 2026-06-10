@@ -1,9 +1,15 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../api";
+import { InfoDisclosure } from "./InfoDisclosure";
+
+type Props = {
+  /** Fits inside the 4-column scheduler composer grid. */
+  compact?: boolean;
+};
 
 /** Buffer → X on the Scheduler page — not Misc. */
-export function SchedulerBufferPanel() {
+export function SchedulerBufferPanel({ compact = false }: Props) {
   const [msg, setMsg] = useState<string | null>(null);
   const [testPublishNow, setTestPublishNow] = useState(false);
   const test = useMutation({
@@ -15,9 +21,9 @@ export function SchedulerBufferPanel() {
       setMsg(
         n
           ? mode === "shareNow"
-            ? `Published ${n} channel(s) via Buffer shareNow. Check X shortly.`
-            : `Queued ${n} item(s) in Buffer. Open publish.buffer.com → Queue.`
-          : "No confirmation from Buffer — check API / backend logs."
+            ? `Published ${n} channel(s) via shareNow.`
+            : `Queued ${n} in Buffer — check publish.buffer.com.`
+          : "No confirmation — check API / logs."
       );
       window.setTimeout(() => setMsg(null), 14000);
     },
@@ -25,24 +31,66 @@ export function SchedulerBufferPanel() {
       const raw = e instanceof Error ? e.message : "Buffer test failed";
       const hint =
         raw.includes("posted that one recently") || raw.includes("buffer_errors")
-          ? " Buffer blocks duplicate copy — wait a few minutes or retry (test text is timestamped)."
+          ? " Duplicate copy blocked — wait or retry."
           : "";
       setMsg(raw + hint);
       window.setTimeout(() => setMsg(null), 16000);
     },
   });
 
+  if (compact) {
+    return (
+      <div className="space-y-2 text-[11px]">
+        <p className="text-slate-500 leading-snug">
+          Per-job <strong className="text-slate-300">Buffer → X</strong> mirrors Telegram to X.{" "}
+          <InfoDisclosure>
+            shareNow posts right after send; addToQueue uses Buffer&apos;s queue (Free: 10 slots/channel). Row editor
+            holds up to 10 custom X captions; else TBCC mirrors Telegram. Env{" "}
+            <code className="text-slate-500">TBCC_BUFFER_SCHEDULED_SHARE_NOW=1</code> defaults publish-now.
+          </InfoDisclosure>
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 text-slate-300">
+            <input
+              type="checkbox"
+              checked={testPublishNow}
+              onChange={(e) => setTestPublishNow(e.target.checked)}
+            />
+            Test publish now
+          </label>
+          <button
+            type="button"
+            className="rounded bg-emerald-700 px-2 py-1 text-[10px] text-white hover:bg-emerald-600 disabled:opacity-50"
+            disabled={test.isPending}
+            onClick={() => test.mutate()}
+          >
+            {test.isPending ? "…" : testPublishNow ? "Test shareNow" : "Test queue"}
+          </button>
+          <a
+            href="https://publish.buffer.com"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[10px] text-cyan-400 hover:underline"
+          >
+            Buffer
+          </a>
+        </div>
+        {msg ? <p className="text-[10px] text-emerald-200/90">{msg}</p> : null}
+      </div>
+    );
+  }
+
   return (
-    <section className="mb-8 max-w-3xl border border-slate-600 rounded-lg p-5 bg-slate-900/50">
-      <h2 className="text-lg font-medium text-slate-100 mb-1">Social · Buffer</h2>
-      <p className="text-slate-400 text-sm mb-3">
+    <section className="mb-8 max-w-3xl rounded-lg border border-slate-600 bg-slate-900/50 p-5">
+      <h2 className="mb-1 text-lg font-medium text-slate-100">Social · Buffer</h2>
+      <p className="mb-3 text-sm text-slate-400">
         With <strong className="text-slate-300">Buffer → X</strong> on a scheduled row, each successful Telegram send
         triggers one Buffer post. Use <strong className="text-slate-300">Publish now</strong> per job for Buffer{" "}
         <code className="text-slate-500">shareNow</code> (X goes live right after Telegram). Leave it off for{" "}
         <code className="text-slate-500">addToQueue</code> (Buffer&apos;s own queue timing). Pre-write up to 10 X captions
         in the row editor; otherwise TBCC mirrors the Telegram caption.
       </p>
-      <ul className="text-xs text-slate-500 mb-4 list-disc pl-5 space-y-1">
+      <ul className="mb-4 list-disc space-y-1 pl-5 text-xs text-slate-500">
         <li>
           <strong className="text-slate-400">Buffer Free:</strong> up to 10 posts waiting in queue per channel when using
           addToQueue.
@@ -55,16 +103,12 @@ export function SchedulerBufferPanel() {
       </ul>
       <div className="flex flex-wrap items-center gap-3">
         <label className="flex items-center gap-2 text-sm text-slate-300">
-          <input
-            type="checkbox"
-            checked={testPublishNow}
-            onChange={(e) => setTestPublishNow(e.target.checked)}
-          />
+          <input type="checkbox" checked={testPublishNow} onChange={(e) => setTestPublishNow(e.target.checked)} />
           Test with publish now
         </label>
         <button
           type="button"
-          className="px-3 py-2 rounded bg-emerald-700 text-white text-sm hover:bg-emerald-600 disabled:opacity-50"
+          className="rounded bg-emerald-700 px-3 py-2 text-sm text-white hover:bg-emerald-600 disabled:opacity-50"
           disabled={test.isPending}
           onClick={() => test.mutate()}
         >
@@ -79,7 +123,7 @@ export function SchedulerBufferPanel() {
           Open Buffer
         </a>
       </div>
-      {msg ? <p className="text-sm text-emerald-200 mt-3">{msg}</p> : null}
+      {msg ? <p className="mt-3 text-sm text-emerald-200">{msg}</p> : null}
     </section>
   );
 }

@@ -106,3 +106,24 @@ def extension_payload(db: Session) -> dict[str, Any]:
         "active_image": pub.get("active_image"),
         "images": pub.get("images") or [],
     }
+
+
+def load_active_send_promo_bytes(db: Session) -> tuple[bytes, str] | None:
+    """Active gallery send-promo tile bytes for appending as the last album image."""
+    pub = get_gallery_send_promo_public(db)
+    if not pub.get("enabled"):
+        return None
+    active = pub.get("active_image")
+    if not isinstance(active, dict):
+        return None
+    fn = str(active.get("filename") or "").strip()
+    path = send_promo_image_path(fn)
+    if not path:
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data:
+        return None
+    return data, "photo"

@@ -17,5 +17,9 @@ class CaptureArchiveEntry(Base):
     source = Column(String(80), nullable=True)
     ref = Column(Text, nullable=True)
     note = Column(Text, nullable=True)
+    description = Column(String(400), nullable=True)  # auto-tag short page summary
+    tags = Column(String(500), nullable=True)  # comma-separated filter labels
     origin = Column(String(32), nullable=True)  # extension | media_library | import
+    status = Column(String(16), nullable=False, default="approved")  # approved | pending | rejected
+    submitted_by = Column(String(32), nullable=True)  # telegram user id when community-submitted
     added_at = Column(DateTime, default=datetime.utcnow, nullable=False)

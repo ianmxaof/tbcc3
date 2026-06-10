@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { api } from "../api";
+import { api, type ImportJobPollResult } from "../api";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { canPreviewInGallery } from "../components/MediaGalleryModal";
 import { MediaMasterSuiteModal } from "../components/MediaMasterSuiteModal";
@@ -14,6 +14,8 @@ import {
   readSendSilentPreference,
   writeSendSilentPreference,
 } from "../components/SilentTelegramSendOption";
+import { suggestPoolIdForTopicTitle } from "../utils/suggestPoolForTopic";
+import { WatermarkControls } from "../components/WatermarkControls";
 
 type MediaRow = Record<string, unknown>;
 
@@ -64,6 +66,7 @@ function MediaRowSelectionControl({
 }
 
 export function MediaLibrary() {
+  const FAST_REBUILD_STORAGE_KEY = "tbcc.fastRebuildMode";
   const [searchParams] = useSearchParams();
   const [statusFilter, setStatusFilter] = useState<string | undefined>("pending");
   /** 0 = all pools (API omits pool_id). Backend always supported this; the UI did not until now. */
@@ -76,10 +79,25 @@ export function MediaLibrary() {
   const [suiteIndex, setSuiteIndex] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [gridCols, setGridCols] = useState<3 | 5 | 8>(5);
+  const [fastRebuildMode, setFastRebuildMode] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(FAST_REBUILD_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [llmSuggestMediaId, setLlmSuggestMediaId] = useState<number | null>(null);
   const [bulkPoolId, setBulkPoolId] = useState<number>(0);
   const [bulkTagsText, setBulkTagsText] = useState("");
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(FAST_REBUILD_STORAGE_KEY, fastRebuildMode ? "1" : "0");
+    } catch {
+      // Ignore storage failures (private mode / blocked storage).
+    }
+  }, [fastRebuildMode]);
 
   useEffect(() => {
     const status = searchParams.get("status");
@@ -120,6 +138,53 @@ export function MediaLibrary() {
   );
   const [savedImportPool, setSavedImportPool] = useState(1);
   const [savedImportLimit, setSavedImportLimit] = useState(50);
+  const [savedImportApplyWatermark, setSavedImportApplyWatermark] = useState(false);
+  const [channelImportPool, setChannelImportPool] = useState(1);
+  /** Registered channel row id; -1 = manual identifier fallback */
+  const [channelImportChannelId, setChannelImportChannelId] = useState(0);
+  const [channelImportCustomIdentifier, setChannelImportCustomIdentifier] = useState("");
+  const [channelImportLimit, setChannelImportLimit] = useState(50);
+  const [channelImportMediaTypes, setChannelImportMediaTypes] = useState<"both" | "photos" | "videos">("both");
+  const [channelImportTopicId, setChannelImportTopicId] = useState<number | null>(null);
+  const [channelImportTopics, setChannelImportTopics] = useState<Array<{ id: number; title: string }>>([]);
+  const [channelImportTopicsError, setChannelImportTopicsError] = useState<string | null>(null);
+  /** topic id → pool id for batch import from forum subtopics */
+  const [channelTopicPoolMap, setChannelTopicPoolMap] = useState<Record<string, number>>({});
+  const [channelTopicBatchSelected, setChannelTopicBatchSelected] = useState<Record<string, boolean>>({});
+  /** While a background channel import is running (Celery + poll). */
+  const [channelImportStatus, setChannelImportStatus] = useState<string | null>(null);
+  /** one = pick subtopic + pool; batch = checkbox map table */
+  const [channelImportMode, setChannelImportMode] = useState<"one" | "batch">("one");
+
+  function summarizeChannelImportResult(data: Record<string, unknown> | undefined): {
+    stored: number;
+    skipped_duplicate: number;
+    skipped_media_type: number;
+    messages_scanned: number;
+  } {
+    const result =
+      data?.result && typeof data.result === "object"
+        ? (data.result as Record<string, unknown>)
+        : data;
+    return {
+      stored: Number(result?.stored ?? 0),
+      skipped_duplicate: Number(result?.skipped_duplicate ?? 0),
+      skipped_media_type: Number(result?.skipped_media_type ?? 0),
+      messages_scanned: Number(result?.messages_scanned ?? 0),
+    };
+  }
+
+  async function waitForChannelImportJob(
+    jobId: string,
+    label: string
+  ): Promise<ImportJobPollResult> {
+    return api.import.pollImportJob(jobId, {
+      onUpdate: (j) => {
+        const st = j.status === "processing" ? "importing" : j.status || "queued";
+        setChannelImportStatus(`${label}: ${st}… (background — large batches can take 10+ min)`);
+      },
+    });
+  }
 
   const [uploadPoolId, setUploadPoolId] = useState(1);
   /** pool-only: TBCC pool only; channel: import then post to channel/topic; saved-only: Telegram Saved Messages only (no Media rows) */
@@ -137,6 +202,73 @@ export function MediaLibrary() {
     queryKey: ["channels"],
     queryFn: () => api.channels.list(),
   });
+
+  type ChannelRow = { id: number; name?: string; identifier?: string };
+
+  const channelImportIdentifierResolved = useMemo(() => {
+    if (channelImportChannelId > 0) {
+      const ch = (channels as ChannelRow[]).find((c) => c.id === channelImportChannelId);
+      return String(ch?.identifier || "").trim();
+    }
+    if (channelImportChannelId === -1) {
+      return channelImportCustomIdentifier.trim();
+    }
+    return "";
+  }, [channelImportChannelId, channelImportCustomIdentifier, channels]);
+
+  const { data: channelImportForumTopicsRes, isFetching: channelImportTopicsLoading } = useQuery({
+    queryKey: ["forumTopics", "channelImport", channelImportChannelId],
+    queryFn: () => api.channels.forumTopics(channelImportChannelId),
+    enabled: channelImportChannelId > 0,
+  });
+
+  const customImportIdent = channelImportCustomIdentifier.trim();
+  const { data: channelImportCustomTopicsRes, isFetching: channelImportCustomTopicsLoading } =
+    useQuery({
+      queryKey: ["forumTopics", "channelImportCustom", customImportIdent],
+      queryFn: () => api.import.forumTopicsForChannel(customImportIdent),
+      enabled: channelImportChannelId === -1 && customImportIdent.length > 0,
+    });
+
+  const channelImportTopicsLoadingAny =
+    channelImportTopicsLoading || channelImportCustomTopicsLoading;
+
+  useEffect(() => {
+    if (channelImportChannelId === 0) {
+      setChannelImportTopics([]);
+      setChannelImportTopicsError(null);
+      return;
+    }
+    const res =
+      channelImportChannelId === -1 ? channelImportCustomTopicsRes : channelImportForumTopicsRes;
+    const topics = Array.isArray(res?.topics) ? res!.topics : [];
+    setChannelImportTopics(topics);
+    setChannelImportTopicsError(res?.error ? String(res.error) : null);
+    const poolList = pools as Array<{ id: number; name?: string }>;
+    const nextMap: Record<string, number> = {};
+    const nextSel: Record<string, boolean> = {};
+    for (const t of topics) {
+      const suggested = suggestPoolIdForTopicTitle(t.title, poolList);
+      if (suggested) {
+        nextMap[String(t.id)] = suggested;
+        nextSel[String(t.id)] = true;
+      }
+    }
+    setChannelTopicPoolMap(nextMap);
+    setChannelTopicBatchSelected(nextSel);
+    if (topics.length === 1) {
+      setChannelImportTopicId(topics[0].id);
+      const s = suggestPoolIdForTopicTitle(topics[0].title, poolList);
+      if (s) setChannelImportPool(s);
+    }
+  }, [channelImportChannelId, channelImportForumTopicsRes, channelImportCustomTopicsRes, pools]);
+
+  useEffect(() => {
+    if (!channelImportTopics.length && channelImportMode === "batch") {
+      setChannelImportMode("one");
+    }
+  }, [channelImportTopics.length, channelImportMode]);
+
   const { data: uploadForumTopicsRes } = useQuery({
     queryKey: ["forumTopics", uploadChannelId],
     queryFn: () => api.channels.forumTopics(uploadChannelId),
@@ -146,8 +278,92 @@ export function MediaLibrary() {
   const uploadForumTopicsHint = uploadForumTopicsRes?.error;
 
   const importFromSaved = useMutation({
-    mutationFn: () => api.import.fromSaved(savedImportPool, savedImportLimit),
+    mutationFn: () =>
+      api.import.fromSaved(savedImportPool, savedImportLimit, {
+        applyWatermark: savedImportApplyWatermark,
+      }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["media"] }),
+  });
+
+  const importFromChannel = useMutation({
+    mutationFn: async () => {
+      const topicTitle =
+        channelImportTopicId != null
+          ? channelImportTopics.find((t) => t.id === channelImportTopicId)?.title
+          : null;
+      const label = topicTitle || "channel";
+      setChannelImportStatus(`${label}: queueing…`);
+      const queued = await api.import.fromChannel({
+        pool_id: channelImportPool,
+        channel: channelImportIdentifierResolved,
+        limit: channelImportLimit,
+        media_types: channelImportMediaTypes,
+        ...(channelImportTopicId != null ? { message_thread_id: channelImportTopicId } : {}),
+        ...(topicTitle ? { topic_title: topicTitle } : {}),
+      });
+      if (queued.error && !queued.job_id) throw new Error(String(queued.error));
+      if (queued.job_id) {
+        const final = await waitForChannelImportJob(queued.job_id, label);
+        const stats = summarizeChannelImportResult(final as Record<string, unknown>);
+        return { status: "ok", ...stats };
+      }
+      return queued;
+    },
+    onSuccess: () => {
+      setChannelImportStatus(null);
+      void queryClient.invalidateQueries({ queryKey: ["media"] });
+    },
+    onError: () => setChannelImportStatus(null),
+  });
+
+  const importFromChannelBatch = useMutation({
+    mutationFn: async () => {
+      const imports = channelImportTopics
+        .filter((t) => channelTopicBatchSelected[String(t.id)])
+        .map((t) => ({
+          message_thread_id: t.id,
+          pool_id: channelTopicPoolMap[String(t.id)] ?? channelImportPool,
+          topic_title: t.title,
+          limit: channelImportLimit,
+          media_types: channelImportMediaTypes,
+        }))
+        .filter((row) => row.pool_id > 0);
+      if (!imports.length) throw new Error("Select at least one topic with a target pool.");
+      setChannelImportStatus(`Batch: queueing ${imports.length} topic(s)…`);
+      const queued = await api.import.fromChannelBatch({
+        channel: channelImportIdentifierResolved,
+        limit: channelImportLimit,
+        media_types: channelImportMediaTypes,
+        imports,
+      });
+      if (queued.error && !queued.jobs?.length) throw new Error(String(queued.error));
+      if (queued.jobs?.length) {
+        const results: Array<Record<string, unknown>> = [];
+        for (const j of queued.jobs) {
+          if (j.error && !j.job_id) {
+            results.push({ error: j.error, topic_title: j.topic_title });
+            continue;
+          }
+          if (!j.job_id) continue;
+          const title = String(j.topic_title || j.params?.topic_title || j.message_thread_id || "topic");
+          const final = await waitForChannelImportJob(j.job_id, title);
+          const stats = summarizeChannelImportResult(final as Record<string, unknown>);
+          results.push({
+            message_thread_id: j.message_thread_id ?? j.params?.message_thread_id,
+            topic_title: j.topic_title ?? j.params?.topic_title,
+            pool_id: j.pool_id,
+            ...stats,
+          });
+        }
+        return { status: "ok", results };
+      }
+      return queued;
+    },
+    onSuccess: () => {
+      setChannelImportStatus(null);
+      void queryClient.invalidateQueries({ queryKey: ["media"] });
+    },
+    onError: () => setChannelImportStatus(null),
   });
 
   useEffect(() => {
@@ -156,6 +372,13 @@ export function MediaLibrary() {
       setSavedImportPool(ids[0]);
     }
   }, [pools, savedImportPool]);
+
+  useEffect(() => {
+    const ids = (pools as Array<{ id: number }>).map((p) => p.id);
+    if (ids.length && !ids.includes(channelImportPool)) {
+      setChannelImportPool(ids[0]);
+    }
+  }, [pools, channelImportPool]);
 
   useEffect(() => {
     const ids = (pools as Array<{ id: number }>).map((p) => p.id);
@@ -185,6 +408,7 @@ export function MediaLibrary() {
           await api.import.bytes(list[0], uploadPoolId, "dashboard:media-library", {
             savedOnly: true,
             caption: captionForTelegram,
+            sync: true,
           });
           return { lines: [`${list[0].name}: sent to Saved Messages`] };
         }
@@ -195,7 +419,7 @@ export function MediaLibrary() {
       const mediaIds: number[] = [];
       const lines: string[] = [];
       for (const f of list) {
-        const r = await api.import.bytes(f, uploadPoolId, "dashboard:media-library");
+        const r = await api.import.bytes(f, uploadPoolId, "dashboard:media-library", { sync: true });
         if (r.error) lines.push(`${f.name}: ${String(r.error)}`);
         else if (r.media_id != null) {
           mediaIds.push(Number(r.media_id));
@@ -442,8 +666,8 @@ export function MediaLibrary() {
           . With exactly one selection, <strong>AI suggest</strong> uses <code className="text-slate-400">TBCC_OPENAI_API_KEY</code>.
         </InfoDisclosure>
       </div>
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-4 items-stretch">
-        <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-4 items-stretch">
+        <div className="tbcc-panel bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h2 className="text-sm font-medium text-slate-200">Import from Saved Messages</h2>
             <InfoDisclosure>
@@ -490,6 +714,18 @@ export function MediaLibrary() {
               {importFromSaved.isPending ? "Importing…" : "Import from Saved"}
             </button>
           </div>
+          <details className="mt-3 rounded border border-slate-600/80 bg-slate-900/40 p-2">
+            <summary className="cursor-pointer text-xs text-slate-300 font-medium select-none">
+              Promo watermark settings
+            </summary>
+            <div className="mt-2">
+              <WatermarkControls
+                showSavedImportToggle
+                compact
+                onApplyChange={setSavedImportApplyWatermark}
+              />
+            </div>
+          </details>
           {importFromSaved.isError && (
             <p className="text-red-400 text-xs mt-2">{(importFromSaved.error as Error)?.message}</p>
           )}
@@ -505,7 +741,298 @@ export function MediaLibrary() {
           )}
         </div>
 
-        <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
+        <div className="tbcc-panel bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h2 className="text-sm font-medium text-slate-200">Import from channel / group</h2>
+            <InfoDisclosure>
+              <p>
+                Pick a <strong>registered group</strong> — subtopics load automatically for forum groups. Use{" "}
+                <strong>One subtopic</strong> to pull a single category into one pool, or <strong>Batch</strong> to map
+                several subtopics at once. Add groups under <strong>Pools &amp; channels</strong> at the bottom of this
+                page.
+              </p>
+              <p className="mt-2">
+                Non-forum channels scrape the whole chat. For a separate scraper account, use{" "}
+                <Link to="/scheduler/ingest" className="text-cyan-400 hover:underline">
+                  Automation → Ingest
+                </Link>
+                .
+              </p>
+            </InfoDisclosure>
+          </div>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <span className="text-[10px] text-slate-500 self-center mr-1">Import mode</span>
+            <button
+              type="button"
+              onClick={() => setChannelImportMode("one")}
+              className={`px-2.5 py-1 rounded text-xs font-medium border ${
+                channelImportMode === "one"
+                  ? "bg-violet-600/90 border-violet-500 text-white"
+                  : "bg-slate-900 border-slate-600 text-slate-300 hover:border-slate-500"
+              }`}
+            >
+              One subtopic
+            </button>
+            <button
+              type="button"
+              onClick={() => setChannelImportMode("batch")}
+              disabled={!channelImportTopics.length}
+              title={
+                channelImportTopics.length
+                  ? "Map several subtopics to pools and import in one go"
+                  : "Select a forum group with subtopics first"
+              }
+              className={`px-2.5 py-1 rounded text-xs font-medium border disabled:opacity-40 ${
+                channelImportMode === "batch"
+                  ? "bg-violet-600/90 border-violet-500 text-white"
+                  : "bg-slate-900 border-slate-600 text-slate-300 hover:border-slate-500"
+              }`}
+            >
+              Batch (several subtopics)
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-2 sm:gap-3 items-end">
+            <label className="block text-xs text-slate-400 flex-1 min-w-[10rem]">
+              Channel / group
+              <select
+                className="mt-1 block w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={channelImportChannelId}
+                onChange={(e) => {
+                  const id = Number(e.target.value);
+                  setChannelImportChannelId(id);
+                  setChannelImportTopicId(null);
+                }}
+              >
+                <option value={0}>Select group…</option>
+                {(channels as ChannelRow[]).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {(c.name || c.identifier || `#${c.id}`).slice(0, 56)}
+                    {c.identifier && c.name ? ` (${String(c.identifier).slice(0, 24)})` : ""}
+                  </option>
+                ))}
+                <option value={-1}>Other (manual id)…</option>
+              </select>
+            </label>
+            {channelImportChannelId === -1 && (
+              <label className="block text-xs text-slate-400 flex-1 min-w-[10rem]">
+                Manual identifier
+                <input
+                  type="text"
+                  placeholder="@group or t.me/… or -100…"
+                  className="mt-1 block w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                  value={channelImportCustomIdentifier}
+                  onChange={(e) => {
+                    setChannelImportCustomIdentifier(e.target.value);
+                    setChannelImportTopicId(null);
+                  }}
+                />
+              </label>
+            )}
+            {channelImportMode === "one" && (
+              <label className="block text-xs text-slate-400 min-w-[10rem]">
+                Forum subtopic
+                <select
+                  className="mt-1 block w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                  value={channelImportTopicId ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!v) {
+                      setChannelImportTopicId(null);
+                      return;
+                    }
+                    const tid = Number(v);
+                    setChannelImportTopicId(tid);
+                    const topic = channelImportTopics.find((t) => t.id === tid);
+                    if (topic) {
+                      const s = suggestPoolIdForTopicTitle(
+                        topic.title,
+                        pools as Array<{ id: number; name?: string }>
+                      );
+                      if (s) setChannelImportPool(s);
+                    }
+                  }}
+                  disabled={channelImportChannelId === 0 || channelImportTopicsLoadingAny}
+                >
+                  <option value="">
+                    {channelImportChannelId === 0
+                      ? "Select a group first"
+                      : channelImportTopicsLoadingAny
+                        ? "Loading subtopics…"
+                        : channelImportTopics.length
+                          ? "Whole group (no topic filter)"
+                          : "Whole group (not a forum or no topics)"}
+                  </option>
+                  {channelImportTopics.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.title}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {channelImportMode === "one" && (
+              <label className="block text-xs text-slate-400">
+                Pool
+                <select
+                  className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm min-w-[8rem]"
+                  value={channelImportPool}
+                  onChange={(e) => setChannelImportPool(Number(e.target.value))}
+                >
+                  {(pools as Array<{ id: number; name?: string }>).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name || `Pool ${p.id}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="block text-xs text-slate-400">
+              Scan up to
+              <input
+                type="number"
+                min={1}
+                max={200}
+                className="mt-1 block w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={channelImportLimit}
+                onChange={(e) =>
+                  setChannelImportLimit(Math.min(200, Math.max(1, Number(e.target.value) || 50)))
+                }
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Media
+              <select
+                className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={channelImportMediaTypes}
+                onChange={(e) =>
+                  setChannelImportMediaTypes(e.target.value as "both" | "photos" | "videos")
+                }
+              >
+                <option value="both">Photos + videos</option>
+                <option value="photos">Photos only</option>
+                <option value="videos">Videos only</option>
+              </select>
+            </label>
+            {channelImportMode === "one" && (
+              <button
+                type="button"
+                onClick={() => importFromChannel.mutate()}
+                disabled={
+                  importFromChannel.isPending ||
+                  importFromChannelBatch.isPending ||
+                  !(pools as unknown[]).length ||
+                  !channelImportIdentifierResolved
+                }
+                className="px-3 py-2 rounded bg-violet-600/90 text-white text-sm font-medium hover:bg-violet-500 disabled:opacity-50 shrink-0"
+              >
+                {importFromChannel.isPending || channelImportStatus
+                  ? channelImportStatus || "Importing…"
+                  : channelImportTopicId != null
+                    ? "Import subtopic"
+                    : "Import group"}
+              </button>
+            )}
+          </div>
+          {channelImportStatus && (
+            <p className="text-sky-300/90 text-xs mt-2">{channelImportStatus}</p>
+          )}
+          {channelImportTopicsError && (
+            <p className="text-amber-300/90 text-xs mt-2">{channelImportTopicsError}</p>
+          )}
+          {channelImportMode === "batch" && channelImportTopics.length > 0 && (
+            <div className="mt-3 border border-slate-600/80 rounded-lg p-2 bg-slate-950/40">
+              <p className="text-[10px] text-slate-400 mb-2">
+                Check subtopics to import, assign each destination pool, then run batch import.
+              </p>
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {channelImportTopics.map((t) => {
+                  const key = String(t.id);
+                  return (
+                    <div key={t.id} className="flex flex-wrap items-center gap-2 text-xs">
+                      <label className="flex items-center gap-1.5 text-slate-300 min-w-[8rem]">
+                        <input
+                          type="checkbox"
+                          checked={!!channelTopicBatchSelected[key]}
+                          onChange={(e) =>
+                            setChannelTopicBatchSelected((prev) => ({ ...prev, [key]: e.target.checked }))
+                          }
+                        />
+                        <span className="truncate max-w-[10rem]" title={t.title}>
+                          {t.title}
+                        </span>
+                      </label>
+                      <span className="text-slate-600">→</span>
+                      <select
+                        className="flex-1 min-w-[8rem] bg-slate-900 border border-slate-600 rounded px-1.5 py-1 text-slate-200"
+                        value={channelTopicPoolMap[key] ?? ""}
+                        onChange={(e) =>
+                          setChannelTopicPoolMap((prev) => ({
+                            ...prev,
+                            [key]: Number(e.target.value),
+                          }))
+                        }
+                      >
+                        <option value="">Pick pool…</option>
+                        {(pools as Array<{ id: number; name?: string }>).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name || `Pool ${p.id}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                type="button"
+                onClick={() => importFromChannelBatch.mutate()}
+                disabled={
+                  importFromChannelBatch.isPending ||
+                  importFromChannel.isPending ||
+                  !channelImportTopics.some((t) => channelTopicBatchSelected[String(t.id)])
+                }
+                className="mt-2 px-3 py-1.5 rounded bg-violet-700/90 text-white text-xs font-medium hover:bg-violet-600 disabled:opacity-50"
+              >
+                {importFromChannelBatch.isPending
+                  ? channelImportStatus || "Importing all…"
+                  : "Import all mapped topics"}
+              </button>
+            </div>
+          )}
+          {importFromChannel.isError && (
+            <p className="text-red-400 text-xs mt-2">{(importFromChannel.error as Error)?.message}</p>
+          )}
+          {importFromChannel.isSuccess && importFromChannel.data && !importFromChannel.data.error && (
+            <p className="text-green-400 text-xs mt-2">
+              Stored <strong>{String(importFromChannel.data.stored ?? 0)}</strong> new item(s); skipped{" "}
+              {String(importFromChannel.data.skipped_duplicate ?? 0)} duplicate(s),{" "}
+              {String(importFromChannel.data.skipped_media_type ?? 0)} wrong type; scanned{" "}
+              {String(importFromChannel.data.messages_scanned ?? 0)} message(s).
+            </p>
+          )}
+          {importFromChannel.isSuccess && importFromChannel.data?.error && (
+            <p className="text-red-400 text-xs mt-2">{String(importFromChannel.data.error)}</p>
+          )}
+          {importFromChannelBatch.isSuccess && importFromChannelBatch.data?.results && (
+            <p className="text-green-400 text-xs mt-2">
+              Batch done —{" "}
+              {(importFromChannelBatch.data.results as Array<Record<string, unknown>>)
+                .map(
+                  (r) =>
+                    `${String(r.topic_title || r.message_thread_id)}: ${String(r.stored ?? 0)} stored`
+                )
+                .join(" · ")}
+            </p>
+          )}
+          {importFromChannelBatch.isError && (
+            <p className="text-red-400 text-xs mt-2">{(importFromChannelBatch.error as Error)?.message}</p>
+          )}
+          {importFromChannelBatch.isSuccess && importFromChannelBatch.data?.error && (
+            <p className="text-red-400 text-xs mt-2">{String(importFromChannelBatch.data.error)}</p>
+          )}
+        </div>
+
+        <div className="tbcc-panel bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h2 className="text-sm font-medium text-slate-200">Upload local files</h2>
             <InfoDisclosure>
@@ -882,6 +1409,14 @@ export function MediaLibrary() {
             )}
           </>
         )}
+        <label className="flex items-center gap-2 text-xs text-slate-300 ml-1">
+          <input
+            type="checkbox"
+            checked={fastRebuildMode}
+            onChange={(e) => setFastRebuildMode(e.target.checked)}
+          />
+          Fast rebuild mode (no thumbnails)
+        </label>
         <button
           onClick={() => refetch()}
           disabled={isFetching}
@@ -890,6 +1425,11 @@ export function MediaLibrary() {
           {isFetching ? "Refreshing..." : "Refresh"}
         </button>
       </div>
+      {fastRebuildMode && (
+        <div className="mb-3 rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-100">
+          Fast rebuild mode is on: media thumbnails are disabled to reduce Telegram session contention during bulk ingest.
+        </div>
+      )}
       {selectedIds.length > 0 && (
         <div
           role="toolbar"
@@ -1104,6 +1644,7 @@ export function MediaLibrary() {
                         mediaId={id}
                         mediaType={String(m.media_type || "")}
                         className="w-full h-full object-cover pointer-events-none"
+                        disableFetch={fastRebuildMode}
                       />
                     </button>
                     <div
@@ -1216,6 +1757,7 @@ export function MediaLibrary() {
                         mediaId={Number(m.id)}
                         mediaType={String(m.media_type || "")}
                         className="w-full h-full object-cover pointer-events-none"
+                        disableFetch={fastRebuildMode}
                       />
                     ) : (
                       <span className="text-slate-500 text-xs px-1">{String(m.media_type || "—")}</span>

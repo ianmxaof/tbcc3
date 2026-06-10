@@ -58,6 +58,7 @@ from app.services.llm_shop_suggest import hashtag_line_from_slugs
 from app.utils.promo_url_normalize import normalize_promo_image_url
 from app.utils.telegram_promo_url import is_public_https_for_telegram
 from bots.shop_promo import send_shop_promo
+from bots.macro_search_telegram import build_macro_search_handlers, cmd_macrosearch
 from telegram import (
     BotCommand,
     InlineKeyboardButton,
@@ -196,7 +197,36 @@ def _normalized_runtime_settings(raw: dict | None) -> dict:
                 continue
             clean_sources.append({"id": sid[:64], "name": name[:128], "url": url[:1024]})
     out["video_finder_sources"] = clean_sources or _runtime_settings_defaults()["video_finder_sources"]
+    macro_sources = out.get("macro_search_sources")
+    if not isinstance(macro_sources, list) or not macro_sources:
+        try:
+            from app.services.model_search_engine import get_macro_search_sites
+
+            out["macro_search_sources"] = get_macro_search_sites()
+        except Exception:
+            out["macro_search_sources"] = []
+    macro_custom = out.get("macro_search_custom_sources")
+    if not isinstance(macro_custom, list):
+        out["macro_search_custom_sources"] = []
     return out
+
+
+async def _patch_macro_custom_sources(custom: list) -> bool:
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.patch(
+                f"{API_BASE.rstrip('/')}/payment-bot-settings",
+                json={"macro_search_custom_sources": custom},
+                timeout=15.0,
+            )
+            return r.is_success
+    except Exception as e:
+        logger.warning("patch macro_search_custom_sources failed: %s", e)
+        return False
+
+
+async def _force_refresh_runtime_settings() -> None:
+    await _get_runtime_settings(force_refresh=True)
 
 
 async def _get_runtime_settings(force_refresh: bool = False) -> dict:
@@ -776,7 +806,8 @@ def welcome_html(settings: dict | None = None) -> str:
         "• /subscribe — Premium memberships\n"
         "• /packs — Digital packs\n"
         "• /resolve — Unwrap supported ad/short links (needs API bypass key + Celery worker)\n"
-        "• /videofind — Video-source fanout by username\n\n"
+        "• /macrosearch — Macro model search (TBCC extension sources) + video URLs\n"
+        "• /videofind — Same as /macrosearch\n\n"
         "📌 <b>Account</b>\n"
         "• /status — Purchases &amp; active access\n"
         "• /referral — Your invite link + rewards\n\n"
@@ -961,61 +992,8 @@ async def _fetch_source_video_links(
 
 
 async def cmd_videofind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Fetch configured video search pages and stream direct result links."""
-    msg = update.effective_message
-    if not msg:
-        return
-    args = context.args or []
-    if not args:
-        await msg.reply_text(
-            "Usage: /videofind <username>\n\n"
-            "Streams configured video-source searches for a model handle."
-        )
-        return
-    username = _normalize_video_username(" ".join(args))
-    if not username:
-        await msg.reply_text("Please provide a valid username (letters/numbers/._-).")
-        return
-    st = await _get_runtime_settings()
-    if not bool(st.get("video_finder_enabled", True)):
-        await msg.reply_text("Video finder is disabled in payment bot settings.")
-        return
-    sources = st.get("video_finder_sources") or []
-    if not isinstance(sources, list) or not sources:
-        await msg.reply_text("No video finder sources are configured.")
-        return
-
-    await msg.reply_text(
-        f"🔎 Searching video sources for <b>{html.escape(username)}</b>…",
-        parse_mode="HTML",
-    )
-    sent = 0
-    max_per_source = int(st.get("video_finder_max_links_per_source") or 8)
-    for item in sources:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or item.get("id") or "source").strip()[:80]
-        template = str(item.get("url") or "").strip()
-        if not template or "{username}" not in template:
-            continue
-        links, err = await _fetch_source_video_links(item, username, max_per_source)
-        search_url = _build_video_search_url(template, username)
-        if links:
-            lines = [f"• {u}" for u in links]
-            body = f"🎬 <b>{html.escape(name)}</b>\n" + "\n".join(lines)
-        else:
-            why = f" ({err})" if err else ""
-            body = (
-                f"🎬 <b>{html.escape(name)}</b>\n"
-                f"No direct video links parsed{why}. Search page:\n"
-                f"• {search_url}"
-            )
-        await msg.reply_text(body, parse_mode="HTML", disable_web_page_preview=True)
-        sent += 1
-    if sent == 0:
-        await msg.reply_text("No valid video finder sources are configured yet.")
-        return
-    await msg.reply_text(f"Done. Streamed {sent} source result pages for @{username}.")
+    """Alias for /macrosearch — same macro engine + extension source list."""
+    await cmd_macrosearch(update, context, get_settings=_get_runtime_settings)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1033,7 +1011,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except BadRequest as e:
         logger.warning("cmd_help HTML failed: %s", e)
         await msg.reply_text(
-            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status /resolve /videofind",
+            "Use /start for the menu. Commands: /shop /loot /subscribe /packs /referral /status /resolve /macrosearch /videofind",
             reply_markup=main_menu_keyboard(),
         )
 
@@ -1084,7 +1062,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = (context.args or [])
     payload = args[0] if args else ""
 
-    if payload.startswith("vf_"):
+    if payload.startswith("vf_") or payload.startswith("ms_"):
         username = _normalize_video_username(payload[3:])
         if username:
             context.args = [username]
@@ -2116,7 +2094,8 @@ async def _post_init(app: Application) -> None:
         BotCommand("referral", "Your code, link & rewards"),
         BotCommand("status", "Your subscription & purchases"),
         BotCommand("resolve", "Unwrap supported ad/short links"),
-        BotCommand("videofind", "Find video sources by username"),
+        BotCommand("macrosearch", "Macro search + video URLs by username"),
+        BotCommand("videofind", "Alias for /macrosearch"),
     ]
     try:
         await app.bot.set_my_commands(commands)
@@ -2141,7 +2120,8 @@ async def _post_init(app: Application) -> None:
         "• /packs — digital packs\n"
         "• /status — your purchases & access\n"
         "• /resolve — unwrap supported ad/short links\n"
-        "• /videofind — video finder by username\n"
+        "• /macrosearch — macro model search + video URLs\n"
+        "• /videofind — same as /macrosearch\n"
         "• /referral — your invite link + rewards\n\n"
         "Payments: Stars in Telegram + Wallet/crypto options."
     )
@@ -2200,6 +2180,12 @@ def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
     app.add_handler(CommandHandler("videofind", cmd_videofind))
+    for h in build_macro_search_handlers(
+        _get_runtime_settings,
+        _patch_macro_custom_sources,
+        _force_refresh_runtime_settings,
+    ):
+        app.add_handler(h)
     # Handle /subscribe in channels (CommandHandler only matches message, not channel_post)
     app.add_handler(
         MessageHandler(
@@ -2243,7 +2229,7 @@ def main() -> None:
     )
 
     print(
-        "Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status, /resolve, /videofind"
+        "Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status, /resolve, /macrosearch, /videofind, /macroaddsource"
     )
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 

@@ -91,3 +91,46 @@ body {
 .text-slate-500 { color: var(--tbcc-d-text-500) !important; }
 .bg-cyan-600 { background-color: var(--tbcc-d-accent-600) !important; }
 .text-cyan-400 { color: var(--tbcc-d-accent-400) !important; }
+
+/* Gilded panel accent — color/opacity/width driven from dashboard settings */
+:root {
+  --tbcc-gilded-border: rgba(251, 191, 36, 0.31);
+  --tbcc-gilded-border-strong: rgba(251, 191, 36, 0.42);
+  --tbcc-gilded-border-width: 1px;
+}
+
+[data-dashboard-gilded="1"] main .tbcc-panel {
+  border-width: var(--tbcc-gilded-border-width) !important;
+  border-color: var(--tbcc-gilded-border) !important;
+  box-shadow: none;
+}
+
+[data-dashboard-gilded="1"] main .tbcc-panel:hover {
+  border-color: var(--tbcc-gilded-border-strong) !important;
+}
+
+/* Fallback for legacy panels without tbcc-panel class */
+[data-dashboard-gilded="1"] main .rounded-lg.border[class*="border-slate-"],
+[data-dashboard-gilded="1"] main .rounded-md.border[class*="border-slate-"] {
+  border-width: var(--tbcc-gilded-border-width) !important;
+  border-color: var(--tbcc-gilded-border) !important;
+  box-shadow: none;
+}
+
+.tbcc-header-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.375rem;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.tbcc-header-icon-btn:not(:disabled):hover {
+  background-color: rgba(51, 65, 85, 0.55);
+}
+
+.tbcc-header-icon-btn--active {
+  background-color: rgba(51, 65, 85, 0.75);
+}

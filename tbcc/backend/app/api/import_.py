@@ -6,14 +6,29 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 from app.database.session import get_db
-from app.services.telegram_admin import friendly_telegram_error, run_telegram_io
+from app.services.image_crop_pipeline import ImageCropSettings, apply_image_crop_pipeline
+from app.schemas.watermark_options import WatermarkOptions
+from app.services.media_watermark import (
+    maybe_apply_media_watermark,
+    skip_watermark_context,
+    watermark_config_context,
+    watermark_config_public,
+)
+from app.services.watermark_settings_effective import build_apply_config
+from app.services.telegram_admin import (
+    friendly_telegram_error,
+    run_telegram_album_composer_io,
+    run_telegram_import_io,
+    run_telegram_io,
+)
 from app.services.hls_import import hls_or_dash_url_to_mp4_bytes
 from app.services.media_sniff import maybe_remux_mp4_for_playback, sniff_media_kind, telegram_media_type_from_sniff
 from app.services.tbcc_media_url import sanitize_import_source_url
@@ -26,6 +41,36 @@ from app.api import import_jobs as import_jobs_api  # noqa: E402
 router.include_router(import_jobs_api.router)
 
 SAVED_BATCH_MAX_FILES = 100
+
+
+async def _import_bytes_to_pool(
+    file_bytes: bytes,
+    media_type: str,
+    source: str,
+    pool_id: int,
+    db: Session,
+    *,
+    skip_watermark: bool = False,
+):
+    """Pool import: local disk by default; legacy Saved Messages upload when TBCC_POOL_IMPORT_LOCAL=0."""
+    from app.services.local_media_storage import pool_import_local_enabled, store_pool_media_from_bytes
+
+    if pool_import_local_enabled():
+        return store_pool_media_from_bytes(
+            file_bytes,
+            media_type,
+            source,
+            pool_id,
+            db,
+            skip_watermark=skip_watermark,
+        )
+
+    async def _store(storage):
+        return await storage.store_from_bytes(
+            file_bytes, media_type, source, pool_id, db, skip_watermark=skip_watermark
+        )
+
+    return await run_telegram_import_io(_store)
 
 
 class HlsManifestUrlBody(BaseModel):
@@ -43,6 +88,98 @@ class SavedBatchUrlsBody(BaseModel):
 
     urls: list[str] = Field(..., min_length=1, max_length=SAVED_BATCH_MAX_FILES)
     caption: str | None = Field(default=None, description="Caption on each album (Saved Messages)")
+    append_send_promo: bool = Field(default=False, description="Append active gallery send-promo as last album image")
+
+
+class SavedFromBotFileItem(BaseModel):
+    file_id: str = Field(..., min_length=1, max_length=512)
+    kind: str = Field(default="photo", description="photo or video")
+
+
+class SavedFromBotMessagesBody(BaseModel):
+    """Instant send: Telethon server-side copy from album bot DM (no byte download)."""
+
+    media_count: int = Field(..., ge=1, le=SAVED_BATCH_MAX_FILES)
+    message_ids: list[int] = Field(default_factory=list, max_length=SAVED_BATCH_MAX_FILES)
+    anchor_max_message_id: int | None = Field(
+        default=None, description="Newest message id in batch (scopes bot chat scan)"
+    )
+    bot_username: str = Field(..., min_length=1, max_length=128, description="Album bot @username without @")
+    caption: str | None = Field(default=None, description="Caption on each album chunk")
+    append_send_promo: bool = Field(default=False, description="Append active gallery send-promo to last photo album")
+    files: list[SavedFromBotFileItem] = Field(
+        default_factory=list,
+        max_length=SAVED_BATCH_MAX_FILES,
+        description="Bot API file_id fallback when Telethon message lookup fails",
+    )
+    crop: ImageCropSettings | None = Field(
+        default=None,
+        description="Percent inset / blur bands (photos only; uses file download path)",
+    )
+    watermark: WatermarkOptions | None = Field(
+        default=None,
+        description="Promo text burn-in (uses byte download path when enabled)",
+    )
+
+
+def _import_uncaught_error(exc: BaseException, *, endpoint: str) -> dict:
+    """Return JSON error body instead of letting import endpoints 500."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    logger.warning("%s uncaught err=%s", endpoint, exc, exc_info=True)
+    if isinstance(exc, SQLAlchemyError):
+        return {
+            "error": (
+                "Database error during import — retry in a few seconds. "
+                "If this persists, run alembic upgrade head and restart TBCC-Backend."
+            )
+        }
+    if isinstance(exc, (OSError, PermissionError)):
+        return {"error": f"Local storage error during import: {exc}"}
+    try:
+        return {"error": friendly_telegram_error(exc)}
+    except Exception:
+        return {"error": f"Import failed: {str(exc)[:300]}"}
+
+
+def _watermark_should_apply(
+    db: Session,
+    wm: WatermarkOptions | None,
+    *,
+    context: str = "default",
+) -> bool:
+    if wm and wm.skip:
+        return False
+    if wm and wm.enabled is False:
+        return False
+    from app.services.watermark_settings_effective import get_effective_watermark_settings
+
+    effective = get_effective_watermark_settings(db)
+    if context == "album_composer" and not effective.get("apply_on_album_composer"):
+        if wm is None or wm.enabled is None:
+            return False
+    if context == "saved_import" and not effective.get("apply_on_saved_import"):
+        if wm is None or wm.enabled is None:
+            return False
+    cfg = build_apply_config(db, override=wm)
+    return bool(cfg.enabled and cfg.texts)
+
+
+def _process_media_bytes(
+    data: bytes,
+    kind: str,
+    db: Session,
+    *,
+    crop: ImageCropSettings | None = None,
+    wm: WatermarkOptions | None = None,
+) -> bytes:
+    if kind == "photo" and crop and crop.applies():
+        data = apply_image_crop_pipeline(data, crop)
+    if _watermark_should_apply(db, wm):
+        cfg = build_apply_config(db, override=wm)
+        with watermark_config_context(cfg):
+            data = maybe_apply_media_watermark(data, kind, config=cfg)
+    return data
 
 
 def _guess_media_type_from_content_type(content_type: str | None) -> str:
@@ -276,7 +413,103 @@ def _caption_from_body(data: dict | None) -> str | None:
     return None
 
 
-async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = None) -> dict:
+def _truthy_flag(value) -> bool:
+    if value is True:
+        return True
+    if value is False or value is None:
+        return False
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _gallery_send_promo_item(db: Session) -> tuple[bytes, str] | None:
+    from app.services.gallery_send_promo import load_active_send_promo_bytes
+
+    return load_active_send_promo_bytes(db)
+
+
+def _album_composer_bot_token() -> str | None:
+    token = (os.getenv("TBCC_ALBUM_COMPOSER_BOT_TOKEN") or "").strip()
+    return token or None
+
+
+def _album_composer_bot_user_id() -> int | None:
+    token = _album_composer_bot_token()
+    if not token or ":" not in token:
+        return None
+    try:
+        return int(token.split(":", 1)[0])
+    except ValueError:
+        return None
+
+
+async def _download_bot_api_file(file_id: str, token: str) -> bytes:
+    base = f"https://api.telegram.org/bot{token}"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)) as client:
+        meta = await client.get(f"{base}/getFile", params={"file_id": file_id})
+        meta.raise_for_status()
+        payload = meta.json()
+        if not payload.get("ok"):
+            raise ValueError(payload.get("description") or "getFile failed")
+        path = str(payload["result"]["file_path"])
+        blob = await client.get(f"https://api.telegram.org/file/bot{token}/{path}")
+        blob.raise_for_status()
+        return blob.content
+
+
+async def _saved_batch_from_bot_files(
+    files: list[SavedFromBotFileItem],
+    caption: str | None,
+    append_send_promo: bool,
+    db: Session,
+    *,
+    use_album_session: bool = False,
+    crop: ImageCropSettings | None = None,
+    wm: WatermarkOptions | None = None,
+) -> dict:
+    token = _album_composer_bot_token()
+    if not token:
+        return {"error": "TBCC_ALBUM_COMPOSER_BOT_TOKEN not set in tbcc/.env"}
+
+    async def _one(item: SavedFromBotFileItem) -> tuple[bytes, str]:
+        data = await _download_bot_api_file(item.file_id, token)
+        kind = (item.kind or "photo").lower()
+        if kind not in ("photo", "video"):
+            kind = "photo"
+        data = _process_media_bytes(data, kind, db, crop=crop, wm=wm)
+        return data, kind
+
+    try:
+        items = await asyncio.gather(*[_one(f) for f in files])
+    except Exception as e:
+        logger.warning("bot API file download failed: %s", e)
+        return {"error": f"Could not download from album bot: {e}"}
+
+    promo_item = _gallery_send_promo_item(db) if append_send_promo else None
+    cap = (caption or "").strip() or None
+    io_fn = run_telegram_album_composer_io if use_album_session else run_telegram_import_io
+    try:
+        await io_fn(
+            lambda storage: storage.save_batch_to_saved_only(items, caption=cap, promo_item=promo_item)
+        )
+    except ImageProcessFailedError as e:
+        return {"error": f"Telegram rejected batch: {e}"}
+    except Exception as e:
+        return {"error": friendly_telegram_error(e)}
+
+    return {
+        "status": "saved_only",
+        "message": "Saved to Telegram Saved Messages (via bot file download)",
+        "count": len(items),
+    }
+
+
+async def _import_saved_batch_urls_impl(
+    urls: list[str],
+    caption: str | None = None,
+    *,
+    append_send_promo: bool = False,
+    db: Session | None = None,
+) -> dict:
     """
     Download multiple URLs server-side and send to Saved Messages as albums (≤10 per album).
     Shared by POST /import/saved-batch-urls and POST /import/url (urls[] + saved_only).
@@ -316,8 +549,12 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
             "error": f"Could not download any of {len(url_errors)} URL(s). First: {url_errors[0]['error']}",
         }
 
+    promo_item = _gallery_send_promo_item(db) if append_send_promo and db is not None else None
+
     try:
-        await run_telegram_io(lambda storage: storage.save_batch_to_saved_only(items, caption=caption))
+        await run_telegram_import_io(
+            lambda storage: storage.save_batch_to_saved_only(items, caption=caption, promo_item=promo_item)
+        )
     except ImageProcessFailedError as e:
         logger.warning("Telegram rejected saved-batch-urls err=%s", e)
         return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
@@ -339,65 +576,118 @@ async def _import_saved_batch_urls_impl(urls: list[str], caption: str | None = N
 @router.post("/url")
 async def import_from_url(data: dict, db: Session = Depends(get_db)):
     """Single URL import, or batch Saved Messages when body includes urls[] + saved_only (same as /saved-batch-urls)."""
-    urls_batch = data.get("urls")
-    if isinstance(urls_batch, list) and len(urls_batch) > 0:
-        if data.get("saved_only") is not True:
-            return {"error": "urls array requires saved_only: true"}
-        try:
-            validated = SavedBatchUrlsBody(urls=urls_batch)
-        except ValidationError as e:
-            return {"error": f"Invalid urls: {e}"}
-        return await _import_saved_batch_urls_impl(validated.urls, caption=_caption_from_body(data))
-
-    url = data.get("url")
-    pool_id = data.get("pool_id", 1)
-    saved_only = data.get("saved_only") is True
-
-    if not url:
-        return {"error": "No URL provided"}
-    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
-        return {"error": "Telegram API not configured"}
-
-    logger.info("import/url: saved_only=%s url=%s", saved_only, url[:160])
-    url_l = url.lower()
-    is_large_media = any(url_l.split("?", 1)[0].endswith(ext) for ext in (".mp4", ".webm", ".mov", ".m4v", ".mkv"))
-    timeout = 300.0 if is_large_media else 60.0
     try:
-        file_bytes, content_type = await _httpx_get_media(url, timeout)
-    except Exception as e:
-        logger.warning("import/url fetch failed url=%s err=%s", url[:120], e)
-        return {"error": _friendly_download_error(url, e)}
-
-    file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
-    media_type = _guess_media_type(url, content_type)
-    cap = _caption_from_body(data)
-    try:
-        if saved_only:
-
-            async def _saved(storage):
-                await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
-
-            await run_telegram_io(_saved)
-            logger.info("saved_only: sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
-            return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
-
-        async def _store(storage):
-            return await storage.store_from_bytes(
-                file_bytes, media_type, sanitize_import_source_url(url), pool_id, db
+        urls_batch = data.get("urls")
+        if isinstance(urls_batch, list) and len(urls_batch) > 0:
+            if data.get("saved_only") is not True:
+                return {"error": "urls array requires saved_only: true"}
+            try:
+                validated = SavedBatchUrlsBody(urls=urls_batch)
+            except ValidationError as e:
+                return {"error": f"Invalid urls: {e}"}
+            return await _import_saved_batch_urls_impl(
+                validated.urls,
+                caption=_caption_from_body(data),
+                append_send_promo=_truthy_flag(data.get("append_send_promo")),
+                db=db,
             )
 
-        record = await run_telegram_io(_store)
-        if record:
-            logger.info("Imported media id=%s pool_id=%s", record.id, pool_id)
-            return {"status": "imported", "media_id": record.id}
-        logger.warning("Import skipped (duplicate or unsupported format) url=%s", url[:80])
-        return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
-    except ImageProcessFailedError as e:
-        logger.warning("Telegram rejected import/url err=%s", e)
-        return {"error": f"Telegram rejected this file (corrupt or unsupported): {e}"}
+        url = data.get("url")
+        pool_id = data.get("pool_id", 1)
+        saved_only = data.get("saved_only") is True
+
+        if not url:
+            return {"error": "No URL provided"}
+        if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+            return {"error": "Telegram API not configured"}
+
+        logger.info("import/url: saved_only=%s url=%s", saved_only, url[:160])
+        url_l = url.lower()
+        is_large_media = any(
+            url_l.split("?", 1)[0].endswith(ext) for ext in (".mp4", ".webm", ".mov", ".m4v", ".mkv")
+        )
+        timeout = 300.0 if is_large_media else 60.0
+        try:
+            file_bytes, content_type = await _httpx_get_media(url, timeout)
+        except Exception as e:
+            logger.warning("import/url fetch failed url=%s err=%s", url[:120], e)
+            return {"error": _friendly_download_error(url, e)}
+
+        file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
+        media_type = _guess_media_type(url, content_type)
+        cap = _caption_from_body(data)
+        try:
+            if saved_only:
+
+                async def _saved(storage):
+                    await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
+
+                await run_telegram_import_io(_saved)
+                logger.info("saved_only: sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
+                return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+
+            record = await _import_bytes_to_pool(
+                file_bytes,
+                media_type,
+                sanitize_import_source_url(url),
+                pool_id,
+                db,
+            )
+            if record:
+                logger.info("Imported media id=%s pool_id=%s", record.id, pool_id)
+                return {"status": "imported", "media_id": record.id}
+            logger.warning("Import skipped (duplicate or unsupported format) url=%s", url[:80])
+            return {"status": "skipped", "reason": "duplicate or unsupported format", "media_id": None}
+        except ImageProcessFailedError as e:
+            logger.warning("Telegram rejected import/url err=%s", e)
+            return {"error": f"Telegram rejected this file (corrupt or unsupported): {e}"}
+        except Exception as e:
+            logger.warning("import/url Telegram err=%s", e, exc_info=True)
+            return {"error": friendly_telegram_error(e)}
     except Exception as e:
-        logger.warning("import/url Telegram err=%s", e, exc_info=True)
-        return {"error": friendly_telegram_error(e)}
+        return _import_uncaught_error(e, endpoint="import/url")
+
+
+@router.get("/watermark-config")
+def import_watermark_config(db: Session = Depends(get_db)):
+    """Extension/dashboard: promo watermark settings (no secrets)."""
+    return watermark_config_public(db)
+
+
+@router.post("/watermark-bytes")
+async def import_watermark_bytes(
+    file: UploadFile = File(...),
+    media_type: str = Form("photo"),
+    skip_watermark: str = Form("false"),
+):
+    """
+    Apply promo text watermark to raw bytes (gallery ZIP/download/export).
+    Returns unchanged body when disabled or skip_watermark=true.
+    """
+    raw = await file.read()
+    if not raw:
+        return Response(content=b"", status_code=400)
+    skip = _truthy_flag(skip_watermark)
+    out = maybe_apply_media_watermark(raw, media_type, force_skip=skip)
+    kind, ext = sniff_media_kind(out)
+    mt = (media_type or "photo").lower()
+    if kind == "video" or mt == "video":
+        mime = "video/mp4"
+        name = "media.mp4"
+    elif ext == "png":
+        mime = "image/png"
+        name = "media.png"
+    elif ext == "gif":
+        mime = "image/gif"
+        name = "media.gif"
+    else:
+        mime = "image/jpeg"
+        name = "media.jpg"
+    return Response(
+        content=out,
+        media_type=mime,
+        headers={"Content-Disposition": f'inline; filename="{name}"'},
+    )
 
 
 @router.post("/bytes")
@@ -408,6 +698,7 @@ async def import_from_bytes(
     source: str = Form("extension:bytes"),
     caption: str = Form(""),
     sync: str = Form("false", description="Force synchronous Telegram upload (TBCC_FAST_IMPORT=0 behavior)"),
+    skip_watermark: str = Form("false"),
     db: Session = Depends(get_db),
     x_tbcc_extension_job_id: str | None = Header(None, alias="X-TBCC-Extension-Job-Id"),
 ):
@@ -416,6 +707,34 @@ async def import_from_bytes(
     Use this to bypass protected sites that block direct URL downloads
     (OnlyFans, FetLife, etc.): extension fetches in page context and POSTs here.
     """
+    try:
+        return await _import_from_bytes_impl(
+            file=file,
+            pool_id=pool_id,
+            saved_only=saved_only,
+            source=source,
+            caption=caption,
+            sync=sync,
+            skip_watermark=skip_watermark,
+            db=db,
+            x_tbcc_extension_job_id=x_tbcc_extension_job_id,
+        )
+    except Exception as e:
+        return _import_uncaught_error(e, endpoint="import/bytes")
+
+
+async def _import_from_bytes_impl(
+    *,
+    file: UploadFile,
+    pool_id: int,
+    saved_only: str,
+    source: str,
+    caption: str,
+    sync: str,
+    skip_watermark: str,
+    db: Session,
+    x_tbcc_extension_job_id: str | None,
+):
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         return {"error": "Telegram API not configured"}
 
@@ -444,8 +763,20 @@ async def import_from_bytes(
 
     media_type = _refine_media_type_from_bytes(file_bytes, media_type)
     cap = (caption or "").strip() or None
+    skip_wm = _truthy_flag(skip_watermark)
 
     force_sync = str(sync or "").strip().lower() in ("true", "1", "yes", "on")
+    # Extension / dashboard: when pool imports are local-only, skip Celery fast-import and
+    # handle the write inline in the API process (no Telegram I/O, no telegram queue usage).
+    if not saved_only_flag:
+        try:
+            from app.services.local_media_storage import pool_import_local_enabled
+
+            if pool_import_local_enabled():
+                force_sync = True
+        except Exception:
+            # Fallback: respect explicit sync flag / TBCC_FAST_IMPORT
+            logger.debug("import/bytes: pool_import_local_enabled check failed", exc_info=True)
     from app.services.import_pipeline import (
         create_staged_import_job,
         enqueue_import_job_processing,
@@ -466,30 +797,48 @@ async def import_from_bytes(
                 filename=file.filename,
                 media_type=media_type,
                 extension_job_id=x_tbcc_extension_job_id,
+                skip_watermark=skip_wm,
             )
             task_id = enqueue_import_job_processing(job.id)
             if task_id:
                 update_job(db, job, celery_task_id=task_id)
+            try:
+                from app.services.focus_profile import on_fast_import_queued
+
+                focus_r = on_fast_import_queued(source or "import/bytes")
+                if focus_r and focus_r.get("ok"):
+                    logger.info("import/bytes: auto import_burst focus applied")
+            except Exception:
+                logger.debug("import/bytes: focus hook skipped", exc_info=True)
             body = job_to_public_dict(job)
             body["poll_url"] = f"/import/jobs/{job.id}"
             logger.info("import/bytes queued job_id=%s size=%s", job.id, job.byte_size)
             return body
         except ValueError as e:
             return {"error": str(e)}
+        except Exception as e:
+            return _import_uncaught_error(e, endpoint="import/bytes fast-import")
 
     file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
 
     try:
-        async def _do(storage):
+        with skip_watermark_context(skip_wm):
             if saved_only_flag:
-                await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
-                return "saved_only"
-            record = await storage.store_from_bytes(
-                file_bytes, media_type, sanitize_import_source_url(source), pool_id, db
-            )
-            return record
 
-        result = await run_telegram_io(_do)
+                async def _saved_only(storage):
+                    await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
+                    return "saved_only"
+
+                result = await run_telegram_import_io(_saved_only)
+            else:
+                result = await _import_bytes_to_pool(
+                    file_bytes,
+                    media_type,
+                    sanitize_import_source_url(source),
+                    pool_id,
+                    db,
+                    skip_watermark=skip_wm,
+                )
         if result == "saved_only":
             logger.info("saved_only (bytes): sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
             return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
@@ -542,13 +891,10 @@ async def import_hls_manifest_url(body: HlsManifestUrlBody, db: Session = Depend
             async def _saved(storage):
                 await storage.save_to_saved_only(file_bytes, media_type, caption=None)
 
-            await run_telegram_io(_saved)
+            await run_telegram_import_io(_saved)
             return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
 
-        async def _store(storage):
-            return await storage.store_from_bytes(file_bytes, media_type, src, body.pool_id, db)
-
-        record = await run_telegram_io(_store)
+        record = await _import_bytes_to_pool(file_bytes, media_type, src, body.pool_id, db)
         if record:
             logger.info("Imported HLS media id=%s pool_id=%s", record.id, body.pool_id)
             return {"status": "imported", "media_id": record.id}
@@ -565,6 +911,8 @@ async def import_hls_manifest_url(body: HlsManifestUrlBody, db: Session = Depend
 async def import_saved_batch(
     files: Annotated[list[UploadFile], File(description="Repeat field name 'files' for each part")],
     caption: str = Form(""),
+    append_send_promo: str = Form("false"),
+    db: Session = Depends(get_db),
 ):
     """
     Send multiple uploads to Saved Messages as Telegram albums (max 10 media per album).
@@ -598,9 +946,13 @@ async def import_saved_batch(
     if not items:
         return {"error": "No usable file bytes"}
 
+    promo_item = _gallery_send_promo_item(db) if _truthy_flag(append_send_promo) else None
+
     cap = (caption or "").strip() or None
     try:
-        await run_telegram_io(lambda storage: storage.save_batch_to_saved_only(items, caption=cap))
+        await run_telegram_import_io(
+            lambda storage: storage.save_batch_to_saved_only(items, caption=cap, promo_item=promo_item)
+        )
     except ImageProcessFailedError as e:
         logger.warning("Telegram rejected saved-batch err=%s", e)
         return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
@@ -615,11 +967,116 @@ async def import_saved_batch(
     }
 
 
+@router.post("/saved-from-bot-messages")
+async def import_saved_from_bot_messages(body: SavedFromBotMessagesBody, db: Session = Depends(get_db)):
+    """
+    Fast Saved Messages path for Album Composer: Telethon copies media from the admin's DM
+    with the bot (by message id) without Bot API download or byte re-upload.
+    """
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return {"error": "Telegram API not configured"}
+
+    bot_peer = body.bot_username.strip().lstrip("@")
+    if not bot_peer:
+        return {"error": "bot_username required"}
+
+    promo_item = _gallery_send_promo_item(db) if body.append_send_promo else None
+    cap = (body.caption or "").strip() or None
+    crop = body.crop
+    wm = body.watermark
+    use_crop = crop is not None and crop.applies()
+    use_wm = _watermark_should_apply(db, wm, context="album_composer")
+    use_bytes = use_crop or use_wm
+    logger.info(
+        "saved-from-bot-messages: %s media bot=@%s promo=%s crop=%s watermark=%s",
+        body.media_count,
+        bot_peer,
+        bool(promo_item),
+        use_crop,
+        use_wm,
+    )
+    if use_bytes:
+        if body.files:
+            return await _saved_batch_from_bot_files(
+                body.files,
+                cap,
+                body.append_send_promo,
+                db,
+                use_album_session=True,
+                crop=crop,
+                wm=wm,
+            )
+
+        async def _telethon_bytes(storage):
+            items = await storage.download_bot_batch_bytes(
+                bot_peer,
+                body.media_count,
+                message_ids=body.message_ids or None,
+                anchor_max_message_id=body.anchor_max_message_id,
+            )
+            processed = [
+                (_process_media_bytes(data, kind, db, crop=crop, wm=wm), kind) for data, kind in items
+            ]
+            await storage.save_batch_to_saved_only(processed, caption=cap, promo_item=promo_item)
+            return len(processed)
+
+        try:
+            count = await run_telegram_album_composer_io(_telethon_bytes)
+        except ImageProcessFailedError as e:
+            return {"error": f"Telegram rejected batch: {e}"}
+        except Exception as e:
+            return {"error": friendly_telegram_error(e)}
+        return {
+            "status": "saved_only",
+            "message": "Saved to Telegram Saved Messages (watermark/crop applied)",
+            "count": count,
+        }
+    try:
+        await run_telegram_album_composer_io(
+            lambda storage: storage.save_bot_messages_to_saved_only(
+                bot_peer,
+                body.media_count,
+                caption=cap,
+                message_ids=body.message_ids or None,
+                anchor_max_message_id=body.anchor_max_message_id,
+                promo_item=promo_item,
+            )
+        )
+    except ValueError as e:
+        if body.files:
+            logger.info("saved-from-bot-messages instant copy failed (%s); using file_id fallback", e)
+            return await _saved_batch_from_bot_files(
+                body.files,
+                cap,
+                body.append_send_promo,
+                db,
+                use_album_session=True,
+            )
+        return {"error": str(e)}
+    except ImageProcessFailedError as e:
+        logger.warning("Telegram rejected saved-from-bot-messages err=%s", e)
+        return {"error": f"Telegram rejected batch (corrupt or unsupported): {e}"}
+    except Exception as e:
+        logger.warning("saved-from-bot-messages Telegram err=%s", e, exc_info=True)
+        return {"error": friendly_telegram_error(e)}
+
+    return {
+        "status": "saved_only",
+        "message": "Saved to Telegram Saved Messages (instant server-side copy)",
+        "count": body.media_count,
+    }
+
+
 @router.post("/saved-batch-urls")
-async def import_saved_batch_urls(body: SavedBatchUrlsBody):
+async def import_saved_batch_urls(body: SavedBatchUrlsBody, db: Session = Depends(get_db)):
     """Alias for batch Saved Messages (albums). Prefer POST /import/url with urls[] if this route is missing (older servers)."""
     cap = body.caption.strip() if body.caption else None
-    return await _import_saved_batch_urls_impl(body.urls, caption=cap)
+    return await _import_saved_batch_urls_impl(
+        body.urls,
+        caption=cap,
+        append_send_promo=body.append_send_promo,
+        db=db,
+    )
 
 
 @router.post("/from-saved")
@@ -641,14 +1098,274 @@ async def import_from_saved_messages(data: dict, db: Session = Depends(get_db)):
         limit = 50
     limit = min(max(limit, 1), 200)
     source = (data.get("source") or "telegram:saved_messages").strip() or "telegram:saved_messages"
+    wm_raw = data.get("watermark")
+    wm = WatermarkOptions.model_validate(wm_raw) if isinstance(wm_raw, dict) else None
+    if data.get("apply_watermark") is True and wm is None:
+        wm = WatermarkOptions(enabled=True)
+    use_wm = _watermark_should_apply(db, wm, context="saved_import")
 
     try:
 
         async def _index(storage):
+            if use_wm:
+                return await storage.index_from_saved_messages_watermarked(
+                    pool_id, source, db, limit=limit, wm=wm
+                )
             return await storage.index_from_saved_messages(pool_id, source, db, limit=limit)
 
-        result = await run_telegram_io(_index)
+        result = await run_telegram_import_io(_index)
     except Exception as e:
         logger.exception("import/from-saved failed: %s", e)
         return {"error": friendly_telegram_error(e)}
     return {"status": "ok", **result}
+
+
+def _parse_channel_import_request(data: dict) -> dict | tuple[str, ...]:
+    """Return error string or parsed kwargs dict for channel import."""
+    channel = (data.get("channel") or data.get("identifier") or "").strip()
+    if not channel:
+        return ("channel is required (@channel, t.me link, or -100… id)",)
+    try:
+        pool_id = int(data.get("pool_id") or 1)
+    except (TypeError, ValueError):
+        return ("Invalid pool_id",)
+    try:
+        limit = int(data.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = min(max(limit, 1), 200)
+    media_types = str(data.get("media_types") or "both").strip().lower() or "both"
+    if media_types not in ("both", "photos", "videos"):
+        return ("media_types must be both, photos, or videos",)
+    message_thread_id = data.get("message_thread_id")
+    if message_thread_id is not None and message_thread_id != "":
+        try:
+            message_thread_id = int(message_thread_id)
+        except (TypeError, ValueError):
+            return ("Invalid message_thread_id (forum topic id)",)
+    else:
+        message_thread_id = None
+    source = (data.get("source") or f"telegram:{channel}").strip() or f"telegram:{channel}"
+    if message_thread_id is not None:
+        source = f"{source}#topic:{message_thread_id}"
+    topic_title = str(data.get("topic_title") or "").strip() or None
+    sync = _truthy_flag(data.get("sync"))
+    return {
+        "channel": channel,
+        "pool_id": pool_id,
+        "limit": limit,
+        "media_types": media_types,
+        "message_thread_id": message_thread_id,
+        "source_label": source,
+        "topic_title": topic_title,
+        "sync": sync,
+    }
+
+
+def _queue_channel_import(db: Session, parsed: dict) -> dict:
+    from app.services.import_pipeline import (
+        create_channel_import_job,
+        enqueue_channel_import_job,
+        job_to_public_dict,
+        update_job,
+    )
+
+    job = create_channel_import_job(
+        db,
+        channel=parsed["channel"],
+        pool_id=parsed["pool_id"],
+        limit=parsed["limit"],
+        media_types=parsed["media_types"],
+        message_thread_id=parsed["message_thread_id"],
+        source_label=parsed["source_label"],
+        topic_title=parsed.get("topic_title"),
+    )
+    task_id = enqueue_channel_import_job(job.id)
+    if task_id:
+        update_job(db, job, celery_task_id=task_id)
+    body = job_to_public_dict(job)
+    body["poll_url"] = f"/import/jobs/{job.id}"
+    body["async"] = True
+    logger.info(
+        "channel import queued job_id=%s channel=%s topic=%s limit=%s pool=%s",
+        job.id,
+        parsed["channel"][:80],
+        parsed["message_thread_id"],
+        parsed["limit"],
+        parsed["pool_id"],
+    )
+    return body
+
+
+@router.post("/from-channel")
+async def import_from_telegram_channel(data: dict, db: Session = Depends(get_db)):
+    """
+    Import recent media from a Telegram channel/group into a pool (admin Telethon session).
+    Forwards or downloads each item into Saved Messages, then indexes as pending media.
+    The admin account must be a member (or admin) of the target chat.
+    Body: pool_id, channel (@name, t.me/…, or -100… id), limit (1–200), media_types (both|photos|videos).
+    Runs in background on the Celery telegram queue unless sync=true (small tests only).
+    """
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return {"error": "Telegram API not configured"}
+    parsed = _parse_channel_import_request(data)
+    if isinstance(parsed, tuple):
+        return {"error": parsed[0]}
+
+    if not parsed["sync"]:
+        return _queue_channel_import(db, parsed)
+
+    try:
+
+        async def _import(storage):
+            return await storage.import_from_telegram_channel(
+                parsed["channel"],
+                parsed["pool_id"],
+                parsed["source_label"],
+                db,
+                limit=parsed["limit"],
+                media_types=parsed["media_types"],
+                message_thread_id=parsed["message_thread_id"],
+            )
+
+        result = await run_telegram_import_io(_import)
+    except Exception as e:
+        logger.exception("import/from-channel failed: %s", e)
+        return {"error": friendly_telegram_error(e)}
+    return {"status": "ok", **result}
+
+
+@router.get("/forum-topics")
+async def import_list_forum_topics(channel: str = Query(..., min_length=1)):
+    """
+    List forum topics for a channel/group by @username, t.me link, or -100… id.
+    Topic `id` is the message_thread_id used when importing from a specific subtopic.
+    """
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return {"topics": [], "error": "Telegram API not configured"}
+    ident = channel.strip()
+    if not ident:
+        return {"topics": [], "error": "channel query param required"}
+
+    try:
+
+        async def _list(storage):
+            return await storage.list_forum_topics(ident)
+
+        topics = await run_telegram_io(_list)
+    except Exception as e:
+        logger.exception("import/forum-topics failed: %s", e)
+        return {"topics": [], "error": friendly_telegram_error(e)}
+    return {"topics": topics, "error": None}
+
+
+@router.post("/from-channel-batch")
+async def import_from_telegram_channel_batch(data: dict, db: Session = Depends(get_db)):
+    """
+    Import several forum topics from one group into different pools.
+    Body: channel, limit (default per row), media_types (default), imports: [
+      { message_thread_id, pool_id, limit?, media_types? }, ...
+    ]
+    Each topic is queued as its own background job unless sync=true.
+    """
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return {"error": "Telegram API not configured"}
+    channel = (data.get("channel") or data.get("identifier") or "").strip()
+    if not channel:
+        return {"error": "channel is required"}
+    raw = data.get("imports")
+    if not isinstance(raw, list) or not raw:
+        return {"error": "imports must be a non-empty list"}
+    sync = _truthy_flag(data.get("sync"))
+    default_limit = 50
+    try:
+        default_limit = int(data.get("limit") or 50)
+    except (TypeError, ValueError):
+        pass
+    default_limit = min(max(default_limit, 1), 200)
+    default_media = str(data.get("media_types") or "both").strip().lower() or "both"
+    if default_media not in ("both", "photos", "videos"):
+        return {"error": "media_types must be both, photos, or videos"}
+
+    if not sync:
+        jobs: list[dict] = []
+        for row in raw[:30]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                pool_id = int(row.get("pool_id"))
+                topic_id = int(row.get("message_thread_id"))
+            except (TypeError, ValueError):
+                jobs.append({"error": "Each import needs pool_id and message_thread_id"})
+                continue
+            try:
+                lim = int(row.get("limit") or default_limit)
+            except (TypeError, ValueError):
+                lim = default_limit
+            lim = min(max(lim, 1), 200)
+            mt = str(row.get("media_types") or default_media).strip().lower() or default_media
+            if mt not in ("both", "photos", "videos"):
+                mt = default_media
+            source = f"telegram:{channel}#topic:{topic_id}"
+            title = str(row.get("topic_title") or "").strip()
+            parsed = {
+                "channel": channel,
+                "pool_id": pool_id,
+                "limit": lim,
+                "media_types": mt,
+                "message_thread_id": topic_id,
+                "source_label": source,
+                "topic_title": title or None,
+            }
+            body = _queue_channel_import(db, parsed)
+            body["message_thread_id"] = topic_id
+            body["topic_title"] = title or None
+            jobs.append(body)
+        return {"status": "queued", "async": True, "jobs": jobs}
+
+    results: list[dict] = []
+    try:
+        for row in raw[:30]:
+            if not isinstance(row, dict):
+                continue
+            try:
+                pool_id = int(row.get("pool_id"))
+                topic_id = int(row.get("message_thread_id"))
+            except (TypeError, ValueError):
+                results.append({"error": "Each import needs pool_id and message_thread_id"})
+                continue
+            try:
+                lim = int(row.get("limit") or default_limit)
+            except (TypeError, ValueError):
+                lim = default_limit
+            lim = min(max(lim, 1), 200)
+            mt = str(row.get("media_types") or default_media).strip().lower() or default_media
+            if mt not in ("both", "photos", "videos"):
+                mt = default_media
+            source = f"telegram:{channel}#topic:{topic_id}"
+            title = str(row.get("topic_title") or "").strip()
+
+            async def _import(storage, *, _pid=pool_id, _tid=topic_id, _lim=lim, _mt=mt, _src=source):
+                return await storage.import_from_telegram_channel(
+                    channel,
+                    _pid,
+                    _src,
+                    db,
+                    limit=_lim,
+                    media_types=_mt,
+                    message_thread_id=_tid,
+                )
+
+            part = await run_telegram_import_io(_import)
+            results.append(
+                {
+                    "message_thread_id": topic_id,
+                    "pool_id": pool_id,
+                    "topic_title": title or None,
+                    **part,
+                }
+            )
+    except Exception as e:
+        logger.exception("import/from-channel-batch failed: %s", e)
+        return {"error": friendly_telegram_error(e), "results": results}
+    return {"status": "ok", "results": results}

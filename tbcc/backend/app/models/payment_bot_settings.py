@@ -30,3 +30,6 @@ class PaymentBotSettings(Base):
     video_finder_enabled = Column(Integer, nullable=True)  # 1/0
     video_finder_sources_json = Column(Text, nullable=True)
     video_finder_max_links_per_source = Column(Integer, nullable=True)
+    # Telegram /macroaddsource — extra macro sources (extension parity); built-in JSON still loaded.
+    macro_search_custom_sources_json = Column(Text, nullable=True)
+    macro_search_disabled_json = Column(Text, nullable=True)  # {"site_id": false, ...}

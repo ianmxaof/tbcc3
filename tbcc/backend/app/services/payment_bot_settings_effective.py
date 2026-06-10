@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.payment_bot_settings import PaymentBotSettings
+from app.services.model_search_engine import get_macro_search_sites, merge_model_search_sites
 
 ROW_ID = 1
 
@@ -95,6 +96,30 @@ def _normalize_main_menu(raw_json: str | None) -> list[list[dict[str, str]]]:
     return rows or DEFAULT_MAIN_MENU
 
 
+def _parse_json_list(raw: str | None) -> list[dict[str, Any]]:
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [x for x in parsed if isinstance(x, dict)]
+
+
+def _parse_disabled_ids(raw: str | None) -> set[str]:
+    if not isinstance(raw, str) or not raw.strip():
+        return set()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return set()
+    if not isinstance(parsed, dict):
+        return set()
+    return {str(k).strip() for k, v in parsed.items() if v is False and str(k).strip()}
+
+
 def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
     r = _row(db)
     raw_video_sources = getattr(r, "video_finder_sources_json", None) if r else None
@@ -130,6 +155,21 @@ def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
                     video_sources = out
         except Exception:
             video_sources = DEFAULT_VIDEO_FINDER_SOURCES
+
+    macro_custom = _parse_json_list(getattr(r, "macro_search_custom_sources_json", None) if r else None)
+    macro_disabled = _parse_disabled_ids(getattr(r, "macro_search_disabled_json", None) if r else None)
+    # Legacy dashboard video_finder_sources JSON — treat as extra macro templates.
+    legacy_extra: list[dict[str, Any]] = []
+    for item in video_sources:
+        if isinstance(item, dict) and item.get("id") and item.get("url"):
+            legacy_extra.append({**item, "category": "macro"})
+    merged_custom = macro_custom + [
+        x for x in legacy_extra if x.get("id") not in {c.get("id") for c in macro_custom}
+    ]
+    macro_sources = get_macro_search_sites(custom_sites=merged_custom, disabled_ids=macro_disabled)
+    if not macro_sources:
+        macro_sources = [s for s in merge_model_search_sites() if s.get("category") == "macro"][:60]
+
     return {
         "main_menu": _normalize_main_menu(getattr(r, "main_menu_json", None) if r else None),
         "welcome_html": _str_or_default(
@@ -205,4 +245,7 @@ def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
             min_v=1,
             max_v=30,
         ),
+        "macro_search_sources": macro_sources,
+        "macro_search_custom_sources": macro_custom,
+        "macro_search_disabled_ids": sorted(macro_disabled),
     }

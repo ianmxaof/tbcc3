@@ -1,20 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { useState, useEffect } from "react";
 import { ScheduledPostsList } from "../components/ScheduledPostsList";
-import { SchedulerWeek } from "../components/SchedulerWeek";
 import { SchedulePromoSlots } from "../components/SchedulePromoSlots";
 import { ApprovedMediaPickerStrip } from "../components/ApprovedMediaPickerStrip";
-import { formatUtcForDashboard, formatUtcWithLocalHint } from "../utils/formatUtc";
-import { CaptionSnippetInsertSelect, CaptionSnippetLibraryManageButton } from "../components/CaptionSnippetLibrary";
-import { CustomEmojiInsertSelect, CustomEmojiLibraryManageButton } from "../components/CustomEmojiLibrary";
 import { CaptionTelegramHtmlField } from "../components/CaptionTelegramHtmlField";
-import { ChannelInviteLinkButtons } from "../components/ChannelInviteLinkButtons";
-import { PromoAffiliateLinksPopover } from "../components/PromoAffiliateLinksPopover";
+import { TbccInsertMenu } from "../components/TbccInsertMenu";
+import { TbccInsertLibraryToolbar } from "../components/TbccInsertLibraryToolbar";
 import { InfoDisclosure } from "../components/InfoDisclosure";
 import { SchedulerBufferPanel } from "../components/SchedulerBufferPanel";
+import { SchedulerComposerCard } from "../components/SchedulerComposerCard";
 import { CaptionLlmRewriteFields } from "../components/CaptionLlmRewriteFields";
+import { MediaPoolSelect } from "../components/MediaPoolSelect";
+import {
+  poolSelectToApi,
+  poolSelectUsesPool,
+  poolSelectUsesSpecificPool,
+  poolAlbumDefaultsFromMap,
+} from "../utils/mediaPoolSelect";
 import {
   SilentTelegramSendOption,
   readSendSilentPreference,
@@ -22,6 +25,10 @@ import {
 } from "../components/SilentTelegramSendOption";
 
 const INTERVAL_OPTIONS = [15, 30, 60, 120, 180, 240, 360, 720];
+/** Fixed-height composer tiles (matches overview band density). */
+const COMPOSER_TILE_H = "h-[8.25rem]";
+const COMPOSER_BODY_H = "h-full space-y-1.5";
+type ComposerDetailTab = "caption" | "buttons" | "delivery";
 
 type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
 
@@ -37,6 +44,8 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
   const [name, setName] = useState("");
   /** Multi-select: same job posts to every checked channel (one shared recurring / one-time schedule). */
   const [selectedChannelIds, setSelectedChannelIds] = useState<number[]>([]);
+  /** Multi-channel: each interval posts to one random checked channel instead of all. */
+  const [campaignRandomChannel, setCampaignRandomChannel] = useState(false);
   /** One box = single caption; 2+ non-empty = rotate in order each time the job runs */
   const [captionVariations, setCaptionVariations] = useState<string[]>([""]);
   const [scheduledAt, setScheduledAt] = useState("");
@@ -71,6 +80,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
   const [pinToolMessageId, setPinToolMessageId] = useState("");
   const [pinToolUnpin, setPinToolUnpin] = useState(false);
   const [pinToolMsg, setPinToolMsg] = useState<string | null>(null);
+  const [composerDetailTab, setComposerDetailTab] = useState<ComposerDetailTab>("caption");
 
   const { data: pools = [] } = useQuery({
     queryKey: ["pools"],
@@ -91,7 +101,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
   const { data: media = [] } = useQuery({
     queryKey: ["media", "approved", poolId],
     queryFn: () =>
-      poolId > 0
+      poolSelectUsesSpecificPool(poolId)
         ? api.media.list({ status: "approved", pool_id: poolId })
         : api.media.list("approved"),
   });
@@ -105,6 +115,9 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
   });
   const salablePlans = (subscriptionPlansRaw as Array<Record<string, unknown>>).filter(
     (p) => p.is_active !== false && Number(p.price_stars || 0) > 0
+  );
+  const poolMap = Object.fromEntries(
+    (pools as Array<Record<string, unknown>>).map((p) => [String(p.id), p])
   );
   useEffect(() => {
     setScheduleAlbumVariants((prev) => padAlbumVariants(prev, captionVariations.length));
@@ -142,6 +155,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
       }));
       const chIds = [...new Set(selectedChannelIds.filter((x) => x > 0))].sort((a, b) => a - b);
       if (chIds.length === 0) throw new Error("Select at least one channel");
+      const poolApi = poolSelectToApi(poolId);
       const base: Parameters<typeof api.scheduledPosts.create>[0] = {
         name: name || undefined,
         channel_ids: chIds,
@@ -150,11 +164,11 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
         media_ids: [],
         album_variants: av,
         album_order_mode: scheduleAlbumOrderMode,
-        pool_id: poolId || undefined,
+        ...poolApi,
         buttons: buttons.some((b) => b.text.trim() && b.url.trim()) ? buttons.filter((b) => b.text.trim() && b.url.trim()) : undefined,
         scheduled_at: isRecurring ? undefined : scheduledAtIso,
         interval_minutes: isRecurring ? intervalMinutes : undefined,
-        ...(poolId > 0
+        ...(poolSelectUsesPool(poolId)
           ? {
               album_size: Math.min(10, Math.max(1, scheduleAlbumSize)),
               pool_randomize: schedulePoolRandomize,
@@ -176,6 +190,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
           scheduleCheckoutStars && scheduleCheckoutPlanId > 0 ? scheduleCheckoutPlanId : null,
         checkout_button_label: scheduleCheckoutButtonLabel.trim() || null,
         checkout_referral_code: scheduleCheckoutReferralCode.trim().toUpperCase() || null,
+        ...(chIds.length > 1 ? { campaign_random_channel: campaignRandomChannel } : {}),
       };
       if (trimmed.length >= 2) {
         base.content_variations = trimmed;
@@ -185,6 +200,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      queryClient.invalidateQueries({ queryKey: ["pools"] });
       setName("");
       setSelectedChannelIds([]);
       setMessageThreadId(null);
@@ -245,12 +261,6 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
   };
   const removeButton = (i: number) => setButtons((prev) => prev.filter((_, j) => j !== i));
 
-  const chartData = (pools as Array<Record<string, unknown>>).map((p) => ({
-    name: String(p.name || `Pool ${p.id}`),
-    interval: Number(p.interval_minutes) || 60,
-    id: p.id,
-  }));
-
   const openScheduleForCalendarDay = (iso: string) => {
     setScheduledAt(`${iso}T12:00`);
     setIsRecurring(false);
@@ -266,25 +276,31 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
     return () => window.removeEventListener("keydown", k);
   }, [calendarScheduleModalOpen]);
 
+  const inputSm =
+    "w-full bg-slate-700 border border-slate-600 rounded px-2 py-1.5 text-slate-200 text-sm";
+
   const renderAddScheduledPostForm = () => (
     <>
         {createScheduledPost.isError && (
-          <div className="mb-3 px-3 py-2 rounded bg-red-900/50 text-red-200 text-sm">
+          <div className="mb-2 px-2 py-1.5 rounded bg-red-900/50 text-red-200 text-xs">
             {createScheduledPost.error?.message}
           </div>
         )}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="space-y-2">
+
+        <div className="mb-2 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4 xl:items-stretch">
+          <SchedulerComposerCard title="Destinations" className={COMPOSER_TILE_H} bodyClassName={COMPOSER_BODY_H}>
             <input
               type="text"
               placeholder="Name (optional)"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+              className={inputSm}
             />
-            <div className="border border-slate-600 rounded-lg p-2 bg-slate-900/40">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                <span className="text-slate-400 text-sm">Channels (one post per channel)</span>
+            <div className="rounded border border-slate-600/80 bg-slate-950/30 p-1.5">
+              <div className="mb-1 flex flex-wrap items-center justify-between gap-1">
+                <span className="text-[11px] text-slate-400">
+                  Channels{campaignRandomChannel ? " · random/run" : " · all selected"}
+                </span>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -306,9 +322,9 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
                   </button>
                 </div>
               </div>
-              <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto">
+              <div className="flex max-h-[3.25rem] flex-col gap-1 overflow-y-auto">
                 {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
-                  <label key={c.id} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+                  <label key={c.id} className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-300">
                     <input
                       type="checkbox"
                       checked={selectedChannelIds.includes(c.id)}
@@ -325,97 +341,60 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
                   </label>
                 ))}
               </div>
-            </div>
-            <div className="border border-sky-800/50 rounded-lg p-3 bg-sky-950/20 mt-2">
-              <span className="text-slate-300 text-sm font-medium block mb-2">Social destinations</span>
-              <p className="text-slate-500 text-xs mb-2">
-                Telegram uses the channels above. Optional Buffer mirror queues the same caption to X (see panel below).
-              </p>
-              <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={scheduleBufferMirror}
-                  onChange={(e) => {
-                    setScheduleBufferMirror(e.target.checked);
-                    if (!e.target.checked) setScheduleBufferPublishNow(false);
-                  }}
-                />
-                <span>
-                  <strong className="text-sky-300">Buffer → X</strong> after each successful Telegram send
-                  <span className="block text-xs text-slate-500 mt-0.5">
-                    Shown in the scheduled posts list when enabled. Needs public https image URLs for promo art.
-                  </span>
-                </span>
-              </label>
-              {scheduleBufferMirror ? (
-                <label className="flex items-start gap-2 text-sm text-slate-300 cursor-pointer ml-6 mt-2">
+              {selectedChannelIds.length > 1 ? (
+                <label className="mt-1.5 flex cursor-pointer items-start gap-1.5 border-t border-slate-700/80 pt-1.5 text-[11px] text-slate-300">
                   <input
                     type="checkbox"
                     className="mt-0.5"
-                    checked={scheduleBufferPublishNow}
-                    onChange={(e) => setScheduleBufferPublishNow(e.target.checked)}
+                    checked={campaignRandomChannel}
+                    onChange={(e) => setCampaignRandomChannel(e.target.checked)}
                   />
                   <span>
-                    <strong className="text-emerald-300">Publish now</strong> (Buffer <code className="text-xs">shareNow</code>)
-                    <span className="block text-xs text-slate-500 mt-0.5">
-                      Off = add to Buffer queue. On = post to X as soon as Telegram sends.
-                    </span>
+                    <strong className="text-amber-300">Random channel / run</strong>
+                    <span className="mt-0.5 block text-[10px] text-slate-500">One channel per interval, not all at once.</span>
                   </span>
                 </label>
               ) : null}
             </div>
-            {selectedChannelIds.length > 1 && (
-              <p className="text-slate-500 text-xs">
-                Forum topic picker is available when exactly one channel is selected; with multiple channels, leave topic
-                as main chat or pick a topic after narrowing to one channel.
-              </p>
-            )}
+            {selectedChannelIds.length > 1 ? (
+              <p className="text-[10px] text-slate-500">Forum topic: pick one channel first.</p>
+            ) : null}
             {forumTopicSourceId > 0 && (
               <div>
-                <span className="text-slate-400 text-xs block mb-1">
-                  Forum topic (optional — supergroups with topics enabled)
-                </span>
+                <span className="mb-0.5 block text-[10px] text-slate-500">Forum topic</span>
                 <select
                   value={messageThreadId === null ? "" : String(messageThreadId)}
                   onChange={(e) => {
                     const v = e.target.value;
                     setMessageThreadId(v === "" ? null : Number(v));
                   }}
-                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
+                  className={inputSm}
                 >
-                  <option value="">Main chat (no topic)</option>
+                  <option value="">Main chat</option>
                   {forumTopics.map((t) => (
                     <option key={t.id} value={String(t.id)}>
                       {t.title}
                     </option>
                   ))}
                 </select>
-                {forumTopicsHint && (
-                  <p className="text-amber-400/90 text-xs mt-1">{forumTopicsHint}</p>
-                )}
-                {forumTopics.length === 0 && !forumTopicsHint && (
-                  <p className="text-slate-500 text-xs mt-1">
-                    No topics listed — group may not be forum-enabled, or Telegram user session cannot read topics.
-                  </p>
-                )}
+                {forumTopicsHint ? <p className="mt-0.5 text-[10px] text-amber-400/90">{forumTopicsHint}</p> : null}
               </div>
             )}
-            <label className="flex items-center gap-2 text-slate-300">
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
               <input
                 type="checkbox"
                 checked={isRecurring}
                 onChange={(e) => setIsRecurring(e.target.checked)}
               />
-              Recurring (post at interval)
+              Recurring
             </label>
             {isRecurring ? (
-              <div>
-                <span className="text-slate-400 text-sm">Every </span>
+              <div className="flex items-center gap-1.5 text-[11px]">
+                <span className="text-slate-500">Every</span>
                 <select
                   value={intervalMinutes}
                   onChange={(e) => setIntervalMinutes(Number(e.target.value))}
-                  className="bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                  className="rounded border border-slate-600 bg-slate-700 px-2 py-1 text-slate-200"
                 >
                   {INTERVAL_OPTIONS.map((m) => (
                     <option key={m} value={m}>
@@ -429,310 +408,140 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
                 type="datetime-local"
                 value={scheduledAt}
                 onChange={(e) => setScheduledAt(e.target.value)}
-                className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
+                className={inputSm}
               />
             )}
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-slate-400 text-sm">
-                  Caption{captionVariations.length > 1 ? "s (rotate in order)" : ""}
+          </SchedulerComposerCard>
+
+          <SchedulerComposerCard title="Social · Buffer" className={COMPOSER_TILE_H} bodyClassName={COMPOSER_BODY_H}>
+            <label className="flex cursor-pointer items-start gap-1.5 text-[11px] text-slate-300">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={scheduleBufferMirror}
+                onChange={(e) => {
+                  setScheduleBufferMirror(e.target.checked);
+                  if (!e.target.checked) setScheduleBufferPublishNow(false);
+                }}
+              />
+              <span>
+                <strong className="text-sky-300">Buffer → X</strong> after Telegram send
+                <span className="mt-0.5 block text-[10px] text-slate-500">Needs https promo URLs for images.</span>
+              </span>
+            </label>
+            {scheduleBufferMirror ? (
+              <label className="ml-4 flex cursor-pointer items-start gap-1.5 text-[11px] text-slate-300">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={scheduleBufferPublishNow}
+                  onChange={(e) => setScheduleBufferPublishNow(e.target.checked)}
+                />
+                <span>
+                  <strong className="text-emerald-300">Publish now</strong> (shareNow)
+                  <span className="mt-0.5 block text-[10px] text-slate-500">Off = Buffer queue.</span>
                 </span>
-                <div className="flex flex-wrap items-center gap-2 justify-end">
-                  <PromoAffiliateLinksPopover />
-                  <CaptionSnippetLibraryManageButton />
-                  <CustomEmojiLibraryManageButton />
-                </div>
-              </div>
-              {captionVariations.map((line, i) => (
-                <CaptionTelegramHtmlField
-                  key={i}
-                  value={line}
-                  onChange={(v) => setCaptionVariations((prev) => prev.map((p, j) => (j === i ? v : p)))}
-                  placeholder={i === 0 ? "Text content (caption)" : `Caption variation ${i + 1}`}
-                  rows={i === 0 ? 4 : 3}
-                  extraActions={
-                    <>
-                    <CaptionSnippetInsertSelect
-                      onInsert={(t) =>
-                        setCaptionVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
-                      }
-                    />
-                    <CustomEmojiInsertSelect
-                      onInsert={(chunk) =>
-                        setCaptionVariations((prev) =>
-                          prev.map((p, j) => (j === i ? (p ? `${chunk}\n\n${p}` : chunk) : p))
-                        )
-                      }
-                    />
-                    {captionVariations.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => setCaptionVariations((prev) => prev.filter((_, j) => j !== i))}
-                        className="px-2 py-1 text-red-400 hover:bg-red-900/30 rounded"
-                        title="Remove this caption"
-                      >
-                        ✕
-                      </button>
-                    )}
-                    </>
-                  }
-                />
-              ))}
-              <button
-                type="button"
-                onClick={() => setCaptionVariations((prev) => [...prev, ""])}
-                className="text-sm text-cyan-400 hover:text-cyan-300"
+              </label>
+            ) : null}
+            <SchedulerBufferPanel compact />
+          </SchedulerComposerCard>
+
+          <SchedulerComposerCard title="Album & media" className={COMPOSER_TILE_H} bodyClassName={`${COMPOSER_BODY_H} text-[11px]`}>
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-slate-500">Order</span>
+              <select
+                value={scheduleAlbumOrderMode}
+                onChange={(e) =>
+                  setScheduleAlbumOrderMode(e.target.value as "static" | "shuffle" | "carousel")
+                }
+                className="min-w-0 flex-1 rounded border border-slate-600 bg-slate-700 px-1.5 py-1 text-slate-200"
               >
-                + Add caption variation (enables rotation when 2+ are filled)
-              </button>
+                <option value="static">Static</option>
+                <option value="shuffle">Shuffle</option>
+                <option value="carousel">Carousel</option>
+              </select>
+              <InfoDisclosure>
+                One album per caption. Shuffle/carousel apply to promo + library picks for that caption.
+              </InfoDisclosure>
             </div>
-            <ChannelInviteLinkButtons
-              channels={channels as Array<Record<string, unknown>>}
-              summaryPrefix="Quick insert — channel invite links → first caption"
-              onInsertLink={(link) => {
-                setCaptionVariations((prev) => {
-                  const next = [...prev];
-                  const cur = next[0] || "";
-                  next[0] = cur.trim() ? `${cur.trim()}\n\n${link}` : link;
-                  return next;
-                });
-              }}
-            />
-            <div>
-              <span className="text-slate-400 text-sm block mb-1">Inline buttons (text + URL)</span>
-              <p className="text-slate-500 text-xs mb-2">
-                Use <code className="text-slate-400">https://</code> or <code className="text-slate-400">tg://</code>{" "}
-                (e.g. link to your bot). Buttons apply to the whole album (caption sits on the first item).
-              </p>
-              {buttons.map((b, i) => (
-                <div key={i} className="flex gap-2 mb-2">
-                  <input
-                    placeholder="Button text"
-                    value={b.text}
-                    onChange={(e) => updateButton(i, "text", e.target.value)}
-                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-sm"
-                  />
-                  <input
-                    placeholder="https://… or tg://…"
-                    value={b.url}
-                    onChange={(e) => updateButton(i, "url", e.target.value)}
-                    className="flex-1 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200 text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeButton(i)}
-                    className="px-2 py-1 text-red-400 hover:bg-red-900/30 rounded"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={addButton}
-                className="text-sm text-cyan-400 hover:text-cyan-300"
-              >
-                + Add button
-              </button>
-              <div className="mt-3 pt-3 border-t border-slate-600/60 space-y-2">
-                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={scheduleCheckoutStars}
-                    onChange={(e) => {
-                      setScheduleCheckoutStars(e.target.checked);
-                      if (!e.target.checked) setScheduleCheckoutPlanId(0);
-                    }}
-                  />
-                  <span>
-                    Stars checkout button (payment bot) — uses Commerce plan price &amp; fulfillment
-                  </span>
-                </label>
-                <p className="text-slate-500 text-xs pl-6">
-                  Appends a URL button to your{" "}
-                  <code className="text-slate-400">TBCC_PAYMENT_BOT_USERNAME</code> deep link. Tapping it opens a private
-                  chat with the bot and shows the same Telegram Stars invoice as the shop. Caption and album above are
-                  unchanged (your promo creative).
-                </p>
-                {scheduleCheckoutStars && (
-                  <div className="pl-6 space-y-2 border-l border-slate-600/80 ml-1">
-                    <label className="block text-xs text-slate-400">
-                      Commerce product (Stars price)
-                      <select
-                        value={scheduleCheckoutPlanId || ""}
-                        onChange={(e) => setScheduleCheckoutPlanId(Number(e.target.value) || 0)}
-                        className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-                      >
-                        <option value="">Select plan…</option>
-                        {salablePlans.map((p) => (
-                          <option key={String(p.id)} value={Number(p.id)}>
-                            {String(p.name || `Plan ${p.id}`)} — {Number(p.price_stars || 0)}⭐ (
-                            {String(p.product_type || "subscription")})
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="block text-xs text-slate-400">
-                      Button label (optional)
-                      <input
-                        type="text"
-                        value={scheduleCheckoutButtonLabel}
-                        onChange={(e) => setScheduleCheckoutButtonLabel(e.target.value)}
-                        placeholder="Default: plan name + ⭐ price"
-                        maxLength={64}
-                        className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-                      />
-                    </label>
-                    <label className="block text-xs text-slate-400">
-                      Referral code (optional, 1–16 letters/digits)
-                      <input
-                        type="text"
-                        value={scheduleCheckoutReferralCode}
-                        onChange={(e) => setScheduleCheckoutReferralCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ""))}
-                        placeholder="From user’s /referral in the payment bot"
-                        maxLength={16}
-                        className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-                      />
-                    </label>
-                  </div>
-                )}
-              </div>
-              <div className="flex flex-col gap-2 pt-2 border-t border-slate-600/60 mt-2">
-                <SilentTelegramSendOption
-                  checked={scheduleSendSilent}
-                  onChange={(v) => {
-                    setScheduleSendSilent(v);
-                    writeSendSilentPreference(v);
-                  }}
-                />
-                <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={schedulePinAfterSend}
-                    onChange={(e) => setSchedulePinAfterSend(e.target.checked)}
-                  />
-                  Pin this post after send (needs pin rights; pins first album message)
-                </label>
-                <CaptionLlmRewriteFields
-                  enabled={scheduleLlmRewrite}
-                  onEnabledChange={setScheduleLlmRewrite}
-                  mode={scheduleLlmMode}
-                  onModeChange={setScheduleLlmMode}
-                  interval={scheduleLlmInterval}
-                  onIntervalChange={setScheduleLlmInterval}
-                  probability={scheduleLlmProb}
-                  onProbabilityChange={setScheduleLlmProb}
-                  disabled={createScheduledPost.isPending}
-                />
-              </div>
-            </div>
-          </div>
-          <div>
-            <label className="block text-slate-400 text-xs mb-1">Album order (promo + picked media)</label>
-            <select
-              value={scheduleAlbumOrderMode}
-              onChange={(e) =>
-                setScheduleAlbumOrderMode(e.target.value as "static" | "shuffle" | "carousel")
-              }
-              className="w-full mb-3 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-            >
-              <option value="static">Static order</option>
-              <option value="shuffle">Shuffle each time</option>
-              <option value="carousel">Carousel (rotate order each post)</option>
-            </select>
-            <p className="text-slate-500 text-xs mb-3">
-              One album block per caption. Shuffle / carousel apply to that caption&apos;s combined promo + library picks.
-            </p>
-            <p className="text-slate-400 text-sm mb-2">
-              Media pool (optional) — choosing a pool filters thumbnails. Empty caption albums fall back to the pool
-              batch.
-            </p>
-            <select
+            <MediaPoolSelect
               value={poolId}
-              onChange={(e) => {
-                setPoolId(Number(e.target.value));
+              onChange={(next) => {
+                setPoolId(next);
                 setScheduleAlbumVariants((prev) => prev.map((v) => ({ ...v, media_ids: [] })));
+                const defs = poolAlbumDefaultsFromMap(next, poolMap);
+                setScheduleAlbumSize(defs.albumSize);
+                setSchedulePoolRandomize(defs.randomize);
               }}
-              className="w-full mb-2 bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-            >
-              <option value={0}>No pool (text-only unless media is explicitly picked below)</option>
-              {(pools as Array<{ id: number; name?: string }>).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name || `Pool ${p.id}`} (media + optional auto-pick)
-                </option>
-              ))}
-            </select>
-            <p className="text-slate-500 text-xs mb-2">
-              Choose <strong>No pool</strong> for clean text+links recurring posts between album drops.
-            </p>
-            {poolId > 0 && (
-              <div className="border border-slate-600 rounded p-3 mb-2 space-y-2 bg-slate-900/40">
-                <p className="text-slate-400 text-xs">
-                  <strong>This schedule only</strong> — album size & randomize (override the pool defaults for this job).
+              pools={pools as Array<{ id: number; name?: string }>}
+              className={inputSm}
+              variant="compact"
+            />
+            {poolSelectUsesPool(poolId) ? (
+              <div className="space-y-1 rounded border border-slate-600/60 bg-slate-950/40 p-1.5">
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  {poolSelectUsesSpecificPool(poolId)
+                    ? "Album size & randomize sync with the pool editor."
+                    : "All pools (random): settings apply to this job only."}
                 </p>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex items-center gap-2 text-sm text-slate-300">
-                    <span className="text-slate-400">Album size</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-1 text-slate-300">
+                    <span className="text-slate-500">Size</span>
                     <input
                       type="number"
                       min={1}
                       max={10}
                       value={scheduleAlbumSize}
                       onChange={(e) => setScheduleAlbumSize(Math.min(10, Math.max(1, Number(e.target.value) || 5)))}
-                      className="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-slate-200"
+                      className="w-10 rounded border border-slate-600 bg-slate-700 px-1 py-0.5 text-slate-200"
                     />
                   </label>
-                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <label className="flex items-center gap-1 text-slate-300">
                     <input
                       type="checkbox"
                       checked={schedulePoolRandomize}
                       onChange={(e) => setSchedulePoolRandomize(e.target.checked)}
                     />
-                    Randomize pool picks
+                    Random
                   </label>
-                  <label className="flex items-center gap-2 text-sm text-slate-300">
+                  <label className="flex items-center gap-1 text-slate-300">
                     <input
                       type="checkbox"
                       checked={schedulePoolOnlyMode}
                       onChange={(e) => setSchedulePoolOnlyMode(e.target.checked)}
                     />
-                    Pool-only mode (ignore picked media/promos)
+                    Pool-only
                   </label>
                 </div>
               </div>
-            )}
-            <label className="flex flex-wrap items-center gap-2 text-slate-400 text-xs mb-2 cursor-pointer">
-              <span>Import into pool (Telegram Saved Messages — needs API session):</span>
+            ) : null}
+            <label className="flex cursor-pointer flex-wrap items-center gap-1 text-[10px] text-slate-500">
+              <span>Import to pool:</span>
               <input
                 type="file"
                 accept="image/*,video/*"
                 multiple
-                disabled={!poolId || uploadToPool.isPending}
+                disabled={!poolSelectUsesSpecificPool(poolId) || uploadToPool.isPending}
                 onChange={(e) => {
                   const pid = poolId;
                   const input = e.target as HTMLInputElement;
                   const snapshot = input.files?.length ? Array.from(input.files) : [];
                   input.value = "";
-                  if (!pid || !snapshot.length) return;
+                  if (!poolSelectUsesSpecificPool(pid) || !snapshot.length) return;
                   uploadToPool.mutate({ files: snapshot, pid });
                 }}
-                className="text-slate-300 max-w-full"
+                className="max-w-full text-slate-400"
               />
             </label>
-            {uploadMsg && (
-              <pre className="text-xs text-slate-300 bg-slate-900/80 rounded p-2 mb-2 whitespace-pre-wrap max-h-24 overflow-y-auto">
+            {uploadMsg ? (
+              <pre className="max-h-16 overflow-y-auto whitespace-pre-wrap rounded bg-slate-950/80 p-1 text-[10px] text-slate-400">
                 {uploadMsg}
               </pre>
-            )}
-            {!poolId && (
-              <p className="text-amber-400/90 text-xs mb-2">
-                Select a pool above to enable this import (pending in Media Library until approved).
-              </p>
-            )}
+            ) : null}
             {captionVariations.map((_, vi) => (
-              <div key={vi} className="mb-3 border border-slate-600/80 rounded-lg p-2 bg-slate-900/30">
-                <p className="text-slate-300 text-xs font-medium mb-2">
-                  {captionVariations.length > 1 ? `Album for caption ${vi + 1}` : "Promotional album"}
+              <div key={vi} className="rounded border border-slate-600/70 bg-slate-950/30 p-1.5">
+                <p className="mb-1 text-[10px] font-medium text-slate-400">
+                  {captionVariations.length > 1 ? `Album · cap ${vi + 1}` : "Promo + picks"}
                 </p>
                 <SchedulePromoSlots
                   urls={scheduleAlbumVariants[vi]?.attachment_urls ?? []}
@@ -749,7 +558,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
                   }}
                   idPrefix={`scheduler-create-v${vi}`}
                 />
-                <div className="mt-2 min-w-0">
+                <div className="mt-1 min-w-0">
                   <ApprovedMediaPickerStrip
                     rows={media as Array<Record<string, unknown>>}
                     selectedIds={scheduleAlbumVariants[vi]?.media_ids ?? []}
@@ -759,30 +568,269 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
                 </div>
               </div>
             ))}
-            <p className="text-slate-500 text-xs mt-1">
-              {scheduleAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} media pick(s).{" "}
-              {poolId > 0 && schedulePoolOnlyMode
-                ? "Pool-only mode is ON: scheduler ignores picked media/promos and always uses pool batch."
-                : "If pool is set and a caption has no picks, that run uses the pool batch."}
+            <p className="text-[10px] text-slate-500">
+              {scheduleAlbumVariants.reduce((n, v) => n + v.media_ids.length, 0)} pick(s)
+              {poolSelectUsesPool(poolId) && schedulePoolOnlyMode ? " · pool-only ignores picks" : ""}
             </p>
-          </div>
+          </SchedulerComposerCard>
+
+          <SchedulerComposerCard title="Pin message" className={COMPOSER_TILE_H} bodyClassName={COMPOSER_BODY_H}>
+            <InfoDisclosure>
+              Message id from a Telegram link or helper bot. Admin session needs pin rights in the channel.
+            </InfoDisclosure>
+            <div className="space-y-1.5">
+              <select
+                value={pinToolChannelId}
+                onChange={(e) => setPinToolChannelId(Number(e.target.value))}
+                className={inputSm}
+              >
+                <option value={0}>Channel…</option>
+                {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name || c.identifier || `#${c.id}`}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={pinToolMessageId}
+                onChange={(e) => setPinToolMessageId(e.target.value)}
+                placeholder="Message id"
+                className={inputSm}
+              />
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
+                  <input type="checkbox" checked={pinToolUnpin} onChange={(e) => setPinToolUnpin(e.target.checked)} />
+                  Unpin
+                </label>
+                <button
+                  type="button"
+                  onClick={() => pinToolMutation.mutate()}
+                  disabled={pinToolMutation.isPending}
+                  className="rounded bg-slate-600 px-2.5 py-1 text-[11px] text-white hover:bg-slate-500 disabled:opacity-50"
+                >
+                  {pinToolMutation.isPending ? "…" : pinToolUnpin ? "Unpin" : "Pin"}
+                </button>
+              </div>
+              {pinToolMsg ? (
+                <p
+                  className={`text-[10px] ${
+                    pinToolMsg.includes("Error") || pinToolMsg.includes("Select") ? "text-amber-300" : "text-emerald-300"
+                  }`}
+                >
+                  {pinToolMsg}
+                </p>
+              ) : null}
+            </div>
+          </SchedulerComposerCard>
         </div>
-        <button
-          onClick={() => createScheduledPost.mutate()}
-          disabled={
-            createScheduledPost.isPending ||
-            selectedChannelIds.length === 0 ||
-            (scheduleCheckoutStars && scheduleCheckoutPlanId <= 0) ||
-            (!captionVariations.some((s) => s.trim()) &&
-              !poolId &&
-              !scheduleAlbumVariants.some(
-                (v) => v.media_ids.length > 0 || v.attachment_urls.some((s) => s.trim())
-              ))
+
+        <SchedulerComposerCard
+          title="Post body"
+          className="h-[7.75rem]"
+          bodyClassName="h-full"
+          headerRight={
+            <button
+              type="button"
+              onClick={() => createScheduledPost.mutate()}
+              disabled={
+                createScheduledPost.isPending ||
+                selectedChannelIds.length === 0 ||
+                (scheduleCheckoutStars && scheduleCheckoutPlanId <= 0) ||
+                (!captionVariations.some((s) => s.trim()) &&
+                  !poolSelectUsesPool(poolId) &&
+                  !scheduleAlbumVariants.some(
+                    (v) => v.media_ids.length > 0 || v.attachment_urls.some((s) => s.trim())
+                  ))
+              }
+              className="rounded bg-cyan-600 px-2.5 py-0.5 text-[10px] font-medium text-white hover:bg-cyan-500 disabled:opacity-50"
+            >
+              {createScheduledPost.isPending ? "…" : "Schedule"}
+            </button>
           }
-          className="mt-4 px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-500 disabled:opacity-50"
         >
-          {createScheduledPost.isPending ? "Creating..." : "Schedule"}
-        </button>
+          <div className="mb-1 flex gap-px border-b border-slate-700/80">
+            {(
+              [
+                ["caption", "Caption"],
+                ["buttons", "Buttons"],
+                ["delivery", "Delivery"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setComposerDetailTab(id)}
+                className={`px-2 py-0.5 text-[10px] font-medium border-b-2 -mb-px transition-colors ${
+                  composerDetailTab === id
+                    ? "border-cyan-500 text-cyan-300"
+                    : "border-transparent text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                {label}
+                {id === "caption" && captionVariations.length > 1 ? ` (${captionVariations.length})` : ""}
+              </button>
+            ))}
+            <div className="ml-auto flex items-center">
+              <TbccInsertLibraryToolbar />
+            </div>
+          </div>
+          <div className="h-[4.75rem] overflow-y-auto pr-0.5 text-[11px]">
+            {composerDetailTab === "caption" ? (
+              <div className="space-y-1">
+                {captionVariations.map((line, i) => (
+                  <CaptionTelegramHtmlField
+                    key={i}
+                    className="w-full min-w-0"
+                    value={line}
+                    onChange={(v) => setCaptionVariations((prev) => prev.map((p, j) => (j === i ? v : p)))}
+                    placeholder={i === 0 ? "Caption (Telegram HTML)" : `Variation ${i + 1}`}
+                    rows={1}
+                    extraActions={
+                      <>
+                        <TbccInsertMenu
+                          channels={channels as Array<Record<string, unknown>>}
+                          pools={pools as Array<Record<string, unknown>>}
+                          onInsert={(t) =>
+                            setCaptionVariations((prev) => prev.map((p, j) => (j === i ? t : p)))
+                          }
+                        />
+                        {captionVariations.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() => setCaptionVariations((prev) => prev.filter((_, j) => j !== i))}
+                            className="rounded px-1.5 py-0.5 text-red-400 hover:bg-red-900/30"
+                            title="Remove caption"
+                          >
+                            ✕
+                          </button>
+                        ) : null}
+                      </>
+                    }
+                  />
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setCaptionVariations((prev) => [...prev, ""])}
+                  className="text-[10px] text-cyan-400 hover:text-cyan-300"
+                >
+                  + Rotate caption
+                </button>
+              </div>
+            ) : null}
+            {composerDetailTab === "buttons" ? (
+              <div className="space-y-1">
+                {buttons.length === 0 ? (
+                  <p className="text-[10px] text-slate-500">
+                    <code>https://</code> or <code>tg://</code> on the album row.
+                  </p>
+                ) : null}
+                {buttons.map((b, i) => (
+                  <div key={i} className="flex gap-1">
+                    <input
+                      placeholder="Label"
+                      value={b.text}
+                      onChange={(e) => updateButton(i, "text", e.target.value)}
+                      className="min-w-0 flex-1 rounded border border-slate-600 bg-slate-700 px-1.5 py-0.5 text-slate-200"
+                    />
+                    <input
+                      placeholder="URL"
+                      value={b.url}
+                      onChange={(e) => updateButton(i, "url", e.target.value)}
+                      className="min-w-0 flex-[2] rounded border border-slate-600 bg-slate-700 px-1.5 py-0.5 text-slate-200"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeButton(i)}
+                      className="px-1 text-red-400 hover:bg-red-900/30"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button type="button" onClick={addButton} className="text-[10px] text-cyan-400 hover:text-cyan-300">
+                  + Button
+                </button>
+              </div>
+            ) : null}
+            {composerDetailTab === "delivery" ? (
+              <div className="space-y-1.5">
+                <SilentTelegramSendOption
+                  checked={scheduleSendSilent}
+                  onChange={(v) => {
+                    setScheduleSendSilent(v);
+                    writeSendSilentPreference(v);
+                  }}
+                />
+                <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={schedulePinAfterSend}
+                    onChange={(e) => setSchedulePinAfterSend(e.target.checked)}
+                  />
+                  Pin after send
+                </label>
+                <label className="flex cursor-pointer items-center gap-1.5 text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={scheduleCheckoutStars}
+                    onChange={(e) => {
+                      setScheduleCheckoutStars(e.target.checked);
+                      if (!e.target.checked) setScheduleCheckoutPlanId(0);
+                    }}
+                  />
+                  Stars checkout
+                </label>
+                {scheduleCheckoutStars ? (
+                  <select
+                    value={scheduleCheckoutPlanId || ""}
+                    onChange={(e) => setScheduleCheckoutPlanId(Number(e.target.value) || 0)}
+                    className={inputSm}
+                  >
+                    <option value="">Commerce plan…</option>
+                    {salablePlans.map((p) => (
+                      <option key={String(p.id)} value={Number(p.id)}>
+                        {String(p.name || `Plan ${p.id}`)} — {Number(p.price_stars || 0)}⭐
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
+                {scheduleCheckoutStars ? (
+                  <div className="grid grid-cols-2 gap-1">
+                    <input
+                      type="text"
+                      value={scheduleCheckoutButtonLabel}
+                      onChange={(e) => setScheduleCheckoutButtonLabel(e.target.value)}
+                      placeholder="Button label"
+                      maxLength={64}
+                      className={inputSm}
+                    />
+                    <input
+                      type="text"
+                      value={scheduleCheckoutReferralCode}
+                      onChange={(e) => setScheduleCheckoutReferralCode(e.target.value.replace(/[^a-zA-Z0-9]/g, ""))}
+                      placeholder="Referral"
+                      maxLength={16}
+                      className={inputSm}
+                    />
+                  </div>
+                ) : null}
+                <CaptionLlmRewriteFields
+                  enabled={scheduleLlmRewrite}
+                  onEnabledChange={setScheduleLlmRewrite}
+                  mode={scheduleLlmMode}
+                  onModeChange={setScheduleLlmMode}
+                  interval={scheduleLlmInterval}
+                  onIntervalChange={setScheduleLlmInterval}
+                  probability={scheduleLlmProb}
+                  onProbabilityChange={setScheduleLlmProb}
+                  disabled={createScheduledPost.isPending}
+                />
+              </div>
+            ) : null}
+          </div>
+        </SchedulerComposerCard>
     </>
   );
 
@@ -803,97 +851,39 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 mb-8 items-stretch">
-        <div className="bg-slate-800 rounded-lg p-4 xl:col-span-1">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <h2 className="text-lg font-medium">Pool intervals</h2>
-            <InfoDisclosure>
-              Pool auto-posting is off. Use scheduled posts below to publish. Times are stored as UTC; tooltips show
-              local and PT hints.
-            </InfoDisclosure>
-          </div>
-          {chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <XAxis dataKey="name" stroke="#94a3b8" fontSize={12} />
-                <YAxis stroke="#94a3b8" fontSize={12} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #475569" }}
-                  labelStyle={{ color: "#e2e8f0" }}
-                />
-                <Bar dataKey="interval" radius={[4, 4, 0, 0]}>
-                  {chartData.map((_, i) => (
-                    <Cell key={i} fill="#06b6d4" />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <p className="text-slate-500">No pools. Create pools in the Pools panel.</p>
-          )}
-        </div>
-        <div className="overflow-x-auto xl:col-span-2 border border-slate-600 rounded-lg">
-          <table className="w-full overflow-hidden">
-            <thead className="bg-slate-700">
-              <tr>
-                <th className="text-left p-3">Pool</th>
-                <th className="text-left p-3">Queued</th>
-                <th className="text-left p-3">Interval (min)</th>
-                <th className="text-left p-3">Last pool run (UTC)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pools.map((p: Record<string, unknown>) => (
-                <tr key={String(p.id)} className="border-t border-slate-600 hover:bg-slate-800/50">
-                  <td className="p-3">{String(p.name)}</td>
-                  <td className="p-3">
-                    <span className={Number(p.approved_count ?? 0) > 0 ? "text-cyan-300" : "text-slate-500"}>
-                      {String(p.approved_count ?? 0)}/{String(p.album_size ?? 5)}
-                    </span>
-                  </td>
-                  <td className="p-3">{String(p.interval_minutes)}</td>
-                  <td
-                    className="p-3 text-slate-400 text-sm"
-                    title={p.last_posted ? formatUtcWithLocalHint(String(p.last_posted)) : undefined}
-                  >
-                    {p.last_posted ? formatUtcForDashboard(String(p.last_posted)) : "Never"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <SchedulerWeek
-        posts={
-          scheduledPostsForWeek as Array<{
-            id: number;
-            name?: string | null;
-            scheduled_at?: string | null;
-            interval_minutes?: number | null;
-            channel_name?: string | null;
-            campaign_group_id?: string | null;
-          }>
-        }
-        onDayClick={openScheduleForCalendarDay}
-      />
-
-      <h2 className="text-xl font-semibold mb-3">Scheduled Posts</h2>
-      <div className="mb-4 flex justify-end">
-        <InfoDisclosure>
-          Captions support Telegram HTML tags; buttons support https:// and tg:// links. Recurring schedules begin with
-          <strong> Post now</strong> once if no last send exists. You can rotate captions and send one campaign to many
-          channels. Recurring rows show bright <strong>Next post</strong> in local time + PT.
-        </InfoDisclosure>
-      </div>
-
       {!calendarScheduleModalOpen ? (
-        <div id="scheduler-add-post" className="bg-slate-800 rounded-lg p-4 mb-6 max-w-4xl">
-          <h3 className="text-lg font-medium mb-3">Add scheduled post</h3>
+        <div
+          id="scheduler-add-post"
+          className="tbcc-panel mb-3 max-w-full rounded-md border border-slate-700/80 bg-slate-800/90 p-2"
+        >
           {renderAddScheduledPostForm()}
         </div>
       ) : null}
+
+      <div className="mb-4 max-w-full">
+        <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <h2 className="text-sm font-semibold tracking-tight text-slate-100">Scheduled posts</h2>
+          <span className="text-[10px] text-slate-500">
+            Overview · jobs · <strong className="text-slate-400">Post now</strong> → Celery
+          </span>
+          <InfoDisclosure>
+            Captions support Telegram HTML. Recurring jobs fire <strong>Post now</strong> once if never sent.
+          </InfoDisclosure>
+        </div>
+        <ScheduledPostsList
+          weekPosts={
+            scheduledPostsForWeek as Array<{
+              id: number;
+              name?: string | null;
+              scheduled_at?: string | null;
+              interval_minutes?: number | null;
+              channel_name?: string | null;
+              campaign_group_id?: string | null;
+            }>
+          }
+          onWeekDayClick={openScheduleForCalendarDay}
+        />
+      </div>
 
       {calendarScheduleModalOpen ? (
         <div
@@ -904,7 +894,7 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
           onClick={() => setCalendarScheduleModalOpen(false)}
         >
           <div
-            className="w-full max-w-4xl rounded-lg border border-slate-600 bg-slate-800 p-4 shadow-2xl mb-10"
+            className="w-full max-w-[min(96rem,100%)] rounded-lg border border-slate-600 bg-slate-800 p-4 shadow-2xl mb-10"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
@@ -934,69 +924,6 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
         </div>
       ) : null}
 
-      <div className="bg-slate-800 rounded-lg p-4 mb-8 max-w-2xl border border-slate-600/80">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <h3 className="text-lg font-medium">Pin a message in a channel</h3>
-          <InfoDisclosure>
-            Paste numeric message id from a message link or helper bot. Your admin Telegram session must have pin rights
-            in the channel.
-          </InfoDisclosure>
-        </div>
-        <div className="flex flex-wrap gap-3 items-end">
-          <div className="flex-1 min-w-[10rem]">
-            <span className="text-slate-400 text-xs block mb-1">Channel</span>
-            <select
-              value={pinToolChannelId}
-              onChange={(e) => setPinToolChannelId(Number(e.target.value))}
-              className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
-            >
-              <option value={0}>Select channel</option>
-              {(channels as Array<{ id: number; name?: string; identifier?: string }>).map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || c.identifier || `#${c.id}`}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="w-32">
-            <span className="text-slate-400 text-xs block mb-1">Message id</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={pinToolMessageId}
-              onChange={(e) => setPinToolMessageId(e.target.value)}
-              placeholder="e.g. 48291"
-              className="w-full bg-slate-700 border border-slate-600 rounded px-2 py-2 text-slate-200 text-sm"
-            />
-          </div>
-          <label className="flex items-center gap-2 text-sm text-slate-300 pb-2">
-            <input type="checkbox" checked={pinToolUnpin} onChange={(e) => setPinToolUnpin(e.target.checked)} />
-            Unpin
-          </label>
-          <button
-            type="button"
-            onClick={() => pinToolMutation.mutate()}
-            disabled={pinToolMutation.isPending}
-            className="px-4 py-2 bg-slate-600 text-white rounded hover:bg-slate-500 disabled:opacity-50 text-sm"
-          >
-            {pinToolMutation.isPending ? "…" : pinToolUnpin ? "Unpin" : "Pin"}
-          </button>
-        </div>
-        {pinToolMsg && (
-          <p className={`text-sm mt-3 ${pinToolMsg.includes("Error") || pinToolMsg.includes("Select") ? "text-amber-300" : "text-emerald-300"}`}>
-            {pinToolMsg}
-          </p>
-        )}
-      </div>
-
-      <SchedulerBufferPanel />
-
-      <h2 className="text-xl font-semibold mb-2">Scheduled posts</h2>
-      <p className="text-slate-400 text-sm mb-4">
-        Click a row to edit captions, interval, pool albums, or <strong className="text-slate-300">Buffer → X</strong> per job.
-        The <strong className="text-slate-300">Destinations</strong> column shows Telegram + social mirror when enabled.
-      </p>
-      <ScheduledPostsList />
     </div>
   );
 }

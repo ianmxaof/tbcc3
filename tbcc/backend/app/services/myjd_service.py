@@ -44,6 +44,50 @@ def myjd_poll_timeout_s() -> float:
         return 120.0
 
 
+def myjd_request_timeout_s() -> float:
+    """Hard cap for any single MyJD API round-trip (connect + add_links / resolve)."""
+    try:
+        return max(5.0, float(os.environ.get("TBCC_MYJD_REQUEST_TIMEOUT_S") or "45"))
+    except ValueError:
+        return 45.0
+
+
+def myjd_max_links_per_batch() -> int:
+    try:
+        return max(1, min(200, int(os.environ.get("TBCC_MYJD_MAX_LINKS_PER_BATCH") or "40")))
+    except ValueError:
+        return 40
+
+
+def myjd_async_min_links() -> int:
+    try:
+        return max(1, int(os.environ.get("TBCC_MYJD_ASYNC_MIN_LINKS") or "12"))
+    except ValueError:
+        return 12
+
+
+def myjd_prefer_async() -> bool:
+    return (os.environ.get("TBCC_MYJD_ASYNC") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def count_link_lines(links: str) -> int:
+    return len(_split_link_lines(links))
+
+
+def _split_link_lines(links: str) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in (links or "").splitlines():
+        u = raw.strip()
+        if not u or not u.startswith(("http://", "https://")):
+            continue
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
 def _format_myjd_device_list(devices: list[dict[str, Any]]) -> str:
     names = [str(d.get("name") or "").strip() for d in devices if d.get("name")]
     return ", ".join(repr(n) for n in names) if names else "(none)"
@@ -222,17 +266,32 @@ def _resolve_page_sync(
 def _add_links_sync(links: str, *, package_name: str | None = None, autostart: bool = False) -> dict[str, Any]:
     _, device = _connect_sync()
     pkg = package_name or f"TBCC {int(time.time())}"
-    job = device.linkgrabber.add_links(
-        [
-            {
-                "autostart": autostart,
-                "links": links.strip(),
-                "packageName": pkg,
-                "priority": "DEFAULT",
-            }
-        ]
-    )
-    return {"ok": True, "package_name": pkg, "job": job}
+    urls = _split_link_lines(links)
+    if not urls:
+        raise ValueError("No http(s) links in payload")
+    batch_size = myjd_max_links_per_batch()
+    jobs: list[Any] = []
+    for i in range(0, len(urls), batch_size):
+        chunk = urls[i : i + batch_size]
+        suffix = f" ({i // batch_size + 1})" if len(urls) > batch_size else ""
+        job = device.linkgrabber.add_links(
+            [
+                {
+                    "autostart": autostart,
+                    "links": "\n".join(chunk),
+                    "packageName": pkg + suffix,
+                    "priority": "DEFAULT",
+                }
+            ]
+        )
+        jobs.append(job)
+    return {
+        "ok": True,
+        "package_name": pkg,
+        "link_count": len(urls),
+        "batches": len(jobs),
+        "job": jobs[-1] if jobs else None,
+    }
 
 
 def _plugin_handles_url_sync(url: str) -> bool | None:
@@ -246,11 +305,14 @@ def _plugin_handles_url_sync(url: str) -> bool | None:
 
 
 async def myjd_status() -> dict[str, Any]:
-    return await asyncio.to_thread(status_sync)
+    return await asyncio.wait_for(asyncio.to_thread(status_sync), timeout=myjd_request_timeout_s())
 
 
 async def myjd_add_links(links: str, *, package_name: str | None = None, autostart: bool = False) -> dict[str, Any]:
-    return await asyncio.to_thread(_add_links_sync, links, package_name=package_name, autostart=autostart)
+    return await asyncio.wait_for(
+        asyncio.to_thread(_add_links_sync, links, package_name=package_name, autostart=autostart),
+        timeout=myjd_request_timeout_s(),
+    )
 
 
 async def myjd_resolve_page(
@@ -259,16 +321,21 @@ async def myjd_resolve_page(
     package_name: str | None = None,
     autostart: bool = False,
 ) -> list[MyJdResolvedItem]:
-    return await asyncio.to_thread(
-        _resolve_page_sync,
-        page_url,
-        package_name=package_name,
-        autostart=autostart,
+    # Resolve polls linkgrabber up to poll timeout; allow extra headroom for connect.
+    timeout = myjd_poll_timeout_s() + myjd_request_timeout_s()
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            _resolve_page_sync,
+            page_url,
+            package_name=package_name,
+            autostart=autostart,
+        ),
+        timeout=timeout,
     )
 
 
 async def myjd_can_handle_url(url: str) -> bool | None:
-    return await asyncio.to_thread(_plugin_handles_url_sync, url)
+    return await asyncio.wait_for(asyncio.to_thread(_plugin_handles_url_sync, url), timeout=myjd_request_timeout_s())
 
 
 def should_use_myjd_for_url(url: str, *, local_adapter: str, local_count: int) -> bool:

@@ -167,7 +167,7 @@ def organize_file(
     dry_run: bool = False,
 ) -> tuple[bool, str, Path | None]:
     """
-    Move ``src`` into library_root/<Category>/ if it is a regular file and not incomplete.
+    Move ``src`` into library_root/<Category>/ (or Images/<tier>/[<class>/] when NSFW sorting is on).
     Returns (ok, message, dest_or_none).
     """
     try:
@@ -215,21 +215,49 @@ def organize_file(
         _append_log(log_path, record)
         return True, f"moved non-media -> {reject_dest}", reject_dest
 
-    dest_dir = library_root / cat
+    nsfw_meta: dict | None = None
+    rel_subdir = cat
+    try:
+        from app.services.watch_folder_nsfw import (
+            build_watch_metadata,
+            image_library_subdir,
+            watch_nsfw_tier_subfolders_enabled,
+            write_watch_sidecar,
+        )
+
+        if cat == "Images" and watch_nsfw_tier_subfolders_enabled():
+            nsfw_meta = build_watch_metadata(src)
+            rel_subdir = image_library_subdir(cat, src, nsfw_meta)
+    except Exception as e:
+        logger.warning("watch nsfw metadata skipped for %s: %s", src.name, e)
+
+    dest_dir = library_root.joinpath(*rel_subdir.split("/"))
     dest = _unique_dest(dest_dir / src.name)
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "action": "dry_run" if dry_run else "move",
         "category": cat,
+        "library_subdir": rel_subdir,
         "src": str(src),
         "dest": str(dest),
     }
+    if nsfw_meta:
+        record["nsfw_tier"] = nsfw_meta.get("nsfw_tier")
+        record["nsfw_class"] = nsfw_meta.get("top_class")
+        niche = nsfw_meta.get("niche") or {}
+        if isinstance(niche, dict):
+            record["niche_slug"] = niche.get("primary_slug") or (niche.get("clip") or {}).get("top_slug")
+            record["niche_source"] = niche.get("primary_source")
+        if nsfw_meta.get("llm"):
+            record["llm_niche"] = (nsfw_meta.get("llm") or {}).get("niche")
     if dry_run:
         _append_log(log_path, record)
         return True, f"would move -> {dest}", dest
     try:
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
+        if nsfw_meta:
+            write_watch_sidecar(dest, nsfw_meta)
     except OSError as e:
         logger.exception("move failed %s -> %s", src, dest)
         record["action"] = "error"
@@ -392,7 +420,7 @@ def run_watch_loop(
     observer.schedule(Handler(), str(inbox), recursive=False)
     observer.start()
     logger.info(
-        "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s media_only=%s reject_dir=%s",
+        "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s media_only=%s reject_dir=%s nsfw_tier=%s nsfw_class=%s clip_niche=%s vision_llm=%s",
         inbox,
         library_root,
         debounce_s,
@@ -400,6 +428,10 @@ def run_watch_loop(
         len(_CATEGORY_OVERRIDES),
         media_only,
         str(reject_dir) if reject_dir else "-",
+        _is_truthy_env(os.environ.get("TBCC_WATCH_NSFW_TIER_SUBFOLDERS")),
+        _is_truthy_env(os.environ.get("TBCC_WATCH_NSFW_CLASS_SUBFOLDERS")),
+        bool((os.environ.get("TBCC_CLIP_CATEGORIZE_URL") or "").strip()),
+        (os.environ.get("TBCC_VISION_LLM_PROVIDER") or os.environ.get("TBCC_WATCH_LLM_TAG") or "").strip() or "-",
     )
     try:
         while True:

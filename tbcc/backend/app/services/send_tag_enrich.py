@@ -12,7 +12,9 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+from app.services.clip_classifier import clip_classifier_enabled
 from app.services.lustpress_metadata import fetch_metadata_for_url, lustpress_enabled, metadata_to_tag_slugs
+from app.services.media_niche_classify import classify_image_bytes_niche
 from app.services.nsfw_classifier import classify_image_url, nsfw_classifier_enabled
 
 logger = logging.getLogger(__name__)
@@ -272,6 +274,49 @@ def _lustpress_labels(page_url: str, *, timeout: float = 25.0) -> tuple[list[str
     return labels, title
 
 
+def _clip_niche_labels(
+    media_urls: list[str],
+    max_samples: int = 2,
+    *,
+    timeout: float = 60.0,
+) -> tuple[list[str], str | None]:
+    if not clip_classifier_enabled():
+        return [], None
+    import httpx
+
+    sampled = 0
+    labels: list[str] = []
+    top_slug: str | None = None
+    for raw in media_urls:
+        if sampled >= max_samples:
+            break
+        url = (raw or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        low = url.lower().split("?", 1)[0]
+        if not any(low.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")):
+            continue
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                r = client.get(url)
+                r.raise_for_status()
+                data = r.content[:4_000_000]
+        except Exception as e:
+            logger.debug("clip sample fetch failed: %s", e)
+            continue
+        if len(data) < 32:
+            continue
+        sampled += 1
+        niche = classify_image_bytes_niche(data, top_k=3)
+        for slug in niche.get("labels") or []:
+            s = str(slug).strip()
+            if s and not is_junk_label(s) and s not in labels:
+                labels.append(s)
+        if not top_slug and niche.get("primary_slug"):
+            top_slug = str(niche["primary_slug"])
+    return labels[:6], top_slug
+
+
 def _nsfw_tier_labels(
     media_urls: list[str],
     max_samples: int = 3,
@@ -306,6 +351,9 @@ def _nsfw_tier_labels(
             labels.append(tier)
         elif tier == "unknown":
             labels.append("nsfw-unknown")
+        top = (res.top_class or "").strip().lower()
+        if res.confident and top in ("hentai", "porn", "sexy", "drawings", "neutral"):
+            labels.append(top)
     top_tier = next(iter(tier_seen), None)
     return labels, top_tier
 
@@ -386,11 +434,22 @@ def enrich_send_batch(
     for lbl in nsfw_labels:
         _add_label(labels, seen, lbl)
 
+    clip_max = 1 if fast else 2
+    clip_labels, clip_primary = _clip_niche_labels(
+        media_urls, max_samples=clip_max, timeout=nsfw_timeout + 15.0
+    )
+    if clip_labels and "clip" not in sources:
+        sources.append("clip")
+    for lbl in clip_labels:
+        _add_label(labels, seen, lbl)
+
     caption_line = ""
     if caption_parts:
         caption_line = caption_parts[0]
         if len(caption_parts) > 1:
             caption_line = caption_parts[0] + " · " + caption_parts[1][:80]
+    elif clip_primary and not is_junk_label(clip_primary):
+        caption_line = clip_primary.replace("-", " ").title()
 
     return {
         "ok": True,
@@ -399,6 +458,8 @@ def enrich_send_batch(
         "sources": sources,
         "lustpress_pages": lustpress_pages,
         "nsfw_tier": top_tier,
+        "clip_primary_slug": clip_primary,
         "lustpress_enabled": lustpress_enabled(),
         "nsfw_enabled": nsfw_classifier_enabled(),
+        "clip_enabled": clip_classifier_enabled(),
     }

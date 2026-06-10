@@ -61,14 +61,6 @@
           <span id="crawlerTabUrl" class="crawler-tab-url" title="Active tab URL"></span>
           <span id="crawlerStatus" class="crawler-status" aria-live="polite"></span>
         </div>
-        <div id="tbccApiOfflineBanner" class="tbcc-api-offline-banner" hidden aria-live="polite">
-          <span id="tbccApiOfflineBannerText">TBCC API offline — start the backend on localhost:8000.</span>
-          <span class="tbcc-api-offline-banner__actions">
-            <button type="button" id="btnTbccLaunchApiFromGallery" class="tbcc-btn-secondary tbcc-btn--compact">Launch full stack</button>
-            <button type="button" id="btnTbccRetryApiFromGallery" class="tbcc-btn-secondary tbcc-btn--compact">Retry connection</button>
-          </span>
-        </div>
-        <div id="tbccSystemHealthHint" class="tbcc-system-health-hint" hidden aria-live="polite"></div>
         <div id="tbccActiveJobsBar" class="tbcc-active-jobs-bar" hidden aria-live="polite">
           <div class="tbcc-active-jobs-bar__head">
             <strong>Running tasks</strong>
@@ -196,7 +188,7 @@
           <div id="sendPromoStripWrap" class="send-promo-strip-wrap" hidden>
             <div class="send-promo-strip-head">
               <strong class="send-promo-strip-head__title">Send promo</strong>
-              <span class="send-promo-strip-head__hint">Appended last on batch send (Saved / channel / topic)</span>
+              <span class="send-promo-strip-head__hint">Included in the last album on batch send (Saved / channel / topic)</span>
               <label class="send-promo-strip-head__check" title="Add active promo tile after your selection">
                 <input type="checkbox" id="sendPromoOnSend" checked />
                 Append
@@ -225,6 +217,15 @@
           <button type="button" id="btnDownload" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Download selected">⬇</button>
           <button type="button" id="btnDownloadZip" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="ZIP selected">📦</button>
           <button type="button" id="btnCopyJd" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Send selection to JDownloader LinkGrabber">🔗</button>
+          <button
+            type="button"
+            id="btnAddToCollected"
+            class="tbcc-btn-icon tbcc-btn-icon--tool"
+            disabled
+            title="Stage selected tiles in Collected gallery (group, tag, caption, then Dest)"
+          >
+            ＋
+          </button>
           <button type="button" id="btnToggleOverlay" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Toggle on-page selection boxes">☑</button>
           <button type="button" id="btnSelectAllOnPage" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Select all on tab (page overlay)">⊞</button>
           <button type="button" id="btnToggleFoldVariants" class="tbcc-btn-icon tbcc-btn-icon--tool" title="Fold duplicate video resolutions into one tile">⧉</button>
@@ -420,6 +421,7 @@
                 <div class="telegram-caption-toolbar telegram-caption-toolbar--wrap">
                   <label for="forumAlbumCaption">Message text</label>
                   <div class="telegram-caption-toolbar__actions">
+                    <span id="captionInsertMenuMount"></span>
                     <button type="button" id="btnCaptionLibraryOpen" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Insert from saved captions">
                       Library…
                     </button>
@@ -465,7 +467,7 @@
               <p id="importSheetTagsOutcome" class="import-sheet-outcome" aria-live="polite"></p>
               <label class="forum-check import-sheet-auto-tag">
                 <input type="checkbox" id="autoTagOnExport" />
-                <span id="autoTagOnExportLabel">Auto-fill from page tab, site name, and URL paths</span>
+                <span id="autoTagOnExportLabel">Auto-fill from page tab and URL paths (not source site names)</span>
               </label>
               <div id="tagSendPanel" class="tag-send-panel tag-send-panel--sheet">
                 <div class="tag-send-toolbar">
@@ -504,39 +506,51 @@
             <button type="button" id="btnSavedUrlInboxDone">Done</button>
           </div>
           <p class="sheet-intro-hint">
-            Queue links (context menu: <strong>Add URL to TBCC inbox</strong>). Choose <strong>content pool</strong> (media import,
-            <strong>background</strong>) or <strong>Loot modifier</strong> (batched link-only, or <strong>Zip pack</strong> to download → zip → tier 9–10). Then <strong>Import checked</strong>.
-            Pool imports use <strong>Auto-fill tags</strong> from Send settings (step 3).
+            Save links to the <strong>master archive</strong> (tagged, filterable) without hitting TBCC upload until you choose.
+            Queue rows here only when destination is <strong>Import queue</strong>. Context menu: <strong>Add URL to TBCC inbox</strong>.
           </p>
-          <div class="saved-url-inbox-toolbar">
+          <div class="saved-url-inbox-toolbar saved-url-inbox-toolbar--primary">
             <label class="saved-url-inbox-default-pool">
-              Default destination
-              <select id="savedUrlInboxDefaultDest" class="pool-select-compact" title="Pool = download + Media Library; Loot modifier = link only">
-                <option value="pool">Content pool (media)</option>
-                <option value="loot_modifier">Loot modifier (URL only)</option>
+              Destination
+              <select id="savedUrlInboxDefaultDest" class="pool-select-compact" title="Archive = master list only; Import queue = staged for TBCC import">
+                <option value="archive">Master archive (no upload)</option>
+                <option value="pool">Import queue → content pool</option>
+                <option value="loot_modifier">Import queue → Loot modifier</option>
               </select>
             </label>
             <label class="saved-url-inbox-default-pool" id="savedUrlInboxDefaultPoolWrap">
               Pool
               <select id="savedUrlInboxDefaultPool" class="pool-select-compact"></select>
             </label>
-            <input type="url" id="savedUrlInboxManualUrl" class="tbcc-input" placeholder="https://…" />
-            <button type="button" id="btnSavedUrlInboxAdd" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Add URL</button>
+            <label class="saved-url-inbox-default-pool" id="savedUrlInboxDefaultTagsWrap">
+              Tags
+              <input type="text" id="savedUrlInboxDefaultTags" class="tbcc-input saved-url-inbox-default-tags" placeholder="erome, staging" />
+            </label>
+            <input type="url" id="savedUrlInboxManualUrl" class="tbcc-input saved-url-inbox-manual-url" placeholder="https://…" />
+            <button type="button" id="btnSavedUrlInboxAdd" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Add</button>
+            <button type="button" id="btnSavedUrlInboxArchiveSel" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Send checked URLs to master archive (no TBCC upload)">Archive checked</button>
             <button type="button" id="btnSavedUrlInboxImportSel" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Import checked</button>
-            <button type="button" id="btnSavedUrlInboxRemoveSel" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Remove checked</button>
-            <button type="button" id="btnSavedUrlInboxClearImported" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Clear imported</button>
-            <button type="button" id="btnSavedUrlInboxSelectAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Check all queued rows">Select all</button>
-            <button type="button" id="btnSavedUrlInboxDeselectAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Uncheck all rows">Deselect all</button>
-            <button type="button" id="btnSavedUrlInboxExport" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Download inbox as JSON">Export inbox</button>
-            <button type="button" id="btnSavedUrlInboxImport" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Import URLs from file or clipboard">Import…</button>
-            <button type="button" id="btnSavedUrlInboxCopyAll" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="Copy every URL currently in the inbox queue">Copy all URLs</button>
-            <button type="button" id="btnSavedUrlInboxMaster" class="tbcc-btn-secondary tbcc-btn--sheet-compact" title="All URLs and usernames ever captured">Master archive</button>
+            <label class="saved-url-inbox-actions-label">
+              Actions
+              <select id="savedUrlInboxActions" class="pool-select-compact">
+                <option value="">Choose…</option>
+                <option value="select_all">Select all</option>
+                <option value="deselect_all">Deselect all</option>
+                <option value="remove_checked">Remove checked</option>
+                <option value="clear_imported">Clear imported</option>
+                <option value="copy_all">Copy all URLs</option>
+                <option value="export_json">Export inbox JSON</option>
+                <option value="import_file">Import from file…</option>
+                <option value="open_archive">Open master archive</option>
+              </select>
+            </label>
+            <button type="button" id="btnSavedUrlInboxRunAction" class="tbcc-btn-secondary tbcc-btn--sheet-compact">Go</button>
           </div>
           <input type="file" id="savedUrlInboxImportFile" accept=".json,.csv,.txt,text/plain,application/json" hidden />
           <p id="savedUrlInboxStatus" class="saved-url-inbox-status" aria-live="polite"></p>
           <p class="sheet-intro-hint sheet-intro-hint--tight">
-            <strong>Import checked</strong> sends rows to your TBCC server (content pool download or loot modifier URL). The
-            <strong>master archive</strong> keeps every URL/username locally and is not cleared when you clear imported inbox rows.
+            <strong>Dashboard → Master Archive</strong> is canonical; the extension mirror is for capture, filters, and hygiene.
+            <strong>Archive checked</strong> sends selected URLs to the master archive. <strong>Import checked</strong> runs TBCC download/upload for import-queue rows only.
           </p>
           <div id="savedUrlInboxList" class="saved-url-inbox-list" role="list"></div>
         </div>
@@ -566,6 +580,7 @@
           </div>
           <div class="master-archive-toolbar">
             <input type="search" id="masterArchiveFilter" class="tbcc-input" placeholder="Filter…" />
+            <input type="text" id="masterArchiveTags" class="tbcc-input" placeholder="Tags (comma)" title="All listed tags must match" />
             <select id="masterArchiveKind" class="pool-select-compact" title="Entry type">
               <option value="">All types</option>
               <option value="url">URLs only</option>
@@ -658,27 +673,43 @@
         role="presentation"
       >
         <div class="tbcc-gallery-ctx-menu__inner" role="menu" aria-label="Gallery quick actions">
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="saveTabArchive">Save tab URL to master archive</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="lookupUsername" hidden>Look up username</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="reverseImage">Reverse image search</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="collectedAdd">Add to Collected</button>
+          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="savedMessages">Send to Saved Messages</button>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="refresh">Refresh / rescan</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="overlay">Toggle on-page boxes</button>
-          <hr class="tbcc-gallery-ctx-menu__sep" />
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectToggle">Select all visible</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectAnchorToggle">Toggle anchor row</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectAllPage">Select all on page (overlay)</button>
-          <hr class="tbcc-gallery-ctx-menu__sep" />
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="download">Download selected</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="zip">ZIP selected</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="copyJd">Send to JDownloader</button>
+          <div class="tbcc-gallery-ctx-menu__sub">
+            <button type="button" class="tbcc-gallery-ctx-menu__item tbcc-gallery-ctx-menu__item--parent" data-ctx-sub="select">Select ▸</button>
+            <div class="tbcc-gallery-ctx-menu__flyout" hidden>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectToggle">All visible</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectAnchorToggle">Toggle anchor row</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="selectAllPage">All on page (overlay)</button>
+            </div>
+          </div>
+          <div class="tbcc-gallery-ctx-menu__sub">
+            <button type="button" class="tbcc-gallery-ctx-menu__item tbcc-gallery-ctx-menu__item--parent" data-ctx-sub="export">Export ▸</button>
+            <div class="tbcc-gallery-ctx-menu__flyout" hidden>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="download">Download selected</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="zip">ZIP selected</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="copyJd">JDownloader</button>
+            </div>
+          </div>
           <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="send">Send to TBCC</button>
-          <hr class="tbcc-gallery-ctx-menu__sep" />
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="filter">Filter…</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="fold">Toggle fold video variants</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="crop">Crop &amp; watermarks</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="addFiles">Add local files</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="telegram">Send settings…</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="inbox">URL inbox…</button>
-          <hr class="tbcc-gallery-ctx-menu__sep" />
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="options">Capture &amp; extension options</button>
-          <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="help">Keyboard shortcuts</button>
+          <div class="tbcc-gallery-ctx-menu__sub">
+            <button type="button" class="tbcc-gallery-ctx-menu__item tbcc-gallery-ctx-menu__item--parent" data-ctx-sub="more">More ▸</button>
+            <div class="tbcc-gallery-ctx-menu__flyout" hidden>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="overlay">On-page boxes</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="filter">Filter…</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="fold">Fold video variants</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="crop">Crop &amp; watermarks</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="addFiles">Add local files</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="telegram">Send settings…</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="inbox">URL inbox…</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="options">Capture options</button>
+              <button type="button" class="tbcc-gallery-ctx-menu__item" role="menuitem" data-ctx="help">Shortcuts</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -687,6 +718,7 @@
           <button type="button" class="close-lb" id="tbccLightboxClose" title="Close (Esc)">×</button>
           <img id="tbccLightboxImg" alt="" style="display:none" />
           <video id="tbccLightboxVideo" controls playsinline style="display:none"></video>
+          <div id="tbccLightboxMeta" class="tbcc-lightbox-meta" hidden></div>
           <div id="tbccLightboxVideoErr" class="lightbox-video-err" hidden></div>
         </div>
       </div>
@@ -715,10 +747,13 @@
   <script src="tbcc-master-archive.js"></script>
   <script src="tbcc-archive-list-ui.js"></script>
   <script src="saved-url-inbox.js"></script>
+  <script src="tbcc-collected-lib.js"></script>
   <script src="tag-catalog-combobox.js"></script>
   <script src="auto-tag-utils.js"></script>
   <script src="tbcc-clipboard-toast.js"></script>
+  <script src="tbcc-insert-menu.js"></script>
   <script src="gallery-send-promo.js"></script>
+  <script src="tbcc-webp-convert.js"></script>
   <script src="tbcc-import-pipeline.js"></script>
   <script src="gallery.js"></script>
   <script src="gallery-panel.js"></script>

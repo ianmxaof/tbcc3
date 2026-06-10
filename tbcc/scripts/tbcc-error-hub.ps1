@@ -13,6 +13,113 @@ function Get-TbccErrorHubPaths {
   return @{ RunDir = $runDir; LaunchersDir = $launchers; LogPath = $log }
 }
 
+function Set-TbccConsoleTabTitle {
+  <# Short tab/window title so Windows Terminal does not widen to fit "TBCC-Backend - powershell -File ...". #>
+  param([Parameter(Mandatory = $true)][string]$Title)
+  $t = $Title.Trim()
+  if (-not $t) { return }
+  try {
+    if ($Host.UI -and $Host.UI.RawUI) {
+      $Host.UI.RawUI.WindowTitle = $t
+    }
+  } catch {}
+  try {
+    $esc = [char]27
+    $bel = [char]7
+    [Console]::Out.Write("${esc}]0;${t}${bel}")
+    [Console]::Out.Flush()
+  } catch {}
+}
+
+function Get-TbccConsoleLayoutFromRoot {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $cols = 84
+  $lines = 24
+  $dotEnv = Join-Path $TbccRoot ".env"
+  if (Test-Path -LiteralPath $dotEnv) {
+    foreach ($line in Get-Content -LiteralPath $dotEnv -ErrorAction SilentlyContinue) {
+      $raw = $line.Trim()
+      if (-not $raw -or $raw.StartsWith("#")) { continue }
+      $eq = $raw.IndexOf("=")
+      if ($eq -lt 1) { continue }
+      $k = $raw.Substring(0, $eq).Trim()
+      $v = $raw.Substring($eq + 1).Trim()
+      if ($v.StartsWith('"') -and $v.EndsWith('"') -and $v.Length -ge 2) { $v = $v.Substring(1, $v.Length - 2) }
+      if ($k -eq "TBCC_CONSOLE_COLS") { try { $cols = [int]$v } catch {} }
+      if ($k -eq "TBCC_CONSOLE_LINES") { try { $lines = [int]$v } catch {} }
+    }
+  }
+  $cols = [Math]::Max(40, [Math]::Min(200, $cols))
+  $lines = [Math]::Max(12, [Math]::Min(60, $lines))
+  return @{ Cols = $cols; Lines = $lines }
+}
+
+function Initialize-TbccServiceConsole {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$Title
+  )
+  Set-TbccConsoleTabTitle -Title $Title
+  $layout = Get-TbccConsoleLayoutFromRoot -TbccRoot $TbccRoot
+  $null = cmd /c ("mode con: cols={0} lines={1} >nul 2>&1" -f $layout.Cols, $layout.Lines)
+}
+
+function Test-TbccWtPowershellHubCommand {
+  param([Parameter(Mandatory = $true)][string]$Command)
+  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|run-tbcc-orchestrator\.ps1')
+}
+
+function Add-TbccWtTabShellInvocation {
+  <# Launch hub-wrapped services as powershell.exe tabs (not cmd /k) so WT tab titles stay short. #>
+  param(
+    [Parameter(Mandatory = $true)][System.Collections.ArrayList]$ArgumentList,
+    [Parameter(Mandatory = $true)][string]$Title,
+    [Parameter(Mandatory = $true)][string]$Command,
+    [int]$Cols = 84,
+    [int]$Lines = 24
+  )
+  [void]$ArgumentList.Add('new-tab')
+  [void]$ArgumentList.Add('--title')
+  [void]$ArgumentList.Add($Title)
+  if (Test-TbccWtPowershellHubCommand -Command $Command) {
+    $file = $null
+    $root = $null
+    if ($Command -match '-File\s+"([^"]+)"') { $file = $Matches[1] }
+    if ($Command -match '-TbccRoot\s+"([^"]+)"') { $root = $Matches[1] }
+    if (-not $file -or -not $root) {
+      throw "Add-TbccWtTabShellInvocation: could not parse hub wrapper command."
+    }
+    [void]$ArgumentList.Add('powershell')
+    [void]$ArgumentList.Add('-NoProfile')
+    [void]$ArgumentList.Add('-ExecutionPolicy')
+    [void]$ArgumentList.Add('Bypass')
+    [void]$ArgumentList.Add('-File')
+    [void]$ArgumentList.Add($file)
+    [void]$ArgumentList.Add('-TbccRoot')
+    [void]$ArgumentList.Add($root)
+    if ($Command -match 'run-tbcc-service\.ps1') {
+      [void]$ArgumentList.Add('-ServiceName')
+      [void]$ArgumentList.Add($Title)
+    }
+    if ($Command -match 'run-tbcc-orchestrator\.ps1') {
+      if ($Command -match '-Action\s+(\w+)') {
+        [void]$ArgumentList.Add('-Action')
+        [void]$ArgumentList.Add($Matches[1])
+      }
+      if ($Command -match '-NoOpen') {
+        [void]$ArgumentList.Add('-NoOpen')
+      }
+    }
+    return
+  }
+  $part1 = "mode con: cols=$Cols lines=$Lines"
+  $part2 = [string]::Concat('title "', $Title, '"')
+  $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Command)
+  [void]$ArgumentList.Add('cmd')
+  [void]$ArgumentList.Add('/k')
+  [void]$ArgumentList.Add($run)
+}
+
 function Initialize-TbccErrorHub {
   param([Parameter(Mandatory = $true)][string]$TbccRoot)
   $paths = Get-TbccErrorHubPaths -TbccRoot $TbccRoot
@@ -71,6 +178,27 @@ function Format-TbccHubLine {
   return $one.Substring(0, $MaxLen) + " ...."
 }
 
+function Add-TbccErrorHubLogBytes {
+  param(
+    [Parameter(Mandatory = $true)][string]$LogPath,
+    [Parameter(Mandatory = $true)][byte[]]$Bytes
+  )
+  # FileShare.ReadWrite lets show-tbcc-error-hub.ps1 (Get-Content -Wait) tail without blocking writers.
+  $stream = [System.IO.File]::Open(
+    $LogPath,
+    [System.IO.FileMode]::Append,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::ReadWrite
+  )
+  try {
+    $stream.Write($Bytes, 0, $Bytes.Length)
+    $stream.Flush()
+  } finally {
+    $stream.Close()
+    $stream.Dispose()
+  }
+}
+
 function Write-TbccErrorHubEntry {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
@@ -88,15 +216,27 @@ function Write-TbccErrorHubEntry {
     $line += "  -> " + (Format-TbccHubLine -Text $Hint -MaxLen 120)
   }
 
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  $bytes = $utf8.GetBytes($line + [Environment]::NewLine)
   $mutex = New-Object System.Threading.Mutex($false, $script:TbccErrorHubMutexName)
+  $gotMutex = $false
   try {
-    $null = $mutex.WaitOne(15000)
-    Add-Content -LiteralPath $paths.LogPath -Value $line -Encoding UTF8
-  } finally {
-    if ($mutex) {
-      try { $mutex.ReleaseMutex() } catch {}
-      $mutex.Dispose()
+    $gotMutex = $mutex.WaitOne(15000)
+    if (-not $gotMutex) { return }
+    for ($attempt = 0; $attempt -lt 4; $attempt++) {
+      try {
+        Add-TbccErrorHubLogBytes -LogPath $paths.LogPath -Bytes $bytes
+        return
+      } catch [System.IO.IOException] {
+        if ($attempt -ge 3) { throw }
+        Start-Sleep -Milliseconds (40 * ($attempt + 1))
+      }
     }
+  } finally {
+    if ($mutex -and $gotMutex) {
+      try { $mutex.ReleaseMutex() } catch {}
+    }
+    if ($mutex) { $mutex.Dispose() }
   }
 }
 
@@ -120,6 +260,9 @@ function Test-TbccBenignHubLine {
     'No training configuration found in the save file',
     'cpu_feature_guard\.cc',
     'performance-critical operations',
+    'oneDNN custom operations are on',
+    'QuickGELU mismatch',
+    'unauthenticated requests to the HF Hub',
     '^\s*I\d{4}\s',  # TensorFlow / absl INFO written to stderr (e.g. I0000 ...)
     'actively refused it\),\s*retry\s+\d+/\d+',  # API not up yet; bots retry on startup
     'failed \(.*\),\s*retry\s+\d+/\d+\s+in\s+\d+s'
@@ -137,8 +280,9 @@ function Test-TbccErrorLine {
   if ($t.Length -lt 4) { return $false }
   if (Test-TbccBenignHubLine -Line $t) { return $false }
 
-  # Benign noise
-  if ($t -match '^(INFO|DEBUG)\s') { return $false }
+  # Benign noise (uvicorn uses "INFO:" with a colon)
+  if ($t -match '^(INFO|DEBUG)[\s:]') { return $false }
+  if ($t -match 'HTTP/1\.1"\s+2\d\d\s') { return $false }
   if ($t -match '0 errors?\b') { return $false }
   if ($t -match 'no errors?\b') { return $false }
   if ($t -imatch 'is not recognized as the name of a cmdlet') { return $false }

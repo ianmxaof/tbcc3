@@ -103,7 +103,7 @@ export function CaptionTelegramHtmlField({
           onFocus={regSnippetFocus}
           onBlur={regSnippetBlur}
           rows={rows}
-          className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 min-w-0"
+          className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 min-w-[20rem]"
         />
         <p className="text-slate-500 text-[10px] leading-snug">
           Sent as Telegram HTML (includes custom emoji via{" "}

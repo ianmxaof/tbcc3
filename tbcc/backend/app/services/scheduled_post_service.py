@@ -26,7 +26,7 @@ from app.models.content_pool import ContentPool
 from app.models.channel import Channel
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.promo_storage import promo_path_from_public_url
-from app.utils.telegram_peer import normalize_telethon_peer_identifier
+from app.utils.telegram_peer import normalize_telethon_peer_identifier, resolve_poster_peer
 from app.services.telegram_custom_emoji import telethon_message_kwargs
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ def _resolve_variant_sources(post: ScheduledTextPost, slot: int) -> tuple[list[i
             structured = False
 
     variants = post.get_album_variants()
-    if bool(getattr(post, "pool_only_mode", False)) and post.pool_id:
+    if bool(getattr(post, "pool_only_mode", False)) and _post_uses_pool(post):
         return [], [], True
     if not variants:
         mids = post.get_media_ids()
@@ -127,14 +127,14 @@ def _resolve_variant_sources(post: ScheduledTextPost, slot: int) -> tuple[list[i
 
     if structured:
         if not mids and not promo:
-            return [], [], bool(post.pool_id)
-        return mids, promo, bool(post.pool_id and not mids and not promo)
+            return [], [], _post_uses_pool(post)
+        return mids, promo, _post_uses_pool(post) and not mids and not promo
 
     if not mids and not promo:
         mids = post.get_media_ids()
         promo = post._urls_from_attachment_urls_json_column()
         return mids, promo, True
-    return mids, promo, bool(post.pool_id and not mids and not promo)
+    return mids, promo, _post_uses_pool(post) and not mids and not promo
 
 
 def _effective_album_order_mode(post: ScheduledTextPost) -> str:
@@ -167,13 +167,43 @@ def _apply_order_mode_to_sequence(items: list, mode: str, post: ScheduledTextPos
     return items
 
 
+def _post_uses_pool(post: ScheduledTextPost) -> bool:
+    return bool(post.pool_id) or bool(getattr(post, "pool_collective_random", False))
+
+
+def _pick_collective_pool_id(db: Session) -> int | None:
+    """Random pool that has at least one approved media row."""
+    rows = (
+        db.query(ContentPool.id)
+        .join(Media, Media.pool_id == ContentPool.id)
+        .filter(Media.status == "approved")
+        .distinct()
+        .all()
+    )
+    ids = [int(r[0]) for r in rows]
+    if not ids:
+        return None
+    return random.choice(ids)
+
+
+def _resolve_effective_pool_id(post: ScheduledTextPost, db: Session) -> int | None:
+    if bool(getattr(post, "pool_collective_random", False)):
+        return _pick_collective_pool_id(db)
+    return post.pool_id
+
+
 def _load_pool_media_items(
     post: ScheduledTextPost,
     db: Session,
     album_order_mode: str,
 ) -> list[Media]:
-    pool = db.query(ContentPool).filter(ContentPool.id == post.pool_id).first()
+    effective_pool_id = _resolve_effective_pool_id(post, db)
+    if not effective_pool_id:
+        return []
+    pool = db.query(ContentPool).filter(ContentPool.id == effective_pool_id).first()
     default_album = min(10, max(1, int(pool.album_size) if pool and pool.album_size else 5))
+    if bool(getattr(post, "pool_collective_random", False)):
+        default_album = min(10, max(1, int(post.album_size) if post.album_size is not None else 5))
     album_size = (
         min(10, max(1, int(post.album_size)))
         if post.album_size is not None
@@ -181,9 +211,11 @@ def _load_pool_media_items(
     )
     if post.pool_randomize is not None:
         randomize = bool(post.pool_randomize)
+    elif bool(getattr(post, "pool_collective_random", False)):
+        randomize = True
     else:
         randomize = bool(pool and getattr(pool, "randomize_queue", False))
-    q = db.query(Media).filter(Media.pool_id == post.pool_id, Media.status == "approved")
+    q = db.query(Media).filter(Media.pool_id == effective_pool_id, Media.status == "approved")
     # Randomize means random *selection* from the full approved pool.
     # Album order mode (static/shuffle/carousel) is applied later to the selected batch.
     if randomize:
@@ -205,7 +237,7 @@ def _gather_media_items_for_send(
         m = db.query(Media).filter(Media.id == int(mid_i)).first()
         if m:
             media_items.append(m)
-    if post.pool_id and not media_items and use_pool_fallback:
+    if _post_uses_pool(post) and not media_items and use_pool_fallback:
         media_items = _load_pool_media_items(post, db, album_order_mode)
     return _apply_order_mode_to_sequence(media_items, album_order_mode, post)
 
@@ -349,6 +381,18 @@ def _send_options(post: ScheduledTextPost) -> dict:
     return {}
 
 
+async def _resolve_channel_peer(
+    client: TelegramClient,
+    channel_identifier: str,
+    *,
+    invite_fallback: str | None = None,
+):
+    """See app.utils.telegram_peer.resolve_poster_peer."""
+    return await resolve_poster_peer(
+        client, channel_identifier, invite_fallback=invite_fallback
+    )
+
+
 def _primary_message_from_send(result):
     if result is None:
         return None
@@ -421,11 +465,20 @@ async def _execute_telegram_scheduled_send(
         if first_type not in ("photo", "video", "document", "gif"):
             first_type = "document"
         items = by_type.get(first_type, media_items[:1])
-        msg_ids = [m.telegram_message_id for m in items]
-        messages = await client.get_messages("me", ids=msg_ids)
-        msg_map = {m.id: m for m in messages if m}
+        from app.services.local_media_storage import is_local_pool_media, telethon_file_from_media
+
+        saved_ids = [m.telegram_message_id for m in items if not is_local_pool_media(m)]
+        msg_map: dict = {}
+        if saved_ids:
+            messages = await client.get_messages("me", ids=saved_ids)
+            msg_map = {m.id: m for m in messages if m}
         raw_medias = []
         for m in items:
+            if is_local_pool_media(m):
+                f = telethon_file_from_media(m)
+                if f is not None:
+                    raw_medias.append(f)
+                continue
             msg = msg_map.get(m.telegram_message_id)
             if msg and msg.media:
                 raw_medias.append(msg.media)
@@ -515,9 +568,12 @@ async def send_scheduled_post(
     db: Session,
     *,
     reshuffle_album: bool = False,
+    invite_fallback: str | None = None,
 ) -> None:
     """Send a scheduled post (text, optional media, optional buttons)."""
-    channel_identifier = normalize_telethon_peer_identifier(channel_identifier)
+    peer = await _resolve_channel_peer(
+        client, channel_identifier, invite_fallback=invite_fallback
+    )
     slot = _peek_caption_slot_index(post)
     album_order_mode = _album_order_mode_for_send(post, reshuffle_album)
     from app.services.caption_llm_rewrite import resolve_scheduled_caption_for_send
@@ -537,7 +593,7 @@ async def send_scheduled_post(
     try:
         sent_result = await _execute_telegram_scheduled_send(
             client,
-            channel_identifier,
+            peer,
             caption=caption,
             media_items=media_items,
             promo_ordered=promo_ordered,
@@ -546,10 +602,10 @@ async def send_scheduled_post(
             reply_to=reply_to,
         )
     except ChatRestrictedError:
-        _log_chat_restricted_help(channel_identifier)
+        _log_chat_restricted_help(str(channel_identifier))
         raise
 
-    await _maybe_pin_after_send(client, channel_identifier, post, sent_result)
+    await _maybe_pin_after_send(client, peer, post, sent_result)
 
 
 async def send_scheduled_campaign(
@@ -592,10 +648,15 @@ async def send_scheduled_campaign(
             logger.warning("Campaign skip: channel %s missing for scheduled post %s", p.channel_id, p.id)
             failed_post_ids.append(int(p.id))
             continue
-        peer = normalize_telethon_peer_identifier(channel.identifier)
+        peer_raw = normalize_telethon_peer_identifier(channel.identifier)
         silent_kw = _send_options(p)
         reply_to = p.message_thread_id if getattr(p, "message_thread_id", None) else None
         try:
+            peer = await _resolve_channel_peer(
+                client,
+                peer_raw,
+                invite_fallback=getattr(channel, "invite_link", None),
+            )
             sent_result = await _execute_telegram_scheduled_send(
                 client,
                 peer,
@@ -609,7 +670,7 @@ async def send_scheduled_campaign(
             await _maybe_pin_after_send(client, peer, p, sent_result)
             sent_post_ids.append(int(p.id))
         except ChatRestrictedError as e:
-            _log_chat_restricted_help(peer)
+            _log_chat_restricted_help(peer_raw)
             failed_post_ids.append(int(p.id))
             if first_error is None:
                 first_error = e

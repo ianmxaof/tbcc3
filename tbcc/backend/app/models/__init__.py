@@ -21,9 +21,13 @@ from .emoji_factory_sketch import EmojiFactorySketchPage
 from .listening_relay_settings import ListeningRelaySettings
 from .zip_bundle_settings import ZipBundleSettings
 from .gallery_send_promo_settings import GallerySendPromoSettings
+from .watermark_settings import WatermarkSettings
 from .promo_affiliate_link import PromoAffiliateLink
 from .capture_archive_entry import CaptureArchiveEntry
 from .import_job import ImportJob
+from .secretary_user_context import SecretaryMessageRecord, SecretaryUserContext
+from .secretary_settings import SecretarySettings
+from .secretary_knowledge import SecretaryKnowledgeEntry
 from .loot import (
     LootDropEvent,
     LootGameConfig,
@@ -77,4 +81,8 @@ __all__ = [
     "PromoAffiliateLink",
     "CaptureArchiveEntry",
     "ImportJob",
+    "SecretaryUserContext",
+    "SecretaryMessageRecord",
+    "SecretarySettings",
+    "SecretaryKnowledgeEntry",
 ]

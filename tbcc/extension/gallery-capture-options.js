@@ -18,6 +18,9 @@
   const elNotifySendTbcc = document.getElementById("captureSettingNotifySendTbcc");
   const elNotifySendSaved = document.getElementById("captureSettingNotifySendSaved");
   const elNotifySendChannel = document.getElementById("captureSettingNotifySendChannel");
+  const elNotificationStyle = document.getElementById("captureSettingNotificationStyle");
+  const elDownloadMode = document.getElementById("captureSettingDownloadMode");
+  const elSkipPromoWatermark = document.getElementById("captureSettingSkipPromoWatermark");
   const btnClear = document.getElementById("captureSettingClearCache");
   const apiStatus = document.getElementById("tbccApiStatus");
 
@@ -46,6 +49,9 @@
     if (elNotifySendTbcc) elNotifySendTbcc.checked = s.notifyOnSendTbccComplete !== false;
     if (elNotifySendSaved) elNotifySendSaved.checked = s.notifyOnSendSavedComplete !== false;
     if (elNotifySendChannel) elNotifySendChannel.checked = s.notifyOnSendChannelComplete !== false;
+    if (elNotificationStyle) elNotificationStyle.value = s.notificationStyle || "full";
+    if (elDownloadMode) elDownloadMode.value = s.downloadMode === "direct" ? "direct" : "buffered";
+    if (elSkipPromoWatermark) elSkipPromoWatermark.checked = s.skipPromoWatermark === true;
     if (elPageMediaMenu) elPageMediaMenu.checked = o[STORAGE_PAGE_MEDIA_MENU] !== false;
     if (elLazy) {
       const d = parseInt(String(s.captureLazyDelayMs || 0), 10);
@@ -77,6 +83,16 @@
     elNotifySendSaved.addEventListener("change", () => mergeSave({ notifyOnSendSavedComplete: !!elNotifySendSaved.checked }));
   if (elNotifySendChannel)
     elNotifySendChannel.addEventListener("change", () => mergeSave({ notifyOnSendChannelComplete: !!elNotifySendChannel.checked }));
+  if (elNotificationStyle)
+    elNotificationStyle.addEventListener("change", () => mergeSave({ notificationStyle: elNotificationStyle.value || "full" }));
+  if (elDownloadMode)
+    elDownloadMode.addEventListener("change", () =>
+      mergeSave({ downloadMode: elDownloadMode.value === "direct" ? "direct" : "buffered" })
+    );
+  if (elSkipPromoWatermark)
+    elSkipPromoWatermark.addEventListener("change", () =>
+      mergeSave({ skipPromoWatermark: !!elSkipPromoWatermark.checked })
+    );
   if (elLazy)
     elLazy.addEventListener("change", () => {
       let d = parseInt(elLazy.value, 10);

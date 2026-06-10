@@ -79,4 +79,21 @@ if (-not (Test-Path (Join-Path $lustDir "package.json"))) {
 }
 
 Write-Host ""
+Write-Host "[CLIP] Local niche categorizer (OpenCLIP ViT-B/32)..." -ForegroundColor Yellow
+$clipReq = Join-Path $here "clip-categorize-tbcc.txt"
+if (Test-Path -LiteralPath $clipReq) {
+  $py = Get-TbccPython
+  cmd /c ($py + " -m pip install -U -r `"" + $clipReq + "`"")
+  cmd /c ($py + " -c `"import open_clip; import torch; print('open_clip OK')`"")
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "  OK (run_clip_categorize.py on port 8002)" -ForegroundColor Green
+    Write-Host "  Set TBCC_CLIP_CATEGORIES_FILE in tbcc/.env to your category catalog JSON/txt" -ForegroundColor Gray
+  } else {
+    Write-Host "  CLIP deps check failed (torch/open-clip). GPU optional; CPU works." -ForegroundColor Red
+  }
+} else {
+  Write-Host "  clip-categorize-tbcc.txt not found — skip" -ForegroundColor DarkYellow
+}
+
+Write-Host ""
 Write-Host ('Next: cd ' + $tbccDir + '; .\start.ps1 -Full -WtTabs') -ForegroundColor Green

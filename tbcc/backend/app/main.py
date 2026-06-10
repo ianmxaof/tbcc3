@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, archive
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, extension_context_menu, album_composer_drafts
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -26,7 +26,11 @@ from app.models.listening_relay_settings import ListeningRelaySettings  # noqa: 
 from app.models.zip_bundle_settings import ZipBundleSettings  # noqa: F401
 from app.models.promo_affiliate_link import PromoAffiliateLink  # noqa: F401
 from app.models.capture_archive_entry import CaptureArchiveEntry  # noqa: F401
+from app.models.macro_search_source_submission import MacroSearchSourceSubmission  # noqa: F401
 from app.models.import_job import ImportJob  # noqa: F401
+from app.models.secretary_user_context import SecretaryMessageRecord, SecretaryUserContext  # noqa: F401
+from app.models.secretary_settings import SecretarySettings  # noqa: F401
+from app.models.secretary_knowledge import SecretaryKnowledgeEntry  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
 from app.services.zip_promo_storage import ensure_zip_promo_dir
 from app.services.send_promo_storage import ensure_send_promo_dir
@@ -48,12 +52,44 @@ def on_startup():
     from app.services.system_health import auto_remediate_on_startup
     from app.utils.telethon_session import (
         admin_session_stem,
+        import_session_stem,
+        import_sessions_share_admin_file,
         poster_session_stem,
         telethon_sessions_share_file,
     )
 
     auto_remediate_on_startup()
     ensure_bundle_dir()
+    try:
+        from app.services.focus_profile import (
+            focus_auto_import_enabled,
+            focus_auto_react_enabled,
+            focus_watch_loop_enabled,
+            evaluate_and_maybe_auto_apply,
+        )
+        import threading
+
+        if focus_watch_loop_enabled():
+
+            def _focus_watch_loop() -> None:
+                import time
+
+                while True:
+                    time.sleep(25)
+                    try:
+                        evaluate_and_maybe_auto_apply()
+                    except Exception:
+                        logger.debug("focus watch loop tick failed", exc_info=True)
+
+            threading.Thread(target=_focus_watch_loop, name="tbcc-focus-watch", daemon=True).start()
+            parts = []
+            if focus_auto_react_enabled():
+                parts.append("auto-react")
+            if focus_auto_import_enabled():
+                parts.append("auto-import-burst")
+            logger.info("TBCC focus watch loop: %s", ", ".join(parts) or "on")
+    except Exception:
+        logger.debug("focus watch loop not started", exc_info=True)
     if telethon_sessions_share_file():
         logger.warning(
             "Telethon admin and poster sessions share one file (%s.session). "
@@ -63,9 +99,16 @@ def on_startup():
         )
     else:
         logger.info(
-            "Telethon sessions: admin=%s.session poster=%s.session",
+            "Telethon sessions: admin=%s.session poster=%s.session import=%s.session",
             Path(admin_session_stem()).name,
             Path(poster_session_stem()).name,
+            Path(import_session_stem()).name,
+        )
+    if import_sessions_share_admin_file():
+        logger.warning(
+            "Telethon imports share admin.session — bulk channel imports will contend with "
+            "dashboard thumbnails. Set TBCC_IMPORT_TELEGRAM_SESSION=admin_import and "
+            "TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION=1 in tbcc/.env, then restart API + Celery."
         )
     url = str(engine.url)
     if "sqlite" in url:
@@ -119,6 +162,14 @@ def on_startup():
                             text(
                                 "ALTER TABLE payment_bot_settings ADD COLUMN video_finder_max_links_per_source INTEGER"
                             )
+                        )
+                    if "macro_search_custom_sources_json" not in cols:
+                        conn.execute(
+                            text("ALTER TABLE payment_bot_settings ADD COLUMN macro_search_custom_sources_json TEXT")
+                        )
+                    if "macro_search_disabled_json" not in cols:
+                        conn.execute(
+                            text("ALTER TABLE payment_bot_settings ADD COLUMN macro_search_disabled_json TEXT")
                         )
         except Exception:
             logger.exception("SQLite: failed to patch payment_bot_settings columns")
@@ -309,6 +360,24 @@ def on_startup():
                             )
                         )
                         logger.info("SQLite: added scheduled_text_posts.posting_auto_pause_reason (dev migration)")
+                    if "campaign_random_channel" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN campaign_random_channel BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added scheduled_text_posts.campaign_random_channel (dev migration)"
+                        )
+                    if "pool_collective_random" not in st_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN pool_collective_random BOOLEAN NOT NULL DEFAULT 0"
+                            )
+                        )
+                        logger.info(
+                            "SQLite: added scheduled_text_posts.pool_collective_random (dev migration)"
+                        )
                     if "buffer_mirror_enabled" not in st_cols:
                         conn.execute(
                             text(
@@ -554,6 +623,14 @@ def on_startup():
                                 "ALTER TABLE payment_bot_settings ADD COLUMN video_finder_max_links_per_source INTEGER"
                             )
                         )
+                    if "macro_search_custom_sources_json" not in cols:
+                        conn.execute(
+                            text("ALTER TABLE payment_bot_settings ADD COLUMN macro_search_custom_sources_json TEXT")
+                        )
+                    if "macro_search_disabled_json" not in cols:
+                        conn.execute(
+                            text("ALTER TABLE payment_bot_settings ADD COLUMN macro_search_disabled_json TEXT")
+                        )
         except Exception:
             logger.exception("Startup: failed to ensure payment_bot_settings table")
         # Alembic 044 — many deployments pull code before running upgrade head.
@@ -791,6 +868,26 @@ def on_startup():
                     logger.info(
                         "PostgreSQL: added scheduled_text_posts.posting_auto_pause_reason (startup migration)"
                     )
+                if "campaign_random_channel" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN campaign_random_channel BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.campaign_random_channel (startup migration)"
+                    )
+                if "pool_collective_random" not in st_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE scheduled_text_posts ADD COLUMN pool_collective_random BOOLEAN NOT NULL DEFAULT FALSE"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added scheduled_text_posts.pool_collective_random (startup migration)"
+                    )
                 if "buffer_mirror_enabled" not in st_cols:
                     with engine.begin() as conn:
                         conn.execute(
@@ -972,6 +1069,25 @@ def on_startup():
                 "cd backend && alembic upgrade head"
             )
 
+        try:
+            from sqlalchemy import inspect as sa_inspect
+
+            insp = sa_inspect(engine)
+            if "import_jobs" in insp.get_table_names():
+                ij_cols = {c["name"] for c in insp.get_columns("import_jobs")}
+                if "job_kind" not in ij_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE import_jobs ADD COLUMN job_kind VARCHAR(32) NOT NULL DEFAULT 'bytes'"
+                            )
+                        )
+                    logger.info("PostgreSQL: added import_jobs.job_kind (startup migration)")
+        except Exception:
+            logger.exception(
+                "PostgreSQL: could not add import_jobs.job_kind — run: cd backend && alembic upgrade head"
+            )
+
     try:
         from app.database.session import SessionLocal
         from app.services.seed_aof_x_promo_defaults import seed_aof_x_promo_defaults
@@ -1028,6 +1144,8 @@ app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 app.include_router(scheduled_posts.router, prefix="/scheduled-posts", tags=["scheduled-posts"])
 app.include_router(internal_launch.router, prefix="/internal", tags=["internal"])
 app.include_router(watch_folder.router, prefix="/watch-folder", tags=["watch-folder"])
+app.include_router(ops_focus.router)
+app.include_router(ops_alerts.router)
 app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
 app.include_router(crawler.router, prefix="/crawler", tags=["crawler"])
 app.include_router(jdownloader.router, prefix="/jd", tags=["jdownloader"])
@@ -1038,7 +1156,13 @@ app.include_router(promo_affiliate_links.router, prefix="/promo-affiliate-links"
 app.include_router(listening_relay_settings.router, prefix="/listening-relay-settings", tags=["listening-relay-settings"])
 app.include_router(zip_bundle_settings.router, prefix="/zip-bundle-settings", tags=["zip-bundle-settings"])
 app.include_router(gallery_send_promo.router, prefix="/gallery-send-promo", tags=["gallery-send-promo"])
+app.include_router(watermark_settings.router, prefix="/watermark-settings", tags=["watermark-settings"])
+app.include_router(extension_context_menu.router, prefix="/extension/context-menu", tags=["extension-context-menu"])
+app.include_router(album_composer_drafts.router, prefix="/album-composer/drafts", tags=["album-composer-drafts"])
 app.include_router(archive.router, tags=["archive"])
+app.include_router(macro_search_submissions.router)
+app.include_router(secretary.router, tags=["secretary"])
+app.include_router(automation.router)
 app.include_router(listening_relay_settings.webhook_router, tags=["listening-relay"])
 
 
@@ -1073,6 +1197,71 @@ async def health_telegram():
     return JSONResponse(content=body, status_code=status, headers={"Cache-Control": "no-store"})
 
 
+@app.post("/telegram/open-saved")
+async def telegram_open_saved():
+    """
+    Open Saved Messages in the user's installed Telegram desktop client (Windows tg:// handler).
+    Avoids opening https://t.me/ links in the browser (e.g. Ayugram marketing pages).
+    """
+    import subprocess
+    import sys
+
+    from app.services.telegram_admin import check_admin_telegram_session
+
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "Telegram API not configured (API_ID/API_HASH)"},
+            headers={"Cache-Control": "no-store"},
+        )
+    body = await check_admin_telegram_session()
+    if not body.get("ok"):
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": body.get("error") or "Telegram session not ready"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    tg_urls: list[str] = []
+    user_id = body.get("user_id")
+    username = str(body.get("username") or "").strip().lstrip("@")
+    if user_id is not None:
+        try:
+            uid = int(user_id)
+            if uid > 0:
+                tg_urls.append(f"tg://user?id={uid}")
+        except (TypeError, ValueError):
+            pass
+    if username:
+        tg_urls.append(f"tg://resolve?domain={username}")
+
+    if not tg_urls:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "No Telegram user id/username from session"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    last_err = None
+    for url in tg_urls:
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["cmd", "/c", "start", "", url], close_fds=True)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", url], close_fds=True)
+            else:
+                subprocess.Popen(["xdg-open", url], close_fds=True)
+            return JSONResponse(content={"ok": True, "opened": url}, headers={"Cache-Control": "no-store"})
+        except OSError as e:
+            last_err = str(e)
+
+    return JSONResponse(
+        status_code=500,
+        content={"ok": False, "error": last_err or "Could not launch Telegram client"},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/health")
 def health():
     # no-store: browsers were caching {"status":"ok"} and hiding new fields during dev
@@ -1088,10 +1277,15 @@ def health():
 
 @app.get("/health/system")
 def health_system():
-    """Infra, port conflicts, Telethon session risks, active import jobs."""
+    """Infra, port conflicts, Telethon session risks, active import jobs, focus profile."""
     from app.services.system_health import collect_system_health
+    from app.services.focus_profile import focus_public_snapshot
 
     body = collect_system_health()
+    try:
+        body["focus"] = focus_public_snapshot()
+    except Exception:
+        body["focus"] = None
     status = 200 if body.get("ok") else 503
     return JSONResponse(content=body, status_code=status, headers={"Cache-Control": "no-store"})
 

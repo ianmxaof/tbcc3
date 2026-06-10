@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.database.session import get_db
 from app.models.capture_archive_entry import CaptureArchiveEntry
 from app.models.media import Media
+from app.services.archive_username_filter import normalize_archive_username
 
 router = APIRouter(prefix="/archive", tags=["archive"])
 
@@ -33,8 +34,7 @@ def _normalize_value(kind: str, raw: str) -> str | None:
     if not v:
         return None
     if kind == "username":
-        v = v.lstrip("@")
-        return v if _USERNAME_RE.match(v) else None
+        return normalize_archive_username(v)
     if v.startswith(("http://", "https://")) and not v.startswith(("blob:", "data:")):
         return v[:4096]
     return None
@@ -60,6 +60,9 @@ def _heuristic_url_summary(url: str) -> str:
 
 
 def _entry_summary(entry: dict[str, Any]) -> str:
+    desc = (entry.get("description") or "").strip()
+    if desc:
+        return desc[:400]
     note = (entry.get("note") or "").strip()
     if note and not note.startswith("ref:"):
         return note[:400]
@@ -76,7 +79,11 @@ def _row_to_dict(row: CaptureArchiveEntry) -> dict[str, Any]:
         "source": row.source or "",
         "ref": row.ref or "",
         "note": row.note or "",
+        "description": getattr(row, "description", None) or "",
+        "tags": row.tags or "",
         "origin": row.origin or "",
+        "status": getattr(row, "status", None) or "approved",
+        "submitted_by": getattr(row, "submitted_by", None) or "",
         "added_at": row.added_at.isoformat() if row.added_at else None,
         "addedAt": int(row.added_at.timestamp() * 1000) if row.added_at else None,
     }
@@ -109,7 +116,12 @@ def _upsert_entry(db: Session, payload: dict[str, Any]) -> bool:
     source = str(payload.get("source") or "")[:80] or None
     ref = str(payload.get("ref") or "")[:2000] or None
     note = str(payload.get("note") or "")[:400] or None
+    tags_raw = str(payload.get("tags") or payload.get("tagsCsv") or "")[:500].strip()
+    tags = tags_raw or None
     origin = str(payload.get("origin") or "import")[:32] or None
+    status_raw = str(payload.get("status") or "approved").strip().lower()
+    status = status_raw if status_raw in ("approved", "pending", "rejected") else "approved"
+    submitted_by = str(payload.get("submitted_by") or "")[:32].strip() or None
     if existing:
         existing.added_at = max(existing.added_at or ts, ts)
         if source:
@@ -118,6 +130,12 @@ def _upsert_entry(db: Session, payload: dict[str, Any]) -> bool:
             existing.ref = ref
         if note:
             existing.note = note
+        if tags:
+            existing.tags = tags
+        if status and getattr(existing, "status", None) != "approved":
+            existing.status = status
+        if submitted_by and not getattr(existing, "submitted_by", None):
+            existing.submitted_by = submitted_by
         return False
     db.add(
         CaptureArchiveEntry(
@@ -126,14 +144,17 @@ def _upsert_entry(db: Session, payload: dict[str, Any]) -> bool:
             source=source,
             ref=ref,
             note=note,
+            tags=tags,
             origin=origin,
+            status=status,
+            submitted_by=submitted_by,
             added_at=ts,
         )
     )
     return True
 
 
-_SORT_FIELDS = frozenset({"added_at", "value", "kind", "source", "host", "summary"})
+_SORT_FIELDS = frozenset({"added_at", "value", "kind", "source", "host", "summary", "tags"})
 
 
 def _entry_host(entry: dict[str, Any]) -> str:
@@ -159,6 +180,8 @@ def _sort_value(entry: dict[str, Any], field: str) -> Any:
         return (entry.get("summary") or _entry_summary(entry) or "").lower()
     if f == "source":
         return str(entry.get("source") or "").lower()
+    if f == "tags":
+        return str(entry.get("tags") or "").lower()
     return str(entry.get("value") or "").lower()
 
 
@@ -202,11 +225,24 @@ def _sort_archive_items(
     return items
 
 
+def _entry_matches_tags(entry: dict[str, Any], tags_filter: str | None) -> bool:
+    raw = (tags_filter or "").strip()
+    if not raw:
+        return True
+    hay = str(entry.get("tags") or "").lower()
+    tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    if not tokens:
+        return True
+    return all(t in hay for t in tokens)
+
+
 def _build_merged_list(
     db: Session,
     *,
     q: str | None = None,
     kind: str | None = None,
+    tags: str | None = None,
+    status: str | None = None,
     include_media: bool = True,
     sort: str | None = "added_at",
     order: str | None = "desc",
@@ -253,6 +289,11 @@ def _build_merged_list(
             entry["summary"] = _entry_summary(entry)
     if kind:
         items = [x for x in items if x["kind"] == _normalize_kind(kind)]
+    if status:
+        st = status.strip().lower()
+        items = [x for x in items if str(x.get("status") or "approved").lower() == st]
+    else:
+        items = [x for x in items if str(x.get("status") or "approved").lower() == "approved"]
     if q:
         ql = q.strip().lower()
         tokens = [t for t in ql.split() if t]
@@ -265,6 +306,8 @@ def _build_merged_list(
                     str(entry.get("source") or ""),
                     str(entry.get("ref") or ""),
                     str(entry.get("note") or ""),
+                    str(entry.get("description") or ""),
+                    str(entry.get("tags") or ""),
                     str(entry.get("summary") or _entry_summary(entry)),
                     str(entry.get("origin") or ""),
                 ]
@@ -272,6 +315,8 @@ def _build_merged_list(
             return all(t in hay for t in tokens)
 
         items = [x for x in items if _matches(x)]
+    if tags:
+        items = [x for x in items if _entry_matches_tags(x, tags)]
     return _sort_archive_items(items, sort=sort, order=order, sort2=sort2, order2=order2)
 
 
@@ -286,7 +331,7 @@ def list_archive_handles(db: Session = Depends(get_db)):
         .all()
     )
     handles = sorted({str(v[0]).strip().lstrip("@").lower() for v in rows if v and v[0]})
-    return {"handles": [h for h in handles if h]}
+    return {"handles": [h for h in handles if normalize_archive_username(h)]}
 
 
 @router.get("/entries/sync-bundle")
@@ -294,9 +339,10 @@ def extension_sync_bundle(
     limit: int = Query(12000, ge=1, le=12000),
     db: Session = Depends(get_db),
 ):
-    """All persisted archive rows for extension pull (no virtual media merge)."""
+    """All persisted approved archive rows for extension pull (no virtual media merge)."""
     rows = (
         db.query(CaptureArchiveEntry)
+        .filter(CaptureArchiveEntry.status == "approved")
         .order_by(CaptureArchiveEntry.added_at.desc())
         .limit(limit)
         .all()
@@ -305,10 +351,86 @@ def extension_sync_bundle(
     return {"entries": entries, "total": len(entries)}
 
 
+@router.get("/entries/insert-menu")
+def archive_insert_menu(
+    limit: int = Query(200, ge=1, le=500),
+    q: str | None = Query(None, description="Filter by label, tags, or URL substring"),
+    db: Session = Depends(get_db),
+):
+    """Approved archive URLs for the global Insert dropdown (scheduler, relay, gallery)."""
+    rows = (
+        db.query(CaptureArchiveEntry)
+        .filter(CaptureArchiveEntry.kind == "url", CaptureArchiveEntry.status == "approved")
+        .order_by(CaptureArchiveEntry.added_at.desc())
+        .limit(min(limit * 3, 1500))
+        .all()
+    )
+    ql = (q or "").strip().lower()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        d = _row_to_dict(row)
+        label = (d.get("description") or d.get("summary") or _heuristic_url_summary(row.value) or row.value).strip()
+        if ql:
+            hay = " ".join([label, d.get("tags") or "", row.value]).lower()
+            if ql not in hay and not all(t in hay for t in ql.split() if t):
+                continue
+        items.append(
+            {
+                "id": row.id,
+                "url": row.value,
+                "label": label[:80],
+                "description": d.get("description") or "",
+                "tags": d.get("tags") or "",
+            }
+        )
+        if len(items) >= limit:
+            break
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/entries/bulk/auto-tag")
+def bulk_auto_tag_archive(body: dict, db: Session = Depends(get_db)):
+    """Semantic auto-tag for archive URLs (page sweep + tag labels)."""
+    from app.services.archive_url_enrich import bulk_enrich_archive_urls
+
+    raw_ids = body.get("ids") or body.get("entry_ids") or []
+    if not isinstance(raw_ids, list):
+        raw_ids = []
+    ids = [int(x) for x in raw_ids if x is not None and str(x).isdigit()]
+    return bulk_enrich_archive_urls(
+        db,
+        entry_ids=ids or None,
+        missing_only=bool(body.get("missing_only", not ids)),
+        limit=min(int(body.get("limit") or 16), 48),
+        fast=bool(body.get("fast", True)),
+        force=bool(body.get("force")),
+    )
+
+
+@router.post("/entries/{entry_id}/auto-tag")
+def auto_tag_archive_entry(entry_id: int, body: dict | None = None, db: Session = Depends(get_db)):
+    from app.services.archive_url_enrich import enrich_archive_entry_by_id
+
+    payload = body or {}
+    result = enrich_archive_entry_by_id(
+        db,
+        entry_id,
+        fast=bool(payload.get("fast", True)),
+        force=bool(payload.get("force")),
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=404 if result.get("error") == "not_found" else 400, detail=result.get("error"))
+    row = db.query(CaptureArchiveEntry).filter(CaptureArchiveEntry.id == entry_id).first()
+    entry = _row_to_dict(row) if row else None
+    return {"ok": True, "entry": entry, **{k: v for k, v in result.items() if k != "ok"}}
+
+
 @router.get("/entries")
 def list_entries(
     q: str | None = Query(None),
     kind: str | None = Query(None),
+    tags: str | None = Query(None, description="Comma-separated tag tokens (all must match)"),
+    status: str | None = Query(None, description="approved | pending | rejected (omit = approved only)"),
     username: str | None = Query(None, description="Filter URLs linked to this model handle"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=100),
@@ -324,6 +446,8 @@ def list_entries(
         db,
         q=q,
         kind=kind,
+        tags=tags,
+        status=status,
         include_media=include_media,
         sort=sort,
         order=order,
@@ -365,17 +489,46 @@ def list_entries(
 def bulk_upsert(body: dict, db: Session = Depends(get_db)):
     entries = body.get("entries") or body.get("items") or []
     merge = body.get("merge", True)
+    auto_tag = bool(body.get("auto_tag"))
     if not merge:
         db.query(CaptureArchiveEntry).delete()
     added = 0
+    added_values: list[str] = []
     for raw in entries:
         if isinstance(raw, str):
             raw = {"kind": "url", "value": raw}
-        if _upsert_entry(db, raw):
+        kind = _normalize_kind(raw.get("kind") or raw.get("type"))
+        value = _normalize_value(kind, str(raw.get("value") or raw.get("url") or ""))
+        was_new = _upsert_entry(db, raw)
+        if was_new:
             added += 1
+            if auto_tag and value and kind == "url":
+                added_values.append(value)
     db.commit()
+    enrich_result = None
+    if auto_tag and added_values:
+        from app.services.archive_url_enrich import bulk_enrich_archive_urls
+
+        added_ids = [
+            int(r.id)
+            for r in db.query(CaptureArchiveEntry)
+            .filter(CaptureArchiveEntry.kind == "url", CaptureArchiveEntry.value.in_(added_values[:24]))
+            .all()
+            if r.id
+        ]
+        if added_ids:
+            enrich_result = bulk_enrich_archive_urls(
+                db,
+                entry_ids=added_ids,
+                missing_only=False,
+                limit=min(len(added_ids), 24),
+                fast=True,
+            )
     total = db.query(func.count(CaptureArchiveEntry.id)).scalar() or 0
-    return {"ok": True, "added": added, "total": total}
+    out: dict[str, Any] = {"ok": True, "added": added, "total": total}
+    if enrich_result:
+        out["auto_tag"] = enrich_result
+    return out
 
 
 @router.post("/entries/sync-from-media")
@@ -427,6 +580,7 @@ def export_entries(
     export_format: str = Query("json", alias="format", pattern="^(json|csv|txt)$"),
     q: str | None = Query(None),
     kind: str | None = Query(None),
+    tags: str | None = Query(None),
     include_media: bool = Query(True),
     sort: str | None = Query("added_at"),
     order: str | None = Query("desc"),
@@ -438,6 +592,7 @@ def export_entries(
         db,
         q=q,
         kind=kind,
+        tags=tags,
         include_media=include_media,
         sort=sort,
         order=order,
@@ -453,7 +608,7 @@ def export_entries(
     if export_format == "csv":
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["kind", "value", "added_at", "source", "ref", "note", "origin"])
+        w.writerow(["kind", "value", "added_at", "source", "ref", "note", "description", "tags", "origin"])
         for e in items:
             w.writerow(
                 [
@@ -463,6 +618,8 @@ def export_entries(
                     e.get("source"),
                     e.get("ref"),
                     e.get("note"),
+                    e.get("description"),
+                    e.get("tags"),
                     e.get("origin"),
                 ]
             )
@@ -477,3 +634,52 @@ def export_entries(
         media_type="text/plain",
         headers={"Content-Disposition": 'attachment; filename="tbcc-master-archive.txt"'},
     )
+
+
+@router.post("/entries/submit")
+def submit_archive_entry(body: dict, db: Session = Depends(get_db)):
+    """Submit a URL/username to the archive inbox (community = pending until approved)."""
+    from app.services.archive_governance import submit_archive_url
+
+    auto = bool(body.get("auto_approve"))
+    result = submit_archive_url(
+        db,
+        value=str(body.get("value") or body.get("url") or ""),
+        source=str(body.get("source") or "telegram")[:80],
+        ref=str(body.get("ref") or "")[:2000] or None,
+        note=str(body.get("note") or "")[:400] or None,
+        tags=str(body.get("tags") or body.get("tagsCsv") or "")[:500] or None,
+        origin=str(body.get("origin") or "telegram")[:32],
+        submitted_by=str(body.get("submitted_by") or "")[:32] or None,
+        auto_approve=auto,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "submit_failed")
+    return result
+
+
+@router.get("/governance/pending")
+def list_pending_archive(db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500)):
+    from app.services.archive_governance import list_pending_archive_entries
+
+    items = list_pending_archive_entries(db, limit=limit)
+    return {"items": items, "total": len(items)}
+
+
+@router.post("/entries/{entry_id}/governance")
+def govern_archive_entry(entry_id: int, body: dict, db: Session = Depends(get_db)):
+    from app.services.archive_governance import set_archive_entry_status
+
+    status = str(body.get("status") or "").strip().lower()
+    if status not in ("approved", "rejected", "pending"):
+        raise HTTPException(status_code=400, detail="status must be approved, rejected, or pending")
+    result = set_archive_entry_status(
+        db,
+        entry_id,
+        status,
+        reviewed_by=str(body.get("reviewed_by") or "")[:32] or None,
+        review_note=str(body.get("review_note") or "")[:400] or None,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error") or "not_found")
+    return result

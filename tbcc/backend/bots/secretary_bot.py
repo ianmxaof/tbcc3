@@ -12,6 +12,7 @@ Env: TBCC_SECRETARY_BOT_TOKEN (or SECRETARY_BOT_TOKEN), TBCC_API_URL, TBCC_OPENA
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -31,7 +32,17 @@ _env = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env.exists():
     load_dotenv(_env, override=True)
 
-from telegram import BotCommand, CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    MenuButtonCommands,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.constants import ChatAction
 from telegram.error import NetworkError
 from telegram.ext import (
@@ -43,6 +54,21 @@ from telegram.ext import (
     filters,
 )
 
+from bots.error_reporter import report_bot_error
+
+from app.services.format_engine import (
+    finalize_assistant_turn,
+    finalize_assistant_turn_for_user,
+    format_engine_enabled,
+    get_user_context_public_summary,
+    load_recent_messages_for_llm,
+    prepare_user_turn,
+)
+from app.services.secretary_rag import build_rag_context_suffix
+from app.database.session import SessionLocal
+from app.models.secretary_knowledge import SecretaryKnowledgeEntry
+from app.models.secretary_user_context import SecretaryUserContext
+from app.services.secretary_settings_effective import get_effective_secretary_settings
 from app.services.secretary_llm import (
     REDO_STYLE_HINTS,
     complete_secretary_chat,
@@ -124,6 +150,55 @@ def _reply_kwargs(message) -> dict:
 
 HISTORY_KEY = "secretary_history"
 BIZ_LINES_KEY = "secretary_biz_customer_lines"
+
+# Reply keyboard labels → handler key
+_FAQ_KEYBOARD: dict[str, str] = {
+    "⭐ Subscribe (payment bot)": "subscribe",
+    "🛒 Shop / packs": "shop",
+    "🔄 Clear FAQ context": "reset",
+    "ℹ️ My support status": "mystatus",
+}
+
+
+def _faq_reply_keyboard() -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(label)] for label in _FAQ_KEYBOARD]
+    rows.append([KeyboardButton("💬 Type your question below")])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+
+
+def _payment_inline_keyboard() -> InlineKeyboardMarkup | None:
+    pay = _payment_bot_username()
+    if not pay:
+        return None
+    pay_safe = html.escape(pay)
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("⭐ Subscribe", url=f"https://t.me/{pay_safe}?start=subscribe"),
+                InlineKeyboardButton("🛒 Shop", url=f"https://t.me/{pay_safe}?start=shop"),
+            ],
+            [
+                InlineKeyboardButton("📋 Payment bot chat", url=f"https://t.me/{pay_safe}"),
+            ],
+        ]
+    )
+
+
+async def _reply_with_keyboards(msg, text: str, *, parse_mode: str = "HTML") -> None:
+    kwargs = {**_reply_kwargs(msg), "parse_mode": parse_mode, "disable_web_page_preview": True}
+    markup_inline = _payment_inline_keyboard()
+    if markup_inline:
+        kwargs["reply_markup"] = markup_inline
+    await msg.reply_text(text, **kwargs)
+    # Reply keyboard is sent as a separate lightweight message so inline + reply can coexist
+    try:
+        await msg.reply_text(
+            "Quick actions:",
+            reply_markup=_faq_reply_keyboard(),
+            **_reply_kwargs(msg),
+        )
+    except Exception as e:
+        logger.debug("faq reply keyboard: %s", e)
 
 
 def _auto_reply_in_business() -> bool:
@@ -273,6 +348,12 @@ async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_i
     except Exception as e:
         logger.exception("approve failed draft=%s chat=%s bc=%s: %s", draft_id, chat_id, bc_id, e)
         return False, f"Could not send: {e}"
+    user_id = int(item.get("user_id") or 0)
+    if user_id and format_engine_enabled():
+        try:
+            finalize_assistant_turn_for_user(user_id, text)
+        except Exception as e:
+            logger.warning("format_engine draft finalize uid=%s: %s", user_id, e)
     _pending_drafts.pop(draft_id, None)
     return True, f"Sent {draft_id}."
 
@@ -476,9 +557,116 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Messages (including <b>/start</b>, <b>/help</b>, and plain-text questions) share a <b>strict per-minute rate limit</b> "
         "so abuse cannot burn the service down. Ask a real question when you are ready; with the backend online I also "
         "pull short live snippets of active subscription plans to ground answers about Stars and durations."
+        + "\n\n<b>Commands</b>\n"
+        "/mystatus — see your FAQ thread phase\n"
+        "/reset — clear remembered context\n"
+        "Use the keyboard below for shortcuts."
         + biz_note
     )
-    await msg.reply_text(text, parse_mode="HTML", disable_web_page_preview=True, **_reply_kwargs(msg))
+    await _reply_with_keyboards(msg, text)
+
+
+async def cmd_mystatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return
+    if not format_engine_enabled():
+        await msg.reply_text(
+            "Personalized context tracking is off on the server. You can still ask FAQ questions anytime.",
+            **_reply_kwargs(msg),
+        )
+        return
+    summary = await asyncio.to_thread(get_user_context_public_summary, user.id)
+    if not summary:
+        await msg.reply_text(
+            "No saved context yet for this chat — send a question and I'll remember the thread for better answers.",
+            **_reply_kwargs(msg),
+        )
+        return
+    phase = html.escape(str(summary.get("phase") or "introduction"))
+    mc = int(summary.get("message_count") or 0)
+    emo = html.escape(str(summary.get("emotional_summary") or "—"))
+    lines = [
+        "<b>Your FAQ thread</b>",
+        f"Support phase: <code>{phase}</code>",
+        f"Messages in thread: <b>{mc}</b>",
+        f"Summary: {emo}",
+        "\nUse <b>/reset</b> or the keyboard button to clear context.",
+    ]
+    await msg.reply_text("\n".join(lines), parse_mode="HTML", **_reply_kwargs(msg))
+
+
+async def cmd_fe_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: Format Engine + RAG stats."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        await msg.reply_text("Admin only.")
+        return
+
+    def _load_stats() -> dict:
+        from sqlalchemy import func
+
+        db = SessionLocal()
+        try:
+            eff = get_effective_secretary_settings(db)
+            ctx_n = db.query(SecretaryUserContext).count()
+            know_n = (
+                db.query(SecretaryKnowledgeEntry)
+                .filter(SecretaryKnowledgeEntry.is_active.is_(True))
+                .count()
+            )
+            phases = {
+                str(p or "?"): int(c)
+                for p, c in db.query(SecretaryUserContext.current_phase, func.count(SecretaryUserContext.id))
+                .group_by(SecretaryUserContext.current_phase)
+                .all()
+            }
+            return {
+                "effective": eff,
+                "contexts": ctx_n,
+                "knowledge": know_n,
+                "phases": phases,
+                "drafts": len(_pending_drafts),
+            }
+        finally:
+            db.close()
+
+    try:
+        stats = await asyncio.to_thread(_load_stats)
+    except Exception as e:
+        await msg.reply_text(f"Stats failed: {e}")
+        return
+    eff = stats["effective"]
+    phase_lines = ", ".join(f"{k}:{v}" for k, v in (stats.get("phases") or {}).items()) or "none"
+    text = (
+        "<b>Format Engine (admin)</b>\n"
+        f"FE enabled: <code>{eff.get('format_engine_enabled')}</code>\n"
+        f"RAG: <code>{eff.get('rag_enabled')}</code> (top {eff.get('rag_top_k')})\n"
+        f"LLM refine on phase change: <code>{eff.get('llm_refine_on_phase_change')}</code>\n"
+        f"User contexts: <b>{stats['contexts']}</b>\n"
+        f"FAQ chunks: <b>{stats['knowledge']}</b>\n"
+        f"Phases: {html.escape(phase_lines)}\n"
+        f"Pending business drafts: <b>{stats['drafts']}</b>\n"
+        "\nDashboard: Automation → Bots &amp; workers, or System → Secretary / FAQ."
+    )
+    await msg.reply_text(text, parse_mode="HTML", **_reply_kwargs(msg))
+
+
+async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("sec:menu:"):
+        return
+    await query.answer()
+    action = query.data.split(":")[-1]
+    if action == "subscribe":
+        await cmd_subscribe_hint(update, context)
+    elif action == "shop":
+        await cmd_shop_hint(update, context)
+    elif action == "reset":
+        await cmd_reset(update, context)
+    elif action == "mystatus":
+        await cmd_mystatus(update, context)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -571,13 +759,33 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not openai_configured():
         await msg.reply_text(
             "FAQ assistant is offline (no OpenAI key on the server). "
-            "Set TBCC_OPENAI_API_KEY in tbcc/.env for the backend host.",
+            "Set TBCC_OPENROUTER_API_KEY (TBCC_LLM_PROVIDER=openrouter) or TBCC_OPENAI_API_KEY in tbcc/.env.",
             **_reply_kwargs(msg),
         )
         return
 
     user_text = msg.text.strip()
     if not user_text:
+        return
+
+    shortcut = _FAQ_KEYBOARD.get(user_text)
+    if shortcut == "subscribe":
+        await cmd_subscribe_hint(update, context)
+        return
+    if shortcut == "shop":
+        await cmd_shop_hint(update, context)
+        return
+    if shortcut == "reset":
+        await cmd_reset(update, context)
+        return
+    if shortcut == "mystatus":
+        await cmd_mystatus(update, context)
+        return
+    if user_text == "💬 Type your question below":
+        await msg.reply_text(
+            "Type your question in a message below — I'll answer using FAQ knowledge and your thread context.",
+            **_reply_kwargs(msg),
+        )
         return
 
     is_business = bc_id is not None
@@ -602,6 +810,30 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     catalog = await fetch_subscription_catalog_snippet(API_BASE)
     if catalog:
         extra = extra + "\n\n" + catalog
+
+    format_ctx_id: int | None = None
+    if format_engine_enabled():
+        who = (user.username or "").strip() or None
+        try:
+            fe_suffix, format_ctx_id = await asyncio.to_thread(
+                prepare_user_turn, user.id, user_text, username=who
+            )
+            if fe_suffix:
+                extra = extra + "\n\n" + fe_suffix
+        except Exception as e:
+            logger.warning("format_engine prepare failed uid=%s: %s", user.id, e)
+
+    try:
+        sec_eff = await asyncio.to_thread(get_effective_secretary_settings)
+        if sec_eff.get("rag_enabled"):
+            rag_suffix = await asyncio.to_thread(build_rag_context_suffix, user_text)
+            if rag_suffix:
+                extra = extra + "\n\n" + rag_suffix
+        prompt_extra = (sec_eff.get("system_prompt_extra") or "").strip()
+        if prompt_extra:
+            extra = extra + "\n\n" + prompt_extra
+    except Exception as e:
+        logger.warning("secretary RAG/settings suffix failed uid=%s: %s", user.id, e)
 
     if suggest_only_business:
         suggest_suffix = (
@@ -631,6 +863,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for m in hist
             if m.get("role") in ("user", "assistant", "system")
         ]
+        if format_engine_enabled() and len(hist) < 2:
+            db_hist = await asyncio.to_thread(load_recent_messages_for_llm, user.id)
+            if db_hist:
+                hist = db_hist[:-1] if db_hist and db_hist[-1].get("content") == user_text else db_hist
         messages = [{"role": "system", "content": default_system_prompt()}]
         messages.extend(hist[-(_history_max_messages()) :])
         messages.append({"role": "user", "content": user_text})
@@ -683,6 +919,11 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
     else:
         await msg.reply_text(reply[:4096], **_reply_kwargs(msg))
+        if format_ctx_id is not None:
+            try:
+                await asyncio.to_thread(finalize_assistant_turn, format_ctx_id, reply[:4096])
+            except Exception as e:
+                logger.warning("format_engine finalize failed ctx=%s: %s", format_ctx_id, e)
         hist2: list[dict[str, str]] = context.user_data.get(HISTORY_KEY) or []
         hist2 = [
             {"role": m["role"], "content": m["content"]}
@@ -706,6 +947,29 @@ async def on_unsupported_private(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
+def _service_cleanup_enabled() -> bool:
+    """Delete join/leave service messages in groups (default on; set =0 to disable)."""
+    raw = (os.getenv("TBCC_SECRETARY_CLEAN_SERVICE_MESSAGES") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+async def on_service_message_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove 'X joined the group' / 'X left the group' service messages."""
+    if not _service_cleanup_enabled():
+        return
+    msg = update.effective_message
+    if not msg or not update.effective_chat or update.effective_chat.type not in ("group", "supergroup"):
+        return
+    if not (msg.new_chat_members or msg.left_chat_member):
+        return
+    try:
+        await msg.delete()
+    except Exception as e:
+        # Needs "Delete messages" admin right in the group; report once per error text via hub dedup.
+        logger.debug("join/leave cleanup failed chat=%s: %s", msg.chat_id, e)
+        report_bot_error("secretary-bot", "service-message cleanup", e)
+
+
 async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Avoid huge tracebacks for transient DNS / TLS blips; python-telegram-bot retries polling."""
     err = context.error
@@ -713,26 +977,35 @@ async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.warning("Telegram NetworkError (usually transient DNS/connectivity): %s", err)
         return
     logger.error("Secretary bot unhandled error", exc_info=err)
+    report_bot_error("secretary-bot", "unhandled", err if err is not None else "unknown")
 
 
 async def post_init(app: Application) -> None:
     me = await app.bot.get_me()
     logger.info("Secretary bot online @%s id=%s", me.username, me.id)
-    commands = [
-        BotCommand("start", "Intro and payment bot link"),
+    user_commands = [
+        BotCommand("start", "Intro, menu & payment bot"),
         BotCommand("help", "Same as /start"),
         BotCommand("subscribe", "Open payment bot for /subscribe"),
         BotCommand("shop", "Open payment bot for /shop"),
+        BotCommand("mystatus", "Your FAQ thread phase (Format Engine)"),
         BotCommand("reset", "Clear this chat’s FAQ context"),
-        BotCommand("approve", "Send a pending draft to customer"),
-        BotCommand("reject", "Discard a pending draft"),
-        BotCommand("drafts", "List pending draft IDs"),
-        BotCommand("redo", "Regenerate a draft (pro/casual/short)"),
+    ]
+    admin_commands = user_commands + [
+        BotCommand("fe_stats", "Format Engine + RAG stats (admin)"),
+        BotCommand("drafts", "List pending business drafts"),
+        BotCommand("approve", "Send draft to customer"),
+        BotCommand("reject", "Discard draft"),
+        BotCommand("redo", "Regenerate draft (pro/casual/short)"),
     ]
     try:
-        await app.bot.set_my_commands(commands)
+        await app.bot.set_my_commands(user_commands)
+        admin_chat = _admin_notify_chat_id()
+        if admin_chat is not None:
+            await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_chat))
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     except Exception as e:
-        logger.warning("set_my_commands: %s", e)
+        logger.warning("set_my_commands / menu: %s", e)
 
 
 def _telegram_http_timeout_seconds() -> float:
@@ -787,13 +1060,22 @@ def main() -> None:
     app.add_handler(CommandHandler("subscribe", cmd_subscribe_hint))
     app.add_handler(CommandHandler("shop", cmd_shop_hint))
     app.add_handler(CommandHandler("reset", cmd_reset))
+    app.add_handler(CommandHandler("mystatus", cmd_mystatus))
+    app.add_handler(CommandHandler("fe_stats", cmd_fe_stats))
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("drafts", cmd_drafts))
     app.add_handler(CommandHandler("redo", cmd_redo))
-    app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:"))
+    app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^sec:menu:"))
+    app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:(ap|rj|rd):"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.TEXT), on_unsupported_private))
+    app.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
+            on_service_message_cleanup,
+        )
+    )
     app.add_error_handler(_on_app_error)
 
     print("Secretary bot running. Commands: /start /help /subscribe /shop /reset /approve /reject /drafts")

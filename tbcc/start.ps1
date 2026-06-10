@@ -2,7 +2,7 @@
 #   .\start.ps1              — backend + dashboard; opens http://127.0.0.1:5173 in Brave if installed, else default browser
 #   .\start.ps1 -NoOpen      — do not open a browser
 #   .\start.ps1 -Open        — also open http://127.0.0.1:8000/docs (Swagger) in the same browser
-#   .\start.ps1 -Full        — backend + dashboard + Redis + Celery + Beat + payment bot + secretary + loot overseer bot
+#   .\start.ps1 -Full        — backend + dashboard + Redis + Celery + Beat + payment bot + secretary + loot + album composer
 #                            (+ NSFW Detect + Lustpress when .env URLs are localhost and repos exist under services/)
 #                            (Last.fm “listening relay” has no extra exe: TBCC-Beat schedules it, TBCC-Celery post queue runs it)
 #   .\start.ps1 -SkipDocker     — skip Postgres/Redis step (use when Docker DBs already running)
@@ -13,10 +13,13 @@
 #                            and similar features may 500 until you run: cd backend ; python -m alembic upgrade head)
 #
 # Console layout (many windows are easier if smaller, or use one Terminal with tabs):
-#   .\start.ps1 -CompactConsole  — smaller cmd windows (88×24 buffer) so they tile more easily
+#   .\start.ps1 -CompactConsole  — smaller cmd windows (72×20 buffer) so they tile more easily
 #   .\start.ps1 -WideConsole     — larger windows (140×40)
+#   Default tabbed window size: TBCC_WT_WINDOW_SIZE=820,460 in .env (pixels). Console: TBCC_CONSOLE_COLS/LINES.
 #   .\start.ps1 -WtTabs          — one Windows Terminal window, one tab per service (needs wt.exe / Windows Terminal)
 #   .\start.ps1 -WtTabs -Full    — tabs: TBCC-Errors (unified log), backend, dashboard, AOF Forum (:3001), workers
+#   .\start.ps1 -WtTabs -WtHostPid N — add service tabs to existing Windows Terminal window (orchestrator reuse)
+#   .\start.ps1 -WtTabs -CloseAfterWtTabs — exit after opening tabs (orchestrator self-closes)
 #   .\start.ps1 -WtTabs -LlmChat — add tab TBCC-LlmChatBot (Ollama/OpenAI bridge; see TBCC_LLM_CHAT_BOT_TOKEN in .env)
 #   .\start.ps1 -NoErrorHub      — disable TBCC-Errors tab / unified error log (services run directly in tabs)
 #
@@ -55,6 +58,13 @@ $wideConsole = $args -contains "-WideConsole"
 # Default: stable API (no --reload orphans on Windows). Opt in with -Reload when editing backend code.
 $noReload = -not ($args -contains "-Reload")
 $llmChat = $args -contains "-LlmChat"
+$closeAfterWtTabs = $args -contains "-CloseAfterWtTabs"
+$wtHostPidArg = 0
+for ($i = 0; $i -lt $args.Count; $i++) {
+  if ($args[$i] -eq "-WtHostPid" -and ($i + 1) -lt $args.Count) {
+    try { $wtHostPidArg = [int]$args[$i + 1] } catch {}
+  }
+}
 $noErrorHub = $args -contains "-NoErrorHub"
 $useErrorHub = -not $noErrorHub
 $skipPriorStackStop = $args -contains "-SkipPriorStackStop"
@@ -70,9 +80,21 @@ if ($useErrorHub) {
   $script:TbccErrorHubLoaded = $true
 }
 
-$consoleCols = 100
-$consoleLines = 28
-if ($compactConsole) { $consoleCols = 88;  $consoleLines = 24 }
+$controlScriptForPrefs = Join-Path $tbccDir "scripts\tbcc-service-control.ps1"
+$wtWindowWidth = 820
+$wtWindowHeight = 460
+if (Test-Path -LiteralPath $controlScriptForPrefs) {
+  . $controlScriptForPrefs
+  $termPrefs = Get-TbccTerminalWindowPrefs -TbccRoot $tbccDir
+  $consoleCols = $termPrefs.Cols
+  $consoleLines = $termPrefs.Lines
+  $wtWindowWidth = $termPrefs.WtWidth
+  $wtWindowHeight = $termPrefs.WtHeight
+} else {
+  $consoleCols = 84
+  $consoleLines = 24
+}
+if ($compactConsole) { $consoleCols = 72;  $consoleLines = 20 }
 if ($wideConsole)   { $consoleCols = 140; $consoleLines = 40 }
 if ($compactConsole -and $wideConsole) {
   Write-Host "  Note: -WideConsole wins over -CompactConsole." -ForegroundColor DarkYellow
@@ -263,6 +285,18 @@ function Ensure-TbccDependencies {
   } elseif ($FullStack) {
     Write-Host '[deps] Lustpress repo not found under services\lustpress (see services\README.md).' -ForegroundColor DarkYellow
   }
+
+  $clipPin = Join-Path $servicesDir "clip-categorize-tbcc.txt"
+  if (Test-Path -LiteralPath $clipPin) {
+    Write-Host "[deps] CLIP categorizer (open-clip-torch + torch)..." -ForegroundColor Yellow
+    cmd /c ($PythonCmd + ' -m pip install -q -r "' + $clipPin + '"')
+    cmd /c ($PythonCmd + ' -c "import open_clip; import torch"') 2>$null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "  CLIP deps check failed. Run: cd services ; .\setup-enrichment.ps1" -ForegroundColor Red
+    } else {
+      Write-Host "  CLIP categorizer deps OK." -ForegroundColor Green
+    }
+  }
 }
 
 function Get-TbccEnrichmentSidecars {
@@ -315,6 +349,25 @@ function Get-TbccEnrichmentSidecars {
     }
   } elseif ($lustUrl -and (Test-LocalhostServiceUrl $lustUrl) -and (Wait-HttpOk -Uri ($lustUrl.TrimEnd("/") + "/") -MaxSeconds 2)) {
     [void]$notes.Add("Lustpress already up at " + $lustUrl)
+  }
+
+  $clipUrl = $EnvMap["TBCC_CLIP_CATEGORIZE_URL"]
+  $clipCats = $EnvMap["TBCC_CLIP_CATEGORIES_FILE"]
+  if ((Test-LocalhostServiceUrl $clipUrl) -and -not (Wait-HttpOk -Uri ($clipUrl.TrimEnd("/") + "/health") -MaxSeconds 2)) {
+    $clipLauncher = Join-Path $servicesDir "run_clip_categorize.py"
+    if (Test-Path -LiteralPath $clipLauncher) {
+      if ($clipCats -and (Test-Path -LiteralPath $clipCats)) {
+        [void]$titles.Add("TBCC-CLIP-Categorize")
+        [void]$cmds.Add(('cd /d "' + $servicesDir + '" & ' + $PythonCmd + ' run_clip_categorize.py'))
+        [void]$notes.Add("CLIP categorizer -> " + $clipUrl + " (first start encodes category catalog; cached as .clip_embeddings.npz)")
+      } else {
+        [void]$notes.Add("TBCC_CLIP_CATEGORIZE_URL is set but TBCC_CLIP_CATEGORIES_FILE missing or not found: " + $(if ($clipCats) { $clipCats } else { "(unset)" }))
+      }
+    } else {
+      [void]$notes.Add("TBCC_CLIP_CATEGORIZE_URL is set but run_clip_categorize.py missing under services\")
+    }
+  } elseif ($clipUrl -and (Test-LocalhostServiceUrl $clipUrl) -and (Wait-HttpOk -Uri ($clipUrl.TrimEnd("/") + "/health") -MaxSeconds 2)) {
+    [void]$notes.Add("CLIP categorizer already up at " + $clipUrl)
   }
 
   return @{
@@ -375,67 +428,6 @@ function Start-TbccCmdWindow {
   Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", $run) -WindowStyle Normal
 }
 
-function Start-TbccWtTabs {
-  param(
-    [Parameter(Mandatory = $true)][string[]]$Titles,
-    [Parameter(Mandatory = $true)][string[]]$Commands,
-    [int]$Cols = 100,
-    [int]$Lines = 28
-  )
-  $wtExe = $null
-  try {
-    $c = Get-Command "wt.exe" -ErrorAction Stop
-    $wtExe = $c.Source
-  } catch {}
-  if (-not $wtExe) {
-    foreach ($p in @(
-      (Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\wt.exe"),
-      (Join-Path ${env:ProgramFiles} "Windows Terminal\wt.exe")
-    )) {
-      if (Test-Path -LiteralPath $p) { $wtExe = $p; break }
-    }
-  }
-  if (-not $wtExe) {
-    Write-Host '  Windows Terminal (wt.exe) not found - opening separate cmd windows instead.' -ForegroundColor DarkYellow
-    return $false
-  }
-  if ($Titles.Length -ne $Commands.Length) {
-    throw "Start-TbccWtTabs: Titles and Commands count must match."
-  }
-  # Always open a fresh WT window (-w -1). Without this, WT may append tabs to the
-  # last-used window (windowingBehavior / user still closing the old stack).
-  $al = New-Object System.Collections.ArrayList
-  for ($i = 0; $i -lt $Titles.Length; $i++) {
-    $part1 = "mode con: cols=$Cols lines=$Lines"
-    $part2 = [string]::Concat('title "', $Titles[$i], '"')
-    $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Commands[$i])
-    if ($i -gt 0) { [void]$al.Add(';') }
-    if ($i -eq 0) {
-      [void]$al.Add('-w')
-      [void]$al.Add('-1')
-    }
-    [void]$al.Add('new-tab')
-    [void]$al.Add('--title')
-    [void]$al.Add($Titles[$i])
-    [void]$al.Add('cmd')
-    [void]$al.Add('/k')
-    [void]$al.Add($run)
-  }
-  $proc = Start-Process -FilePath $wtExe -ArgumentList @($al.ToArray()) -WindowStyle Normal -PassThru
-  $controlScript = Join-Path $tbccDir "scripts\tbcc-service-control.ps1"
-  if (Test-Path -LiteralPath $controlScript) {
-    . $controlScript
-    Register-TbccWtTabHostFromLauncher -TbccRoot $tbccDir -LauncherPid $proc.Id
-  } else {
-    $runDir = Join-Path $tbccDir ".tbcc-run"
-    if (-not (Test-Path -LiteralPath $runDir)) {
-      New-Item -ItemType Directory -Path $runDir -Force | Out-Null
-    }
-    Set-Content -LiteralPath (Join-Path $runDir "wt-tab-host.pid") -Value $proc.Id -Encoding ascii -NoNewline
-  }
-  return $true
-}
-
 function Ensure-DockerDesktopRunning {
   param([int]$MaxWaitSeconds = 300)
   cmd /c "docker info" >$null 2>&1
@@ -477,7 +469,7 @@ if ($fullStack) {
   Write-Host '  Full stack: Postgres+Redis (Docker) + workers + optional enrichment (NSFW API, Lustpress)' -ForegroundColor Gray
   Write-Host '  Listening relay (Dashboard > Misc): uses TBCC-Celery + TBCC-Beat only — same -Full tabs, no separate Last.fm service.' -ForegroundColor Gray
 }
-Write-Host ('  Console: ' + $consoleCols + 'x' + $consoleLines + ' - use -CompactConsole / -WideConsole for window size, or -WtTabs for one Windows Terminal with tabs') -ForegroundColor Gray
+Write-Host ('  Console: ' + $consoleCols + 'x' + $consoleLines + ' | WT window: ' + $wtWindowWidth + 'x' + $wtWindowHeight + ' px (TBCC_WT_WINDOW_SIZE in .env; -CompactConsole / -WideConsole override cols)') -ForegroundColor Gray
 Write-Host ""
 
 if ($skipDeps) {
@@ -569,12 +561,15 @@ $uvicornReload = if ($noReload) { '' } else { ' --reload --reload-exclude script
 $cmdBackend = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m uvicorn app.main:app --host 127.0.0.1 --port 8000' + $uvicornReload
 $cmdDashboard = 'cd /d "' + $dashboardDir + '" & npm run dev'
 $cmdAofForum = if ($hasAofForum) { 'cd /d "' + $aofForumDir + '" & npm run dev' } else { '' }
-$cmdCelery = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,post,scrape,subscription,telegram'
+$cmdCelery = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,scrape,subscription,telegram'
+$cmdCeleryPost = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post -n post@%h'
 $cmdBeat = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app beat -l info'
 $cmdPay = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.payment_bot'
 $cmdSecretary = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.secretary_bot'
 $cmdLoot = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.loot_bot'
 $cmdLlmChat = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.llm_chat_bot'
+$cmdAlbumComposer = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.album_composer_bot'
+$cmdMacroSearch = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.macro_search_bot'
 
 $dotEnv = Read-TbccDotEnv -Path (Join-Path $tbccDir ".env")
 $enrichment = @{ Titles = @(); Commands = @(); Notes = @() }
@@ -643,12 +638,12 @@ if ($wtTabs) {
     $cmds += $cmdAofForum
   }
   if ($fullStack -and $redisOk) {
-    $titles += 'TBCC-Celery', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot'
-    $cmds += $cmdCelery, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot
+    $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-MacroSearchBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
+    $cmds += $cmdCelery, $cmdCeleryPost, $cmdBeat, $cmdPay, $cmdSecretary, $cmdMacroSearch, $cmdLoot, $cmdAlbumComposer
   } elseif ($fullStack -and -not $redisOk) {
-    $titles += 'TBCC-LootBot'
-    $cmds += $cmdLoot
-    Write-Host '  (-WtTabs) Redis unavailable — Backend + Dashboard + Loot overseer (no Celery/Beat/Payment/Secretary).' -ForegroundColor DarkYellow
+    $titles += 'TBCC-LootBot', 'TBCC-AlbumComposer'
+    $cmds += $cmdLoot, $cmdAlbumComposer
+    Write-Host '  (-WtTabs) Redis unavailable — Backend + Dashboard + Loot + Album Composer (no Celery/Beat/Payment/Secretary).' -ForegroundColor DarkYellow
   }
   if ($enrichment.Titles.Length -gt 0) {
     $titles += $enrichment.Titles
@@ -658,13 +653,22 @@ if ($wtTabs) {
     $titles += 'TBCC-LlmChatBot'
     $cmds += $cmdLlmChat
   }
+  if (Get-Command Select-TbccStartedServicePairs -ErrorAction SilentlyContinue) {
+    $filtered = Select-TbccStartedServicePairs -Titles $titles -Commands $cmds -TbccRoot $tbccDir
+    $titles = $filtered.Titles
+    $cmds = $filtered.Commands
+  }
   if ($useErrorHub) {
     Import-TbccErrorHubModule
     $cmds = Wrap-TbccServiceCommandsForErrorHub -Titles $titles -Commands $cmds
     $titles = @('TBCC-Errors') + $titles
     $cmds = @(Get-TbccErrorMonitorCmd -TbccRoot $tbccDir) + $cmds
   }
-  $wtLaunched = Start-TbccWtTabs -Titles $titles -Commands $cmds -Cols $consoleCols -Lines $consoleLines
+  $wtLaunched = Start-TbccWtTabs -TbccRoot $tbccDir -Titles $titles -Commands $cmds -Cols $consoleCols -Lines $consoleLines -WtWidth $wtWindowWidth -WtHeight $wtWindowHeight -WtHostPid $wtHostPidArg
+  if ($wtLaunched -and $closeAfterWtTabs) {
+    Write-Host 'All TBCC service tabs opened in Windows Terminal (one window).' -ForegroundColor Green
+    exit 0
+  }
 }
 
 function Start-TbccServiceWindow {
@@ -748,11 +752,12 @@ if ($hasAofForum -and -not $wtLaunched) {
 
 if ($fullStack) {
   if ($wtLaunched) {
-    Write-Host '[3/8]–[8/8] Full stack already in Windows Terminal tabs (or Backend+Dashboard+Loot if Redis was down).' -ForegroundColor Gray
+    Write-Host '[3/9]–[9/9] Full stack already in Windows Terminal tabs (or Backend+Dashboard+Loot+AlbumComposer if Redis was down).' -ForegroundColor Gray
   } elseif ($redisOk) {
     Start-Sleep -Seconds 1
     Write-Host '[4/8] Starting Celery worker (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-Celery" -Command $cmdCelery
+    Start-TbccServiceWindow -Title "TBCC-Celery-Post" -Command $cmdCeleryPost
     Write-Host "  Celery worker started." -ForegroundColor Green
     Write-Host '[5/8] Starting Celery Beat (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-Beat" -Command $cmdBeat
@@ -760,12 +765,18 @@ if ($fullStack) {
     Write-Host '[6/8] Starting payment bot (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-PaymentBot" -Command $cmdPay
     Write-Host "  Payment bot started." -ForegroundColor Green
-    Write-Host '[7/8] Starting secretary bot (FAQ / Business drafts) (new window)...' -ForegroundColor Yellow
+    Write-Host '[7/10] Starting secretary bot (FAQ / Business drafts) (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-SecretaryBot" -Command $cmdSecretary
     Write-Host "  Secretary bot started." -ForegroundColor Green
-    Write-Host '[8/8] Starting loot overseer bot (new window)...' -ForegroundColor Yellow
+    Write-Host '[8/10] Starting macro search bot (new window)...' -ForegroundColor Yellow
+    Start-TbccServiceWindow -Title "TBCC-MacroSearchBot" -Command $cmdMacroSearch
+    Write-Host "  Macro search bot started." -ForegroundColor Green
+    Write-Host '[9/10] Starting loot overseer bot (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-LootBot" -Command $cmdLoot
     Write-Host "  Loot overseer bot started." -ForegroundColor Green
+    Write-Host '[10/10] Starting album composer bot (new window)...' -ForegroundColor Yellow
+    Start-TbccServiceWindow -Title "TBCC-AlbumComposer" -Command $cmdAlbumComposer
+    Write-Host "  Album composer bot started." -ForegroundColor Green
     foreach ($i in 0..($enrichment.Titles.Length - 1)) {
       $t = $enrichment.Titles[$i]
       $c = $enrichment.Commands[$i]
@@ -774,9 +785,11 @@ if ($fullStack) {
       Write-Host ('  ' + $t + ' started.') -ForegroundColor Green
     }
   } elseif (-not $redisOk) {
-    Write-Host '[3/4] Redis down — starting loot overseer only (needs API, not Redis)...' -ForegroundColor Yellow
+    Write-Host '[3/5] Redis down — starting loot + album composer (needs API, not Redis)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-LootBot" -Command $cmdLoot
     Write-Host "  Loot overseer bot started." -ForegroundColor Green
+    Start-TbccServiceWindow -Title "TBCC-AlbumComposer" -Command $cmdAlbumComposer
+    Write-Host "  Album composer bot started." -ForegroundColor Green
   }
   if ($llmChat -and -not $wtLaunched) {
     Write-Host 'Starting LLM chat bot (new window)...' -ForegroundColor Yellow

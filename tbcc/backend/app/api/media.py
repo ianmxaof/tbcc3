@@ -204,7 +204,26 @@ def _recommendation_score(media, stats: dict) -> float:
 
 
 async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, str]:
-    """HTTP(S) direct URL, or download from Telegram Saved Messages (indexed by telegram_message_id)."""
+    """Local pool file, HTTP(S) direct URL, or download from Telegram Saved Messages."""
+    from app.database.session import SessionLocal
+    from app.models.media import Media
+    from app.services.local_media_storage import LOCAL_TELEGRAM_MESSAGE_ID, local_media_path
+
+    if ctx.telegram_message_id == LOCAL_TELEGRAM_MESSAGE_ID:
+        db = SessionLocal()
+        try:
+            row = db.query(Media).filter(Media.id == ctx.id).first()
+            if row:
+                p = local_media_path(row)
+                if p and p.is_file():
+                    data = p.read_bytes()
+                    kind, ext = sniff_media_kind(data)
+                    ct = _MIME_FROM_EXT.get(ext, "application/octet-stream")
+                    return data, ct
+        finally:
+            db.close()
+        raise HTTPException(status_code=404, detail="Local media file missing for this pool item")
+
     url = str(ctx.source_channel or "").strip()
     # Never HTTP-fetch our own /media/{id}/thumbnail URLs (loopback + Vite proxy → 502).
     if url.startswith(("http://", "https://")) and looks_like_tbcc_internal_media_url(url):
@@ -292,7 +311,20 @@ async def _fetch_saved_message_thumbnail_bytes(ctx: MediaFetchContext) -> tuple[
     Best-effort image thumbnail from Telegram Saved Messages for video/doc rows.
     Returns (bytes, mime) or None when no thumb is available.
     """
+    from app.services.local_media_storage import LOCAL_TELEGRAM_MESSAGE_ID
+
     if ctx.telegram_message_id is None:
+        return None
+    if ctx.telegram_message_id == LOCAL_TELEGRAM_MESSAGE_ID:
+        try:
+            data, mime = await _fetch_media_bytes_and_type(ctx)
+            jpeg = _image_bytes_to_thumbnail_jpeg(data)
+            if jpeg:
+                return jpeg, "image/jpeg"
+            if (ctx.media_type or "").lower() in ("photo", "gif") or "image" in (mime or "").lower():
+                return data, mime
+        except HTTPException:
+            return None
         return None
     from app.services.telegram_admin import run_telegram_io
 

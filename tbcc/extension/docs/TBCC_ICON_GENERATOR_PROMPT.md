@@ -41,10 +41,10 @@ colors #89b4fa and #f5c2e7 on #1e1e2e, flat vector, symmetric, no text.
 
 ## Export checklist
 
-1. Master PNG (square or landscape; script center-crops). Save reference as `docs/tbcc-icon-master.png`.
-2. Run `python scripts/build-icons.py [path/to/source.png]` from `tbcc/extension/` → writes **16, 32, 48, 128** PNG + `favicon.ico` into `icons/`. Default `--fill 1.06` zooms the mark for toolbar legibility; use `--fill 0.95` if tips clip in Chrome.
+1. Edit the vector mark in `icons/tbcc-mark.svg` (flat blue hex + pink bolt, no gradients).
+2. Run `python scripts/build-icons.py` from `tbcc/extension/` → writes **with-bg** PNGs to `icons/`, **transparent** PNGs to `icons/transparent/`, plus `favicon.ico`. Default `--mark-bleed 0.94` zooms the mark for Chrome toolbar legibility.
 3. Reload extension in `chrome://extensions`.
-4. Gallery favicon flyout is wired in `gallery.html` (ICO + PNG sizes).
+4. Gallery favicon flyout uses `icons/` (with background); toolbar uses `icons/transparent/`.
 
 ## Brand lockup (UI text, not icon)
 

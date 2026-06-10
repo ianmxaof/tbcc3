@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 . (Join-Path $PSScriptRoot "tbcc-error-hub.ps1")
+Initialize-TbccServiceConsole -TbccRoot $TbccRoot -Title $ServiceName
 
 $paths = Get-TbccErrorHubPaths -TbccRoot $TbccRoot
 $safeName = ($ServiceName -replace '[^\w\-]', '_')
@@ -111,9 +112,12 @@ Flush-TbccTraceback
 
 $code = $proc.ExitCode
 if ($code -ne 0) {
-  Write-TbccErrorHubEntry -TbccRoot $TbccRoot -ServiceName $ServiceName -Level "ERROR" -Message ("Process exited with code " + $code)
+  # -1 / 0xC000013A: tab closed, orchestrator stop, or kill — not necessarily a crash.
+  $level = if ($code -eq -1 -or $code -eq -1073741510) { "WARN" } else { "ERROR" }
+  Write-TbccErrorHubEntry -TbccRoot $TbccRoot -ServiceName $ServiceName -Level $level -Message ("Process exited with code " + $code)
   Write-Host ""
-  Write-Host ("[" + $ServiceName + "] exited " + $code + " - see TBCC-Errors tab.") -ForegroundColor Red
+  $color = if ($level -eq "WARN") { "Yellow" } else { "Red" }
+  Write-Host ("[" + $ServiceName + "] exited " + $code + " - see TBCC-Errors tab.") -ForegroundColor $color
   exit $code
 }
 

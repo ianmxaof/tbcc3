@@ -21,6 +21,14 @@ CONFLICT_ACTIONS: dict[str, dict[str, str]] = {
     "api_port_duplicate": {"action": "cleanup_uvicorn_orphans", "action_label": "Clear port 8000 conflicts"},
     "redis_down": {"action": "start_docker_redis", "action_label": "Start Redis (Docker)"},
     "postgres_down": {"action": "start_docker_postgres", "action_label": "Start Postgres (Docker)"},
+    "session_lock_storm": {"action": "focus_telegram_relief", "action_label": "Telegram relief focus"},
+    "celery_queue_backlog": {
+        "action": "purge_celery_queues",
+        "action_label": "Purge stale Celery queues",
+    },
+    "beat_down": {"action": "start_scheduling_stack", "action_label": "Start Beat + Celery"},
+    "celery_worker_down": {"action": "start_scheduling_stack", "action_label": "Start Beat + Celery"},
+    "celery_post_worker_down": {"action": "start_scheduling_stack", "action_label": "Start Beat + Celery"},
 }
 
 from sqlalchemy import text
@@ -35,11 +43,14 @@ from app.utils.telethon_session import (
 
 
 def _port_listening(port: int) -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=0.8):
-            return True
-    except OSError:
-        return False
+    """True if something accepts TCP on this port locally (IPv4 or IPv6 loopback)."""
+    for host in ("127.0.0.1", "localhost", "::1"):
+        try:
+            with socket.create_connection((host, port), timeout=0.8):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _count_port_listeners(port: int) -> int:
@@ -204,6 +215,72 @@ def start_docker_infra(services: list[str]) -> dict[str, Any]:
         return {"ok": False, "error": str(e)[:300]}
 
 
+def start_tbcc_stack_services(service_ids: list[str]) -> dict[str, Any]:
+    """Start TBCC Windows stack tabs via tbcc-service-control.ps1 (Beat, Celery, etc.)."""
+    if platform.system() != "Windows":
+        return {"ok": False, "error": "stack service launch is Windows-only"}
+    root = _tbcc_root()
+    script = root / "scripts" / "_start-scheduling-stack.ps1"
+    if script.is_file() and set(service_ids) >= {"beat", "celery", "celery_post"}:
+        try:
+            proc = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(script),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=90,
+                cwd=str(root),
+            )
+            return {
+                "ok": proc.returncode == 0,
+                "services": service_ids,
+                "stdout": (proc.stdout or "")[-500:],
+                "stderr": (proc.stderr or "")[-500:],
+                "returncode": proc.returncode,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:300]}
+
+    ps1 = root / "scripts" / "tbcc-service-control.ps1"
+    if not ps1.is_file():
+        return {"ok": False, "error": f"missing {ps1}"}
+    ids = [s.strip() for s in service_ids if s and s.strip()]
+    if not ids:
+        return {"ok": False, "error": "no service ids"}
+    id_list = ",".join(f'"{i}"' for i in ids)
+    ps_cmd = (
+        f'. "{ps1}"; '
+        f'$root = "{root}"; '
+        f'foreach ($id in @({id_list})) {{ '
+        f'$svc = Get-TbccStackServices -TbccRoot $root -FullStack | Where-Object {{ $_.Id -eq $id }} | Select-Object -First 1; '
+        f'if ($svc) {{ Start-TbccStackService -Service $svc -TbccRoot $root -UseErrorHubWrapper }} '
+        f'}}'
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            cwd=str(root),
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "services": ids,
+            "stdout": (proc.stdout or "")[-500:],
+            "stderr": (proc.stderr or "")[-500:],
+            "returncode": proc.returncode,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
 def remediate_system_issues(codes: list[str] | None = None) -> dict[str, Any]:
     """Run automated fixes for known conflict codes (dashboard one-click)."""
     snapshot = collect_system_health()
@@ -226,8 +303,95 @@ def remediate_system_issues(codes: list[str] | None = None) -> dict[str, Any]:
         r = start_docker_infra(["postgres"])
         results.append({"code": "start_docker_postgres", **r})
 
+    if (
+        "beat_down" in want
+        or "celery_worker_down" in want
+        or "celery_post_worker_down" in want
+        or "start_scheduling_stack" in want
+    ):
+        r = start_tbcc_stack_services(["beat", "celery", "celery_post"])
+        results.append({"code": "start_scheduling_stack", **r})
+
+    if "session_lock_storm" in want or "focus_telegram_relief" in want:
+        try:
+            from app.services.focus_profile import apply_focus_profile
+
+            r = apply_focus_profile(
+                "telegram_relief",
+                reason="Health banner: session lock storm",
+                auto=False,
+            )
+            results.append({"code": "focus_telegram_relief", **r})
+        except Exception as e:
+            results.append({"code": "focus_telegram_relief", "ok": False, "error": str(e)[:200]})
+
+    if "celery_queue_backlog" in want or "purge_celery_queues" in want:
+        try:
+            from app.services.celery_queue_ops import purge_celery_queues
+
+            r = purge_celery_queues(["celery", "post"], min_length=1)
+            results.append({"code": "purge_celery_queues", **r})
+        except Exception as e:
+            results.append({"code": "purge_celery_queues", "ok": False, "error": str(e)[:200]})
+
+    if "import_queue_busy" in want or "focus_import_burst" in want:
+        try:
+            from app.services.focus_profile import apply_focus_profile
+
+            r = apply_focus_profile(
+                "import_burst",
+                reason="Health banner: import queue busy",
+                auto=False,
+            )
+            results.append({"code": "focus_import_burst", **r})
+        except Exception as e:
+            results.append({"code": "focus_import_burst", "ok": False, "error": str(e)[:200]})
+
     health = collect_system_health()
     return {"ok": health.get("ok", False), "results": results, "health": health}
+
+
+def _scheduling_process_counts() -> dict[str, int]:
+    beat = len(_win_processes_matching(r"app\.workers\.celery_app beat|celery.*\sbeat\s"))
+    worker = len(
+        _win_processes_matching(r"app\.workers\.celery_app worker|celery.*\sworker\s")
+    )
+    return {"beat": beat, "celery_worker": worker}
+
+
+def collect_scheduling_health() -> dict[str, Any]:
+    """Beat + Celery worker presence for pool/scheduled post cron (Windows process match)."""
+    counts = _scheduling_process_counts()
+    post_workers = len(
+        _win_processes_matching(r"celery.*-Q\s+post|celery.*-n\s+post@")
+    )
+    pause = False
+    focus_profile = "off"
+    try:
+        from app.services.focus_profile import get_focus_state, pause_beat_scheduling
+
+        pause = pause_beat_scheduling()
+        focus_profile = (get_focus_state().get("profile") or "off").strip().lower()
+    except Exception:
+        pass
+    pool_auto = True
+    try:
+        from app.services.post_scheduler import pool_auto_post_enabled
+
+        pool_auto = pool_auto_post_enabled()
+    except Exception:
+        pass
+    return {
+        "beat_processes": counts["beat"],
+        "celery_worker_processes": counts["celery_worker"],
+        "celery_post_worker_processes": post_workers,
+        "beat_running": counts["beat"] > 0,
+        "celery_worker_running": counts["celery_worker"] > 0,
+        "celery_post_worker_running": post_workers > 0,
+        "pool_auto_post_enabled": pool_auto,
+        "scheduling_paused_by_focus": pause,
+        "focus_profile": focus_profile,
+    }
 
 
 def _redis_ok() -> tuple[bool, str | None]:
@@ -341,9 +505,130 @@ def collect_system_health() -> dict[str, Any]:
     except Exception:
         active_imports = -1
 
+    try:
+        from app.services.focus_profile import (
+            count_active_import_jobs,
+            focus_auto_import_enabled,
+            focus_import_jobs_threshold,
+            get_focus_state,
+            lock_events_recent_count,
+            focus_auto_react_enabled,
+        )
+
+        active_imports = count_active_import_jobs()
+        focus_prof = (get_focus_state().get("profile") or "off").strip().lower()
+        if (
+            active_imports >= focus_import_jobs_threshold()
+            and focus_prof == "off"
+            and lock_events_recent_count() < 2
+        ):
+            msg = (
+                f"{active_imports} active import jobs — import_burst "
+                + ("will auto-apply" if focus_auto_import_enabled() else "recommended")
+            )
+            conflicts.append(
+                _conflict(
+                    "import_queue_busy",
+                    "warning",
+                    msg,
+                    action=None if focus_auto_import_enabled() else "focus_import_burst",
+                    action_label=None if focus_auto_import_enabled() else "Import burst focus",
+                )
+            )
+    except Exception:
+        pass
+
+    sched = collect_scheduling_health()
+    try:
+        from app.services.celery_queue_ops import celery_queue_snapshot
+
+        qsnap = celery_queue_snapshot()
+        sched["queues"] = qsnap.get("queues") if qsnap.get("ok") else {}
+        post_len = int((qsnap.get("queues") or {}).get("post", {}).get("length") or 0)
+        celery_len = int((qsnap.get("queues") or {}).get("celery", {}).get("length") or 0)
+        if redis_ok and (post_len >= 50 or celery_len >= 200):
+            conflicts.append(
+                _conflict(
+                    "celery_queue_backlog",
+                    "critical",
+                    (
+                        f"Celery backlog: post queue={post_len}, celery queue={celery_len}. "
+                        "Scheduled posts are waiting behind stale tasks — purge queues and restart TBCC-Celery + TBCC-Celery-Post."
+                    ),
+                    action="purge_celery_queues",
+                    action_label="Purge stale Celery queues",
+                )
+            )
+    except Exception:
+        pass
+
+    if redis_ok and not sched.get("beat_running"):
+        conflicts.append(
+            _conflict(
+                "beat_down",
+                "critical",
+                "TBCC-Beat is not running — pool intervals and recurring posts will not enqueue. Start TBCC-Beat (full stack or tray).",
+            )
+        )
+    if redis_ok and not sched.get("celery_worker_running"):
+        conflicts.append(
+            _conflict(
+                "celery_worker_down",
+                "critical",
+                "TBCC-Celery worker is not running — imports and side tasks will stall.",
+            )
+        )
+    if redis_ok and not sched.get("celery_post_worker_running"):
+        conflicts.append(
+            _conflict(
+                "celery_post_worker_down",
+                "critical",
+                "TBCC-Celery-Post is not running — scheduled posts and pool cron will not send. Start TBCC-Celery-Post (full stack).",
+            )
+        )
+    if sched.get("scheduling_paused_by_focus"):
+        conflicts.append(
+            _conflict(
+                "scheduling_paused_focus",
+                "warning",
+                f"Focus profile «{sched.get('focus_profile')}» paused Beat scheduling (TBCC-Beat may still run). Set Focus → Off to resume cron.",
+            )
+        )
+
+    try:
+        from app.services.focus_profile import lock_events_recent_count, focus_auto_react_enabled
+
+        if lock_events_recent_count() >= 2:
+            conflicts.append(
+                _conflict(
+                    "session_lock_storm",
+                    "critical",
+                    (
+                        f"Telethon session stress ({lock_events_recent_count()} events). "
+                        "Use Focus → Telegram relief (or wait for auto-react)."
+                    ),
+                    action="focus_telegram_relief",
+                    action_label="Telegram relief focus",
+                )
+            )
+            if not focus_auto_react_enabled():
+                recommendations.append("Set TBCC_FOCUS_AUTO_REACT=1 for automatic telegram_relief profile.")
+    except Exception:
+        pass
+
     fixable = [c for c in conflicts if c.get("action")]
     if fixable:
         recommendations.append("Use Fix buttons in the banner above — no scripts required.")
+
+    try:
+        from app.services.focus_profile import get_focus_state, lock_events_recent_count
+
+        focus_block = {
+            "active": get_focus_state(),
+            "lock_events_recent": lock_events_recent_count(),
+        }
+    except Exception:
+        focus_block = None
 
     db_url = str(engine.url)
     return {
@@ -366,10 +651,12 @@ def collect_system_health() -> dict[str, Any]:
             "sessions_share_file": telethon_sessions_share_file(),
         },
         "import_pipeline": {"active_jobs": active_imports},
+        "scheduling": sched,
         "orphan_uvicorn_workers": orphans,
         "conflicts": conflicts,
         "recommendations": recommendations,
         "fixable_count": len(fixable),
+        "focus": focus_block,
     }
 
 

@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Continue"
 . (Join-Path $PSScriptRoot "tbcc-error-hub.ps1")
+Initialize-TbccServiceConsole -TbccRoot $TbccRoot -Title "TBCC-Errors"
 
 $paths = Get-TbccErrorHubPaths -TbccRoot $TbccRoot
 if (-not (Test-Path -LiteralPath $paths.LogPath)) {

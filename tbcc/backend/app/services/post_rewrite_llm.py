@@ -7,8 +7,6 @@ import os
 import re
 from typing import Any
 
-import httpx
-
 logger = logging.getLogger(__name__)
 
 _URL_PATTERN = re.compile(
@@ -25,16 +23,15 @@ def caption_rewrite_llm_globally_enabled() -> bool:
     )
 
 
-def _openai_key() -> str:
-    return (os.environ.get("TBCC_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
-
-
 def _model() -> str:
-    return (
+    from app.services.llm_completions import resolve_text_model
+
+    explicit = (
         os.environ.get("TBCC_CAPTION_LLM_REWRITE_MODEL")
         or os.environ.get("TBCC_LLM_MODEL")
-        or "gpt-4o-mini"
+        or ""
     ).strip()
+    return resolve_text_model(explicit or None)
 
 
 def _max_tokens() -> int:
@@ -71,9 +68,12 @@ def rewrite_caption_llm_sync(original_html: str) -> str:
     Return a rephrased caption (Telegram HTML OK). Raises on missing API key or hard failure.
     Falls back to original if model output drops required URLs.
     """
-    key = _openai_key()
-    if not key:
-        raise RuntimeError("TBCC_OPENAI_API_KEY is not set")
+    from app.services.llm_completions import complete_chat_text_sync, text_llm_configured
+
+    if not text_llm_configured():
+        raise RuntimeError(
+            "LLM not configured: TBCC_OPENROUTER_API_KEY or TBCC_OPENAI_API_KEY"
+        )
 
     src = (original_html or "").strip()
     if not src:
@@ -106,20 +106,13 @@ def rewrite_caption_llm_sync(original_html: str) -> str:
         "temperature": 0.75,
     }
 
-    with httpx.Client(timeout=90.0) as client:
-        r = client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json=payload,
-        )
-    if not r.is_success:
-        logger.warning("caption LLM HTTP %s: %s", r.status_code, (r.text or "")[:400])
-        raise RuntimeError(f"OpenAI error {r.status_code}")
-
-    data = r.json()
-    text = (
-        ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-    ).strip()
+    text = complete_chat_text_sync(
+        payload["messages"],
+        model=payload["model"],
+        max_tokens=payload["max_tokens"],
+        temperature=payload["temperature"],
+        timeout=90.0,
+    )
     if text.startswith("```"):
         lines = text.split("\n")
         if lines[0].startswith("```"):

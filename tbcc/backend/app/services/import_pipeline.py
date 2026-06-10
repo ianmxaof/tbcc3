@@ -68,6 +68,7 @@ def _now() -> datetime:
 def job_to_public_dict(job: ImportJob) -> dict:
     out = {
         "job_id": job.id,
+        "job_kind": getattr(job, "job_kind", None) or "bytes",
         "status": job.status,
         "stage": job.stage,
         "pool_id": job.pool_id,
@@ -81,7 +82,13 @@ def job_to_public_dict(job: ImportJob) -> dict:
     }
     if job.result_json:
         try:
-            out["result"] = json.loads(job.result_json)
+            parsed = json.loads(job.result_json)
+            if isinstance(parsed, dict) and isinstance(parsed.get("params"), dict):
+                out["params"] = parsed["params"]
+                if parsed.get("result") is not None:
+                    out["result"] = parsed["result"]
+            else:
+                out["result"] = parsed
         except Exception:
             pass
     return out
@@ -112,7 +119,18 @@ def update_job(
     if poster_path is not None:
         job.poster_path = poster_path
     if result is not None:
-        job.result_json = json.dumps(result, ensure_ascii=False)
+        if job.result_json:
+            try:
+                existing = json.loads(job.result_json)
+                if isinstance(existing, dict) and isinstance(existing.get("params"), dict):
+                    existing["result"] = result
+                    job.result_json = json.dumps(existing, ensure_ascii=False)
+                else:
+                    job.result_json = json.dumps(result, ensure_ascii=False)
+            except Exception:
+                job.result_json = json.dumps(result, ensure_ascii=False)
+        else:
+            job.result_json = json.dumps(result, ensure_ascii=False)
     job.updated_at = _now()
     db.commit()
     db.refresh(job)
@@ -130,6 +148,7 @@ def create_staged_import_job(
     filename: str | None,
     media_type: str,
     extension_job_id: str | None = None,
+    skip_watermark: bool = False,
 ) -> ImportJob:
     size = len(file_bytes)
     if size > import_max_bytes():
@@ -141,6 +160,7 @@ def create_staged_import_job(
     staging.write_bytes(file_bytes)
     job = ImportJob(
         id=job_id,
+        job_kind="bytes",
         status="queued",
         stage="stored",
         pool_id=int(pool_id),
@@ -152,6 +172,9 @@ def create_staged_import_job(
         byte_size=size,
         staging_path=str(staging),
         extension_job_id=(extension_job_id or "")[:64] or None,
+        result_json=json.dumps({"params": {"skip_watermark": bool(skip_watermark)}}, ensure_ascii=False)
+        if skip_watermark
+        else None,
         created_at=_now(),
         updated_at=_now(),
     )
@@ -159,6 +182,53 @@ def create_staged_import_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+def create_channel_import_job(
+    db: Session,
+    *,
+    channel: str,
+    pool_id: int,
+    limit: int,
+    media_types: str,
+    message_thread_id: int | None = None,
+    source_label: str,
+    topic_title: str | None = None,
+) -> ImportJob:
+    job_id = new_import_job_id()
+    params = {
+        "channel": channel,
+        "limit": int(limit),
+        "media_types": media_types,
+        "message_thread_id": message_thread_id,
+        "source_label": source_label,
+        "topic_title": (topic_title or "").strip() or None,
+    }
+    job = ImportJob(
+        id=job_id,
+        job_kind="channel",
+        status="queued",
+        stage="queued",
+        pool_id=int(pool_id),
+        saved_only=False,
+        source=(source_label or "")[:512] or None,
+        media_type=media_types,
+        byte_size=0,
+        result_json=json.dumps({"params": params}, ensure_ascii=False),
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def enqueue_channel_import_job(job_id: str) -> str | None:
+    from app.workers.import_telegram_worker import process_import_job
+
+    async_result = process_import_job.apply_async(args=[job_id], queue="telegram")
+    return async_result.id if async_result else None
 
 
 def enqueue_import_job_processing(job_id: str) -> str | None:

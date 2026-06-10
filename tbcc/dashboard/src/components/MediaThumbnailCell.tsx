@@ -30,10 +30,12 @@ export function MediaThumbnailCell({
   mediaId,
   mediaType,
   className,
+  disableFetch = false,
 }: {
   mediaId: number;
   mediaType: string;
   className?: string;
+  disableFetch?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
@@ -42,6 +44,7 @@ export function MediaThumbnailCell({
   const revokeRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (disableFetch) return;
     const el = rootRef.current;
     if (!el) return;
     if (typeof IntersectionObserver === "undefined") {
@@ -58,9 +61,18 @@ export function MediaThumbnailCell({
     );
     io.observe(el);
     return () => io.disconnect();
-  }, []);
+  }, [disableFetch]);
 
   useEffect(() => {
+    if (disableFetch) {
+      setPhase("idle");
+      setObjectUrl(null);
+      if (revokeRef.current) {
+        URL.revokeObjectURL(revokeRef.current);
+        revokeRef.current = null;
+      }
+      return;
+    }
     if (!visible) return;
     let cancelled = false;
     const ac = new AbortController();
@@ -120,7 +132,7 @@ export function MediaThumbnailCell({
         revokeRef.current = null;
       }
     };
-  }, [visible, mediaId]);
+  }, [visible, mediaId, disableFetch]);
 
   const mediaClass = className ?? "";
   const outer = `relative flex w-full h-full min-h-0 items-center justify-center bg-slate-800 text-slate-500 text-[10px] leading-tight text-center ${
@@ -128,7 +140,13 @@ export function MediaThumbnailCell({
   }`;
 
   let inner: ReactNode;
-  if (!visible) {
+  if (disableFetch) {
+    inner = (
+      <span className="text-slate-400" title="Fast rebuild mode: thumbnail fetch disabled">
+        #{mediaId}
+      </span>
+    );
+  } else if (!visible) {
     inner = (
       <span className="text-slate-600" title="Scroll into view to load preview">
         ·

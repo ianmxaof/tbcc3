@@ -1,7 +1,7 @@
 """
 LLM vision auto-tagging: classify images against existing tbcc_tags (OpenAI vision API).
 
-Skips video and non-image types for v1. Requires TBCC_OPENAI_API_KEY.
+Skips video and non-image types for v1. Requires TBCC_OPENAI_API_KEY or TBCC_OPENROUTER_API_KEY.
 Tags are stored as MediaTagLink with source=\"llm\"; re-runs replace previous llm links only.
 """
 
@@ -25,15 +25,19 @@ def auto_tag_llm_enabled() -> bool:
         "1",
         "true",
         "yes",
-    ) and bool((os.getenv("TBCC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip())
+    ) and _llm_configured()
 
 
-def _openai_key() -> str:
-    return (os.getenv("TBCC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+def _llm_configured() -> bool:
+    from app.services.llm_completions import text_llm_configured
+
+    return text_llm_configured()
 
 
 def _model() -> str:
-    return (os.getenv("TBCC_LLM_MODEL") or "gpt-4o-mini").strip()
+    from app.services.llm_completions import resolve_text_model
+
+    return resolve_text_model(None)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -150,9 +154,12 @@ def run_auto_tag_llm_for_media(media_id: int) -> dict[str, Any]:
     from app.models.media import Media
     from app.models.tbcc_tag import TbccTag
 
-    key = _openai_key()
-    if not key:
-        return {"ok": False, "error": "TBCC_OPENAI_API_KEY not set", "media_id": media_id}
+    if not _llm_configured():
+        return {
+            "ok": False,
+            "error": "LLM not configured (TBCC_OPENROUTER_API_KEY or TBCC_OPENAI_API_KEY)",
+            "media_id": media_id,
+        }
 
     loop = asyncio.new_event_loop()
     try:
@@ -211,22 +218,9 @@ def run_auto_tag_llm_for_media(media_id: int) -> dict[str, Any]:
     }
 
     try:
-        with httpx.Client(timeout=120.0) as client:
-            r = client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            r.raise_for_status()
-            body = r.json()
-    except httpx.HTTPStatusError as e:
-        detail = ""
-        try:
-            detail = e.response.text[:500]
-        except Exception:
-            pass
-        logger.warning("OpenAI vision HTTP error: %s %s", e.response.status_code, detail)
-        return {"ok": False, "error": f"OpenAI HTTP {e.response.status_code}", "media_id": media_id}
+        from app.services.llm_completions import post_chat_completions_sync
+
+        body = post_chat_completions_sync(payload, timeout=120.0)
     except Exception as e:
         logger.exception("OpenAI vision failed media_id=%s", media_id)
         return {"ok": False, "error": str(e), "media_id": media_id}

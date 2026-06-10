@@ -26,9 +26,9 @@
     </label>
     <p class="sub" style="margin:0 0 12px">These apply when you refresh or scan a tab in the gallery. Same settings as the old gallery settings modal.</p>
     <label class="row2">Format
-      <select id="captureSettingFormat">
+      <select id="captureSettingFormat" title="WebP images are re-encoded to JPEG in the browser before download, ZIP, import, and Saved Messages (no ImageMagick required)">
         <option value="original">Original</option>
-        <option value="jpeg">Convert to JPG</option>
+        <option value="jpeg">Convert to JPG (WebP → JPEG)</option>
       </select>
     </label>
     <label class="row2"><input type="checkbox" id="captureSettingAutoRefresh" /> Auto-scan when the side panel opens or becomes visible</label>
@@ -47,6 +47,24 @@
     <label class="row2"><input type="checkbox" id="captureSettingNotifySendTbcc" /> Notify when Send to TBCC finishes</label>
     <label class="row2"><input type="checkbox" id="captureSettingNotifySendSaved" /> Notify when Send to Saved Messages finishes</label>
     <label class="row2"><input type="checkbox" id="captureSettingNotifySendChannel" /> Notify when channel/group/forum post finishes</label>
+    <label class="row2">System notification style
+      <select id="captureSettingNotificationStyle" title="How desktop notifications appear">
+        <option value="full">Title + message</option>
+        <option value="app_name_only">App name + message</option>
+        <option value="body_only">Message only</option>
+        <option value="minimal">Short message</option>
+      </select>
+    </label>
+    <label class="row2">Gallery download mode
+      <select id="captureSettingDownloadMode" title="Buffered = fetch with TBCC progress then save; Direct = browser stream">
+        <option value="buffered">Buffered (progress bar, then save)</option>
+        <option value="direct">Direct (browser stream)</option>
+      </select>
+    </label>
+    <label class="row" style="margin-top:10px">
+      <input type="checkbox" id="captureSettingSkipPromoWatermark" />
+      Skip AOF promo watermark on export (ZIP / download). Imports still respect <code>skip_watermark</code> on send when checked.
+    </label>
     <p style="margin:12px 0 6px;font-size:12px;color:var(--tbcc-text-muted)">Edges / watermarks: use <strong>Crop &amp; watermarks</strong> in the gallery overflow menu (percent trims all four sides).</p>
     <button type="button" id="captureSettingClearCache" class="tbcc-btn-secondary">Clear gallery cache</button>
     <p id="tbccApiStatus" style="margin:14px 0 0;font-size:12px;color:var(--tbcc-text-muted)">Checking API…</p>
@@ -136,8 +154,8 @@
       </label>
     </fieldset>
 
-    <h2>Add a source</h2>
-    <fieldset>
+    <h2 id="tbcc-add-source">Add a source</h2>
+    <fieldset id="tbcc-add-source-fieldset">
       <legend>Custom search URL</legend>
       <p class="sub" style="margin:0 0 10px">
         Paste the URL from the address bar <strong>after</strong> you run a manual search on that site (so you get the real query format). Put <code>{username}</code> where the search term goes — often
@@ -165,12 +183,17 @@
 
     <h2>Telegram relay</h2>
     <fieldset>
-      <legend>Send video searches to bot</legend>
+      <legend>Send macro search to Telegram</legend>
       <p class="sub" style="margin:0 0 10px">
-        Context menu item <strong>Send /videofind in payment bot</strong> opens a deep link with the selected username.
+        Context menu <strong>Send /macrosearch in bot</strong> opens your macro search bot (<code>/start ms_…</code>).
+        Set the @username from BotFather for <code>TBCC_MACRO_SEARCH_BOT_TOKEN</code>.
       </p>
       <label class="row" style="flex-wrap:wrap">
-        <span style="min-width:120px">Payment bot username</span>
+        <span style="min-width:120px">Macro search bot</span>
+        <input type="text" id="tbccMacroSearchBotUsername" class="tbcc-input" placeholder="your_macro_search_bot" style="min-width:240px" />
+      </label>
+      <label class="row" style="flex-wrap:wrap;margin-top:8px">
+        <span style="min-width:120px">Payment bot (fallback)</span>
         <input type="text" id="tbccPaymentBotUsername" class="tbcc-input" placeholder="aofsubscriptions_bot" style="min-width:240px" />
       </label>
     </fieldset>

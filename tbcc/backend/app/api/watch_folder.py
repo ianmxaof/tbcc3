@@ -131,6 +131,17 @@ def watch_folder_status():
         "debounce_s": debounce,
         "stable_wait_s": stable_wait_s,
         "media_only": media_only,
+        "nsfw_tier_subfolders": (os.environ.get("TBCC_WATCH_NSFW_TIER_SUBFOLDERS") or "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        "nsfw_class_subfolders": (os.environ.get("TBCC_WATCH_NSFW_CLASS_SUBFOLDERS") or "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        "watch_llm_tag": (os.environ.get("TBCC_WATCH_LLM_TAG") or "").strip().lower() in ("1", "true", "yes", "on"),
+        "clip_niche_subfolders": (os.environ.get("TBCC_WATCH_CLIP_NICHE_SUBFOLDERS") or "1").strip().lower()
+        not in ("0", "false", "no", "off"),
+        "nsfw_detect_configured": bool((os.environ.get("TBCC_NSFW_DETECT_URL") or "").strip()),
+        "clip_categorize_configured": bool((os.environ.get("TBCC_CLIP_CATEGORIZE_URL") or "").strip()),
+        "clip_categories_file": (os.environ.get("TBCC_CLIP_CATEGORIES_FILE") or "").strip() or None,
+        "vision_llm_provider": (os.environ.get("TBCC_VISION_LLM_PROVIDER") or "none").strip(),
         "reject_dir": str(reject_dir) if reject_dir else None,
         "inbox": {
             "path": inbox_path_str,

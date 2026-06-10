@@ -44,11 +44,42 @@ def poster_session_stem() -> str:
     return str(_backend_root() / raw)
 
 
+def album_composer_session_stem() -> str:
+    """Dedicated Telethon session for Album Composer (avoids admin.session Redis lock)."""
+    raw = (os.getenv("TBCC_ALBUM_COMPOSER_TELEGRAM_SESSION") or "admin_album").strip() or "admin_album"
+    p = Path(raw)
+    if p.is_absolute():
+        return normalize_session_stem(str(p))
+    if "/" in raw or "\\" in raw:
+        return normalize_session_stem(str((_backend_root() / raw).resolve()))
+    return str(_backend_root() / raw)
+
+
+def import_session_stem() -> str:
+    """Bulk import / Saved Messages / channel scan session (separate from dashboard admin.session)."""
+    raw = (os.getenv("TBCC_IMPORT_TELEGRAM_SESSION") or "admin_import").strip() or "admin_import"
+    p = Path(raw)
+    if p.is_absolute():
+        return normalize_session_stem(str(p))
+    if "/" in raw or "\\" in raw:
+        return normalize_session_stem(str((_backend_root() / raw).resolve()))
+    return str(_backend_root() / raw)
+
+
+def _session_paths_equal(a_stem: str, b_stem: str) -> bool:
+    return os.path.normcase(os.path.normpath(a_stem + ".session")) == os.path.normcase(
+        os.path.normpath(b_stem + ".session")
+    )
+
+
 def telethon_sessions_share_file() -> bool:
     """True when admin + poster workers would contend on the same SQLite session file."""
-    return os.path.normcase(
-        os.path.normpath(admin_session_stem() + ".session")
-    ) == os.path.normcase(os.path.normpath(poster_session_stem() + ".session"))
+    return _session_paths_equal(admin_session_stem(), poster_session_stem())
+
+
+def import_sessions_share_admin_file() -> bool:
+    """True when imports still use admin.session (no dedicated import file configured)."""
+    return _session_paths_equal(admin_session_stem(), import_session_stem())
 
 
 def sqlite_busy_timeout_ms() -> int:
@@ -73,7 +104,37 @@ def configure_telethon_sqlite_session(client) -> None:
         logger.debug("could not configure Telethon session SQLite pragmas", exc_info=True)
 
 
-async def graceful_telethon_disconnect(client, *, pause_s: float = 0.35) -> None:
+def _env_truthy(name: str) -> bool | None:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return None
+    return raw not in ("0", "false", "no", "off")
+
+
+def telethon_disconnect_admin_after_io() -> bool:
+    """
+    When True, disconnect the admin Telethon client after each serialized I/O op.
+    Default False when poster + import use separate session files (recommended .env);
+    True when they share admin.session so Celery/API do not hold SQLite locks.
+    """
+    override = _env_truthy("TBCC_TELEGRAM_DISCONNECT_AFTER_IO")
+    if override is not None:
+        return override
+    return telethon_sessions_share_file() or import_sessions_share_admin_file()
+
+
+def telethon_disconnect_import_after_io() -> bool:
+    """Same as admin, but for the dedicated import session client."""
+    override = _env_truthy("TBCC_IMPORT_TELEGRAM_DISCONNECT_AFTER_IO")
+    if override is not None:
+        return override
+    override_global = _env_truthy("TBCC_TELEGRAM_DISCONNECT_AFTER_IO")
+    if override_global is not None:
+        return override_global
+    return import_sessions_share_admin_file()
+
+
+async def graceful_telethon_disconnect(client, *, pause_s: float = 0.5) -> None:
     """
     Disconnect Telethon without leaving send/recv tasks on a closing asyncio loop.
     Celery uses asyncio.run() per task — reusing or half-closing clients causes
@@ -84,11 +145,19 @@ async def graceful_telethon_disconnect(client, *, pause_s: float = 0.35) -> None
     if client is None:
         return
     try:
-        if getattr(client, "is_connected", lambda: False)():
+        connected = False
+        try:
+            connected = bool(client.is_connected())
+        except Exception:
+            connected = False
+        if connected:
+            await asyncio.sleep(0)
             await client.disconnect()
     except RuntimeError as e:
         if "event loop is closed" not in str(e).lower():
             logger.debug("telethon disconnect runtime error", exc_info=True)
+    except GeneratorExit:
+        pass
     except Exception:
         logger.debug("telethon disconnect failed", exc_info=True)
     if pause_s > 0:
