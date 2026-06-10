@@ -8,17 +8,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-env_path = ROOT / ".env"
-if env_path.is_file():
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.utils.load_tbcc_dotenv import load_tbcc_dotenv
+
+load_tbcc_dotenv()
 
 from app.services.buffer_graphql import (
     buffer_target_channel_ids,
