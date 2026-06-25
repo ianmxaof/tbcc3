@@ -1,0 +1,86 @@
+# TBCC ops operator permissions (MCP tools + flywheel actions).
+# Pattern borrowed from openclaw-orchestration/config/tool_permissions.yaml.
+#
+# Roles:
+#   openclaw       — Telegram @openclawtbcc_bot + mcporter (notify, never auto-approve destructive)
+#   secretary      — @aof_secretary_bot human gate (full approve/reject)
+#   cursor_automation — Cursor SDK / automation tick (diagnose + allowlisted auto-fix)
+#   cron           — OpenClaw cron isolated jobs (same as openclaw)
+#   api            — localhost API default (permissive for dashboard scripts)
+
+operators:
+  openclaw:
+    description: OpenClaw agent via Telegram or gateway
+    allowed_mcp_tools:
+      - tbcc_health
+      - list_channels
+      - list_pools
+      - list_scheduled_posts
+      - tbcc_flywheel_tick
+      - flywheel_approval_bundle
+      - analytics_weekly_summary
+    denied_mcp_tools:
+      - flywheel_approve
+      - flywheel_reject
+      - create_scheduled_post
+      - trigger_scheduled_post
+      - schedule_recurring_campaign
+      - import_media_url
+    flywheel:
+      can_tick: true
+      can_approve: false
+      can_reject: false
+      allowed_lanes: [notify_only]
+
+  cron:
+    description: OpenClaw cron isolated session (tbcc-ops-check)
+    allowed_mcp_tools:
+      - tbcc_health
+      - tbcc_flywheel_tick
+      - flywheel_approval_bundle
+    denied_mcp_tools:
+      - flywheel_approve
+      - flywheel_reject
+      - create_scheduled_post
+      - trigger_scheduled_post
+    flywheel:
+      can_tick: true
+      can_approve: false
+      can_reject: false
+      allowed_lanes: [notify_only]
+
+  secretary:
+    description: Secretary bot inline Approve/Reject + /flywheel
+    allowed_mcp_tools: ["*"]
+    denied_mcp_tools: []
+    flywheel:
+      can_tick: true
+      can_approve: true
+      can_reject: true
+      allowed_lanes: [deterministic, claude_code, cursor, notify_only]
+
+  cursor_automation:
+    description: Cursor ops automation / SDK triage
+    allowed_mcp_tools:
+      - tbcc_health
+      - flywheel_approval_bundle
+    denied_mcp_tools:
+      - flywheel_approve
+      - flywheel_reject
+      - create_scheduled_post
+      - trigger_scheduled_post
+    flywheel:
+      can_tick: false
+      can_approve: false
+      can_reject: false
+      allowed_lanes: [cursor]
+
+  api:
+    description: Localhost API / dashboard (default when operator omitted)
+    allowed_mcp_tools: ["*"]
+    denied_mcp_tools: []
+    flywheel:
+      can_tick: true
+      can_approve: true
+      can_reject: true
+      allowed_lanes: [deterministic, claude_code, cursor, notify_only]

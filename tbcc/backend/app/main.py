@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, external_payment_orders, growth_settings, internal_launch, tags, llm_shop, webhooks_payment, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, extension_context_menu, album_composer_drafts
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, extension_context_menu, extension_aof_pools, album_composer_drafts
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -25,15 +25,19 @@ from app.models.emoji_factory_sketch import EmojiFactorySketchPage  # noqa: F401
 from app.models.listening_relay_settings import ListeningRelaySettings  # noqa: F401
 from app.models.zip_bundle_settings import ZipBundleSettings  # noqa: F401
 from app.models.promo_affiliate_link import PromoAffiliateLink  # noqa: F401
+from app.models.promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor  # noqa: F401
 from app.models.capture_archive_entry import CaptureArchiveEntry  # noqa: F401
 from app.models.macro_search_source_submission import MacroSearchSourceSubmission  # noqa: F401
 from app.models.import_job import ImportJob  # noqa: F401
+from app.models.campaign_deploy_event import CampaignDeployEvent  # noqa: F401
+from app.models.scrape_channel_profile import ScrapeChannelProfile  # noqa: F401
 from app.models.secretary_user_context import SecretaryMessageRecord, SecretaryUserContext  # noqa: F401
 from app.models.secretary_settings import SecretarySettings  # noqa: F401
 from app.models.secretary_knowledge import SecretaryKnowledgeEntry  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
 from app.services.zip_promo_storage import ensure_zip_promo_dir
 from app.services.send_promo_storage import ensure_send_promo_dir
+from app.services.post_divider_storage import ensure_post_divider_dir
 from app.services.bundle_storage import ensure_bundle_dir
 from app.services.nowpayments_client import crypto_auto_checkout_ready
 
@@ -404,6 +408,9 @@ def on_startup():
                         ("caption_llm_rewrite_probability", "REAL"),
                         ("caption_llm_send_count", "INTEGER NOT NULL DEFAULT 0"),
                         ("last_sent_caption_html", "TEXT"),
+                        ("discord_mirror_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("reddit_mirror_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("surface_copy_json", "TEXT"),
                     ):
                         if col not in st_cols:
                             conn.execute(
@@ -498,6 +505,13 @@ def on_startup():
                         logger.info(
                             "SQLite: added listening_relay_settings.buffer_relay_last_post_at (dev migration)"
                         )
+                    if "buffer_x_queue_json" not in lr_cols:
+                        conn.execute(
+                            text("ALTER TABLE listening_relay_settings ADD COLUMN buffer_x_queue_json TEXT")
+                        )
+                        logger.info(
+                            "SQLite: added listening_relay_settings.buffer_x_queue_json (dev migration)"
+                        )
                     for col, ddl in (
                         ("template_rotation_mode", "VARCHAR(16) NOT NULL DEFAULT 'sequential'"),
                         ("message_slot_extras_json", "TEXT"),
@@ -565,6 +579,10 @@ def on_startup():
                             )
                         )
                     logger.info("SQLite: added loot_player_stats.free_pulls_used (dev migration)")
+                if "vip_daily_pull_at" not in ps_cols:
+                    with engine.begin() as conn:
+                        conn.execute(text("ALTER TABLE loot_player_stats ADD COLUMN vip_daily_pull_at DATETIME"))
+                    logger.info("SQLite: added loot_player_stats.vip_daily_pull_at (dev migration)")
         except Exception:
             logger.exception("SQLite column patch failed; run: cd backend && alembic upgrade head")
     else:
@@ -667,8 +685,38 @@ def on_startup():
                     with engine.begin() as conn:
                         conn.execute(text("ALTER TABLE promo_affiliate_links ADD COLUMN short_url TEXT"))
                     logger.info("PostgreSQL: added promo_affiliate_links.short_url (startup migration)")
+                for col, ddl in (
+                    ("placements_json", "ALTER TABLE promo_affiliate_links ADD COLUMN placements_json TEXT"),
+                    ("network_keys_json", "ALTER TABLE promo_affiliate_links ADD COLUMN network_keys_json TEXT"),
+                    ("copy_template", "ALTER TABLE promo_affiliate_links ADD COLUMN copy_template TEXT"),
+                ):
+                    if col not in pa_cols:
+                        with engine.begin() as conn:
+                            conn.execute(text(ddl))
+                        logger.info("PostgreSQL: added promo_affiliate_links.%s (startup migration)", col)
         except Exception:
             logger.exception("Startup: failed to ensure promo_affiliate_links.short_url")
+        try:
+            inspector = inspect(engine)
+            if "promo_affiliate_rotation_cursors" not in inspector.get_table_names():
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            """
+                            CREATE TABLE IF NOT EXISTS promo_affiliate_rotation_cursors (
+                                id SERIAL PRIMARY KEY,
+                                placement VARCHAR(32) NOT NULL,
+                                network_key VARCHAR(32) NOT NULL DEFAULT '',
+                                cursor_index INTEGER NOT NULL DEFAULT 0,
+                                updated_at TIMESTAMP WITHOUT TIME ZONE,
+                                UNIQUE (placement, network_key)
+                            )
+                            """
+                        )
+                    )
+                logger.info("PostgreSQL: ensured promo_affiliate_rotation_cursors table")
+        except Exception:
+            logger.exception("Startup: failed to ensure promo_affiliate_rotation_cursors")
         # Keep Postgres dev/prod resilient when model columns are added before alembic is applied.
         try:
             inspector = inspect(engine)
@@ -921,9 +969,12 @@ def on_startup():
                     ("caption_llm_rewrite_mode", "VARCHAR(16)"),
                     ("caption_llm_rewrite_interval", "INTEGER"),
                     ("caption_llm_rewrite_probability", "DOUBLE PRECISION"),
-                    ("caption_llm_send_count", "INTEGER NOT NULL DEFAULT 0"),
-                    ("last_sent_caption_html", "TEXT"),
-                ):
+                        ("caption_llm_send_count", "INTEGER NOT NULL DEFAULT 0"),
+                        ("last_sent_caption_html", "TEXT"),
+                        ("discord_mirror_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                        ("reddit_mirror_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                        ("surface_copy_json", "TEXT"),
+                    ):
                     if col not in st_cols:
                         with engine.begin() as conn:
                             conn.execute(
@@ -1042,6 +1093,16 @@ def on_startup():
                     logger.info(
                         "PostgreSQL: added listening_relay_settings.buffer_relay_last_post_at (startup migration)"
                     )
+                if "buffer_x_queue_json" not in lr_cols:
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE listening_relay_settings ADD COLUMN buffer_x_queue_json TEXT"
+                            )
+                        )
+                    logger.info(
+                        "PostgreSQL: added listening_relay_settings.buffer_x_queue_json (startup migration)"
+                    )
                 for col, ddl in (
                     ("template_rotation_mode", "VARCHAR(16) NOT NULL DEFAULT 'sequential'"),
                     ("message_slot_extras_json", "TEXT"),
@@ -1134,18 +1195,26 @@ app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(subscriptions.router, prefix="/subscriptions", tags=["subscriptions"])
 app.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
 app.include_router(growth_settings.router, prefix="/growth-settings", tags=["growth-settings"])
+app.include_router(growth_hub.router, prefix="/growth-hub", tags=["growth-hub"])
+app.include_router(companion.router, prefix="/companion", tags=["companion"])
 app.include_router(payment_bot_settings.router, prefix="/payment-bot-settings", tags=["payment-bot-settings"])
 app.include_router(loot_bot_settings.router, prefix="/loot-bot-settings", tags=["loot-bot-settings"])
 app.include_router(loot.router, prefix="/loot", tags=["loot"])
 app.include_router(external_payment_orders.router, prefix="/external-payment-orders", tags=["external-payment-orders"])
 app.include_router(webhooks_payment.router, prefix="/webhooks", tags=["webhooks"])
+app.include_router(webhooks_companion.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(subscription_plans.router, prefix="/subscription-plans", tags=["subscription-plans"])
 app.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 app.include_router(scheduled_posts.router, prefix="/scheduled-posts", tags=["scheduled-posts"])
+app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
 app.include_router(internal_launch.router, prefix="/internal", tags=["internal"])
 app.include_router(watch_folder.router, prefix="/watch-folder", tags=["watch-folder"])
 app.include_router(ops_focus.router)
 app.include_router(ops_alerts.router)
+app.include_router(ops_triage.router)
+app.include_router(ops_flywheel.router)
+app.include_router(ops_workflow.router)
+app.include_router(ops_stack.router)
 app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
 app.include_router(crawler.router, prefix="/crawler", tags=["crawler"])
 app.include_router(jdownloader.router, prefix="/jd", tags=["jdownloader"])
@@ -1156,8 +1225,10 @@ app.include_router(promo_affiliate_links.router, prefix="/promo-affiliate-links"
 app.include_router(listening_relay_settings.router, prefix="/listening-relay-settings", tags=["listening-relay-settings"])
 app.include_router(zip_bundle_settings.router, prefix="/zip-bundle-settings", tags=["zip-bundle-settings"])
 app.include_router(gallery_send_promo.router, prefix="/gallery-send-promo", tags=["gallery-send-promo"])
+app.include_router(main_channel_divider.router, prefix="/main-channel-divider", tags=["main-channel-divider"])
 app.include_router(watermark_settings.router, prefix="/watermark-settings", tags=["watermark-settings"])
 app.include_router(extension_context_menu.router, prefix="/extension/context-menu", tags=["extension-context-menu"])
+app.include_router(extension_aof_pools.router, prefix="/extension/aof-pools", tags=["extension-aof-pools"])
 app.include_router(album_composer_drafts.router, prefix="/album-composer/drafts", tags=["album-composer-drafts"])
 app.include_router(archive.router, tags=["archive"])
 app.include_router(macro_search_submissions.router)
@@ -1181,6 +1252,16 @@ def root():
     }
 
 
+@app.get("/health/telegram/import")
+async def health_telegram_import():
+    """Import session used for Saved Messages / bulk import (admin_import.session by default)."""
+    from app.services.telegram_admin import check_import_telegram_session
+
+    body = await check_import_telegram_session()
+    status = 200 if body.get("ok") else 503
+    return JSONResponse(content=body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/health/telegram")
 async def health_telegram():
     """Telethon admin session (Saved Messages / imports). Requires API_ID + logged-in admin.session."""
@@ -1201,12 +1282,12 @@ async def health_telegram():
 async def telegram_open_saved():
     """
     Open Saved Messages in the user's installed Telegram desktop client (Windows tg:// handler).
-    Avoids opening https://t.me/ links in the browser (e.g. Ayugram marketing pages).
+    Uses the import Telethon session — same account that receives context-menu Saved Messages sends.
     """
     import subprocess
     import sys
 
-    from app.services.telegram_admin import check_admin_telegram_session
+    from app.services.telegram_admin import check_import_telegram_session
 
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         return JSONResponse(
@@ -1214,7 +1295,7 @@ async def telegram_open_saved():
             content={"ok": False, "error": "Telegram API not configured (API_ID/API_HASH)"},
             headers={"Cache-Control": "no-store"},
         )
-    body = await check_admin_telegram_session()
+    body = await check_import_telegram_session()
     if not body.get("ok"):
         return JSONResponse(
             status_code=503,
@@ -1363,4 +1444,11 @@ app.mount(
     "/static/send-promo",
     StaticFiles(directory=str(_send_promo_dir)),
     name="send_promo_uploads",
+)
+
+_post_divider_dir = ensure_post_divider_dir()
+app.mount(
+    "/static/post-dividers",
+    StaticFiles(directory=str(_post_divider_dir)),
+    name="post_divider_uploads",
 )

@@ -2,15 +2,25 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.9
-telethon>=1.34.0
+telethon>=1.43.0
 python-telegram-bot>=21.0
 celery[redis]>=5.3.0
 redis>=5.0.0
 httpx>=0.26.0
 alembic>=1.13.0
 python-dotenv>=1.0.0
+PyYAML>=6.0.0
 python-multipart>=0.0.6
 Pillow>=10.0.0
 watchdog>=4.0.0
 myjdapi>=1.1.10
 croniter>=2.0.0
+tenacity>=8.2.0
+playwright>=1.49.0
+# Optional — GA4 Data API hub traffic in content_signals (py -m pip install google-analytics-data)
+# google-analytics-data>=0.18.0
+praw>=8.0.2
+# Optional — Cursor SDK agent triage (TBCC_CURSOR_TRIAGE_ENABLED=1)
+# cursor-sdk>=0.1.0
+# mega.py (inventory scripts): pins tenacity<6 — on Python 3.13 install after pip install -r requirements.txt:
+#   py -m pip install mega.py --no-deps

@@ -8,7 +8,8 @@ FAQ / consumer secretary bot (Telegram Business Chatbots + direct DMs).
 
 Run: cd tbcc/backend && python -m bots.secretary_bot
 
-Env: TBCC_SECRETARY_BOT_TOKEN (or SECRETARY_BOT_TOKEN), TBCC_API_URL, TBCC_OPENAI_API_KEY, ADMIN_TELEGRAM_ID (for drafts)
+Env: TBCC_SECRETARY_BOT_TOKEN (or SECRETARY_BOT_TOKEN), TBCC_API_URL, TBCC_OPENAI_API_KEY, ADMIN_TELEGRAM_ID (for drafts + admin inbox)
+Admin inbox (payment, loot, ops): /inbox /now /payment /loot /ops /critical /read /status — see TBCC_INBOX_* in .env.example
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import asyncio
 import html
 import logging
 import os
+import re
 import secrets
 import sys
 import time
@@ -27,6 +29,8 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 from dotenv import load_dotenv
+
+import httpx
 
 _env = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env.exists():
@@ -44,7 +48,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction
-from telegram.error import NetworkError
+from telegram.error import NetworkError, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -69,12 +73,40 @@ from app.database.session import SessionLocal
 from app.models.secretary_knowledge import SecretaryKnowledgeEntry
 from app.models.secretary_user_context import SecretaryUserContext
 from app.services.secretary_settings_effective import get_effective_secretary_settings
+from app.services.admin_inbox import (
+    admin_telegram_ids,
+    format_inbox_digest,
+    get_inbox_event_by_id,
+    get_last_read_ts,
+    inbox_enabled,
+    list_inbox_events,
+    mark_inbox_read,
+    parse_admin_telegram_id,
+    push_admin_inbox_event,
+)
+from app.services.cursor_triage import run_cursor_triage, triage_enabled, triage_usage_today
+from app.services.focus_profile import apply_focus_profile, get_focus_state, lock_events_recent_count
+from app.services.ops_flywheel import approve_action, flywheel_status, list_pending, reject_action
+from app.services.ops_triage_bundle import build_triage_bundle, tail_error_hub
+from app.services.secretary_llm_config import (
+    clear_llm_api_key_override,
+    clear_llm_base_url_override,
+    apply_cometapi_preset,
+    persist_llm_api_key,
+    persist_llm_base_url,
+    persist_llm_model,
+    persist_llm_provider,
+    secretary_llm_configured,
+    secretary_llm_status,
+    test_secretary_llm,
+)
 from app.services.secretary_llm import (
     REDO_STYLE_HINTS,
     complete_secretary_chat,
     default_system_prompt,
     fetch_subscription_catalog_snippet,
-    openai_configured,
+    persist_system_prompt,
+    resolve_system_prompt,
 )
 
 logging.basicConfig(
@@ -128,7 +160,17 @@ def _history_max_messages() -> int:
         return 12
 
 
+def _admin_user_id() -> int | None:
+    return parse_admin_telegram_id()
+
+
+def _admin_user_id_set() -> set[int]:
+    return admin_telegram_ids()
+
+
 def _allow_rate_limit(user_id: int) -> bool:
+    if user_id in _admin_user_id_set():
+        return True
     cap = _rate_limit_per_minute()
     window = 60.0
     now = time.monotonic()
@@ -141,15 +183,44 @@ def _allow_rate_limit(user_id: int) -> bool:
     return True
 
 
-def _reply_kwargs(message) -> dict:
+async def _reply(
+    message,
+    text: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    **kwargs,
+) -> None:
+    """Business chats need bot.send_message — Message.reply_text rejects business_connection_id."""
     bc = getattr(message, "business_connection_id", None)
     if bc is not None:
-        return {"business_connection_id": bc}
-    return {}
+        await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=text,
+            business_connection_id=str(bc),
+            reply_to_message_id=message.message_id,
+            **kwargs,
+        )
+        return
+    await message.reply_text(text, **kwargs)
+
+
+async def _send_chat_action(message, context: ContextTypes.DEFAULT_TYPE, action: ChatAction) -> None:
+    bc = getattr(message, "business_connection_id", None)
+    if bc is not None:
+        await context.bot.send_chat_action(
+            chat_id=message.chat_id,
+            action=action,
+            business_connection_id=str(bc),
+        )
+        return
+    await context.bot.send_chat_action(chat_id=message.chat_id, action=action)
 
 
 HISTORY_KEY = "secretary_history"
 BIZ_LINES_KEY = "secretary_biz_customer_lines"
+PENDING_SYSPROMPT_KEY = "pending_set_sysprompt"
+PENDING_LLM_API_KEY = "pending_llm_api_key"
+PENDING_LLM_BASE_URL = "pending_llm_base_url"
+PENDING_LLM_MODEL = "pending_llm_model"
 
 # Reply keyboard labels → handler key
 _FAQ_KEYBOARD: dict[str, str] = {
@@ -164,6 +235,85 @@ def _faq_reply_keyboard() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(label)] for label in _FAQ_KEYBOARD]
     rows.append([KeyboardButton("💬 Type your question below")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+
+
+def _user_main_menu_keyboard() -> InlineKeyboardMarkup:
+    pay = _payment_bot_username()
+    pay_safe = html.escape(pay) if pay else ""
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton("⭐ Subscribe", callback_data="sec:menu:subscribe"),
+            InlineKeyboardButton("🛒 Shop", callback_data="sec:menu:shop"),
+        ],
+        [
+            InlineKeyboardButton("ℹ️ My status", callback_data="sec:menu:mystatus"),
+            InlineKeyboardButton("🔄 Reset context", callback_data="sec:menu:reset"),
+        ],
+    ]
+    if pay_safe:
+        rows.append([InlineKeyboardButton("💳 Payment bot", url=f"https://t.me/{pay_safe}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _admin_main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📬 Inbox", callback_data="sec:menu:cat:inbox"),
+                InlineKeyboardButton("🔧 Ops & triage", callback_data="sec:menu:cat:ops"),
+            ],
+            [
+                InlineKeyboardButton("⭐ FAQ shortcuts", callback_data="sec:menu:cat:faq"),
+                InlineKeyboardButton("💳 Payment links", callback_data="sec:menu:cat:pay"),
+            ],
+            [InlineKeyboardButton("📋 Copy hub tail", callback_data="sec:menu:hubcopy")],
+            [
+                InlineKeyboardButton("🤖 LLM config", callback_data="sec:menu:run:config"),
+                InlineKeyboardButton("📖 All commands", callback_data="sec:menu:run:commands"),
+            ],
+        ]
+    )
+
+
+def _admin_inbox_submenu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📥 Full inbox", callback_data="sec:menu:run:inbox"),
+                InlineKeyboardButton("🔔 Unread", callback_data="sec:menu:run:now"),
+            ],
+            [
+                InlineKeyboardButton("💰 Payment", callback_data="sec:menu:run:payment"),
+                InlineKeyboardButton("🎮 Loot", callback_data="sec:menu:run:loot"),
+            ],
+            [
+                InlineKeyboardButton("🔴 Critical", callback_data="sec:menu:run:critical"),
+                InlineKeyboardButton("✅ Mark read", callback_data="sec:menu:run:read"),
+            ],
+            [InlineKeyboardButton("📊 Status", callback_data="sec:menu:run:status")],
+            [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
+        ]
+    )
+
+
+def _admin_ops_submenu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("⚡ Telegram relief", callback_data="sec:menu:run:relief"),
+                InlineKeyboardButton("🎯 Focus state", callback_data="sec:menu:run:focus"),
+            ],
+            [
+                InlineKeyboardButton("🧰 Triage bundle", callback_data="sec:menu:run:triage"),
+                InlineKeyboardButton("🔄 Flywheel", callback_data="sec:menu:run:flywheel"),
+            ],
+            [
+                InlineKeyboardButton("📋 Ops feed", callback_data="sec:menu:run:ops"),
+                InlineKeyboardButton("📋 Copy hub tail", callback_data="sec:menu:hubcopy"),
+            ],
+            [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
+        ]
+    )
 
 
 def _payment_inline_keyboard() -> InlineKeyboardMarkup | None:
@@ -184,18 +334,24 @@ def _payment_inline_keyboard() -> InlineKeyboardMarkup | None:
     )
 
 
-async def _reply_with_keyboards(msg, text: str, *, parse_mode: str = "HTML") -> None:
-    kwargs = {**_reply_kwargs(msg), "parse_mode": parse_mode, "disable_web_page_preview": True}
+async def _reply_with_keyboards(
+    msg,
+    text: str,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    parse_mode: str = "HTML",
+) -> None:
+    kwargs = {"parse_mode": parse_mode, "disable_web_page_preview": True}
     markup_inline = _payment_inline_keyboard()
     if markup_inline:
         kwargs["reply_markup"] = markup_inline
-    await msg.reply_text(text, **kwargs)
-    # Reply keyboard is sent as a separate lightweight message so inline + reply can coexist
+    await _reply(msg, text, context, **kwargs)
     try:
-        await msg.reply_text(
+        await _reply(
+            msg,
             "Quick actions:",
+            context,
             reply_markup=_faq_reply_keyboard(),
-            **_reply_kwargs(msg),
         )
     except Exception as e:
         logger.debug("faq reply keyboard: %s", e)
@@ -217,32 +373,38 @@ def _admin_notify_chat_id() -> int | None:
         return None
 
 
-def _admin_user_id() -> int | None:
-    raw = (os.getenv("ADMIN_TELEGRAM_ID") or "").strip()
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
 def _can_manage_drafts(update: Update) -> bool:
-    """Allow draft actions from configured admin user or notify chat."""
+    """Allow draft/inbox actions from configured admin user(s) or notify chat."""
     user = update.effective_user
     chat = update.effective_chat
-    admin_uid = _admin_user_id()
-    notify_chat = _admin_notify_chat_id()
-    if user and admin_uid is not None and user.id == admin_uid:
+    admin_ids = _admin_user_id_set()
+    if user and user.id in admin_ids:
         return True
-    if chat and notify_chat is not None and chat.id == notify_chat:
+    if chat and chat.id in admin_ids:
         return True
     return False
 
 
 def _is_owner_message(user_id: int) -> bool:
-    admin_uid = _admin_user_id()
-    return admin_uid is not None and user_id == admin_uid
+    return user_id in _admin_user_id_set()
+
+
+async def _reply_inbox_denied(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _admin_user_id_set():
+        await _reply(
+            msg,
+            "Admin inbox is not configured on the server (check <code>ADMIN_TELEGRAM_ID</code> in tbcc/.env).",
+            context,
+            parse_mode="HTML",
+        )
+        return
+    await _reply(
+        msg,
+        "Admin only — your Telegram user id must match <code>ADMIN_TELEGRAM_ID</code> "
+        "(or <code>TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS</code>).",
+        context,
+        parse_mode="HTML",
+    )
 
 
 def _business_msg_dedupe_key(bc_id: str, user_id: int, message_id: int) -> str:
@@ -294,16 +456,12 @@ def _format_draft_card(
     reply_plain: str,
 ) -> str:
     who_disp = f"@{html.escape(who)}" if who and who != "no_username" else "no @"
-    cust = html.escape(customer_line[:500])
+    cust = html.escape(customer_line[:400])
     reply = html.escape(reply_plain[:2800])
     return (
-        f"<b>━━ {draft_id} ━━</b>\n"
-        f"👤 {who_disp} · <code>{user_id}</code>\n"
+        f"<b>{draft_id}</b> · {who_disp} · <code>{user_id}</code>\n"
         f"📩 {cust}\n\n"
-        f"💬 <b>Suggested</b> (Copy button or edit, then /approve)\n"
-        f"<pre>{reply}</pre>\n"
-        f"<code>/approve {draft_id}</code> · <code>/reject {draft_id}</code> · "
-        f"<code>/redo {draft_id} pro|casual|short</code>"
+        f"<pre>{reply}</pre>"
     )
 
 
@@ -401,7 +559,7 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await msg.reply_text("Usage: /redo <draft_id> [pro|casual|short|custom …instruction…]")
         return
-    if not openai_configured():
+    if not secretary_llm_configured():
         await msg.reply_text("OpenAI not configured.")
         return
     draft_id = str(context.args[0]).strip().upper()
@@ -517,11 +675,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not msg or not user:
         return
     if not _allow_rate_limit(user.id):
-        await msg.reply_text(
+        await _reply(
+            msg,
             "You are sending requests a bit fast. This assistant is <b>rate-limited</b> per minute — "
             "please wait up to a minute, then try <b>/start</b> or your question again.",
+            context,
             parse_mode="HTML",
-            **_reply_kwargs(msg),
         )
         return
     pay = _payment_bot_username()
@@ -563,7 +722,47 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Use the keyboard below for shortcuts."
         + biz_note
     )
-    await _reply_with_keyboards(msg, text)
+    if _can_manage_drafts(update):
+        text += (
+            "\n\n<b>Admin</b> — tap <b>Menu</b> below or send <code>/commands</code> for the full list."
+        )
+    menu_kb = _admin_main_menu_keyboard() if _can_manage_drafts(update) else _user_main_menu_keyboard()
+    await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True, reply_markup=menu_kb)
+    if not _can_manage_drafts(update):
+        try:
+            await _reply(
+                msg,
+                "Quick actions:",
+                context,
+                reply_markup=_faq_reply_keyboard(),
+            )
+        except Exception as e:
+            logger.debug("faq reply keyboard: %s", e)
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Universal inline menu — admin gets inbox/ops tree; everyone else FAQ shortcuts."""
+    msg = update.effective_message
+    if not msg:
+        return
+    if _can_manage_drafts(update):
+        await _reply(
+            msg,
+            "🏠 <b>TBCC Secretary — main menu</b>\n\n"
+            "Choose a section below. Use <b>Main menu</b> on any submenu to return here.",
+            context,
+            parse_mode="HTML",
+            reply_markup=_admin_main_menu_keyboard(),
+        )
+        return
+    await _reply(
+        msg,
+        "🏠 <b>Menu</b>\n"
+        "FAQ shortcuts and payment bot links.",
+        context,
+        parse_mode="HTML",
+        reply_markup=_user_main_menu_keyboard(),
+    )
 
 
 async def cmd_mystatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -572,16 +771,18 @@ async def cmd_mystatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not msg or not user:
         return
     if not format_engine_enabled():
-        await msg.reply_text(
+        await _reply(
+            msg,
             "Personalized context tracking is off on the server. You can still ask FAQ questions anytime.",
-            **_reply_kwargs(msg),
+            context,
         )
         return
     summary = await asyncio.to_thread(get_user_context_public_summary, user.id)
     if not summary:
-        await msg.reply_text(
+        await _reply(
+            msg,
             "No saved context yet for this chat — send a question and I'll remember the thread for better answers.",
-            **_reply_kwargs(msg),
+            context,
         )
         return
     phase = html.escape(str(summary.get("phase") or "introduction"))
@@ -594,8 +795,449 @@ async def cmd_mystatus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"Summary: {emo}",
         "\nUse <b>/reset</b> or the keyboard button to clear context.",
     ]
-    await msg.reply_text("\n".join(lines), parse_mode="HTML", **_reply_kwargs(msg))
+    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
 
+
+def _chunk_plain_text(text: str, *, max_len: int = 3800) -> list[str]:
+    body = (text or "").strip()
+    if not body:
+        return ["(empty)"]
+    if len(body) <= max_len:
+        return [body]
+    chunks: list[str] = []
+    start = 0
+    while start < len(body):
+        chunks.append(body[start : start + max_len])
+        start += max_len
+    return chunks
+
+
+async def _reply_preformatted_chunks(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    header: str,
+    body: str,
+) -> None:
+    await _reply(msg, header, context, parse_mode="HTML")
+    parts = _chunk_plain_text(body)
+    for i, chunk in enumerate(parts, start=1):
+        suffix = f" <i>({i}/{len(parts)})</i>" if len(parts) > 1 else ""
+        await _reply(
+            msg,
+            f"<pre>{html.escape(chunk)}</pre>{suffix}",
+            context,
+            parse_mode="HTML",
+        )
+
+
+async def cmd_sysprompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: show effective system prompt."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    def _load() -> dict:
+        prompt, source = resolve_system_prompt()
+        eff = get_effective_secretary_settings()
+        extra = (eff.get("system_prompt_extra") or "").strip()
+        return {
+            "prompt": prompt,
+            "source": source,
+            "chars": len(prompt),
+            "extra": extra,
+            "extra_chars": len(extra),
+        }
+
+    data = await asyncio.to_thread(_load)
+    extra_line = ""
+    if data["extra"]:
+        extra_line = (
+            f"\nAppended extra: <b>{data['extra_chars']}</b> chars "
+            "(dashboard / TBCC_SECRETARY_SYSTEM_PROMPT_EXTRA)"
+        )
+    header = (
+        "<b>Secretary system prompt</b>\n"
+        f"Source: <code>{html.escape(str(data['source']))}</code> · "
+        f"<b>{data['chars']}</b> chars{extra_line}\n"
+        "Edit: <code>/set_sysprompt</code> then send text, "
+        "<code>/set_sysprompt your text</code>, reply to a message, or "
+        "<code>/clear_sysprompt</code>"
+    )
+    await _reply_preformatted_chunks(msg, context, header=header, body=str(data["prompt"]))
+
+
+async def cmd_set_sysprompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: set dashboard system prompt override."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    inline = " ".join(context.args or []).strip()
+    reply_body = ""
+    if msg.reply_to_message and msg.reply_to_message.text:
+        reply_body = msg.reply_to_message.text.strip()
+
+    new_text = inline or reply_body
+    if new_text:
+        try:
+            result = await asyncio.to_thread(persist_system_prompt, new_text)
+        except ValueError as e:
+            await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
+            return
+        except Exception as e:
+            await _reply(msg, f"Save failed: {html.escape(str(e))}", context, parse_mode="HTML")
+            return
+        await _reply(
+            msg,
+            f"✅ System prompt saved (<code>{result['source']}</code>, {result['chars']} chars). "
+            "Use <code>/sysprompt</code> to review.",
+            context,
+            parse_mode="HTML",
+        )
+        return
+
+    context.user_data[PENDING_SYSPROMPT_KEY] = True
+    await _reply(
+        msg,
+        "Send the <b>full system prompt</b> in your next message (plain text).\n"
+        "Cancel: <code>/cancel</code>",
+        context,
+        parse_mode="HTML",
+    )
+
+
+async def cmd_clear_sysprompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: clear dashboard system prompt override."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    try:
+        result = await asyncio.to_thread(persist_system_prompt, None)
+    except Exception as e:
+        await _reply(msg, f"Clear failed: {html.escape(str(e))}", context, parse_mode="HTML")
+        return
+    await _reply(
+        msg,
+        f"✅ Dashboard prompt cleared. Active source: <code>{html.escape(str(result['source']))}</code> "
+        f"({result['chars']} chars).",
+        context,
+        parse_mode="HTML",
+    )
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    cancelled: list[str] = []
+    if context.user_data.pop(PENDING_SYSPROMPT_KEY, None):
+        cancelled.append("system prompt edit")
+    if context.user_data.pop(PENDING_LLM_API_KEY, None):
+        cancelled.append("API key input")
+    if context.user_data.pop(PENDING_LLM_BASE_URL, None):
+        cancelled.append("endpoint URL input")
+    if context.user_data.pop(PENDING_LLM_MODEL, None):
+        cancelled.append("model id input")
+    if cancelled:
+        await _reply(msg, "Cancelled: " + ", ".join(cancelled) + ".", context)
+        return
+    await _reply(msg, "Nothing to cancel.", context)
+
+
+def _public_commands_reference() -> str:
+    return (
+        "<b>Public commands</b> (@aof_secretary_bot)\n\n"
+        "<b>FAQ</b>\n"
+        "/start · /help — intro & menu\n"
+        "/menu — inline shortcuts\n"
+        "/subscribe · /shop — payment bot links\n"
+        "/mystatus — Format Engine thread phase\n"
+        "/reset — clear FAQ context\n\n"
+        "<i>Plain text = FAQ question (if public FAQ enabled).</i>"
+    )
+
+
+def _admin_commands_reference() -> str:
+    return (
+        "<b>Admin commands</b>\n"
+        "<i>Your Telegram user id must match </i><code>ADMIN_TELEGRAM_ID</code><i>.</i>\n\n"
+        "<b>Navigation</b>\n"
+        "/menu — main inline menu\n"
+        "/commands — this list\n"
+        "/config — LLM key + endpoint (button tree)\n\n"
+        "<b>Inbox</b>\n"
+        "/inbox — recent feed\n"
+        "/now — unread only\n"
+        "/payment — payment category\n"
+        "/loot — loot category\n"
+        "/ops — ops category\n"
+        "/critical — critical and important\n"
+        "/read — mark inbox seen\n"
+        "/status — inbox stats\n\n"
+        "<b>Business supervise</b>\n"
+        "<i>Customers never see the bot until you approve a draft.</i>\n"
+        "/drafts — list pending suggestions\n"
+        "/approve <code>draft_id</code>\n"
+        "/reject <code>draft_id</code>\n"
+        "/redo <code>draft_id</code> pro|casual|short\n"
+        "<i>Draft cards: Send, Drop, Regenerate</i>\n\n"
+        "<b>Format Engine and prompt</b>\n"
+        "/fe_stats — contexts, RAG, phases\n"
+        "/sysprompt — view system prompt\n"
+        "/set_sysprompt — set via next message, inline text, or reply\n"
+        "/clear_sysprompt — drop dashboard override\n"
+        "/cancel — cancel pending prompt edit\n\n"
+        "<b>Ops</b>\n"
+        "/relief — telegram_relief focus profile\n"
+        "/focus — current focus profile state\n"
+        "/triage — Cursor bundle (optional <code>event_id</code>)\n"
+        "/flywheel — ops flywheel status\n"
+        "/deposit <code>N</code> — Storage Hub subtopic → pool (admin, in-topic)\n\n"
+        "<b>Configuration</b>\n"
+        "/config — LLM API key + endpoint URL (button tree, live test)\n"
+        "TBCC API URL: <code>TBCC_API_URL</code> in tbcc/.env\n"
+        "Internal API key: <code>TBCC_INTERNAL_API_KEY</code>\n"
+        "Cursor triage: <code>CURSOR_API_KEY</code> + <code>TBCC_CURSOR_TRIAGE_ENABLED=1</code>\n\n"
+        "<b>Notes</b>\n"
+        "Sale and ops instant DMs work without this process; inbox callback buttons need it running.\n"
+        "Same prompt settings as <code>/sysprompt</code> live in the dashboard Secretary panel."
+    )
+
+
+async def cmd_commands(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    if _can_manage_drafts(update):
+        body = _public_commands_reference() + "\n\n" + _admin_commands_reference()
+    else:
+        body = _public_commands_reference()
+    await _reply(msg, body, context, parse_mode="HTML")
+
+
+def _clear_llm_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(PENDING_LLM_API_KEY, None)
+    context.user_data.pop(PENDING_LLM_BASE_URL, None)
+    context.user_data.pop(PENDING_LLM_MODEL, None)
+
+
+def _llm_config_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ Set API key", callback_data="sec:llm:set_key")],
+            [InlineKeyboardButton("🔗 Set endpoint URL", callback_data="sec:llm:set_url")],
+            [InlineKeyboardButton("🧪 Test API key", callback_data="sec:llm:test")],
+            [
+                InlineKeyboardButton("OpenAI", callback_data="sec:llm:prov:openai"),
+                InlineKeyboardButton("OpenRouter", callback_data="sec:llm:prov:openrouter"),
+                InlineKeyboardButton("☄️ CometAPI", callback_data="sec:llm:cometapi"),
+            ],
+            [InlineKeyboardButton("📝 Set model id", callback_data="sec:llm:set_model")],
+            [
+                InlineKeyboardButton("🗑 Clear API key", callback_data="sec:llm:clear_key"),
+                InlineKeyboardButton("🗑 Clear URL", callback_data="sec:llm:clear_url"),
+            ],
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="sec:llm:home"),
+                InlineKeyboardButton("◀ Menu", callback_data="sec:menu:home"),
+            ],
+        ]
+    )
+
+
+def _format_llm_test_result(result: dict) -> str:
+    if result.get("ok"):
+        return (
+            "✅ <b>LLM test passed</b>\n"
+            f"Endpoint: <code>{html.escape(str(result.get('endpoint') or '—'))}</code>\n"
+            f"Model: <code>{html.escape(str(result.get('model') or '—'))}</code>\n"
+            f"Latency: <b>{int(result.get('latency_ms') or 0)}</b> ms\n"
+            f"Reply: <code>{html.escape(str(result.get('reply_preview') or '—'))}</code>"
+        )
+    stage = html.escape(str(result.get("stage") or "error"))
+    raw_msg = str(result.get("message") or "unknown error")
+    if "insufficient_user_quota" in raw_msg or "quota is not enough" in raw_msg.lower():
+        cq = result.get("cometapi_quota") or {}
+        bal = cq.get("total_quota")
+        reqs = cq.get("request_count")
+        bal_line = f" Account balance: <b>${bal:.2f}</b>." if isinstance(bal, (int, float)) else ""
+        req_line = f" Successful API calls so far: <b>{reqs}</b>." if isinstance(reqs, int) else ""
+        msg = (
+            "CometAPI rejected the call — <b>insufficient account balance</b> (not a TBCC wiring issue). "
+            "Your key and <code>https://api.cometapi.com/v1</code> are correct."
+            f"{bal_line}{req_line}\n\n"
+            "CometAPI onboarding steps the <b>bot cannot do for you</b>:\n"
+            "• Claim credits in console → <b>Account → Free Credits</b> or <b>Credits</b>\n"
+            "• Complete “Successfully call API 1 time” — try the <b>Playground</b> first if balance is $0\n"
+            "• Top up via Wallet (min $10) if needed\n\n"
+            "Your API key already shows <b>unlimited</b> token limit — that part is fine."
+        )
+    else:
+        msg = html.escape(raw_msg)
+    lines = [
+        "❌ <b>LLM test failed</b>",
+        f"Stage: <code>{stage}</code>",
+        f"Detail: {msg}",
+    ]
+    if result.get("endpoint"):
+        lines.append(f"Endpoint: <code>{html.escape(str(result['endpoint']))}</code>")
+    if result.get("model"):
+        lines.append(f"Model: <code>{html.escape(str(result['model']))}</code>")
+    if result.get("latency_ms") is not None:
+        lines.append(f"Latency: <b>{int(result['latency_ms'])}</b> ms")
+    return "\n".join(lines)
+
+
+def _build_llm_config_text() -> str:
+    st = secretary_llm_status()
+    src = "dashboard / Telegram" if st.get("api_key_override") else "tbcc/.env"
+    endpoint = st.get("endpoint_url") or "(not configured)"
+    base = st.get("base_url") or "(provider default)"
+    return (
+        "🤖 <b>Secretary LLM configuration</b>\n\n"
+        f"Provider: <code>{html.escape(str(st.get('provider') or 'openai'))}</code>\n"
+        f"Model: <code>{html.escape(str(st.get('model') or '—'))}</code>\n"
+        f"API key: <code>{html.escape(str(st.get('api_key_hint') or 'not set'))}</code> ({src})\n"
+        f"Base URL: <code>{html.escape(str(base))}</code>\n"
+        f"Completions: <code>{html.escape(str(endpoint))}</code>\n\n"
+        "Use the buttons below. After setting a key, a live test runs automatically.\n"
+        "<code>/cancel</code> aborts a pending prompt."
+    )
+
+
+async def _send_llm_config_panel(
+    target,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    edit: bool = False,
+    extra_footer: str = "",
+) -> None:
+    body = _build_llm_config_text()
+    if extra_footer:
+        body = body + "\n\n" + extra_footer
+    kb = _llm_config_keyboard()
+    if edit and hasattr(target, "edit_message_text"):
+        try:
+            await target.edit_message_text(body, parse_mode="HTML", reply_markup=kb)
+            return
+        except TelegramError as e:
+            logger.debug("llm panel edit failed: %s", e)
+    chat_id = getattr(target, "chat_id", None) or getattr(getattr(target, "chat", None), "id", None)
+    if chat_id is not None:
+        await context.bot.send_message(chat_id=chat_id, text=body, parse_mode="HTML", reply_markup=kb)
+
+
+async def cmd_config(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: LLM key + endpoint configuration (inline buttons)."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    _clear_llm_pending(context)
+    await _send_llm_config_panel(msg, context)
+
+
+async def on_llm_config_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("sec:llm:"):
+        return
+    await query.answer()
+    if not _can_manage_drafts(update):
+        await query.answer("Admin only.", show_alert=True)
+        return
+
+    action = query.data.split(":", 2)[-1] if query.data.count(":") >= 2 else ""
+    if query.data.startswith("sec:llm:prov:"):
+        action = "prov:" + query.data.split(":")[-1]
+
+    if action in ("home", "refresh"):
+        _clear_llm_pending(context)
+        await _send_llm_config_panel(query, context, edit=True)
+        return
+
+    if action == "set_key":
+        _clear_llm_pending(context)
+        context.user_data[PENDING_LLM_API_KEY] = True
+        if query.message:
+            await query.message.reply_text(
+                "Send your <b>API key</b> in the next message (plain text).\n"
+                "It will be saved and <b>live-tested</b> immediately.\n"
+                "Cancel: <code>/cancel</code>",
+                parse_mode="HTML",
+            )
+        return
+
+    if action == "set_url":
+        _clear_llm_pending(context)
+        context.user_data[PENDING_LLM_BASE_URL] = True
+        if query.message:
+            await query.message.reply_text(
+                "Send the <b>endpoint base URL</b> in the next message.\n"
+                "Example: <code>https://openrouter.ai/api/v1</code>\n"
+                "Example: <code>https://api.openai.com/v1</code>\n"
+                "Cancel: <code>/cancel</code>",
+                parse_mode="HTML",
+            )
+        return
+
+    if action == "set_model":
+        _clear_llm_pending(context)
+        context.user_data[PENDING_LLM_MODEL] = True
+        if query.message:
+            await query.message.reply_text(
+                "Send the <b>model id</b> in the next message "
+                "(e.g. <code>gpt-4o-mini</code> or an OpenRouter model slug).\n"
+                "Cancel: <code>/cancel</code>",
+                parse_mode="HTML",
+            )
+        return
+
+    if action.startswith("prov:"):
+        prov = action.split(":", 1)[-1]
+        try:
+            await asyncio.to_thread(persist_llm_provider, prov)
+            footer = f"Provider set to <code>{html.escape(prov)}</code>."
+        except Exception as e:
+            footer = f"Provider update failed: {html.escape(str(e))}"
+        await _send_llm_config_panel(query, context, edit=True, extra_footer=footer)
+        return
+
+    if action == "test":
+        if query.message:
+            await query.message.reply_text("🧪 Running live LLM test…", parse_mode="HTML")
+        result = await asyncio.to_thread(test_secretary_llm)
+        footer = _format_llm_test_result(result)
+        await _send_llm_config_panel(query, context, edit=False, extra_footer=footer)
+        return
+
+    if action == "clear_key":
+        await asyncio.to_thread(clear_llm_api_key_override)
+        await _send_llm_config_panel(query, context, edit=True, extra_footer="API key override cleared.")
+        return
+
+    if action == "clear_url":
+        await asyncio.to_thread(clear_llm_base_url_override)
+        await _send_llm_config_panel(query, context, edit=True, extra_footer="Endpoint URL override cleared.")
+        return
+
+    if action == "cometapi":
+        preset = await asyncio.to_thread(apply_cometapi_preset)
+        footer = (
+            "☄️ <b>CometAPI preset applied</b>\n"
+            f"URL: <code>{html.escape(str(preset.get('base_url')))}</code>\n"
+            f"Provider: <code>openai</code> · Model: <code>{html.escape(str(preset.get('model')))}</code>\n"
+            "Now tap <b>Set API key</b> if you have not already, then <b>Test API key</b>."
+        )
+        await _send_llm_config_panel(query, context, edit=True, extra_footer=footer)
+        return
 
 async def cmd_fe_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin: Format Engine + RAG stats."""
@@ -650,23 +1292,602 @@ async def cmd_fe_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"Pending business drafts: <b>{stats['drafts']}</b>\n"
         "\nDashboard: Automation → Bots &amp; workers, or System → Secretary / FAQ."
     )
-    await msg.reply_text(text, parse_mode="HTML", **_reply_kwargs(msg))
+    await _reply(msg, text, context, parse_mode="HTML")
+
+
+async def _send_inbox_digest(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    title: str,
+    limit: int = 20,
+    category: str | None = None,
+    min_severity: str | None = None,
+    unread_only: bool = False,
+    empty_hint: str = "Nothing here — you're caught up.",
+) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    events = list_inbox_events(
+        limit=limit,
+        category=category,
+        min_severity=min_severity,  # type: ignore[arg-type]
+        unread_only=unread_only,
+    )
+    text = format_inbox_digest(events, title=title, empty_hint=empty_hint)
+    await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def cmd_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_inbox_digest(update, context, title="TBCC Inbox", limit=20)
+
+
+async def cmd_inbox_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_inbox_digest(
+        update,
+        context,
+        title="Unread",
+        limit=30,
+        unread_only=True,
+        empty_hint="No unread items — use /read after you've reviewed the feed.",
+    )
+
+
+async def cmd_inbox_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_inbox_digest(update, context, title="Payment", category="payment", limit=15)
+
+
+async def cmd_inbox_loot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_inbox_digest(update, context, title="Loot", category="loot", limit=15)
+
+
+async def cmd_inbox_ops(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_inbox_digest(update, context, title="Ops", category="ops", limit=15)
+
+
+async def cmd_inbox_critical(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send_inbox_digest(
+        update,
+        context,
+        title="Critical & important",
+        limit=25,
+        min_severity="important",
+    )
+
+
+async def cmd_inbox_read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    mark_inbox_read()
+    await _reply(
+        msg,
+        "✅ Inbox marked as read. /now will stay quiet until new events arrive.",
+        context,
+    )
+
+
+async def cmd_inbox_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    last_read = get_last_read_ts()
+    unread = list_inbox_events(limit=100, unread_only=True)
+    total = list_inbox_events(limit=100)
+    focus = get_focus_state()
+    usage = triage_usage_today()
+    await _reply(
+        msg,
+        "📊 <b>Inbox status</b>\n\n"
+        f"Capture: <code>{'on' if inbox_enabled() else 'off'}</code>\n"
+        f"Stored (recent): <code>{len(total)}</code>\n"
+        f"Unread: <code>{len(unread)}</code>\n"
+        f"Last /read: <code>{'never' if last_read <= 0 else 'set'}</code>\n"
+        f"Focus: <code>{html.escape(str(focus.get('profile') or 'off'))}</code>\n"
+        f"Lock events: <code>{lock_events_recent_count()}</code>\n"
+        f"Cursor triage: <code>{'on' if triage_enabled() else 'off'}</code> "
+        f"({usage.get('used', 0)}/{usage.get('cap', 0)} today)",
+        context,
+        parse_mode="HTML",
+    )
+
+
+def _copy_text_keyboard(text: str, *, prefix: str = "📋 Copy") -> InlineKeyboardMarkup | None:
+    """Telegram copy_text buttons (256 chars each). Returns None if client/API unsupported."""
+    chunk_size = 256
+    cap = chunk_size * 8
+    body = (text or "")[:cap]
+    if not body:
+        return None
+    chunks = [body[i : i + chunk_size] for i in range(0, len(body), chunk_size)]
+    rows: list[list[InlineKeyboardButton]] = []
+    try:
+        for i, chunk in enumerate(chunks):
+            label = prefix if len(chunks) == 1 else f"{prefix} {i + 1}/{len(chunks)}"
+            rows.append([InlineKeyboardButton(label, copy_text=CopyTextButton(text=chunk))])
+    except TypeError:
+        return None
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def _format_hub_digest(hub: str, *, max_lines: int = 12) -> str:
+    """Plain-English digest of error-hub tail for Telegram (not raw log dump)."""
+    from app.services.error_suggestions import suggest_fix_for_hub_line
+
+    raw_lines = [ln.strip() for ln in (hub or "").splitlines() if ln.strip()][-max_lines:]
+    out: list[str] = []
+    seen_fix: set[str] = set()
+    hub_line = re.compile(
+        r"^\[(?P<ts>[^\]]+)\]\s*\[(?P<svc>[^\]]+)\]\s*\[(?P<lvl>[^\]]+)\]\s*(?P<body>.*)$"
+    )
+    for line in raw_lines:
+        m = hub_line.match(line)
+        if m:
+            svc = m.group("svc")
+            lvl = m.group("lvl")
+            body = m.group("body")
+            short = body[:140] + ("..." if len(body) > 140 else "")
+            out.append(f"{lvl} {svc}: {short}")
+            fix = suggest_fix_for_hub_line(body, svc)
+            if fix and fix not in seen_fix:
+                out.append(f"  -> {fix}")
+                seen_fix.add(fix)
+        else:
+            out.append(line[:160])
+    return "\n".join(out) if out else "(error hub empty)"
+
+
+def _triage_copy_keyboard(bundle: str) -> InlineKeyboardMarkup | None:
+    return _copy_text_keyboard(bundle, prefix="📋 Copy bundle")
+
+
+async def cmd_relief(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    def _apply() -> dict:
+        return apply_focus_profile(
+            "telegram_relief",
+            reason="Secretary /relief (manual)",
+            auto=False,
+        )
+
+    result = await asyncio.to_thread(_apply)
+    ok = bool(result.get("ok"))
+    stopped = result.get("stopped_services") or []
+    text = (
+        "⚡ <b>Telegram relief</b> "
+        + ("applied." if ok else "failed — check backend logs.")
+        + "\n"
+        f"Stopped: <code>{html.escape(', '.join(stopped) if stopped else 'none')}</code>"
+    )
+    await _reply(msg, text, context, parse_mode="HTML")
+
+
+async def cmd_focus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    st = get_focus_state()
+    await _reply(
+        msg,
+        "🎯 <b>Focus profile</b>\n\n"
+        f"Profile: <code>{html.escape(str(st.get('profile') or 'off'))}</code>\n"
+        f"Reason: {html.escape(str(st.get('reason') or '—'))}\n"
+        f"Since: <code>{html.escape(str(st.get('since') or '—'))}</code>\n"
+        f"Lock events (recent): <code>{lock_events_recent_count()}</code>\n\n"
+        "Use <b>/relief</b> for telegram_relief · API <code>GET /ops/focus</code>",
+        context,
+        parse_mode="HTML",
+    )
+
+
+async def cmd_triage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    args = context.args or []
+    event_id = args[0].strip() if args else ""
+    if not event_id:
+        events = list_inbox_events(limit=1, category="ops", min_severity="important")  # type: ignore[arg-type]
+        if not events:
+            await _reply(
+                msg,
+                "No recent ops events. Pass an id: <code>/triage event_id</code>",
+                context,
+                parse_mode="HTML",
+            )
+            return
+        event_id = str(events[0].get("id") or "")
+
+    ev = get_inbox_event_by_id(event_id)
+    bundle = build_triage_bundle(ev, event_id=event_id)
+    kb = _triage_copy_keyboard(bundle)
+    kwargs: dict = {"parse_mode": "HTML"}
+    if kb:
+        kwargs["reply_markup"] = kb
+    preview = html.escape(bundle[:3500])
+    await _reply(
+        msg,
+        f"🧰 <b>Triage bundle</b> · <code>{html.escape(event_id)}</code>\n\n<pre>{preview}</pre>",
+        context,
+        **kwargs,
+    )
+
+
+def _internal_api_headers() -> dict[str, str]:
+    key = (
+        (os.getenv("TBCC_SECRETARY_INTERNAL_API_KEY") or os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    )
+    return {"X-TBCC-Internal-Key": key} if key else {}
+
+
+def _resolve_invoice_order_id(event: dict | None) -> int | None:
+    if not event:
+        return None
+    meta = event.get("meta") or {}
+    raw = meta.get("order_id")
+    if raw is not None:
+        try:
+            oid = int(raw)
+            if oid > 0:
+                return oid
+        except (TypeError, ValueError):
+            pass
+    ref = str(meta.get("reference_code") or "").strip()
+    if not ref:
+        return None
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            r = client.get(
+                f"{API_BASE}/external-payment-orders/pending",
+                headers=_internal_api_headers(),
+            )
+            if not r.is_success:
+                return None
+            rows = r.json()
+            if not isinstance(rows, list):
+                return None
+            for row in rows:
+                if isinstance(row, dict) and str(row.get("reference_code") or "") == ref:
+                    try:
+                        return int(row.get("id"))
+                    except (TypeError, ValueError):
+                        return None
+    except Exception as e:
+        logger.warning("resolve invoice order_id failed: %s", e)
+    return None
+
+
+def _invoice_order_action_sync(order_id: int, *, approve: bool) -> tuple[bool, str]:
+    path = "mark-paid" if approve else "cancel"
+    try:
+        with httpx.Client(timeout=45.0) as client:
+            r = client.post(
+                f"{API_BASE}/external-payment-orders/{order_id}/{path}",
+                headers=_internal_api_headers(),
+                json={},
+            )
+            if r.is_success:
+                data = r.json() if r.content else {}
+                if approve and data.get("idempotent"):
+                    return True, "Already fulfilled — access was granted earlier."
+                if approve:
+                    return True, "Sale approved — subscription/access granted."
+                return True, "Pending order denied and cleared."
+            detail = ""
+            try:
+                body = r.json()
+                if isinstance(body, dict):
+                    detail = str(body.get("detail") or body.get("error") or "")
+            except Exception:
+                detail = (r.text or "")[:200]
+            if r.status_code == 403:
+                return False, "API rejected key — set TBCC_INTERNAL_API_KEY in tbcc/.env and restart secretary + API."
+            return False, detail or f"API HTTP {r.status_code}"
+    except httpx.ConnectError:
+        return False, f"Could not reach TBCC API at {API_BASE}."
+    except Exception as e:
+        return False, str(e)
+
+
+async def on_invoice_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    if not _can_manage_drafts(update):
+        await q.answer("Admin only.", show_alert=True)
+        return
+    parts = q.data.split(":")
+    if len(parts) < 3 or parts[0] != "inv" or parts[1] not in ("ok", "no"):
+        return
+    approve = parts[1] == "ok"
+    event_id = parts[2]
+    await q.answer("Working…")
+
+    ev = get_inbox_event_by_id(event_id)
+    order_id = _resolve_invoice_order_id(ev)
+    if not order_id:
+        await q.answer("Order not found (already handled or missing order_id).", show_alert=True)
+        return
+
+    ok, msg = await asyncio.to_thread(_invoice_order_action_sync, order_id, approve=approve)
+    await q.edit_message_reply_markup(reply_markup=None)
+    if q.message:
+        prefix = "✅" if ok and approve else ("✗" if ok else "⚠️")
+        await q.message.reply_text(f"{prefix} {html.escape(msg)}", parse_mode="HTML")
+
+
+async def on_ops_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q or not q.data:
+        return
+    if not _can_manage_drafts(update):
+        await q.answer("Admin only.", show_alert=True)
+        return
+    parts = q.data.split(":")
+    if len(parts) < 3 or parts[0] != "ops":
+        return
+    action = parts[1]
+    await q.answer()
+
+    if action == "fw" and len(parts) >= 4:
+        sub, fw_id = parts[2], parts[3]
+
+        def _fw() -> dict:
+            if sub == "ok":
+                return approve_action(fw_id, operator="secretary")
+            return reject_action(fw_id, operator="secretary")
+
+        result = await asyncio.to_thread(_fw)
+        if q.message:
+            if sub == "ok" and result.get("handoff"):
+                handoff = html.escape(str(result.get("handoff") or "")[:3500])
+                await q.message.reply_text(
+                    f"✅ Approved — paste into Claude Code:\n\n<pre>{handoff}</pre>",
+                    parse_mode="HTML",
+                )
+            elif sub == "ok":
+                await q.message.reply_text("✅ Flywheel action approved and executed.", parse_mode="HTML")
+            else:
+                await q.message.reply_text("✗ Flywheel action rejected.", parse_mode="HTML")
+        await q.edit_message_reply_markup(reply_markup=None)
+        return
+
+    event_id = parts[2]
+    if action == "relief":
+
+        def _apply() -> dict:
+            return apply_focus_profile(
+                "telegram_relief",
+                reason=f"Secretary button (event {event_id})",
+                auto=False,
+            )
+
+        result = await asyncio.to_thread(_apply)
+        ok = bool(result.get("ok"))
+        await q.edit_message_reply_markup(reply_markup=None)
+        if q.message:
+            await q.message.reply_text(
+                "⚡ Telegram relief " + ("applied." if ok else "failed."),
+                parse_mode="HTML",
+            )
+        return
+
+    ev = get_inbox_event_by_id(event_id)
+    if action == "copy":
+        bundle = build_triage_bundle(ev, event_id=event_id)
+        kb = _triage_copy_keyboard(bundle)
+        if q.message:
+            await q.message.reply_text(
+                f"📋 Paste into Cursor:\n\n<pre>{html.escape(bundle[:3800])}</pre>",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        return
+
+    if action == "cursor":
+
+        def _run() -> dict:
+            return run_cursor_triage(event_id, source="telegram")
+
+        result = await asyncio.to_thread(_run)
+        agent = result.get("agent") or {}
+        if agent.get("ok"):
+            body = html.escape(str(agent.get("result") or "")[:3500])
+            text = f"🤖 <b>Agent triage</b>\n\n{body}"
+        else:
+            reason = html.escape(str(result.get("reason") or agent.get("error") or "failed"))
+            bundle = html.escape(str(result.get("bundle") or build_triage_bundle(ev, event_id=event_id))[:2000])
+            text = f"🤖 Agent triage unavailable: {reason}\n\n<pre>{bundle}</pre>"
+        if q.message:
+            await q.message.reply_text(text, parse_mode="HTML")
+        return
+
+
+async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    def _load() -> dict:
+        st = flywheel_status()
+        pending = list_pending()
+        return {"status": st, "pending": pending}
+
+    data = await asyncio.to_thread(_load)
+    st = data["status"]
+    pending = data["pending"]
+    lines = [
+        "🔄 <b>Ops flywheel</b>",
+        f"Enabled: <code>{st.get('enabled')}</code> · Approval: <code>{st.get('approval')}</code>",
+        f"Pending: <code>{len(pending)}</code> · Registry: <code>{len(st.get('registry_codes') or [])}</code> codes",
+        "",
+        "Flywheel tick: <code>tbcc/scripts/run-tbcc-flywheel-tick.ps1</code>\n"
+        "OpenClaw (external): <code>tbcc/docs/OPENCLAW_TBCC_INTEGRATION.md</code>",
+        "API: <code>POST /ops/flywheel/tick</code>",
+    ]
+    for p in pending[:5]:
+        lines.append(
+            f"· <code>{html.escape(str(p.get('id')))}</code> "
+            f"{html.escape(str(p.get('code')))} — {html.escape(str(p.get('label') or '')[:60])}"
+        )
+    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
 
 
 async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("sec:menu:"):
         return
+
+    parts = query.data.split(":")
+    if len(parts) < 3:
+        await query.answer()
+        return
+
+    kind = parts[2]
+    arg = parts[3] if len(parts) > 3 else ""
+
+    admin_only_kinds = {"hubcopy", "cat", "run"}
+    if kind in admin_only_kinds and not _can_manage_drafts(update):
+        await query.answer("Admin only.", show_alert=True)
+        return
+
     await query.answer()
-    action = query.data.split(":")[-1]
-    if action == "subscribe":
-        await cmd_subscribe_hint(update, context)
-    elif action == "shop":
-        await cmd_shop_hint(update, context)
-    elif action == "reset":
-        await cmd_reset(update, context)
-    elif action == "mystatus":
-        await cmd_mystatus(update, context)
+
+    if kind == "home":
+        await cmd_menu(update, context)
+        return
+
+    if kind == "hubcopy":
+        hub = tail_error_hub(max_lines=20)
+        digest = _format_hub_digest(hub)
+        kb = _copy_text_keyboard(digest, prefix="📋 Copy digest")
+        if query.message:
+            from io import BytesIO
+
+            doc = BytesIO(hub.encode("utf-8"))
+            doc.name = "tbcc-error-hub-tail.txt"
+            try:
+                await query.message.reply_document(
+                    document=doc,
+                    caption="Raw error hub tail (last 20 lines) — open to copy/search.",
+                )
+            except TelegramError as e:
+                logger.warning("hub copy document failed: %s", e)
+            hint = (
+                "Tap <b>Copy digest</b> below (official Telegram; AyuGram may not support copy buttons — use the .txt file)."
+                if kb
+                else "Use the attached <b>.txt</b> file to copy (this client does not support inline copy buttons)."
+            )
+            await query.message.reply_text(
+                "📋 <b>Error hub digest</b>\n\n"
+                f"<pre>{html.escape(digest[:3500])}</pre>\n\n"
+                f"<i>{hint}</i>",
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+        return
+
+    if kind in ("subscribe", "shop", "reset", "mystatus"):
+        if kind == "subscribe":
+            await cmd_subscribe_hint(update, context)
+        elif kind == "shop":
+            await cmd_shop_hint(update, context)
+        elif kind == "reset":
+            await cmd_reset(update, context)
+        elif kind == "mystatus":
+            await cmd_mystatus(update, context)
+        return
+
+    if kind == "cat":
+        if arg == "inbox":
+            if query.message:
+                await query.message.reply_text(
+                    "📬 <b>Inbox</b>\n\n"
+                    "Payment, loot, and ops alerts land here. "
+                    "<b>Mark read</b> clears the unread badge for <code>/now</code>.",
+                    parse_mode="HTML",
+                    reply_markup=_admin_inbox_submenu_keyboard(),
+                )
+        elif arg == "ops":
+            if query.message:
+                await query.message.reply_text(
+                    "🔧 <b>Ops and triage</b>\n\n"
+                    "<b>Relief</b> — pauses optional bots to reduce Telethon session contention.\n"
+                    "<b>Triage</b> — bundles the latest alert plus error-hub tail for Cursor.\n"
+                    "<b>Agent</b> — Cursor run (needs <code>CURSOR_API_KEY</code> in tbcc/.env).\n"
+                    "API status: <code>/config</code>",
+                    parse_mode="HTML",
+                    reply_markup=_admin_ops_submenu_keyboard(),
+                )
+        elif arg == "faq":
+            if query.message:
+                await query.message.reply_text(
+                    "⭐ <b>FAQ shortcuts</b>\n\n"
+                    "Consumer-facing hints you can preview before sending to a customer.",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton("Subscribe hint", callback_data="sec:menu:subscribe"),
+                                InlineKeyboardButton("Shop hint", callback_data="sec:menu:shop"),
+                            ],
+                            [
+                                InlineKeyboardButton("My status", callback_data="sec:menu:mystatus"),
+                                InlineKeyboardButton("Reset", callback_data="sec:menu:reset"),
+                            ],
+                            [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
+                        ]
+                    ),
+                )
+        elif arg == "pay":
+            await cmd_subscribe_hint(update, context)
+        else:
+            await query.answer("Unknown submenu.", show_alert=True)
+        return
+
+    if kind == "run":
+        runners = {
+            "inbox": cmd_inbox,
+            "now": cmd_inbox_now,
+            "payment": cmd_inbox_payment,
+            "loot": cmd_inbox_loot,
+            "ops": cmd_inbox_ops,
+            "critical": cmd_inbox_critical,
+            "read": cmd_inbox_read,
+            "status": cmd_inbox_status,
+            "relief": cmd_relief,
+            "focus": cmd_focus,
+            "triage": cmd_triage,
+            "flywheel": cmd_flywheel,
+            "config": cmd_config,
+            "commands": cmd_commands,
+        }
+        fn = runners.get(arg)
+        if fn:
+            await fn(update, context)
+        else:
+            await query.answer("Unknown action.", show_alert=True)
+        return
+
+    await query.answer("Unknown menu.", show_alert=True)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -679,23 +1900,25 @@ async def cmd_subscribe_hint(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not msg or not user:
         return
     if not _allow_rate_limit(user.id):
-        await msg.reply_text(
+        await _reply(
+            msg,
             "Rate limit — wait a bit, then try again.",
+            context,
             parse_mode="HTML",
-            **_reply_kwargs(msg),
         )
         return
     pay = _payment_bot_username()
     if not pay:
-        await msg.reply_text("Payment bot username is not configured.", **_reply_kwargs(msg))
+        await _reply(msg, "Payment bot username is not configured.", context)
         return
     pay_safe = html.escape(pay)
-    await msg.reply_text(
+    await _reply(
+        msg,
         "Subscriptions (Stars + access) are handled here:\n"
         f'<a href="https://t.me/{pay_safe}">https://t.me/{pay_safe}</a>\n\n'
         "Open that chat and send <b>/subscribe</b>.",
+        context,
         parse_mode="HTML",
-        **_reply_kwargs(msg),
     )
 
 
@@ -705,7 +1928,7 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     context.user_data.pop(HISTORY_KEY, None)
     context.user_data.pop(BIZ_LINES_KEY, None)
-    await msg.reply_text("Conversation context cleared.", **_reply_kwargs(msg))
+    await _reply(msg, "Conversation context cleared.", context)
 
 
 async def cmd_shop_hint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -714,23 +1937,25 @@ async def cmd_shop_hint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not msg or not user:
         return
     if not _allow_rate_limit(user.id):
-        await msg.reply_text(
+        await _reply(
+            msg,
             "Rate limit — wait a bit, then try again.",
+            context,
             parse_mode="HTML",
-            **_reply_kwargs(msg),
         )
         return
     pay = _payment_bot_username()
     if not pay:
-        await msg.reply_text("Payment bot username is not configured.", **_reply_kwargs(msg))
+        await _reply(msg, "Payment bot username is not configured.", context)
         return
     pay_safe = html.escape(pay)
-    await msg.reply_text(
+    await _reply(
+        msg,
         "Storefront / promos:\n"
         f'<a href="https://t.me/{pay_safe}">https://t.me/{pay_safe}</a>\n\n'
         "Send <b>/shop</b> in that bot.",
+        context,
         parse_mode="HTML",
-        **_reply_kwargs(msg),
     )
 
 
@@ -748,24 +1973,149 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
         if msg.message_id and _already_processed_business_msg(str(bc_id), user.id, int(msg.message_id)):
             return
+    elif not _can_manage_drafts(update):
+        try:
+            eff = await asyncio.to_thread(get_effective_secretary_settings)
+            if not eff.get("public_faq_enabled", True):
+                pay = _payment_bot_username()
+                hint = f" Open @{pay} for checkout." if pay else ""
+                await _reply(
+                    msg,
+                    "This bot is admin-only. Customer FAQ is handled via the payment bot." + hint,
+                    context,
+                )
+                return
+        except Exception as e:
+            logger.warning("public_faq gate failed: %s", e)
 
     if not _allow_rate_limit(user.id):
-        await msg.reply_text(
+        await _reply(
+            msg,
             "You're sending messages a bit fast — please wait a minute and try again.",
-            **_reply_kwargs(msg),
-        )
-        return
-
-    if not openai_configured():
-        await msg.reply_text(
-            "FAQ assistant is offline (no OpenAI key on the server). "
-            "Set TBCC_OPENROUTER_API_KEY (TBCC_LLM_PROVIDER=openrouter) or TBCC_OPENAI_API_KEY in tbcc/.env.",
-            **_reply_kwargs(msg),
+            context,
         )
         return
 
     user_text = msg.text.strip()
     if not user_text:
+        return
+
+    if _can_manage_drafts(update):
+        if context.user_data.get(PENDING_LLM_API_KEY):
+            if user_text.startswith("/") and user_text.split()[0] != "/cancel":
+                await _reply(
+                    msg,
+                    "Still waiting for API key, or send <code>/cancel</code>.",
+                    context,
+                    parse_mode="HTML",
+                )
+                return
+            context.user_data.pop(PENDING_LLM_API_KEY, None)
+            try:
+                saved = await asyncio.to_thread(persist_llm_api_key, user_text)
+                test = await asyncio.to_thread(test_secretary_llm)
+            except ValueError as e:
+                await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
+                return
+            except Exception as e:
+                await _reply(msg, f"Save failed: {html.escape(str(e))}", context, parse_mode="HTML")
+                return
+            footer = (
+                f"✅ API key saved (<code>{html.escape(str(saved.get('api_key_hint')))}</code>).\n"
+                + _format_llm_test_result(test)
+            )
+            await _send_llm_config_panel(msg, context, extra_footer=footer)
+            return
+
+        if context.user_data.get(PENDING_LLM_BASE_URL):
+            if user_text.startswith("/") and user_text.split()[0] != "/cancel":
+                await _reply(
+                    msg,
+                    "Still waiting for endpoint URL, or send <code>/cancel</code>.",
+                    context,
+                    parse_mode="HTML",
+                )
+                return
+            context.user_data.pop(PENDING_LLM_BASE_URL, None)
+            try:
+                saved = await asyncio.to_thread(persist_llm_base_url, user_text)
+                test = await asyncio.to_thread(test_secretary_llm)
+            except ValueError as e:
+                await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
+                return
+            except Exception as e:
+                await _reply(msg, f"Save failed: {html.escape(str(e))}", context, parse_mode="HTML")
+                return
+            endpoint = html.escape(str(saved.get("endpoint_url") or "—"))
+            footer = f"✅ Endpoint saved.\nCompletions: <code>{endpoint}</code>\n" + _format_llm_test_result(test)
+            await _send_llm_config_panel(msg, context, extra_footer=footer)
+            return
+
+        if context.user_data.get(PENDING_LLM_MODEL):
+            if user_text.startswith("/") and user_text.split()[0] != "/cancel":
+                await _reply(
+                    msg,
+                    "Still waiting for model id, or send <code>/cancel</code>.",
+                    context,
+                    parse_mode="HTML",
+                )
+                return
+            context.user_data.pop(PENDING_LLM_MODEL, None)
+            try:
+                saved = await asyncio.to_thread(persist_llm_model, user_text)
+                test = await asyncio.to_thread(test_secretary_llm)
+            except ValueError as e:
+                await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
+                return
+            except Exception as e:
+                await _reply(msg, f"Save failed: {html.escape(str(e))}", context, parse_mode="HTML")
+                return
+            model = html.escape(str(saved.get("model") or "—"))
+            footer = f"✅ Model set to <code>{model}</code>.\n" + _format_llm_test_result(test)
+            await _send_llm_config_panel(msg, context, extra_footer=footer)
+            return
+
+    if not secretary_llm_configured():
+        if _can_manage_drafts(update):
+            await _reply(
+                msg,
+                "FAQ LLM is not configured yet. Send <code>/config</code> to set API key and endpoint.",
+                context,
+                parse_mode="HTML",
+            )
+        else:
+            await _reply(
+                msg,
+                "FAQ assistant is offline (no LLM key on the server).",
+                context,
+            )
+        return
+
+    if _can_manage_drafts(update) and context.user_data.get(PENDING_SYSPROMPT_KEY):
+        if user_text.startswith("/"):
+            if user_text.split()[0] != "/cancel":
+                await _reply(
+                    msg,
+                    "Still waiting for system prompt text, or send <code>/cancel</code>.",
+                    context,
+                    parse_mode="HTML",
+                )
+            return
+        context.user_data.pop(PENDING_SYSPROMPT_KEY, None)
+        try:
+            result = await asyncio.to_thread(persist_system_prompt, user_text)
+        except ValueError as e:
+            await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
+            return
+        except Exception as e:
+            await _reply(msg, f"Save failed: {html.escape(str(e))}", context, parse_mode="HTML")
+            return
+        await _reply(
+            msg,
+            f"✅ System prompt saved (<code>{result['source']}</code>, {result['chars']} chars).",
+            context,
+            parse_mode="HTML",
+        )
         return
 
     shortcut = _FAQ_KEYBOARD.get(user_text)
@@ -782,9 +2132,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await cmd_mystatus(update, context)
         return
     if user_text == "💬 Type your question below":
-        await msg.reply_text(
+        await _reply(
+            msg,
             "Type your question in a message below — I'll answer using FAQ knowledge and your thread context.",
-            **_reply_kwargs(msg),
+            context,
         )
         return
 
@@ -794,11 +2145,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if not suggest_only_business:
         try:
-            await context.bot.send_chat_action(
-                chat_id=msg.chat_id, action=ChatAction.TYPING, **_reply_kwargs(msg)
-            )
-        except TypeError:
-            await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.TYPING)
+            await _send_chat_action(msg, context, ChatAction.TYPING)
         except Exception as e:
             logger.debug("send_chat_action: %s", e)
 
@@ -875,9 +2222,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply = await complete_secretary_chat(messages, extra_system_suffix=extra)
     except Exception as e:
         logger.warning("secretary LLM failed: %s", e)
-        await msg.reply_text(
+        await _reply(
+            msg,
             "I couldn't generate a reply right now. Try again in a moment, or open the payment bot for checkout.",
-            **_reply_kwargs(msg),
+            context,
         )
         return
 
@@ -918,7 +2266,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "TBCC_SECRETARY_SUGGEST_NOTIFY_CHAT_ID — cannot deliver FAQ draft"
             )
     else:
-        await msg.reply_text(reply[:4096], **_reply_kwargs(msg))
+        await _reply(msg, reply[:4096], context)
         if format_ctx_id is not None:
             try:
                 await asyncio.to_thread(finalize_assistant_turn, format_ctx_id, reply[:4096])
@@ -940,42 +2288,58 @@ async def on_unsupported_private(update: Update, context: ContextTypes.DEFAULT_T
     msg = update.effective_message
     if not msg or msg.chat.type != "private":
         return
-    await msg.reply_text(
+    await _reply(
+        msg,
         "I can only read <b>text</b> in this version. Type your question, or use /help.",
+        context,
         parse_mode="HTML",
-        **_reply_kwargs(msg),
     )
 
 
 def _service_cleanup_enabled() -> bool:
-    """Delete join/leave service messages in groups (default on; set =0 to disable)."""
+    """Delete leave service messages in groups/channels (default on; set =0 to disable)."""
     raw = (os.getenv("TBCC_SECRETARY_CLEAN_SERVICE_MESSAGES") or "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
 async def on_service_message_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Remove 'X joined the group' / 'X left the group' service messages."""
+    """Delete 'X left the group/channel' only — keep join welcome messages visible."""
     if not _service_cleanup_enabled():
         return
     msg = update.effective_message
-    if not msg or not update.effective_chat or update.effective_chat.type not in ("group", "supergroup"):
+    if not msg or not update.effective_chat:
         return
-    if not (msg.new_chat_members or msg.left_chat_member):
+    chat_type = update.effective_chat.type
+    if chat_type not in ("group", "supergroup", "channel"):
+        return
+    if not msg.left_chat_member:
         return
     try:
         await msg.delete()
     except Exception as e:
-        # Needs "Delete messages" admin right in the group; report once per error text via hub dedup.
-        logger.debug("join/leave cleanup failed chat=%s: %s", msg.chat_id, e)
-        report_bot_error("secretary-bot", "service-message cleanup", e)
+        logger.debug("leave-message cleanup failed chat=%s: %s", msg.chat_id, e)
+        report_bot_error("secretary-bot", "leave-message cleanup", e)
 
 
 async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Avoid huge tracebacks for transient DNS / TLS blips; python-telegram-bot retries polling."""
     err = context.error
-    if isinstance(err, NetworkError):
-        logger.warning("Telegram NetworkError (usually transient DNS/connectivity): %s", err)
-        return
+    try:
+        from telegram.error import Conflict, Forbidden, NetworkError
+
+        if isinstance(err, Conflict):
+            from bots.error_reporter import log_telegram_conflict_once
+
+            log_telegram_conflict_once("secretary-bot", err)
+            return
+        if isinstance(err, Forbidden):
+            logger.info("Secretary Forbidden (blocked chat): %s", err)
+            return
+        if isinstance(err, NetworkError):
+            logger.warning("Telegram NetworkError (usually transient DNS/connectivity): %s", err)
+            return
+    except ImportError:
+        pass
     logger.error("Secretary bot unhandled error", exc_info=err)
     report_bot_error("secretary-bot", "unhandled", err if err is not None else "unknown")
 
@@ -992,20 +2356,56 @@ async def post_init(app: Application) -> None:
         BotCommand("reset", "Clear this chat’s FAQ context"),
     ]
     admin_commands = user_commands + [
+        BotCommand("menu", "Main menu (inline buttons)"),
+        BotCommand("commands", "Command reference"),
+        BotCommand("config", "LLM key + endpoint"),
+        BotCommand("inbox", "Admin: recent notifications"),
+        BotCommand("now", "Admin: unread inbox"),
+        BotCommand("payment", "Admin: payment events"),
+        BotCommand("loot", "Admin: loot events"),
+        BotCommand("ops", "Admin: ops alerts"),
+        BotCommand("critical", "Admin: critical + important"),
+        BotCommand("read", "Admin: mark inbox seen"),
+        BotCommand("status", "Admin: inbox stats"),
         BotCommand("fe_stats", "Format Engine + RAG stats (admin)"),
+        BotCommand("sysprompt", "Admin: view system prompt"),
+        BotCommand("set_sysprompt", "Admin: set system prompt"),
+        BotCommand("clear_sysprompt", "Admin: clear prompt override"),
         BotCommand("drafts", "List pending business drafts"),
         BotCommand("approve", "Send draft to customer"),
         BotCommand("reject", "Discard draft"),
         BotCommand("redo", "Regenerate draft (pro/casual/short)"),
+        BotCommand("relief", "Apply telegram_relief focus"),
+        BotCommand("focus", "Focus profile status"),
+        BotCommand("triage", "Ops triage bundle for Cursor"),
+        BotCommand("flywheel", "Ops flywheel status"),
+        BotCommand("deposit", "Storage Hub topic → pool"),
     ]
     try:
         await app.bot.set_my_commands(user_commands)
         admin_chat = _admin_notify_chat_id()
         if admin_chat is not None:
             await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_chat))
+        try:
+            from app.services.storage_topic_deposit import storage_hub_chat_id_int
+
+            await app.bot.set_my_commands(
+                [BotCommand("deposit", "Queue N deduped items into this topic's pool")],
+                scope=BotCommandScopeChat(chat_id=storage_hub_chat_id_int()),
+            )
+        except Exception as e:
+            logger.debug("storage hub deposit commands scope: %s", e)
         await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     except Exception as e:
         logger.warning("set_my_commands / menu: %s", e)
+    if inbox_enabled() and _admin_notify_chat_id() is not None:
+        push_admin_inbox_event(
+            category="system",
+            severity="info",
+            title="Secretary bot online",
+            body="Admin inbox: /inbox or /now in this chat.",
+            instant=False,
+        )
 
 
 def _telegram_http_timeout_seconds() -> float:
@@ -1055,30 +2455,68 @@ def main() -> None:
         br,
         f", proxy={proxy}" if proxy else "",
     )
+    admins = sorted(_admin_user_id_set())
+    if admins:
+        logger.info("Admin inbox access for Telegram user id(s): %s", ", ".join(str(x) for x in admins))
+    else:
+        logger.warning("No valid ADMIN_TELEGRAM_ID — /inbox and instant payment DMs are disabled")
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    app.add_handler(CommandHandler("commands", cmd_commands))
+    app.add_handler(CommandHandler("config", cmd_config))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe_hint))
     app.add_handler(CommandHandler("shop", cmd_shop_hint))
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("mystatus", cmd_mystatus))
     app.add_handler(CommandHandler("fe_stats", cmd_fe_stats))
+    app.add_handler(CommandHandler("sysprompt", cmd_sysprompt))
+    app.add_handler(CommandHandler("set_sysprompt", cmd_set_sysprompt))
+    app.add_handler(CommandHandler("clear_sysprompt", cmd_clear_sysprompt))
+    app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("drafts", cmd_drafts))
     app.add_handler(CommandHandler("redo", cmd_redo))
+    app.add_handler(CommandHandler("inbox", cmd_inbox))
+    app.add_handler(CommandHandler("now", cmd_inbox_now))
+    app.add_handler(CommandHandler("payment", cmd_inbox_payment))
+    app.add_handler(CommandHandler("loot", cmd_inbox_loot))
+    app.add_handler(CommandHandler("ops", cmd_inbox_ops))
+    app.add_handler(CommandHandler("critical", cmd_inbox_critical))
+    app.add_handler(CommandHandler("read", cmd_inbox_read))
+    app.add_handler(CommandHandler("status", cmd_inbox_status))
+    app.add_handler(CommandHandler("relief", cmd_relief))
+    app.add_handler(CommandHandler("focus", cmd_focus))
+    app.add_handler(CommandHandler("triage", cmd_triage))
+    app.add_handler(CommandHandler("flywheel", cmd_flywheel))
+
+    async def _cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from bots.secretary_storage_deposit import cmd_deposit as _storage_deposit
+
+        await _storage_deposit(update, context, is_admin=_can_manage_drafts(update))
+
+    app.add_handler(CommandHandler("deposit", _cmd_deposit))
     app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^sec:menu:"))
+    app.add_handler(CallbackQueryHandler(on_llm_config_callback, pattern=r"^sec:llm:"))
     app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:(ap|rj|rd):"))
+    app.add_handler(CallbackQueryHandler(on_ops_inbox_callback, pattern=r"^ops:"))
+    app.add_handler(CallbackQueryHandler(on_invoice_inbox_callback, pattern=r"^inv:"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.TEXT), on_unsupported_private))
     app.add_handler(
         MessageHandler(
-            filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER,
+            filters.StatusUpdate.LEFT_CHAT_MEMBER,
             on_service_message_cleanup,
         )
     )
     app.add_error_handler(_on_app_error)
 
-    print("Secretary bot running. Commands: /start /help /subscribe /shop /reset /approve /reject /drafts")
+    print(
+        "Secretary bot running. FAQ: /start /help /subscribe /shop /reset | "
+        "Admin inbox: /inbox /now /payment /loot /ops /critical /read /status /relief /focus /triage /flywheel /deposit | "
+        "Drafts: /approve /reject /drafts"
+    )
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
 
 

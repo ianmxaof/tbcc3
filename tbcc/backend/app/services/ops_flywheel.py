@@ -340,7 +340,7 @@ def route_event(event: dict[str, Any], *, source: str = "router") -> dict[str, A
     return {"ok": True, "routed": True, "lane": "notify_only", "label": reg.get("label")}
 
 
-def approve_action(action_id: str) -> dict[str, Any]:
+def approve_action(action_id: str, *, operator: str = "api") -> dict[str, Any]:
     pending = list_pending()
     action = next((a for a in pending if str(a.get("id")) == action_id), None)
     if not action:
@@ -386,9 +386,9 @@ def approve_action(action_id: str) -> dict[str, Any]:
     return {"ok": True, "executed": False, "lane": lane}
 
 
-def reject_action(action_id: str) -> dict[str, Any]:
+def reject_action(action_id: str, *, operator: str = "api") -> dict[str, Any]:
     _remove_pending(action_id)
-    return {"ok": True, "rejected": action_id}
+    return {"ok": True, "rejected": action_id, "operator": operator}
 
 
 def _remove_pending(action_id: str) -> None:

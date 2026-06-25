@@ -63,19 +63,35 @@ Copy-Item -Force $cfg "$env:USERPROFILE\clawd\config\mcporter.json"
 
 Verify in an agent turn (or CLI): `tbcc_health`, `tbcc_flywheel_tick`, `flywheel_approval_bundle`.
 
-## 3. AOF operator skill
+## 3. AOF operator skills
 
-Installed to:
+Installed to `~/.openclaw/workspace/skills/`:
 
-`~/.openclaw/workspace/skills/tbcc-aof-network/SKILL.md`
+| Skill | Purpose |
+|-------|---------|
+| `tbcc-aof-network` | Daily ops: health, flywheel, approvals |
+| `tbcc-failure-modes` | Diagnose scheduler stall, CPU, MCP, notification storm |
 
-Re-copy from repo after updates:
+Re-copy after updates:
+
+```powershell
+.\tbcc\scripts\setup-openclaw-tbcc.ps1 -SkipMcpAdd
+```
+
+Or:
 
 ```powershell
 Copy-Item -Recurse -Force `
-  "C:\Powercore-repo-main\telegram_bot2\tbcc\docs\openclaw-skill\tbcc-aof-network" `
+  "C:\Powercore-repo-main\telegram_bot2\tbcc\docs\openclaw-skill\*" `
   "$env:USERPROFILE\.openclaw\workspace\skills\"
 ```
+
+## 3b. Ops workflow + handoffs
+
+- **Workflow API:** `POST /ops/workflow/run` — YAML-driven `tbcc_ops_turn` (health → scheduling → flywheel → handoff)
+- **Handoff format:** [OPS_HANDOFF_PROTOCOL.md](./OPS_HANDOFF_PROTOCOL.md)
+- **Permissions:** [ops_tool_permissions.yaml](../backend/app/data/ops_tool_permissions.yaml) — OpenClaw cannot `flywheel_approve`
+- **MCP:** `run_ops_workflow`, `flywheel_approval_bundle` (approve via Secretary only)
 
 ## 4. Telegram channel (separate bot)
 

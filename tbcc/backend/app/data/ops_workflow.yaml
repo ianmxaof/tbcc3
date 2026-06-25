@@ -1,0 +1,42 @@
+# TBCC ops turn workflow — YAML-driven steps (pattern from openclaw-orchestration).
+# Run via POST /ops/workflow/run or: py -3.13 tbcc/backend/scripts/run_ops_workflow.py
+
+id: tbcc_ops_turn
+name: TBCC Ops Turn
+description: Health → scheduling → flywheel tick → approval gate → handoff summary
+
+inputs:
+  - ops_limit
+  - operator
+  - include_handoff
+
+outputs:
+  - state
+  - handoff_markdown
+
+steps:
+  - id: health
+    type: check
+    check: system_health
+    gate_on_fail: true
+
+  - id: scheduling
+    type: check
+    check: scheduling_health
+    gate_on_fail: false
+
+  - id: flywheel_tick
+    type: action
+    action: flywheel_tick
+    input:
+      limit: inputs.ops_limit
+
+  - id: approval_gate
+    type: gate
+    gate: flywheel_pending
+    message: Pending flywheel items require Secretary approve — OpenClaw notify only
+
+  - id: handoff
+    type: output
+    output: ops_handoff
+    when: inputs.include_handoff

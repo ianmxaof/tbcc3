@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.services.ops_flywheel import (
@@ -15,6 +15,7 @@ from app.services.ops_flywheel import (
     tick_flywheel,
 )
 from app.services.admin_inbox import get_inbox_event_by_id
+from app.services.ops_tool_permissions import assert_flywheel_action, permissions_summary
 
 router = APIRouter(prefix="/ops/flywheel", tags=["ops-flywheel"])
 
@@ -59,11 +60,24 @@ def flywheel_tick(body: FlywheelTickBody | None = None):
     return tick_flywheel(limit=limit)
 
 
+@router.get("/permissions")
+def flywheel_permissions(operator: str = Query("openclaw")):
+    return {"ok": True, **permissions_summary(operator)}
+
+
 @router.post("/approve/{action_id}")
-def flywheel_approve(action_id: str):
-    return approve_action(action_id)
+def flywheel_approve(action_id: str, operator: str = Query("api")):
+    try:
+        assert_flywheel_action(operator, "approve")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    return approve_action(action_id, operator=operator)
 
 
 @router.post("/reject/{action_id}")
-def flywheel_reject(action_id: str):
-    return reject_action(action_id)
+def flywheel_reject(action_id: str, operator: str = Query("api")):
+    try:
+        assert_flywheel_action(operator, "reject")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+    return reject_action(action_id, operator=operator)

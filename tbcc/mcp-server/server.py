@@ -440,15 +440,43 @@ def flywheel_approval_bundle() -> str:
 
 
 @mcp.tool()
-def flywheel_approve(action_id: str) -> str:
-    """Approve a pending flywheel action (restart, Cursor triage, etc.)."""
-    return _pretty(_request("POST", f"/ops/flywheel/approve/{action_id.strip()}"))
+def flywheel_approve(action_id: str, operator: str = "openclaw") -> str:
+    """Approve a pending flywheel action. OpenClaw role is denied — use @aof_secretary_bot."""
+    return _pretty(
+        _request(
+            "POST",
+            f"/ops/flywheel/approve/{action_id.strip()}",
+            params={"operator": operator},
+        )
+    )
 
 
 @mcp.tool()
-def flywheel_reject(action_id: str) -> str:
-    """Reject/dismiss a stale flywheel approval."""
-    return _pretty(_request("POST", f"/ops/flywheel/reject/{action_id.strip()}"))
+def flywheel_reject(action_id: str, operator: str = "openclaw") -> str:
+    """Reject/dismiss a stale flywheel approval. OpenClaw role is denied — use Secretary."""
+    return _pretty(
+        _request(
+            "POST",
+            f"/ops/flywheel/reject/{action_id.strip()}",
+            params={"operator": operator},
+        )
+    )
+
+
+@mcp.tool()
+def run_ops_workflow(ops_limit: int = 1, operator: str = "openclaw", include_handoff: bool = True) -> str:
+    """Run tbcc_ops_turn workflow: health → scheduling → flywheel → approval gate → handoff."""
+    return _pretty(
+        _request(
+            "POST",
+            "/ops/workflow/run",
+            json_body={
+                "ops_limit": ops_limit,
+                "operator": operator,
+                "include_handoff": include_handoff,
+            },
+        )
+    )
 
 
 @mcp.tool()

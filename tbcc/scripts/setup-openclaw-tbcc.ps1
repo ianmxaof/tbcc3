@@ -10,8 +10,8 @@ if (-not $TbccRoot) {
 }
 $repoRoot = Split-Path $TbccRoot -Parent
 $mcpScript = Join-Path $TbccRoot "mcp-server\server.py"
-$skillSrc = Join-Path $TbccRoot "docs\openclaw-skill\tbcc-aof-network"
-$skillDst = Join-Path $env:USERPROFILE ".openclaw\workspace\skills\tbcc-aof-network"
+$skillSrc = Join-Path $TbccRoot "docs\openclaw-skill"
+$skillNames = @("tbcc-aof-network", "tbcc-failure-modes")
 
 Write-Host "=== OpenClaw + TBCC setup ===" -ForegroundColor Cyan
 Write-Host "Repo: $repoRoot" -ForegroundColor Gray
@@ -65,11 +65,19 @@ if (-not $SkipMcpAdd) {
   Write-Host "  OK tbcc MCP (23 tools)" -ForegroundColor Green
 }
 
-# 3. Skill
-Write-Host "`nInstalling skill -> $skillDst" -ForegroundColor Yellow
-New-Item -ItemType Directory -Force -Path (Split-Path $skillDst -Parent) | Out-Null
-Copy-Item -Recurse -Force $skillSrc $skillDst
-Write-Host "  OK tbcc-aof-network skill" -ForegroundColor Green
+# 3. Skills
+Write-Host "`nInstalling OpenClaw skills..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path (Join-Path $env:USERPROFILE ".openclaw\workspace\skills") | Out-Null
+foreach ($name in $skillNames) {
+  $src = Join-Path $skillSrc $name
+  $dst = Join-Path $env:USERPROFILE ".openclaw\workspace\skills\$name"
+  if (-not (Test-Path -LiteralPath $src)) {
+    Write-Host "  SKIP missing $name" -ForegroundColor DarkYellow
+    continue
+  }
+  Copy-Item -Recurse -Force $src $dst
+  Write-Host "  OK $name" -ForegroundColor Green
+}
 
 # 4. TBCC health
 Write-Host "`nProbing TBCC API..." -ForegroundColor Yellow

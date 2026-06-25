@@ -93,14 +93,52 @@ cd tbcc\scripts
 
 Secretary: `/flywheel` · **Approve fix** / **Reject** on flywheel DMs.
 
+## Operator permissions (OpenClaw vs Secretary)
+
+YAML matrix: `app/data/ops_tool_permissions.yaml`
+
+| Operator | MCP flywheel_approve | Flywheel tick |
+|----------|---------------------|---------------|
+| `openclaw` / `cron` | **Denied** — notify only | Allowed |
+| `secretary` | Allowed | Allowed |
+| `api` | Allowed (localhost scripts) | Allowed |
+
+```powershell
+curl "http://127.0.0.1:8000/ops/flywheel/permissions?operator=openclaw"
+curl -X POST "http://127.0.0.1:8000/ops/flywheel/approve/ABC123?operator=openclaw"   # → 403
+```
+
+OpenClaw must use **@aof_secretary_bot** Approve/Reject buttons, not MCP `flywheel_approve`.
+
+## Ops workflow (YAML runner)
+
+Pattern from `openclaw-orchestration` — lives in TBCC (no port conflict):
+
+```powershell
+curl -X POST http://127.0.0.1:8000/ops/workflow/run -H "Content-Type: application/json" -d "{\"operator\":\"openclaw\"}"
+py -3.13 tbcc/backend/scripts/run_ops_workflow.py --operator openclaw
+```
+
+Steps: health → scheduling → flywheel tick → approval gate → handoff markdown.
+
+Definition: `app/data/ops_workflow.yaml` · Runner: `app/services/ops_workflow_runner.py`
+
+## Handoff reports
+
+Structured ops output for OpenClaw / Cursor: [OPS_HANDOFF_PROTOCOL.md](./OPS_HANDOFF_PROTOCOL.md)
+
+OpenClaw skill for failure modes: `docs/openclaw-skill/tbcc-failure-modes/SKILL.md`
+
 ## Files
 
 - `app/services/admin_inbox.py` — instant DM + inline keyboard
 - `app/services/ops_flywheel.py` — router + registry + pending approvals
+- `app/services/ops_tool_permissions.py` — operator role gates
+- `app/services/ops_workflow_runner.py` — YAML workflow executor
+- `app/data/ops_tool_permissions.yaml` — permission matrix
+- `app/data/ops_workflow.yaml` — tbcc_ops_turn workflow
 - `app/api/ops_flywheel.py` — HTTP API
-- `backend/scripts/run_openclaw_ops_tick.py` — OpenClaw stub
-- `scripts/run-openclaw-ops-tick.ps1` — Windows launcher
-- `app/services/ops_triage_bundle.py` — bundle builder
-- `app/services/cursor_triage.py` — gated agent runs
-- `app/api/ops_triage.py` — HTTP API
-- `bots/secretary_bot.py` — `/relief` `/focus` `/triage` + callbacks
+- `app/api/ops_workflow.py` — workflow + permissions API
+- `backend/scripts/run_tbcc_flywheel_tick.py` — internal flywheel tick
+- `backend/scripts/run_ops_workflow.py` — CLI workflow runner
+- `scripts/run-tbcc-flywheel-tick.ps1` — Windows launcher

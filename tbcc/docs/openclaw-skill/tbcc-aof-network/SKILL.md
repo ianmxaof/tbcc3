@@ -57,3 +57,9 @@ Every 15–30 min while PC is on:
 - **You (OpenClaw)** = autonomous operator with shell/browser + TBCC MCP
 
 Docs: `tbcc/docs/OPENCLAW_TBCC_INTEGRATION.md`
+
+## Failure modes + workflow
+
+- Full scan: load skill `tbcc-failure-modes` when user reports stall, hot CPU, or notification storm
+- Structured output: `tbcc/docs/OPS_HANDOFF_PROTOCOL.md`
+- One-shot workflow: MCP `run_ops_workflow` or `POST /ops/workflow/run`
