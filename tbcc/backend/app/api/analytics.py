@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -187,3 +187,182 @@ def telegram_channel_stats(
             detail="Set API_ID and API_HASH; authorize TBCC_POSTER_TELEGRAM_SESSION",
         )
     return fetch_channel_post_stats_sync(channel, limit=limit)
+
+
+@router.get("/deliveries")
+def list_deliveries(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    scheduled_post_id: int | None = Query(None),
+    channel_id: int | None = Query(None),
+):
+    """Post delivery ledger with Telegram view snapshots (when refreshed)."""
+    from app.services.content_performance import list_delivery_metrics
+
+    return list_delivery_metrics(
+        db,
+        days=days,
+        limit=limit,
+        offset=offset,
+        scheduled_post_id=scheduled_post_id,
+        channel_id=channel_id,
+    )
+
+
+@router.post("/deliveries/refresh-views")
+def refresh_delivery_views(
+    db: Session = Depends(get_db),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """Poll Telethon for message view counts on recent deliveries."""
+    from app.services.content_performance import refresh_delivery_views_sync
+    from app.services.telegram_channel_stats import telethon_stats_configured
+
+    if not telethon_stats_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Set API_ID and API_HASH; authorize TBCC_POSTER_TELEGRAM_SESSION",
+        )
+    return refresh_delivery_views_sync(db, limit=limit)
+
+
+@router.get("/deliveries/views-by-hour")
+def delivery_views_by_hour(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+):
+    """Average views by local hour (TBCC_ANALYTICS_TZ) + community peak-time reference bands."""
+    from app.services.content_performance import aggregate_views_by_hour
+
+    return aggregate_views_by_hour(db, days=days)
+
+
+@router.get("/deliveries/caption-slots")
+def delivery_views_by_caption_slot(
+    db: Session = Depends(get_db),
+    scheduled_post_id: int = Query(..., ge=1),
+    days: int = Query(90, ge=1, le=366),
+):
+    """Per-caption-slot view aggregates for one scheduler job."""
+    from app.services.content_performance import aggregate_views_by_caption_slot
+
+    result = aggregate_views_by_caption_slot(db, scheduled_post_id=scheduled_post_id, days=days)
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=str(result["error"]))
+    return result
+
+
+@router.get("/growth-attribution/summary")
+def growth_attribution_summary(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+):
+    """Loot/sub/referral conversions with time-of-day breakdown."""
+    from app.services.growth_attribution import attribution_summary
+
+    return attribution_summary(db, days=days)
+
+
+@router.get("/growth-attribution/events")
+def growth_attribution_events(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    event_type: str | None = Query(None),
+):
+    from app.services.growth_attribution import list_attribution_events
+
+    return list_attribution_events(
+        db,
+        days=days,
+        limit=limit,
+        offset=offset,
+        event_type=event_type,
+    )
+
+
+@router.get("/signals/status")
+def growth_signals_status_route():
+    """OpenClaw / dashboard: growth signal engine config + last tick."""
+    from app.services.content_signals import growth_signals_status
+
+    return growth_signals_status()
+
+
+@router.get("/signals")
+def growth_signals_compute(
+    db: Session = Depends(get_db),
+    days: int = Query(None, ge=3, le=90),
+):
+    """Strongest content/growth signals (read-only, no view refresh)."""
+    from app.services.content_signals import compute_strong_signals
+
+    return compute_strong_signals(db, days=days) if days else compute_strong_signals(db)
+
+
+@router.post("/signals/tick")
+def growth_signals_tick(
+    db: Session = Depends(get_db),
+    refresh_views: bool = Query(True),
+    push_inbox: bool = Query(True),
+):
+    """
+    OpenClaw growth tick: refresh Telethon views → rank signals → inbox digest on change.
+    Analytics lane only (no instant DM).
+    """
+    from app.services.content_signals import tick_growth_signals
+
+    return tick_growth_signals(db, refresh_views=refresh_views, push_inbox_on_change=push_inbox)
+
+
+@router.get("/signals/markdown")
+def growth_signals_markdown(
+    db: Session = Depends(get_db),
+    days: int = Query(None, ge=3, le=90),
+):
+    from app.services.content_signals import compute_strong_signals, format_signals_markdown
+
+    report = compute_strong_signals(db, days=days) if days else compute_strong_signals(db)
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(format_signals_markdown(report), media_type="text/markdown; charset=utf-8")
+
+
+@router.post("/openclaw/tick")
+def openclaw_unified_tick_deprecated(
+    db: Session = Depends(get_db),
+    ops_limit: int = Query(1, ge=0, le=5),
+    growth: bool = Query(True),
+):
+    """Deprecated alias — use POST /analytics/tbcc-flywheel/tick."""
+    return tbcc_flywheel_unified_tick(db=db, ops_limit=ops_limit, growth=growth)
+
+
+@router.post("/tbcc-flywheel/tick")
+def tbcc_flywheel_unified_tick(
+    db: Session = Depends(get_db),
+    ops_limit: int = Query(1, ge=0, le=5),
+    growth: bool = Query(True),
+):
+    """
+    TBCC internal flywheel tick: ops routing + growth signals.
+    External OpenClaw (github.com/openclaw/openclaw) should use TBCC MCP instead.
+    """
+    from app.services.content_signals import flywheel_growth_tick_enabled, tick_growth_signals
+    from app.services.ops_flywheel import tick_flywheel
+
+    out: dict[str, Any] = {"ok": True, "ops": None, "growth": None}
+    if ops_limit > 0:
+        out["ops"] = tick_flywheel(limit=ops_limit)
+    if growth and flywheel_growth_tick_enabled():
+        out["growth"] = tick_growth_signals(db)
+    elif growth:
+        out["growth"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "TBCC_FLYWHEEL_GROWTH_TICK=0",
+        }
+    return out

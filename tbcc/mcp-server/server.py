@@ -199,6 +199,37 @@ def trigger_scheduled_post(post_id: int, reshuffle: bool = False) -> str:
 
 
 @mcp.tool()
+def deploy_campaign_post(
+    post_id: int,
+    sync: bool = False,
+    telegram: bool = True,
+    buffer: bool | None = None,
+    discord: bool | None = None,
+    reshuffle: bool = False,
+) -> str:
+    """
+    Multi-surface deploy: Telegram (+ optional Buffer/Discord mirrors). sync=true blocks until done.
+    buffer/discord None = use each post's buffer_mirror_enabled / discord_mirror_enabled flags.
+    """
+    body: dict[str, Any] = {
+        "telegram": telegram,
+        "sync": sync,
+        "reshuffle": reshuffle,
+    }
+    if buffer is not None:
+        body["buffer"] = buffer
+    if discord is not None:
+        body["discord"] = discord
+    return _pretty(_request("POST", f"/campaigns/deploy/post/{post_id}", json_body=body))
+
+
+@mcp.tool()
+def audit_campaign_schedules() -> str:
+    """List all scheduled posts + recent multi-surface deploy ledger entries."""
+    return _pretty(_request("GET", "/campaigns/audit/schedules"))
+
+
+@mcp.tool()
 def list_media(
     status: str | None = "approved",
     pool_id: int | None = None,
@@ -355,6 +386,69 @@ def analytics_weekly_summary(days: int = 7) -> str:
     lines.append("")
     lines.append(f"_Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from {TBCC_API_URL}_")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def analytics_content_performance(days: int = 14, run_tick: bool = True) -> str:
+    """
+    Strongest content/growth signals for OpenClaw — ranked peak hours, caption winners, lane leaders.
+    Runs growth tick (view refresh + signal ranking) when run_tick=True.
+    """
+    days = max(1, min(90, days))
+    if run_tick:
+        tick = _request("POST", "/analytics/signals/tick", params={"refresh_views": "true", "push_inbox": "false"})
+        report = tick.get("report") or {}
+        md = tick.get("markdown")
+        if md:
+            return md
+    else:
+        report = _request("GET", "/analytics/signals", params={"days": days})
+
+    lines = [
+        f"# TBCC growth signals (last {report.get('lookback_days', days)} days)",
+        f"tz={report.get('timezone')} · network avg views={report.get('network_avg_views')}",
+        "",
+    ]
+    for i, s in enumerate(report.get("signals") or [], 1):
+        lines.append(
+            f"{i}. [{s.get('confidence')}] {s.get('signal_type')} (strength={s.get('strength')})"
+        )
+        lines.append(f"   {s.get('recommendation')}")
+    if not report.get("signals"):
+        lines.append("_Insufficient data — need more posted deliveries with view refresh._")
+    lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def tbcc_flywheel_tick(ops_limit: int = 1) -> str:
+    """TBCC flywheel tick: route critical ops + refresh growth signals. Returns JSON."""
+    out = _request("POST", "/analytics/tbcc-flywheel/tick", params={"ops_limit": ops_limit})
+    return _pretty(out)
+
+
+@mcp.tool()
+def openclaw_tick(ops_limit: int = 1) -> str:
+    """Deprecated alias for tbcc_flywheel_tick."""
+    return tbcc_flywheel_tick(ops_limit=ops_limit)
+
+
+@mcp.tool()
+def flywheel_approval_bundle() -> str:
+    """Pending Secretary flywheel approvals — use before executing destructive fixes."""
+    return _pretty(_request("GET", "/ops/flywheel/approval-bundle"))
+
+
+@mcp.tool()
+def flywheel_approve(action_id: str) -> str:
+    """Approve a pending flywheel action (restart, Cursor triage, etc.)."""
+    return _pretty(_request("POST", f"/ops/flywheel/approve/{action_id.strip()}"))
+
+
+@mcp.tool()
+def flywheel_reject(action_id: str) -> str:
+    """Reject/dismiss a stale flywheel approval."""
+    return _pretty(_request("POST", f"/ops/flywheel/reject/{action_id.strip()}"))
 
 
 @mcp.tool()
