@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { MediaLibrary } from "./panels/MediaLibrary";
+import { PoolCurateGallery } from "./panels/PoolCurateGallery";
 import { AutomationPanel } from "./panels/AutomationPanel";
 import { Subscriptions } from "./panels/Subscriptions";
 import { BotsPanel } from "./panels/BotsPanel";
 import { TagsPanel } from "./panels/TagsPanel";
 import { Analytics } from "./panels/Analytics";
+import { IncomePanel } from "./panels/IncomePanel";
 import { MiscPanel } from "./panels/MiscPanel";
 import { MasterArchivePanel } from "./panels/MasterArchivePanel";
 import { DashboardSettingsPanel } from "./panels/DashboardSettingsPanel";
@@ -14,15 +16,18 @@ import { SystemHealthBanner } from "./components/SystemHealthBanner";
 import { OpsAlertsPoller } from "./components/OpsAlertsPoller";
 import { ScrapeRunBanner } from "./components/ScrapeRunBanner";
 import { TbccClipboardInit } from "./components/TbccClipboardInit";
+import { ApprovalQueueCounter } from "./components/ApprovalQueueCounter";
 
 const nav = [
-  { to: "/", label: "Media" },
-  { to: "/scheduler", label: "Automation" },
-  { to: "/subscriptions", label: "Commerce" },
-  { to: "/analytics", label: "Analytics" },
-  { to: "/bots", label: "System" },
-  { to: "/misc", label: "Misc" },
-  { to: "/archive", label: "Archive" },
+  { to: "/", label: "Media", showQueue: true },
+  { to: "/curate", label: "Curate", showQueue: true },
+  { to: "/scheduler", label: "Automation", showQueue: false },
+  { to: "/subscriptions", label: "Commerce", showQueue: false },
+  { to: "/income", label: "Income", showQueue: false },
+  { to: "/analytics", label: "Analytics", showQueue: false },
+  { to: "/bots", label: "System", showQueue: false },
+  { to: "/misc", label: "Misc", showQueue: false },
+  { to: "/archive", label: "Archive", showQueue: false },
 ];
 
 function AppShell() {
@@ -38,16 +43,17 @@ function AppShell() {
             <img src="/favicon-32x32.png" alt="" width={22} height={22} className="rounded-sm" />
             TBCC
           </span>
-          {nav.map(({ to, label }) => (
+          {nav.map(({ to, label, showQueue }) => (
             <NavLink
               key={to}
               to={to}
               end={to === "/"}
               className={({ isActive }) =>
-                isActive ? "text-cyan-400 font-medium" : "text-slate-400 hover:text-slate-200"
+                `inline-flex items-center gap-1.5 ${isActive ? "text-cyan-400 font-medium" : "text-slate-400 hover:text-slate-200"}`
               }
             >
               {label}
+              {showQueue ? <ApprovalQueueCounter variant="compact" /> : null}
             </NavLink>
           ))}
           <DashboardHeaderToolbar />
@@ -59,6 +65,22 @@ function AppShell() {
               element={
                 <ErrorBoundary name="Media">
                   <MediaLibrary />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/curate"
+              element={
+                <ErrorBoundary name="PoolCurateGallery">
+                  <PoolCurateGallery />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/income"
+              element={
+                <ErrorBoundary name="Income">
+                  <IncomePanel />
                 </ErrorBoundary>
               }
             />

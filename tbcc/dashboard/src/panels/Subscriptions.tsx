@@ -38,6 +38,12 @@ export function Subscriptions() {
   return (
     <div>
       <h1 className="text-2xl font-semibold mb-4">Subscriptions</h1>
+      <p className="text-slate-400 text-sm mb-4">
+        <Link to="/income" className="text-cyan-400 hover:text-cyan-300">
+          Income Hub →
+        </Link>{" "}
+        unified totals across Stars, gates, affiliates, and donations.
+      </p>
       {subsError && (
         <QueryErrorBanner
           title="Could not load subscriptions"

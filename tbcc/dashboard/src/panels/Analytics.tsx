@@ -9,9 +9,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
 import { InfoDisclosure } from "../components/InfoDisclosure";
+import { CategoryDemandCrosswalk } from "../components/CategoryDemandCrosswalk";
 
 export function Analytics() {
   const rangeDays = 30;
@@ -37,6 +39,9 @@ export function Analytics() {
     <div className="max-w-5xl space-y-10">
       <div className="flex items-start justify-between gap-3">
         <h1 className="text-xl font-semibold text-slate-100">Analytics</h1>
+        <Link to="/income" className="text-sm text-cyan-400 hover:text-cyan-300 shrink-0">
+          Income Hub →
+        </Link>
         <InfoDisclosure className="shrink-0">
           Step 1: subscription totals and an append-only outbound Telegram log (scheduled sends + pool albums). Step 2:
           AI tag/caption suggestions remain under Media Library (human review before apply). Deeper engagement metrics
@@ -140,6 +145,8 @@ export function Analytics() {
           </>
         ) : null}
       </section>
+
+      <CategoryDemandCrosswalk />
 
       <section>
         <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide mb-3">Recent post events</h2>

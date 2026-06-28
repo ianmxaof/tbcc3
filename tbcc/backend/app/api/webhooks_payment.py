@@ -60,11 +60,23 @@ async def nowpayments_ipn(request: Request, db: Session = Depends(get_db)):
     np_id = data.get("payment_id")
     charge_id = f"np_{np_id}_{order.reference_code}" if np_id is not None else f"np_{order.reference_code}"
 
+    income_usd: float | None = None
+    for key in ("price_amount", "actually_paid", "pay_amount"):
+        raw = data.get(key)
+        if raw is None:
+            continue
+        try:
+            income_usd = float(raw)
+            break
+        except (TypeError, ValueError):
+            continue
+
     result = fulfill_external_order(
         db,
         order,
         payment_method="crypto",
         telegram_charge_id=str(charge_id)[:128],
+        income_amount_usd=income_usd,
     )
     if result.get("error"):
         logger.error("NOWPayments fulfill failed: %s", result.get("error"))

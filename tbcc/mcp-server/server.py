@@ -344,6 +344,25 @@ def analytics_subscriptions() -> str:
 
 
 @mcp.tool()
+def analytics_income_summary(days: int | None = None) -> str:
+    """Unified income rollup (USD + Stars) across internal and external sources."""
+    params: dict = {}
+    if days is not None:
+        params["days"] = max(1, min(3660, int(days)))
+    return _pretty(_request("GET", "/analytics/income/summary", params=params or None))
+
+
+@mcp.tool()
+def analytics_income_sync(sources: str = "") -> str:
+    """Sync external income (linkvertise, admaven, workink, bmc). Comma-separated sources or empty for all."""
+    src_list = [s.strip() for s in sources.split(",") if s.strip()] or None
+    body: dict = {}
+    if src_list:
+        body["sources"] = src_list
+    return _pretty(_request("POST", "/analytics/income/sync", json_body=body))
+
+
+@mcp.tool()
 def analytics_weekly_summary(days: int = 7) -> str:
     """
     Human-readable weekly ops report: subscriptions + outbound posts + recent failures.
@@ -429,7 +448,7 @@ def tbcc_flywheel_tick(ops_limit: int = 1) -> str:
 
 @mcp.tool()
 def openclaw_tick(ops_limit: int = 1) -> str:
-    """Deprecated alias for tbcc_flywheel_tick."""
+    """Deprecated alias for tbcc_flywheel_tick (internal event bus, not the OpenClaw gateway)."""
     return tbcc_flywheel_tick(ops_limit=ops_limit)
 
 

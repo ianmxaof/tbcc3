@@ -145,13 +145,28 @@ export type WatchFolderStatus =
 export type PaymentBotMenuButton = { label: string; action: string };
 export type SecretarySettingsEffective = {
   format_engine_enabled: boolean;
+  fe_verbosity: "compact" | "standard";
+  public_faq_enabled: boolean;
   llm_refine_on_phase_change: boolean;
   rag_enabled: boolean;
   rag_top_k: number;
+  system_prompt: string;
+  system_prompt_source: "dashboard" | "env" | "builtin" | string;
   system_prompt_extra: string;
   message_retention: number;
   llm_history: number;
   rag_embeddings: boolean;
+  llm_provider: string;
+  llm_model: string;
+  llm_base_url: string | null;
+  llm?: {
+    provider: string;
+    model: string;
+    base_url: string | null;
+    configured: boolean;
+    api_key_override: boolean;
+    api_key_hint: string | null;
+  };
 };
 
 export type SecretaryUserContext = {
@@ -390,6 +405,30 @@ export const api = {
         timeoutMs: MEDIA_LIST_TIMEOUT_MS,
       });
     },
+    /** Paginated pool gallery — isolated from main library list (minimal rows, cursor). */
+    listGalleryPage: (opts: {
+      pool_id: number;
+      status?: string;
+      limit?: number;
+      before_id?: number;
+    }) => {
+      const params = new URLSearchParams();
+      params.set("pool_id", String(opts.pool_id));
+      params.set("fields", "minimal");
+      if (opts.status) params.set("status", opts.status);
+      if (opts.limit != null) params.set("limit", String(opts.limit));
+      if (opts.before_id != null && opts.before_id > 0) params.set("before_id", String(opts.before_id));
+      return fetchApi<Array<{ id: number; media_type?: string; status?: string; pool_id?: number; nsfw_tier?: string }>>(
+        `/media?${params.toString()}`,
+        { timeoutMs: 45_000 }
+      );
+    },
+    pendingSummary: () =>
+      fetchApi<{
+        total_pending: number;
+        total_queue: number;
+        pools: Array<{ pool_id: number; pool_name: string; pending: number; queue_total: number }>;
+      }>("/media/pending-summary"),
     get: async (mediaId: number) =>
       throwIfBodyError(await fetchApi<Record<string, unknown>>(`/media/${mediaId}`)),
     updateStatus: async (mediaId: number, status: string) =>
@@ -483,7 +522,16 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ ids }),
       }),
-    thumbnailUrl: (id: number) => `${API_BASE}/media/${id}/thumbnail`,
+    thumbnailUrl: (id: number, opts?: { cacheOnly?: boolean }) => {
+      const base = `${API_BASE}/media/${id}/thumbnail`;
+      if (opts?.cacheOnly) return `${base}?cache_only=1`;
+      return base;
+    },
+    warmThumbnails: (ids: number[]) =>
+      fetchApi<{ queued: number; already_cached: number }>(`/media/thumbnails/warm`, {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
     /** Full bytes (Telegram download or URL proxy) — use in lightbox / video src. */
     fileUrl: (id: number) => `${API_BASE}/media/${id}/file`,
   },
@@ -538,8 +586,34 @@ export const api = {
           expires_at: string | null;
           active: boolean;
           created_at: string | null;
+          placements: string[];
+          network_keys: string[];
+          copy_template: string | null;
         }>
       >(`/promo-affiliate-links/${qs ? `?${qs}` : ""}`);
+    },
+    placements: () => fetchApi<{ placements: string[] }>("/promo-affiliate-links/placements"),
+    stats: () =>
+      fetchApi<{ active_rows: number; by_placement: Record<string, number>; cursors: number }>(
+        "/promo-affiliate-links/stats"
+      ),
+    previewRotation: (opts: { placement: string; network_key?: string; count?: number }) => {
+      const q = new URLSearchParams();
+      q.set("placement", opts.placement);
+      if (opts.network_key) q.set("network_key", opts.network_key);
+      if (opts.count != null) q.set("count", String(opts.count));
+      return fetchApi<{
+        placement: string;
+        network_key?: string | null;
+        picks: Array<{
+          id: number;
+          label: string;
+          url: string;
+          priority_tier: number;
+          line_html: string;
+          line_plain: string;
+        }>;
+      }>(`/promo-affiliate-links/preview-rotation?${q.toString()}`);
     },
     bulk: (body: {
       items: Array<{
@@ -551,6 +625,9 @@ export const api = {
         priority_tier?: number;
         expires_at?: string | null;
         active?: boolean;
+        placements?: string[];
+        network_keys?: string[];
+        copy_template?: string | null;
       }>;
     }) =>
       fetchApi<{ created: number }>("/promo-affiliate-links/bulk", {
@@ -638,7 +715,13 @@ export const api = {
       file: File,
       poolId: number,
       source?: string,
-      opts?: { savedOnly?: boolean; caption?: string; /** Bypass Celery fast-import queue (dashboard uploads). */ sync?: boolean }
+      opts?: {
+        savedOnly?: boolean;
+        caption?: string;
+        /** Bypass Celery fast-import queue (dashboard uploads). */
+        sync?: boolean;
+        skipWatermark?: boolean;
+      }
     ) => {
       const form = new FormData();
       form.append("file", file);
@@ -647,6 +730,7 @@ export const api = {
       form.append("source", source || "dashboard:upload");
       if (opts?.sync) form.append("sync", "true");
       if (opts?.caption?.trim()) form.append("caption", opts.caption.trim());
+      if (opts?.skipWatermark) form.append("skip_watermark", "true");
       let res: Response;
       try {
         res = await fetch(`${API_BASE}/import/bytes`, { method: "POST", body: form });
@@ -752,6 +836,7 @@ export const api = {
       media_types?: "both" | "photos" | "videos";
       message_thread_id?: number | null;
       topic_title?: string;
+      apply_watermark?: boolean;
     }) =>
       fetchApi<
         ImportJobPollResult & {
@@ -777,6 +862,7 @@ export const api = {
       channel: string;
       limit?: number;
       media_types?: "both" | "photos" | "videos";
+      apply_watermark?: boolean;
       imports: Array<{
         message_thread_id: number;
         pool_id: number;
@@ -796,12 +882,53 @@ export const api = {
         body: JSON.stringify(body),
         timeoutMs: 60_000,
       }),
+    storageHubLanes: () =>
+      fetchApi<{
+        storage_hub_ident: string;
+        default_batch_size: number;
+        lanes: Array<{
+          network_key: string;
+          topic_title: string;
+          message_thread_id: number;
+          topic_deep_link: string;
+          pool_id: number;
+          pool_name: string;
+          channel_name: string;
+          receive_channel: string;
+          channel_id?: number | null;
+        }>;
+      }>("/import/storage-hub-lanes"),
+    fromStorageHub: (body: {
+      limit?: number;
+      network_keys?: string[];
+      media_types?: "both" | "photos" | "videos";
+      apply_watermark?: boolean;
+    }) =>
+      fetchApi<{
+        ok?: boolean;
+        async?: boolean;
+        limit_per_lane?: number;
+        matched_count?: number;
+        jobs?: ImportJobPollResult[];
+        error?: string;
+      }>("/import/from-storage-hub", {
+        method: "POST",
+        body: JSON.stringify(body),
+        timeoutMs: 60_000,
+      }),
   },
   sources: {
     list: () => fetchApi<Array<Record<string, unknown>>>("/sources"),
     get: (id: number) => fetchApi<Record<string, unknown>>(`/sources/${id}`),
     listScrapeRuns: (limit = 8) =>
       fetchApi<Array<Record<string, unknown>>>(`/sources/scrape-runs/latest?limit=${limit}`),
+    listChannelIntel: (params?: { forward_enabled?: boolean; pool_key?: string; limit?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.forward_enabled != null) q.set("forward_enabled", String(params.forward_enabled));
+      if (params?.pool_key) q.set("pool_key", params.pool_key);
+      q.set("limit", String(params?.limit ?? 200));
+      return fetchApi<Array<Record<string, unknown>>>(`/sources/channel-intel?${q.toString()}`);
+    },
     listSourceScrapeRuns: (sourceId: number, limit = 20) =>
       fetchApi<Array<Record<string, unknown>>>(`/sources/${sourceId}/scrape-runs?limit=${limit}`),
     create: (body: {
@@ -957,10 +1084,16 @@ export const api = {
           module: string;
           username?: string;
           status: string;
-          pid?: number | null;
           adapter?: string;
         }
       >;
+      stack?: {
+        available?: boolean;
+        enabled_up?: number;
+        enabled?: number;
+        profile?: string;
+        services?: Array<{ id: string; title: string; running: boolean; status: string }>;
+      };
       format_engine: {
         settings: SecretarySettingsEffective;
         user_contexts_total: number;
@@ -968,6 +1101,15 @@ export const api = {
         knowledge_chunks_active: number;
       };
     }>("/automation/overview"),
+    stackStatus: () =>
+      fetchApi<{
+        ok?: boolean;
+        available?: boolean;
+        enabled_up?: number;
+        enabled?: number;
+        profile?: string;
+        services?: Array<{ id: string; title: string; running: boolean; status: string }>;
+      }>("/ops/stack-status"),
   },
   subscriptions: {
     list: (status?: string) =>
@@ -982,6 +1124,103 @@ export const api = {
         cancelled: number;
         revenue_stars: number;
       }>("/analytics/subscriptions"),
+    incomeSummary: (opts?: { days?: number; backfill?: boolean }) => {
+      const p = new URLSearchParams();
+      if (opts?.days != null) p.set("days", String(opts.days));
+      if (opts?.backfill === false) p.set("backfill", "false");
+      const q = p.toString();
+      return fetchApi<{
+        ok: boolean;
+        scope: string;
+        range_days: number | null;
+        totals: {
+          usd_cents: number;
+          usd: number;
+          stars: number;
+          entry_count: number;
+          internal_usd: number;
+          external_usd: number;
+        };
+        by_source: Array<{
+          source: string;
+          label: string;
+          usd_cents: number;
+          stars: number;
+          count: number;
+          category: string;
+        }>;
+        stars_usd_rate: number;
+        latest_earned_at: string | null;
+        latest_entry_at: string | null;
+      }>(q ? `/analytics/income/summary?${q}` : "/analytics/income/summary");
+    },
+    incomeEntries: (opts?: { days?: number; source?: string; limit?: number; offset?: number }) => {
+      const p = new URLSearchParams();
+      if (opts?.days != null) p.set("days", String(opts.days));
+      if (opts?.source) p.set("source", opts.source);
+      if (opts?.limit != null) p.set("limit", String(opts.limit));
+      if (opts?.offset != null) p.set("offset", String(opts.offset));
+      const q = p.toString();
+      return fetchApi<{
+        items: Array<{
+          id: number;
+          source: string;
+          source_label: string | null;
+          amount_minor: number;
+          currency: string;
+          amount_usd_cents: number;
+          amount_usd: number;
+          earned_at: string | null;
+          sync_kind: string;
+          external_ref: string | null;
+          created_at: string | null;
+        }>;
+        total: number;
+        limit: number;
+        offset: number;
+      }>(q ? `/analytics/income/entries?${q}` : "/analytics/income/entries");
+    },
+    incomeManual: (body: {
+      source: string;
+      amount_usd: number;
+      source_label?: string;
+      period_key?: string;
+      notes?: string;
+      promo_affiliate_link_id?: number;
+    }) =>
+      fetchApi<{ ok: boolean; idempotent?: boolean; id?: number; error?: string }>(
+        "/analytics/income/manual",
+        { method: "POST", body: JSON.stringify(body) }
+      ),
+    incomeSync: (body?: { sources?: string[]; headed?: boolean }) =>
+      fetchApi<{
+        ok: boolean;
+        results: Array<{
+          ok?: boolean;
+          source?: string;
+          error?: string;
+          skipped?: boolean;
+          delta_usd?: number;
+        }>;
+        synced_at: string;
+      }>("/analytics/income/sync", {
+        method: "POST",
+        body: JSON.stringify(body ?? {}),
+      }),
+    incomeAffiliates: () =>
+      fetchApi<{
+        ok: boolean;
+        count: number;
+        items: Array<{
+          id: number;
+          label: string;
+          url: string;
+          payout_kind: string;
+          last_usd_cents: number;
+          last_earned_at: string | null;
+          last_sync_kind: string | null;
+        }>;
+      }>("/analytics/income/affiliates"),
     postEvents: (opts?: { limit?: number; offset?: number }) => {
       const p = new URLSearchParams();
       if (opts?.limit != null) p.set("limit", String(opts.limit));
@@ -1023,6 +1262,219 @@ export const api = {
         by_channel: Array<{ channel_id: number; channel_name: string; count: number }>;
       }>(`/analytics/post-events/summary${q}`);
     },
+    deliveries: (opts?: {
+      days?: number;
+      limit?: number;
+      offset?: number;
+      scheduled_post_id?: number;
+      channel_id?: number;
+    }) => {
+      const p = new URLSearchParams();
+      if (opts?.days != null) p.set("days", String(opts.days));
+      if (opts?.limit != null) p.set("limit", String(opts.limit));
+      if (opts?.offset != null) p.set("offset", String(opts.offset));
+      if (opts?.scheduled_post_id != null) p.set("scheduled_post_id", String(opts.scheduled_post_id));
+      if (opts?.channel_id != null) p.set("channel_id", String(opts.channel_id));
+      const q = p.toString();
+      return fetchApi<{
+        range_days: number;
+        total: number;
+        limit: number;
+        offset: number;
+        timezone: string;
+        items: Array<{
+          id: number;
+          created_at: string | null;
+          event_type: string;
+          channel_id: number | null;
+          channel_name: string | null;
+          scheduled_post_id: number | null;
+          pool_id: number | null;
+          scheduler_name: string | null;
+          telegram_message_id: number | null;
+          caption_slot_index: number | null;
+          posted_hour_local: number | null;
+          views_latest: number | null;
+          views_peak: number | null;
+          forwards_latest: number | null;
+        }>;
+      }>(q ? `/analytics/deliveries?${q}` : "/analytics/deliveries");
+    },
+    refreshDeliveryViews: (limit?: number) => {
+      const q = limit != null ? `?limit=${limit}` : "";
+      return fetchApi<{ ok: boolean; updated?: number; checked?: number; error?: string }>(
+        `/analytics/deliveries/refresh-views${q}`,
+        { method: "POST" }
+      );
+    },
+    viewsByHour: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        range_days: number;
+        timezone: string;
+        by_hour: Array<{
+          hour_local: number;
+          post_count: number;
+          avg_views: number | null;
+          total_views: number;
+          max_views: number | null;
+        }>;
+        top_hours_local: number[];
+        suggested_peak_hours_et: Array<{ start: number; end: number }>;
+        note: string;
+      }>(`/analytics/deliveries/views-by-hour${q}`);
+    },
+    captionSlotViews: (scheduledPostId: number, days?: number) => {
+      const p = new URLSearchParams({ scheduled_post_id: String(scheduledPostId) });
+      if (days != null) p.set("days", String(days));
+      return fetchApi<{
+        scheduled_post_id: number;
+        scheduler_name: string | null;
+        caption_variation_count: number;
+        slots: Array<{
+          caption_slot_index: number;
+          send_count: number;
+          avg_views: number | null;
+          max_views: number | null;
+        }>;
+      }>(`/analytics/deliveries/caption-slots?${p}`);
+    },
+    growthAttributionSummary: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        range_days: number;
+        timezone: string;
+        totals_by_type: Record<string, number>;
+        subscription_stars_total: number;
+        top_conversion_hours_local: Array<{ hour: number; count: number }>;
+      }>(`/analytics/growth-attribution/summary${q}`);
+    },
+    signalsStatus: () =>
+      fetchApi<{
+        enabled: boolean;
+        flywheel_growth_tick: boolean;
+        /** @deprecated use flywheel_growth_tick */
+        openclaw_growth_tick?: boolean;
+        lookback_days: number;
+        thresholds: Record<string, number>;
+        last_tick_unix: number | null;
+        last_digest: string | null;
+      }>("/analytics/signals/status"),
+    signals: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        ok: boolean;
+        signal_count: number;
+        network_avg_views: number;
+        timezone: string;
+        signals: Array<{
+          signal_type: string;
+          strength: number;
+          confidence: string;
+          recommendation: string;
+        }>;
+      }>(`/analytics/signals${q}`);
+    },
+    signalsTick: (opts?: { refreshViews?: boolean; pushInbox?: boolean }) => {
+      const p = new URLSearchParams();
+      if (opts?.refreshViews === false) p.set("refresh_views", "false");
+      if (opts?.pushInbox === false) p.set("push_inbox", "false");
+      const q = p.toString();
+      return fetchApi<{
+        ok: boolean;
+        digest_changed: boolean;
+        markdown?: string;
+        report?: { signals: unknown[] };
+      }>(q ? `/analytics/signals/tick?${q}` : "/analytics/signals/tick", { method: "POST" });
+    },
+    tbccFlywheelTick: (opsLimit?: number) => {
+      const q = opsLimit != null ? `?ops_limit=${opsLimit}` : "";
+      return fetchApi<{ ok: boolean; ops?: unknown; growth?: unknown }>(
+        `/analytics/tbcc-flywheel/tick${q}`,
+        { method: "POST" }
+      );
+    },
+    /** @deprecated use tbccFlywheelTick */
+    openclawTick: (opsLimit?: number) => {
+      const q = opsLimit != null ? `?ops_limit=${opsLimit}` : "";
+      return fetchApi<{ ok: boolean; ops?: unknown; growth?: unknown }>(
+        `/analytics/openclaw/tick${q}`,
+        { method: "POST" }
+      );
+    },
+    industryBenchmarks: (topicType?: string) => {
+      const q = topicType ? `?topic_type=${encodeURIComponent(topicType)}` : "";
+      return fetchApi<{
+        items: Array<{
+          id: number;
+          slug: string;
+          title: string;
+          topic_type: string;
+          summary: string;
+          demand_index: number | null;
+          source_url: string | null;
+          source_label: string | null;
+        }>;
+      }>(`/analytics/industry-benchmarks${q}`);
+    },
+    seedIndustryIntelligence: () =>
+      fetchApi<{
+        benchmarks: { ok: boolean; upserted: number; error?: string };
+        iui_corpus: { ok: boolean; chunks: number; error?: string };
+      }>("/analytics/industry-benchmarks/seed", { method: "POST" }),
+    ga4HubDeviceCountry: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        ok: boolean;
+        configured: boolean;
+        lookback_days?: number;
+        rows: Array<{
+          device_category: string;
+          country: string;
+          sessions: number;
+          active_users: number;
+        }>;
+        error?: string;
+      }>(`/analytics/ga4/hub-device-country${q}`);
+    },
+    categoryDemand: (opts?: { limit?: number; gapThreshold?: number }) => {
+      const p = new URLSearchParams();
+      if (opts?.limit != null) p.set("limit", String(opts.limit));
+      if (opts?.gapThreshold != null) p.set("gap_threshold", String(opts.gapThreshold));
+      const q = p.toString();
+      return fetchApi<{
+        ok: boolean;
+        seeded: boolean;
+        message?: string;
+        total_media: number;
+        benchmark_count: number;
+        gap_threshold: number;
+        rows: Array<{
+          slug: string;
+          title: string;
+          demand_index: number;
+          supply_count: number;
+          supply_pct: number;
+          gap_score: number;
+          status: string;
+          in_clip_catalog: boolean;
+          summary: string;
+        }>;
+        gaps: Array<{
+          slug: string;
+          title: string;
+          demand_index: number;
+          supply_count: number;
+          gap_score: number;
+        }>;
+        top_opportunities: Array<{
+          slug: string;
+          title: string;
+          demand_index: number;
+          gap_score: number;
+        }>;
+      }>(q ? `/analytics/category-demand?${q}` : "/analytics/category-demand");
+    },
   },
   growthSettings: {
     get: () =>
@@ -1037,6 +1489,114 @@ export const api = {
       fetchApi<{ ok: boolean; task_id: string; message: string }>("/growth-settings/send-bulletin-now", {
         method: "POST",
       }),
+  },
+  growthHub: {
+    status: () =>
+      fetchApi<{
+        bulletin_preview: string;
+        bulletin_full_chars: number;
+        schedulers: Array<{
+          key: string;
+          channel_id?: number;
+          scheduler_id?: number;
+          ok: boolean;
+          variations?: number;
+          reason?: string;
+        }>;
+        pinned_bulletin_id: number | null;
+        storage_hub: { identifier: string; invite: string };
+      }>("/growth-hub/status"),
+    syncSchedulers: () =>
+      fetchApi<{ ok: boolean; bulletin_has_packs: boolean; bulletin_has_goon: boolean; channels: unknown[] }>(
+        "/growth-hub/sync-schedulers",
+        { method: "POST" }
+      ),
+    syncAffiliateRotation: () =>
+      fetchApi<{
+        ok: boolean;
+        bulletin_has_partners?: boolean;
+        affiliate?: { active_rows: number; by_placement: Record<string, number>; cursors: number };
+        channels?: unknown[];
+      }>("/growth-hub/sync-affiliate-rotation", { method: "POST" }),
+    broadcastBulletin: () =>
+      fetchApi<{ ok: boolean; queued: unknown[]; count: number }>("/growth-hub/broadcast-bulletin", {
+        method: "POST",
+      }),
+    storageDeposit: (body?: {
+      limit?: number;
+      topic_keys?: string[];
+      media_types?: string;
+      content_lanes_only?: boolean;
+    }) =>
+      fetchApi<{
+        ok: boolean;
+        limit_per_topic: number;
+        jobs: Array<{ id?: number; network_key?: string; pool_name?: string; topic_title?: string }>;
+        unmatched_topics: Array<{ title: string; thread_id: number }>;
+        matched_count: number;
+        error?: string;
+      }>("/growth-hub/storage-deposit", {
+        method: "POST",
+        body: JSON.stringify(body ?? {}),
+      }),
+    livenessStatus: () =>
+      fetchApi<{
+        intervals: Record<string, number>;
+        main_pulses: Array<{
+          name: string;
+          id?: number;
+          interval_minutes?: number;
+          variations?: number;
+          installed?: boolean;
+        }>;
+        command_schedulers: number;
+        pools_with_backup_post: number;
+        subscriber_count_real: number;
+        first_sub_celebrated: boolean;
+      }>("/growth-hub/liveness-status"),
+    applyLiveness: () =>
+      fetchApi<{ ok: boolean; intervals: Record<string, number>; subscriber_count_real: number }>(
+        "/growth-hub/apply-liveness",
+        { method: "POST" }
+      ),
+    celebrateFirstSub: () =>
+      fetchApi<{ ok: boolean; skipped?: boolean; post_id?: number }>("/growth-hub/celebrate-first-sub", {
+        method: "POST",
+      }),
+    feedRhythm: () => fetchApi<Record<string, unknown>>("/growth-hub/feed-rhythm"),
+    scheduleDrop: (body: { lane_key: string; drop_at: string; message_thread_id?: number }) =>
+      fetchApi<{ ok: boolean; session_id?: number }>("/growth-hub/schedule-drop", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    topicMirror: (body?: { limit_per_pair?: number; topic_keys?: string[] }) =>
+      fetchApi<{ ok: boolean; matched_count?: number; jobs?: unknown[] }>("/growth-hub/topic-mirror", {
+        method: "POST",
+        body: JSON.stringify(body ?? { limit_per_pair: 8 }),
+      }),
+    topicMirrorStatus: () =>
+      fetchApi<{ enabled: boolean; liveness_random_topics: boolean; pairs: unknown[] }>(
+        "/growth-hub/topic-mirror"
+      ),
+  },
+  companion: {
+    ops: () =>
+      fetchApi<{
+        bot_username: string;
+        token_configured: boolean;
+        image_provider: string;
+        undress_balance: number | null;
+        webhook_ok: boolean;
+        webhook_detail: string;
+        pending_jobs: number;
+        llm_provider: string;
+        llm_model: string;
+        llm_configured: boolean;
+        gate_enabled: boolean;
+        free_trial_photos: number;
+        stars_enabled: boolean;
+        stars_per_photo: number;
+      }>("/companion/ops"),
   },
   paymentBotSettings: {
     get: () =>
@@ -1072,7 +1632,11 @@ export const api = {
         fetchApi<{ effective: SecretarySettingsEffective; overrides: Record<string, unknown> }>(
           "/secretary-settings"
         ),
-      patch: (body: Partial<SecretarySettingsEffective>) =>
+      patch: (body: Partial<SecretarySettingsEffective> & {
+        llm_api_key?: string;
+        clear_llm_api_key?: boolean;
+        clear_system_prompt?: boolean;
+      }) =>
         fetchApi<{ ok: boolean; effective: SecretarySettingsEffective; overrides: Record<string, unknown> }>(
           "/secretary-settings",
           { method: "PATCH", body: JSON.stringify(body) }
@@ -1088,6 +1652,16 @@ export const api = {
           context_suffix_preview: string;
           rag_hits: Array<{ id: number; title: string | null; body: string; score: number }>;
         }>("/secretary-settings/test-reply", { method: "POST", body: JSON.stringify(body) }),
+      testLlm: () =>
+        fetchApi<{
+          ok: boolean;
+          stage?: string;
+          message?: string;
+          endpoint?: string;
+          model?: string;
+          latency_ms?: number;
+          reply_preview?: string;
+        }>("/secretary-settings/test-llm", { method: "POST" }),
     },
     contexts: {
       list: (params?: { q?: string; phase?: string; limit?: number; offset?: number }) => {
@@ -1129,6 +1703,10 @@ export const api = {
         fetchApi<{ deleted: boolean; id: number }>(`/secretary-knowledge/${id}`, { method: "DELETE" }),
       importDocs: () =>
         fetchApi<{ files: number; chunks: number; error?: string }>("/secretary-knowledge/import-docs", {
+          method: "POST",
+        }),
+      importIuiCorpus: () =>
+        fetchApi<{ ok: boolean; chunks: number; error?: string }>("/secretary-knowledge/import-iui-corpus", {
           method: "POST",
         }),
       reindexEmbeddings: () =>
@@ -1268,6 +1846,30 @@ export const api = {
           { method: "POST", body: JSON.stringify(body ?? {}) }
         ),
     },
+    listJobs: () =>
+      fetchApi<{
+        jobs: Array<{
+          job_id: string;
+          cols: number;
+          rows: number;
+          row_strips?: Array<{
+            row: number;
+            preview_url: string;
+            saved_path?: string | null;
+            export_filename: string;
+          }>;
+        }>;
+      }>("/emoji-factory/jobs"),
+    saveRowDivider: (jobId: string, row: number) =>
+      fetchApi<{ ok: boolean; path: string; filename: string }>(
+        `/emoji-factory/jobs/${encodeURIComponent(jobId)}/rows/${row}/divider-png`,
+        { method: "POST" }
+      ),
+    importRowDivider: (jobId: string, row: number) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>(
+        `/emoji-factory/jobs/${encodeURIComponent(jobId)}/rows/${row}/import-divider`,
+        { method: "POST" }
+      ),
   },
   telegramCustomEmoji: {
     listPresets: () => fetchApi<Array<{ id: number; title: string; html_fragment: string; source_note?: string | null }>>("/telegram-custom-emoji/presets"),
@@ -1397,6 +1999,74 @@ export const api = {
         `/gallery-send-promo/images/${encodeURIComponent(imageId)}`,
         { method: "DELETE" }
       ),
+  },
+  mainChannelDivider: {
+    get: () =>
+      fetchApi<{
+        settings: {
+          enabled: boolean;
+          rotate_images: boolean;
+          apply_in_topics: boolean;
+          active_image_id: string | null;
+          active_image: { id: string; url: string; label?: string; filename?: string } | null;
+          images: Array<{ id: string; url: string; label?: string; filename?: string }>;
+          main_group_identifier: string;
+        };
+      }>("/main-channel-divider"),
+    patch: (body: {
+      enabled?: boolean;
+      rotate_images?: boolean;
+      apply_in_topics?: boolean;
+      active_image_id?: string | null;
+    }) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>("/main-channel-divider", {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    uploadImage: (file: File, label?: string) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (label) fd.append("label", label);
+      return fetchApi<{ ok: boolean; image: Record<string, unknown>; settings: Record<string, unknown> }>(
+        "/main-channel-divider/images",
+        { method: "POST", body: fd }
+      );
+    },
+    deleteImage: (imageId: string) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>(
+        `/main-channel-divider/images/${encodeURIComponent(imageId)}`,
+        { method: "DELETE" }
+      ),
+    listEmojiFactorySources: () =>
+      fetchApi<{
+        jobs: Array<{
+          job_id: string;
+          cols: number;
+          rows: number;
+          tile_px?: number;
+          tile_count: number;
+          has_normalized: boolean;
+          normalized_preview_url: string;
+          tiles: Array<{
+            tile: string;
+            row?: number;
+            col?: number;
+            emoji?: string;
+            preview_url: string;
+          }>;
+          row_strips?: Array<{
+            row: number;
+            preview_url: string;
+            saved_path?: string | null;
+            export_filename: string;
+          }>;
+        }>;
+      }>("/main-channel-divider/emoji-factory-sources"),
+    importFromEmojiFactory: (body: { job_id: string; tile?: string; row?: number; label?: string }) =>
+      fetchApi<{ ok: boolean; settings: Record<string, unknown> }>("/main-channel-divider/import-from-emoji-factory", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
   },
   zipBundle: {
     get: () =>
@@ -1573,6 +2243,11 @@ export const api = {
         method: "POST",
         body: "{}",
       }),
+    cancel: (orderId: number) =>
+      fetchApi<Record<string, unknown>>(`/external-payment-orders/${orderId}/cancel`, {
+        method: "POST",
+        body: "{}",
+      }),
   },
   llm: {
     status: () =>
@@ -1687,6 +2362,16 @@ export const api = {
       fetchApi<{ status: string; run_id: number; celery_task_id?: string }>(`/jobs/scrape/${sourceId}`, {
         method: "POST",
       }),
+    triggerMegaScrape: (body: {
+      chat_id?: number;
+      message_limit?: number;
+      direct_only?: boolean;
+      execute?: boolean;
+    }) =>
+      fetchApi<{ status: string; run_id: number; run_kind?: string; celery_task_id?: string }>(
+        "/jobs/mega-scrape",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+      ),
     triggerPost: (poolId: number) =>
       fetchApi<{ status: string }>(`/jobs/post/${poolId}`, { method: "POST" }),
   },
@@ -1929,5 +2614,49 @@ export const api = {
           body: JSON.stringify({ pageMenu }),
         }
       ),
+  },
+  k2s: {
+    status: () =>
+      fetchApi<{
+        enabled: boolean;
+        configured: boolean;
+        mirror_enabled: boolean;
+        lanes: Array<{
+          lane: string;
+          folder_id: string | null;
+          folder_name: string | null;
+          env_var: string;
+          network_channel: string | null;
+        }>;
+      }>("/k2s/status"),
+    ensureFolders: () =>
+      fetchApi<{ ok: boolean; folders: Record<string, string | null>; lanes: unknown[] }>(
+        "/k2s/ensure-folders",
+        { method: "POST" }
+      ),
+    library: (lane = "packs", limit = 50, offset = 0) =>
+      fetchApi<{
+        lane: string;
+        folder_id: string;
+        count: number;
+        files: Array<{
+          id: string;
+          name: string;
+          size: number;
+          is_folder: boolean;
+          is_available: boolean;
+          public_url: string | null;
+        }>;
+      }>(`/k2s/library?lane=${encodeURIComponent(lane)}&limit=${limit}&offset=${offset}`),
+    checkUrl: (url: string) =>
+      fetchApi<{ ok: boolean; host_kind?: string; reason?: string; file_id?: string }>(
+        "/k2s/check-url",
+        { method: "POST", body: JSON.stringify({ url }) }
+      ),
+    mirror: (modifierId: number, lane?: string) =>
+      fetchApi<Record<string, unknown>>("/k2s/mirror", {
+        method: "POST",
+        body: JSON.stringify({ modifier_id: modifierId, lane: lane || undefined }),
+      }),
   },
 };

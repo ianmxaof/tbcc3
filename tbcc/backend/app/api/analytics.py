@@ -3,7 +3,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,20 @@ from app.models.subscription import Subscription
 from app.models.subscription_plan import SubscriptionPlan
 
 router = APIRouter()
+
+
+class ManualIncomeBody(BaseModel):
+    source: str = Field(..., max_length=32)
+    amount_usd: float = Field(..., gt=0)
+    source_label: str | None = Field(default=None, max_length=256)
+    period_key: str | None = Field(default=None, max_length=64)
+    notes: str | None = Field(default=None, max_length=512)
+    promo_affiliate_link_id: int | None = None
+
+
+class IncomeSyncBody(BaseModel):
+    sources: list[str] | None = None
+    headed: bool = False
 
 
 @router.get("/subscriptions")
@@ -52,6 +67,79 @@ def subscription_analytics(db: Session = Depends(get_db)):
         "cancelled": cancelled,
         "revenue_stars": revenue_stars,
     }
+
+
+@router.get("/income/summary")
+def income_summary_route(
+    db: Session = Depends(get_db),
+    days: int | None = Query(None, ge=1, le=3660),
+    backfill: bool = Query(True),
+):
+    """Unified internal income rollup (Stars subs, crypto/manual subs, companion Stars)."""
+    from app.services.income_ledger import income_summary
+
+    return income_summary(db, days=days, backfill=backfill)
+
+
+@router.post("/income/backfill")
+def income_backfill_route(db: Session = Depends(get_db)):
+    """Idempotently seed ledger from existing subscriptions."""
+    from app.services.income_ledger import backfill_subscription_income
+
+    return backfill_subscription_income(db)
+
+
+@router.get("/income/sources")
+def income_sources_route():
+    from app.services.income_ledger import income_source_catalog
+
+    return income_source_catalog()
+
+
+@router.get("/income/entries")
+def income_entries_route(
+    db: Session = Depends(get_db),
+    days: int | None = Query(None, ge=1, le=3660),
+    source: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    from app.services.income_ledger import list_income_entries
+
+    return list_income_entries(db, days=days, source=source, limit=limit, offset=offset)
+
+
+@router.post("/income/manual")
+def income_manual_route(body: ManualIncomeBody, db: Session = Depends(get_db)):
+    from app.services.income_ledger import record_manual_income
+
+    try:
+        return record_manual_income(
+            db,
+            source=body.source,
+            amount_usd=body.amount_usd,
+            source_label=body.source_label,
+            period_key=body.period_key,
+            notes=body.notes,
+            promo_affiliate_link_id=body.promo_affiliate_link_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/income/sync")
+def income_sync_route(body: IncomeSyncBody | None = None, db: Session = Depends(get_db)):
+    from app.services.income_sync import sync_external_income
+
+    payload = body or IncomeSyncBody()
+    return sync_external_income(db, sources=payload.sources, headed=payload.headed)
+
+
+@router.get("/income/affiliates")
+def income_affiliates_route(db: Session = Depends(get_db)):
+    from app.services.income_sync import affiliate_registry_status
+
+    return affiliate_registry_status(db)
 
 
 def _day_key(dt: datetime | None) -> str:
@@ -286,7 +374,7 @@ def growth_attribution_events(
 
 @router.get("/signals/status")
 def growth_signals_status_route():
-    """OpenClaw / dashboard: growth signal engine config + last tick."""
+    """Flywheel / dashboard: growth signal engine config + last tick."""
     from app.services.content_signals import growth_signals_status
 
     return growth_signals_status()
@@ -310,7 +398,7 @@ def growth_signals_tick(
     push_inbox: bool = Query(True),
 ):
     """
-    OpenClaw growth tick: refresh Telethon views → rank signals → inbox digest on change.
+    Flywheel growth tick: refresh Telethon views → rank signals → inbox digest on change.
     Analytics lane only (no instant DM).
     """
     from app.services.content_signals import tick_growth_signals
@@ -331,13 +419,50 @@ def growth_signals_markdown(
     return PlainTextResponse(format_signals_markdown(report), media_type="text/markdown; charset=utf-8")
 
 
+@router.get("/industry-benchmarks")
+def list_industry_benchmarks_route(
+    db: Session = Depends(get_db),
+    topic_type: str | None = Query(None),
+):
+    from app.services.industry_intelligence import list_industry_benchmarks
+
+    return {"items": list_industry_benchmarks(db, topic_type=topic_type)}
+
+
+@router.post("/industry-benchmarks/seed")
+def seed_industry_benchmarks_route(db: Session = Depends(get_db)):
+    from app.services.industry_intelligence import import_iui_corpus, seed_industry_benchmarks
+
+    bench = seed_industry_benchmarks(db)
+    rag = import_iui_corpus(db)
+    return {"benchmarks": bench, "iui_corpus": rag}
+
+
+@router.get("/ga4/hub-device-country")
+def ga4_hub_device_country(days: int = Query(None, ge=1, le=30)):
+    from app.services.ga4_hub_analytics import fetch_device_country_report
+
+    return fetch_device_country_report(days=days)
+
+
+@router.get("/category-demand")
+def category_demand_crosswalk(
+    db: Session = Depends(get_db),
+    limit: int = Query(40, ge=5, le=100),
+    gap_threshold: float = Query(15.0, ge=1.0, le=50.0),
+):
+    from app.services.category_demand_crosswalk import compute_category_demand_crosswalk
+
+    return compute_category_demand_crosswalk(db, limit=limit, gap_threshold=gap_threshold)
+
+
 @router.post("/openclaw/tick")
 def openclaw_unified_tick_deprecated(
     db: Session = Depends(get_db),
     ops_limit: int = Query(1, ge=0, le=5),
     growth: bool = Query(True),
 ):
-    """Deprecated alias — use POST /analytics/tbcc-flywheel/tick."""
+    """Deprecated alias — internal TBCC flywheel tick, not the OpenClaw gateway. Use POST /analytics/tbcc-flywheel/tick."""
     return tbcc_flywheel_unified_tick(db=db, ops_limit=ops_limit, growth=growth)
 
 

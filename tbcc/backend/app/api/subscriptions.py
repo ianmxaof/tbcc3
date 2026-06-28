@@ -160,6 +160,41 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
     db.commit()
     db.refresh(sub)
 
+    try:
+        from app.services.income_ledger import record_subscription_income
+
+        record_subscription_income(
+            db,
+            sub,
+            plan,
+            payment_method=payment_method,
+            charge_id=charge_id,
+            amount_usd_override=(
+                float(data["income_amount_usd"])
+                if data.get("income_amount_usd") is not None
+                else None
+            ),
+            external_ref=(str(data.get("reference_code") or "").strip() or None),
+        )
+    except Exception:
+        pass
+
+    try:
+        from app.services.growth_attribution import EVENT_SUBSCRIPTION_CREATED, record_growth_attribution
+
+        record_growth_attribution(
+            db,
+            event_type=EVENT_SUBSCRIPTION_CREATED,
+            telegram_user_id=int(telegram_user_id),
+            amount_stars=int(plan.price_stars or 0),
+            plan_id=int(plan.id),
+            channel_id=int(plan.channel_id) if plan.channel_id else None,
+            extra={"payment_method": payment_method},
+        )
+        db.commit()
+    except Exception:
+        pass
+
     # Enqueue task to add user to channel (premium group or pack delivery channel)
     if plan.channel_id:
         from app.workers.grant_access_worker import grant_channel_access
@@ -172,26 +207,53 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         _grant_referrer_reward(db, int(referrer_id), reward_days, plan_id)
         db.commit()
 
+    perk_result = None
     if not is_bundle:
         _check_milestones(db)
         from app.workers.milestone_worker import broadcast_progress
 
         broadcast_progress.delay()
+        try:
+            from app.services.aof_vip_perks import grant_vip_subscription_perks
+
+            perk_result = grant_vip_subscription_perks(
+                db,
+                int(telegram_user_id),
+                int(plan.id),
+                charge_id=charge_id,
+            )
+        except Exception:
+            perk_result = None
+        if active_subscription_subscriber_count(db) == 1:
+            from app.services.aof_network_liveness import queue_first_subscription_celebration
+
+            try:
+                queue_first_subscription_celebration(db)
+            except Exception:
+                pass  # never block fulfillment on celebration copy
 
     notify_sale_fulfilled(
         telegram_user_id=int(telegram_user_id),
         plan_name=str(plan.name or "Product"),
         product_type=str(plan.product_type or ""),
         payment_method=str(payment_method or ""),
+        amount_stars=int(plan.price_stars or 0),
+        bot_section=str(getattr(plan, "bot_section", None) or ""),
+        plan_id=int(plan.id),
+        external_order_id=int(data["external_order_id"]) if data.get("external_order_id") else None,
+        reference_code=(str(data.get("reference_code") or "").strip() or None),
     )
 
-    return _build_subscription_api_result(
+    result = _build_subscription_api_result(
         db,
         sub,
         plan,
         referrer_rewarded=bool(referrer_id) and not is_bundle,
         referrer_id_for_response=int(referrer_id) if referrer_id and not is_bundle else None,
     )
+    if not is_bundle and perk_result:
+        result["vip_perks"] = perk_result
+    return result
 
 
 @router.post("/")
