@@ -11,7 +11,8 @@ Use when monitoring content performance, spotting growth opportunities, and deli
 ## Every growth turn
 
 1. Call `tbcc_health` — if backend down, report P0 and stop.
-2. Call `analytics_content_performance` with `run_tick=true` and `days=14`.
+2. Call `growth_signals_eligibility` (MCP) or `GET /analytics/signals/eligibility` — if `eligible=false`, send **one line** with `reason` and **stop** (no tick, no Telethon, no proposals).
+3. Call `analytics_content_performance` with `run_tick=true` and `days=14`.
 3. Deliver the **full markdown report** to the user on Telegram:
    - Start with a 2-sentence executive summary (top opportunity + suggested action).
    - Then paste ranked signals with recommendations unchanged.
