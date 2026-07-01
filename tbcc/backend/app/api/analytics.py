@@ -142,6 +142,21 @@ def income_affiliates_route(db: Session = Depends(get_db)):
     return affiliate_registry_status(db)
 
 
+@router.get("/income/poll-status")
+def income_poll_status_route():
+    from app.services.income_sync import get_income_poll_status
+
+    return get_income_poll_status()
+
+
+@router.post("/income/poll")
+def income_poll_trigger_route(db: Session = Depends(get_db)):
+    """On-demand light poll (same as Celery Beat task)."""
+    from app.services.income_sync import run_income_poll
+
+    return run_income_poll(db, light=True)
+
+
 def _day_key(dt: datetime | None) -> str:
     if not dt:
         return ""
@@ -417,6 +432,32 @@ def growth_signals_markdown(
     from fastapi.responses import PlainTextResponse
 
     return PlainTextResponse(format_signals_markdown(report), media_type="text/markdown; charset=utf-8")
+
+
+@router.get("/signals/proposals")
+def growth_signal_proposals_route(
+    db: Session = Depends(get_db),
+    days: int = Query(None, ge=3, le=90),
+):
+    """Pending growth reaction proposals (observe-only drafts, operator reviews).
+
+    No auto-execution: each proposal carries suggested MCP/API follow-up params
+    for a human (or approved OpenClaw turn) to act on.
+    """
+    from app.services.growth_reaction import list_proposals
+
+    return list_proposals(db, days=days)
+
+
+@router.post("/signals/proposals/{proposal_id}/dismiss")
+def dismiss_growth_signal_proposal_route(proposal_id: str):
+    """Dismiss a proposal so it stops surfacing (survives signal recompute)."""
+    from app.services.growth_reaction import dismiss_proposal
+
+    result = dismiss_proposal(proposal_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "dismiss failed")
+    return result
 
 
 @router.get("/industry-benchmarks")

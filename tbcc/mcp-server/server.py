@@ -440,6 +440,33 @@ def analytics_content_performance(days: int = 14, run_tick: bool = True) -> str:
 
 
 @mcp.tool()
+def growth_signal_proposals(days: int = 14) -> str:
+    """
+    Pending growth reaction proposals — draft actions derived from top signals.
+    Observe-only: each proposal has an action_kind + params for the operator to
+    approve. NEVER execute a proposal without explicit operator OK; report only.
+    """
+    days = max(3, min(90, days))
+    out = _request("GET", "/analytics/signals/proposals", params={"days": days})
+    proposals = out.get("proposals") or []
+    if not proposals:
+        return "No pending growth proposals (no strong signals, or all dismissed)."
+    lines = [f"# Growth reaction proposals ({len(proposals)} pending)", ""]
+    for p in proposals:
+        lines.append(
+            f"- `{p.get('id')}` [{p.get('confidence')}] {p.get('signal_type')} "
+            f"-> {p.get('action_kind')}"
+        )
+        lines.append(f"  {p.get('recommendation')}")
+        note = (p.get("action_params") or {}).get("suggested_note")
+        if note:
+            lines.append(f"  action: {note}")
+    lines.append("")
+    lines.append("Approval required before acting. To drop one: POST /analytics/signals/proposals/{id}/dismiss")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def tbcc_flywheel_tick(ops_limit: int = 1) -> str:
     """TBCC flywheel tick: route critical ops + refresh growth signals. Returns JSON."""
     out = _request("POST", "/analytics/tbcc-flywheel/tick", params={"ops_limit": ops_limit})
