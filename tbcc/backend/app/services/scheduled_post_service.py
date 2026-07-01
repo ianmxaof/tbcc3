@@ -6,7 +6,7 @@ import os
 import random
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from telethon import TelegramClient
 from telethon.errors.rpcerrorlist import ChatRestrictedError
@@ -25,6 +25,7 @@ from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.content_pool import ContentPool
 from app.models.channel import Channel
 from app.models.subscription_plan import SubscriptionPlan
+from app.services.content_performance import ScheduledSendOutcome
 from app.services.promo_storage import promo_path_from_public_url
 from app.utils.telegram_peer import normalize_telethon_peer_identifier, resolve_poster_peer
 from app.services.telegram_custom_emoji import telethon_message_kwargs
@@ -71,6 +72,7 @@ class CampaignSendResult:
     sent_post_ids: list[int]
     failed_post_ids: list[int]
     first_error: Exception | None = None
+    outcomes: dict[int, ScheduledSendOutcome] = field(default_factory=dict)
 
 
 def _promo_buffers_from_urls(urls: list[str]) -> list[io.BytesIO]:
@@ -113,7 +115,10 @@ def _resolve_variant_sources(post: ScheduledTextPost, slot: int) -> tuple[list[i
             structured = False
 
     variants = post.get_album_variants()
-    if bool(getattr(post, "pool_only_mode", False)) and _post_uses_pool(post):
+    has_pinned_variants = bool(
+        variants and any(v.get("media_ids") or v.get("attachment_urls") for v in variants)
+    )
+    if bool(getattr(post, "pool_only_mode", False)) and _post_uses_pool(post) and not has_pinned_variants:
         return [], [], True
     if not variants:
         mids = post.get_media_ids()
@@ -188,6 +193,12 @@ def _pick_collective_pool_id(db: Session) -> int | None:
 
 def _resolve_effective_pool_id(post: ScheduledTextPost, db: Session) -> int | None:
     if bool(getattr(post, "pool_collective_random", False)):
+        from app.services.aof_feed_rhythm_v2 import is_network_tease_scheduler, pick_network_lane_pool_id
+
+        if is_network_tease_scheduler(post):
+            pid = pick_network_lane_pool_id(db)
+            if pid:
+                return pid
         return _pick_collective_pool_id(db)
     return post.pool_id
 
@@ -305,52 +316,67 @@ def _checkout_deep_link_payload(plan_id: int, referral_code: str | None) -> str 
     return raw
 
 
-def _merge_scheduled_post_buttons(post: ScheduledTextPost, db: Session, buttons_data: list) -> list:
-    """
-    Append optional URL button → TBCC payment bot deep link (same Stars invoice flow as /subscribe).
-    Native Stars UI opens in the user's private chat with the bot after they tap the button — not inside the channel post.
-    """
-    base = list(buttons_data) if buttons_data else []
-    if not bool(getattr(post, "checkout_stars_enabled", False)):
-        return base
-    plan_id = getattr(post, "checkout_stars_plan_id", None)
-    if not plan_id:
-        logger.warning("scheduled post %s: checkout enabled but no checkout_stars_plan_id", getattr(post, "id", "?"))
-        return base
-    bot = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "").strip().lstrip("@")
-    if not bot:
-        logger.warning(
-            "scheduled post %s: Stars checkout enabled but TBCC_PAYMENT_BOT_USERNAME is unset",
-            getattr(post, "id", "?"),
-        )
-        return base
-    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(plan_id)).first()
-    if not plan or plan.is_active is False or int(plan.price_stars or 0) <= 0:
-        logger.warning(
-            "scheduled post %s: checkout plan %s missing, inactive, or has no Stars price",
-            getattr(post, "id", "?"),
-            plan_id,
-        )
-        return base
-    ref = getattr(post, "checkout_referral_code", None)
-    payload = _checkout_deep_link_payload(int(plan_id), ref)
-    if not payload:
-        logger.warning(
-            "scheduled post %s: invalid checkout deep link (plan=%s ref=%r)",
-            getattr(post, "id", "?"),
-            plan_id,
-            ref,
-        )
-        return base
-    url = f"https://t.me/{bot}?start={payload}"
-    label = (getattr(post, "checkout_button_label", None) or "").strip()
-    if not label:
-        stars = int(plan.price_stars or 0)
-        name = (plan.name or "Subscribe").strip()[:36]
-        label = f"{name} — {stars}⭐"
-    if len(label) > 64:
-        label = label[:63] + "…"
-    return base + [{"text": label, "url": url}]
+def _merge_scheduled_post_buttons(
+    post: ScheduledTextPost,
+    db: Session,
+    buttons_data: list,
+    *,
+    allow_inline_checkout: bool = True,
+    checkout_enabled: bool | None = None,
+) -> list:
+    from app.services.aof_vip_checkout import merge_checkout_buttons
+
+    stars_on = checkout_enabled if checkout_enabled is not None else bool(
+        getattr(post, "checkout_stars_enabled", False)
+    )
+    return merge_checkout_buttons(
+        buttons_data,
+        db,
+        checkout_stars_enabled=stars_on,
+        checkout_stars_plan_id=getattr(post, "checkout_stars_plan_id", None),
+        checkout_button_label=getattr(post, "checkout_button_label", None),
+        checkout_referral_code=getattr(post, "checkout_referral_code", None),
+        allow_inline_checkout=allow_inline_checkout,
+    )
+
+
+def _effective_album_media_count(media_items: list, promo_ordered: list[str]) -> int:
+    if media_items:
+        return len(media_items)
+    return len(promo_ordered or [])
+
+
+async def _deliver_checkout_after_scheduled_send(
+    *,
+    channel_identifier: str,
+    db: Session,
+    post: ScheduledTextPost,
+    reply_to_message_id: int | None,
+    message_thread_id: int | None = None,
+) -> None:
+    """Global Pay ⭐ delivery for all checkout-enabled schedulers (channels + main group)."""
+    from app.services.aof_vip_checkout import (
+        checkout_multi_album_followup_enabled,
+        deliver_stars_checkout_bot_followup,
+    )
+
+    if not checkout_multi_album_followup_enabled():
+        return
+    if not getattr(post, "checkout_stars_enabled", False) or not post.checkout_stars_plan_id:
+        return
+    if not reply_to_message_id:
+        return
+
+    await deliver_stars_checkout_bot_followup(
+        channel_identifier,
+        db,
+        plan_id=int(post.checkout_stars_plan_id),
+        reply_to_message_id=int(reply_to_message_id),
+        message_thread_id=message_thread_id,
+        checkout_button_label=getattr(post, "checkout_button_label", None),
+        checkout_referral_code=getattr(post, "checkout_referral_code", None),
+        include_bot_fallback=True,
+    )
 
 
 def _build_reply_markup(buttons_data: list):
@@ -375,8 +401,20 @@ def _build_reply_markup(buttons_data: list):
     return ReplyInlineMarkup(rows=rows)
 
 
-def _send_options(post: ScheduledTextPost) -> dict:
-    if bool(getattr(post, "send_silent", False)):
+def _send_options(
+    post: ScheduledTextPost,
+    *,
+    channel_identifier: str | None = None,
+    had_media: bool = False,
+) -> dict:
+    from app.services.main_group_notifications import resolve_main_group_send_silent
+
+    silent = resolve_main_group_send_silent(
+        channel_identifier=channel_identifier,
+        post_send_silent=bool(getattr(post, "send_silent", False)),
+        had_media=had_media,
+    )
+    if silent:
         return {"silent": True}
     return {}
 
@@ -399,6 +437,32 @@ def _primary_message_from_send(result):
     if isinstance(result, list):
         return result[0] if result else None
     return result
+
+
+async def _ensure_checkout_buttons_on_message(
+    channel_identifier: str,
+    sent_result,
+    buttons_data: list,
+) -> bool:
+    """Telethon often drops URL buttons on re-uploaded pool photos — patch via payment bot."""
+    if not buttons_data:
+        return False
+    msg = _primary_message_from_send(sent_result)
+    mid = getattr(msg, "id", None) if msg else None
+    if not mid:
+        return False
+    from app.services.telegram_bot_markup import attach_inline_keyboard
+
+    peer = normalize_telethon_peer_identifier(channel_identifier)
+    ok = await attach_inline_keyboard(peer, int(mid), buttons_data)
+    if ok:
+        logger.info("checkout buttons attached via Bot API channel=%s msg=%s", peer, mid)
+        return True
+    logger.info(
+        "checkout buttons not attached on msg=%s (Telethon-sent posts need Bot API follow-up)",
+        mid,
+    )
+    return False
 
 
 async def _maybe_pin_after_send(
@@ -514,15 +578,22 @@ async def _execute_telegram_scheduled_send(
             }
             _apply_telethon_html_to_kwargs(file_kw, caption, field="caption")
             if len(send_medias) == 1 and isinstance(send_medias[0], io.BytesIO):
+                # Pass BytesIO directly — pre-uploaded InputFile can drop inline buttons on some Telethon builds.
                 f = send_medias[0]
                 f.seek(0)
-                uploaded = await client.upload_file(f)
-                sent_result = await client.send_file(channel_identifier, uploaded, **file_kw)
+                sent_result = await client.send_file(channel_identifier, f, **file_kw)
             elif len(send_medias) == 1:
                 sent_result = await client.send_file(channel_identifier, send_medias[0], **file_kw)
             else:
                 sent_result = await client.send_file(channel_identifier, send_medias, **file_kw)
         else:
+            if media_items:
+                ids = [int(getattr(m, "id", 0) or 0) for m in media_items]
+                logger.error(
+                    "Scheduled post media unresolved — sending text-only (media_ids=%s). "
+                    "Check tbcc/uploads/media-files for local: files or re-import pool media.",
+                    ids,
+                )
             msg_kw: dict = {
                 "buttons": reply_markup,
                 "reply_to": reply_to,
@@ -569,26 +640,103 @@ async def send_scheduled_post(
     *,
     reshuffle_album: bool = False,
     invite_fallback: str | None = None,
-) -> None:
+) -> ScheduledSendOutcome | None:
     """Send a scheduled post (text, optional media, optional buttons)."""
+    from app.services.content_performance import build_scheduled_send_outcome
     peer = await _resolve_channel_peer(
         client, channel_identifier, invite_fallback=invite_fallback
     )
     slot = _peek_caption_slot_index(post)
     album_order_mode = _album_order_mode_for_send(post, reshuffle_album)
     from app.services.caption_llm_rewrite import resolve_scheduled_caption_for_send
+    from app.services.aof_vip_checkout import checkout_active_for_send
+    from app.services.aof_packs_send_time import resolve_packs_send_time_if_applicable
+    from app.services.aof_full_length_send_time import (
+        mark_full_length_media_posted,
+        resolve_full_length_send_time_if_applicable,
+    )
 
-    caption = resolve_scheduled_caption_for_send(post, db)
-    merged = _merge_scheduled_post_buttons(post, db, post.get_buttons())
-    reply_markup = _build_reply_markup(merged)
-    silent_kw = _send_options(post)
-    reply_to = post.message_thread_id if getattr(post, "message_thread_id", None) else None
+    packs_ctx = resolve_packs_send_time_if_applicable(db, post)
+    full_length_ctx = None if packs_ctx else resolve_full_length_send_time_if_applicable(db, post)
+    pack_modifier_id: int | None = None
+    full_length_media_ids: list[int] = []
+    override_buttons: list | None = None
 
-    mids, promo_urls, use_pool = _resolve_variant_sources(post, slot)
+    checkout_this_send = checkout_active_for_send(
+        post, str(channel_identifier), caption_slot_index=slot
+    )
+
+    if packs_ctx:
+        pack_modifier_id = packs_ctx.pack_modifier_id
+        caption = packs_ctx.caption_html
+        post.last_sent_caption_html = caption
+        from app.services.caption_llm_rewrite import apply_llm_rewrite_if_scheduled
+
+        caption = apply_llm_rewrite_if_scheduled(post, caption, db)
+        post.last_sent_caption_html = caption
+        mids = packs_ctx.media_ids
+        promo_urls: list[str] = []
+        use_pool = False
+        if packs_ctx.buttons_json:
+            try:
+                override_buttons = json.loads(packs_ctx.buttons_json)
+            except (json.JSONDecodeError, TypeError):
+                override_buttons = None
+    elif full_length_ctx:
+        caption = full_length_ctx.caption_html
+        post.last_sent_caption_html = caption
+        from app.services.caption_llm_rewrite import apply_llm_rewrite_if_scheduled
+
+        caption = apply_llm_rewrite_if_scheduled(post, caption, db)
+        post.last_sent_caption_html = caption
+        mids = full_length_ctx.media_ids
+        full_length_media_ids = list(mids)
+        promo_urls = []
+        use_pool = False
+    else:
+        caption = resolve_scheduled_caption_for_send(post, db)
+        mids, promo_urls, use_pool = _resolve_variant_sources(post, slot)
+    if checkout_this_send:
+        from app.services.aof_vip_checkout import scrub_caption_for_network_post
+
+        caption = scrub_caption_for_network_post(caption)
     media_items = _gather_media_items_for_send(post, db, mids, use_pool, album_order_mode)
     promo_ordered: list[str] = []
     if not media_items:
         promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, post)
+
+    album_count = _effective_album_media_count(media_items, promo_ordered)
+    multi_album = album_count > 1
+    if checkout_this_send and post.checkout_stars_plan_id:
+        from app.services.aof_vip_checkout import refresh_checkout_caption_for_send
+
+        caption = refresh_checkout_caption_for_send(
+            caption,
+            db,
+            int(post.checkout_stars_plan_id),
+            multi_album_media=multi_album,
+            referral_code=getattr(post, "checkout_referral_code", None),
+        )
+
+    use_inline_on_post = checkout_this_send and not multi_album
+    base_buttons = override_buttons if override_buttons is not None else post.get_buttons()
+    merged = _merge_scheduled_post_buttons(
+        post,
+        db,
+        base_buttons,
+        allow_inline_checkout=use_inline_on_post,
+        checkout_enabled=checkout_this_send,
+    )
+    reply_markup = _build_reply_markup(merged)
+    had_media = bool(media_items) or bool(promo_ordered)
+    silent_kw = _send_options(post, channel_identifier=str(channel_identifier), had_media=had_media)
+    from app.services.aof_topic_mirror import resolve_liveness_thread_for_send
+
+    reply_to = resolve_liveness_thread_for_send(
+        getattr(post, "name", None),
+        scheduled_thread_id=getattr(post, "message_thread_id", None),
+        rotation_index=getattr(post, "caption_rotation_index", None),
+    )
 
     try:
         sent_result = await _execute_telegram_scheduled_send(
@@ -605,7 +753,44 @@ async def send_scheduled_post(
         _log_chat_restricted_help(str(channel_identifier))
         raise
 
+    anchor_id = None
+    if sent_result:
+        msg = sent_result[0] if isinstance(sent_result, list) else sent_result
+        anchor_id = getattr(msg, "id", None)
+
+    if checkout_this_send and anchor_id:
+        await _deliver_checkout_after_scheduled_send(
+            channel_identifier=str(channel_identifier),
+            db=db,
+            post=post,
+            reply_to_message_id=anchor_id,
+            message_thread_id=reply_to,
+        )
+
     await _maybe_pin_after_send(client, peer, post, sent_result)
+    from app.services.main_channel_post_divider import maybe_send_main_channel_post_divider
+
+    await maybe_send_main_channel_post_divider(
+        client,
+        peer,
+        db,
+        channel_identifier=channel_identifier,
+        message_thread_id=reply_to,
+        send_silent=bool(silent_kw.get("silent")),
+    )
+    if full_length_media_ids and sent_result:
+        mark_full_length_media_posted(db, full_length_media_ids)
+        db.commit()
+    if had_media and media_items:
+        try:
+            from app.services.aof_feed_rhythm_v2 import maybe_queue_post_refill_after_scheduled_send
+
+            maybe_queue_post_refill_after_scheduled_send(db, post=post, media_items=media_items)
+        except Exception:
+            logger.debug("scheduled post-refill skipped", exc_info=True)
+    return build_scheduled_send_outcome(
+        post, sent_result, slot_index=slot, pack_modifier_id=pack_modifier_id
+    )
 
 
 async def send_scheduled_campaign(
@@ -621,6 +806,8 @@ async def send_scheduled_campaign(
     Send the same prepared payload to every sibling channel (shared caption rotation, pool batch, promos).
     siblings must include leader; all rows share one campaign_group_id.
     """
+    from app.services.aof_topic_mirror import resolve_liveness_thread_for_send
+
     slot = _peek_caption_slot_index(leader)
     album_order_mode = _album_order_mode_for_send(leader, reshuffle_album)
     from app.services.caption_llm_rewrite import (
@@ -628,17 +815,22 @@ async def send_scheduled_campaign(
         resolve_scheduled_caption_for_send,
     )
 
+    from app.services.aof_vip_checkout import checkout_active_for_send
+
     caption = resolve_scheduled_caption_for_send(leader, db)
-    merged = _merge_scheduled_post_buttons(leader, db, leader.get_buttons())
-    reply_markup = _build_reply_markup(merged)
+    merged_leader = _merge_scheduled_post_buttons(leader, db, leader.get_buttons())
+    reply_markup_leader = _build_reply_markup(merged_leader)
     mids, promo_urls, use_pool = _resolve_variant_sources(leader, slot)
     media_items = _gather_media_items_for_send(leader, db, mids, use_pool, album_order_mode)
     promo_ordered: list[str] = []
     if not media_items:
         promo_ordered = _apply_order_mode_to_sequence(promo_urls, album_order_mode, leader)
 
+    from app.services.content_performance import build_scheduled_send_outcome
+
     sent_post_ids: list[int] = []
     failed_post_ids: list[int] = []
+    outcomes: dict[int, ScheduledSendOutcome] = {}
     first_error: Exception | None = None
     for p in sorted(siblings, key=lambda x: x.id):
         if target_post_ids is not None and int(p.id) not in target_post_ids:
@@ -649,8 +841,54 @@ async def send_scheduled_campaign(
             failed_post_ids.append(int(p.id))
             continue
         peer_raw = normalize_telethon_peer_identifier(channel.identifier)
-        silent_kw = _send_options(p)
-        reply_to = p.message_thread_id if getattr(p, "message_thread_id", None) else None
+        # Per-channel caption/buttons/media when siblings differ (links hub + channel promos).
+        p_slot = _peek_caption_slot_index(p)
+        caption_p = resolve_scheduled_caption_for_send(p, db)
+        checkout_this_send = checkout_active_for_send(
+            p, peer_raw, caption_slot_index=p_slot
+        )
+        mids_p, promo_urls_p, use_pool_p = _resolve_variant_sources(p, p_slot)
+        media_items_p = _gather_media_items_for_send(p, db, mids_p, use_pool_p, album_order_mode)
+        promo_p: list[str] = []
+        if not media_items_p:
+            promo_p = _apply_order_mode_to_sequence(promo_urls_p, album_order_mode, p)
+        had_media_p = bool(media_items_p) or bool(promo_p)
+        silent_kw = _send_options(p, channel_identifier=peer_raw, had_media=had_media_p)
+        reply_to = resolve_liveness_thread_for_send(
+            getattr(p, "name", None),
+            scheduled_thread_id=getattr(p, "message_thread_id", None),
+            rotation_index=getattr(p, "caption_rotation_index", None),
+        )
+        if checkout_this_send:
+            from app.services.aof_vip_checkout import scrub_caption_for_network_post
+
+            caption_p = scrub_caption_for_network_post(caption_p)
+        album_count_p = _effective_album_media_count(media_items_p, promo_p)
+        multi_album_p = album_count_p > 1
+        if checkout_this_send and p.checkout_stars_plan_id:
+            from app.services.aof_vip_checkout import refresh_checkout_caption_for_send
+
+            caption_p = refresh_checkout_caption_for_send(
+                caption_p,
+                db,
+                int(p.checkout_stars_plan_id),
+                multi_album_media=multi_album_p,
+                referral_code=getattr(p, "checkout_referral_code", None),
+            )
+        use_inline_on_post = checkout_this_send and not multi_album_p
+        merged_p = _merge_scheduled_post_buttons(
+            p,
+            db,
+            p.get_buttons() or leader.get_buttons(),
+            allow_inline_checkout=use_inline_on_post,
+            checkout_enabled=checkout_this_send,
+        )
+        reply_markup_p = _build_reply_markup(merged_p)
+        if not media_items_p and not promo_p:
+            media_items_p = media_items
+            promo_p = promo_ordered
+            reply_markup_p = reply_markup_leader
+            caption_p = caption_p or caption
         try:
             peer = await _resolve_channel_peer(
                 client,
@@ -660,15 +898,38 @@ async def send_scheduled_campaign(
             sent_result = await _execute_telegram_scheduled_send(
                 client,
                 peer,
-                caption=caption,
-                media_items=media_items,
-                promo_ordered=promo_ordered,
-                reply_markup=reply_markup,
+                caption=caption_p,
+                media_items=media_items_p,
+                promo_ordered=promo_p,
+                reply_markup=reply_markup_p,
                 silent_kw=silent_kw,
                 reply_to=reply_to,
             )
+            anchor_id = None
+            if sent_result:
+                msg = sent_result[0] if isinstance(sent_result, list) else sent_result
+                anchor_id = getattr(msg, "id", None)
+            if checkout_this_send and anchor_id:
+                await _deliver_checkout_after_scheduled_send(
+                    channel_identifier=peer_raw,
+                    db=db,
+                    post=p,
+                    reply_to_message_id=anchor_id,
+                    message_thread_id=reply_to,
+                )
             await _maybe_pin_after_send(client, peer, p, sent_result)
+            from app.services.main_channel_post_divider import maybe_send_main_channel_post_divider
+
+            await maybe_send_main_channel_post_divider(
+                client,
+                peer,
+                db,
+                channel_identifier=peer_raw,
+                message_thread_id=reply_to,
+                send_silent=bool(silent_kw.get("silent")),
+            )
             sent_post_ids.append(int(p.id))
+            outcomes[int(p.id)] = build_scheduled_send_outcome(p, sent_result, slot_index=p_slot)
         except ChatRestrictedError as e:
             _log_chat_restricted_help(peer_raw)
             failed_post_ids.append(int(p.id))
@@ -688,4 +949,5 @@ async def send_scheduled_campaign(
         sent_post_ids=sent_post_ids,
         failed_post_ids=failed_post_ids,
         first_error=first_error,
+        outcomes=outcomes,
     )

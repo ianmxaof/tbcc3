@@ -17,15 +17,20 @@ def grant_channel_access(telegram_user_id: int, plan_id: int):
     db = SessionLocal()
     try:
         plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == plan_id).first()
-        if not plan or not plan.channel_id:
-            logger.warning("Plan %s not found or has no channel", plan_id)
+        if not plan:
+            logger.warning("Plan %s not found", plan_id)
             return
 
-        channel = db.query(Channel).filter(Channel.id == plan.channel_id).first()
-        if not channel:
-            logger.warning("Channel %s not found for plan %s", plan.channel_id, plan_id)
+        from app.services.aof_vip_fulfillment import fulfillment_channel_identifier
+
+        channel_ident = fulfillment_channel_identifier(db, plan_id)
+        if not channel_ident and plan.channel_id:
+            channel = db.query(Channel).filter(Channel.id == plan.channel_id).first()
+            channel_ident = channel.identifier if channel else None
+        if not channel_ident:
+            logger.warning("No fulfillment channel for plan %s", plan_id)
             return
 
-        add_user_sync(telegram_user_id, channel.identifier)
+        add_user_sync(telegram_user_id, channel_ident)
     finally:
         db.close()

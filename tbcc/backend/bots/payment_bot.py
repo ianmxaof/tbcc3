@@ -57,8 +57,13 @@ from app.services.bundle_storage import bundle_zip2_path, bundle_zip_nth_path, b
 from app.services.llm_shop_suggest import hashtag_line_from_slugs
 from app.utils.promo_url_normalize import normalize_promo_image_url
 from app.utils.telegram_promo_url import is_public_https_for_telegram
+from app.services.telegram_stars_invoice import (
+    plan_invoice_description,
+    stars_invoice_payload,
+)
 from bots.shop_promo import send_shop_promo
 from bots.macro_search_telegram import build_macro_search_handlers, cmd_macrosearch
+from bots.error_reporter import make_error_handler
 from telegram import (
     BotCommand,
     InlineKeyboardButton,
@@ -71,6 +76,7 @@ from telegram import (
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
+    ChatMemberHandler,
     CommandHandler,
     CallbackQueryHandler,
     PreCheckoutQueryHandler,
@@ -451,13 +457,92 @@ def _bundle_ok_for_stars_checkout(p: dict) -> bool:
 async def _fetch_plans_raw() -> list[dict]:
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{API_BASE}/subscription-plans/")
+            r = await client.get(f"{API_BASE}/subscription-plans/", timeout=15.0)
             r.raise_for_status()
             data = r.json()
-            return data if isinstance(data, list) else []
+            if isinstance(data, list) and data:
+                return data
     except Exception as e:
-        logger.warning("Failed to fetch plans: %s", e)
-        return []
+        logger.warning("Failed to fetch plans from API (%s): %s — using DB fallback", API_BASE, e)
+    return await asyncio.to_thread(_fetch_plans_raw_db)
+
+
+def _fetch_plans_raw_db() -> list[dict]:
+    """Catalog fallback when TBCC API is down — same JSON shape as GET /subscription-plans/."""
+    from app.database.session import SessionLocal
+    from app.models.subscription_plan import SubscriptionPlan
+    from app.api.subscription_plans import _attach_tags_to_plan_dicts, _plan_dict
+
+    db = SessionLocal()
+    try:
+        rows = db.query(SubscriptionPlan).all()
+        dicts = [_plan_dict(p) for p in rows]
+        _attach_tags_to_plan_dicts(db, rows, dicts)
+        return dicts
+    finally:
+        db.close()
+
+
+def _fetch_plan_by_id_db(plan_id: int) -> dict | None:
+    from app.database.session import SessionLocal
+    from app.models.subscription_plan import SubscriptionPlan
+    from app.api.subscription_plans import _attach_tags_to_plan_dicts, _plan_dict
+
+    pid = int(plan_id)
+    db = SessionLocal()
+    try:
+        row = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == pid).first()
+        if not row:
+            return None
+        d = _plan_dict(row)
+        _attach_tags_to_plan_dicts(db, [row], [d])
+        return d if _plan_row_usable(d, plan_id=pid) else None
+    finally:
+        db.close()
+
+
+def _plan_row_usable(p: dict | None, *, plan_id: int | None = None) -> bool:
+    if not isinstance(p, dict) or p.get("error"):
+        return False
+    if plan_id is not None:
+        try:
+            if int(p.get("id")) != int(plan_id):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if p.get("is_active") is False:
+        return False
+    return int(p.get("price_stars") or 0) > 0
+
+
+async def fetch_plan_by_id(plan_id: int) -> dict | None:
+    """Resolve one product by id (subscription or bundle)."""
+    pid = int(plan_id)
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{API_BASE}/subscription-plans/{pid}", timeout=15.0)
+            if r.status_code == 404:
+                return await asyncio.to_thread(_fetch_plan_by_id_db, pid)
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("error"):
+                data = None
+            if data and _plan_row_usable(data, plan_id=pid):
+                return data
+    except Exception as e:
+        logger.warning("fetch_plan_by_id(%s) API failed (%s): %s — DB fallback", pid, API_BASE, e)
+
+    found = await asyncio.to_thread(_fetch_plan_by_id_db, pid)
+    if found:
+        return found
+
+    for p in await _fetch_plans_raw():
+        try:
+            if int(p.get("id")) == pid and _plan_row_usable(p):
+                return p
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _plan_in_bot_section(p: dict, section: str) -> bool:
@@ -480,14 +565,6 @@ async def fetch_plans(section: str = "main", min_stars: int | None = None) -> li
 async def fetch_bundles() -> list[dict]:
     """Digital pack products (images/videos); configure in dashboard as product type *bundle*."""
     return [p for p in await _fetch_plans_raw() if _bundle_ok_for_stars_checkout(p)]
-
-
-async def fetch_plan_by_id(plan_id: int) -> dict | None:
-    """Resolve one product by id (subscription or bundle)."""
-    for p in await _fetch_plans_raw():
-        if p.get("id") == plan_id and p.get("is_active") is not False and (p.get("price_stars") or 0) > 0:
-            return p
-    return None
 
 
 async def fetch_user_subscriptions(telegram_user_id: int) -> list[dict]:
@@ -797,7 +874,7 @@ def welcome_html(settings: dict | None = None) -> str:
             "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app, live now) + <b>Wallet / crypto</b>.\n"
             "⚡ <i>Crypto may use auto checkout when NOWPayments + public HTTPS API are configured; otherwise use order code flow.</i>\n\n"
         )
-    return (
+    body = (
         "👋 <b>Welcome to AOF Access Bot</b>\n\n"
         + pay_line
         + "🔥 <b>Main actions</b>\n"
@@ -811,8 +888,14 @@ def welcome_html(settings: dict | None = None) -> str:
         "📌 <b>Account</b>\n"
         "• /status — Purchases &amp; active access\n"
         "• /referral — Your invite link + rewards\n\n"
-        "<i>Tap a button below or run any command.</i>"
     )
+    from app.services.aof_social_links import donation_link_html
+
+    donate = donation_link_html(label="support AOF ☕")
+    if donate:
+        body += f"☕ <b>Tip jar:</b> {donate}\n\n"
+    body += "<i>Tap a button below or run any command.</i>"
+    return body
 
 
 async def cmd_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1092,11 +1175,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
             return
 
-    # Dashboard scheduled post → same Stars invoice as /subscribe (deep link c{plan}[_refcode])
+    # Dashboard scheduled post → Stars invoice (c6) or menu with crypto (cm6)
+    m_menu = re.match(r"^cm(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
     m_checkout = re.match(r"^c(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
-    if m_checkout:
-        plan_id = int(m_checkout.group(1))
-        ref_suffix = m_checkout.group(2)
+    if m_menu or m_checkout:
+        plan_id = int((m_menu or m_checkout).group(1))
+        ref_suffix = (m_menu or m_checkout).group(2)
+        menu_mode = bool(m_menu)
         if ref_suffix:
             referrer_uid = await lookup_referrer_by_code(ref_suffix)
             if referrer_uid is not None and referrer_uid != user.id:
@@ -1109,11 +1194,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if ptype not in ("subscription", "bundle"):
             await msg.reply_text("That product is not available for quick checkout.")
             return
-        await _send_stars_invoice_for_private_chat(context, msg, user.id, plan)
-        try:
-            await msg.reply_text("⬇️ Complete payment in the invoice above.")
-        except Exception:
-            pass
+        if menu_mode:
+            await send_simple_plan_checkout(
+                msg,
+                context,
+                [plan],
+                pack=(ptype == "bundle"),
+            )
+        else:
+            await _send_stars_invoice(
+                context,
+                msg,
+                user.id,
+                plan,
+            )
         return
 
     try:
@@ -1270,18 +1364,120 @@ def _subscription_stars_row_label(p: dict) -> str:
     return f"{_truncate_btn(name, 32)} · {_subscription_duration_badge(p.get('duration_days', 30))} · {stars}⭐"
 
 
+def _simple_stars_btn_label(p: dict) -> str:
+    return f"{int(p.get('price_stars') or 0)} ⭐"
+
+
+def _simple_crypto_btn_label(p: dict) -> str:
+    from app.services.nowpayments_client import plan_nowpayments_usd_quote
+
+    override = p.get("nowpayments_price_usd")
+    try:
+        override_f = float(override) if override is not None else None
+    except (TypeError, ValueError):
+        override_f = None
+    quote = plan_nowpayments_usd_quote(
+        price_stars=int(p.get("price_stars") or 0),
+        nowpayments_price_usd=override_f if override_f and override_f > 0 else None,
+    )
+    billed = float(quote.get("billed_usd") or 0)
+    usd = f"${billed:.0f}" if billed >= 10 else f"${billed:.2f}"
+    return f"{usd} crypto"
+
+
+def _plan_checkout_keyboard_rows(plans: list[dict], *, pack: bool = False) -> list[list[InlineKeyboardButton]]:
+    """One row per payment option — price on the button, no catalog prose."""
+    rows: list[list[InlineKeyboardButton]] = []
+    star_cb = "pack_" if pack else "plan_"
+    ext_cb = "ext_pack_" if pack else "ext_plan_"
+    for p in plans:
+        pid = int(p["id"])
+        if int(p.get("price_stars") or 0) > 0:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        _truncate_btn(_simple_stars_btn_label(p), 64),
+                        callback_data=f"{star_cb}{pid}",
+                    )
+                ]
+            )
+        if _plan_show_crypto_checkout(p):
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        _truncate_btn(_simple_crypto_btn_label(p), 64),
+                        callback_data=f"{ext_cb}{pid}",
+                    )
+                ]
+            )
+    return rows
+
+
+async def send_simple_plan_checkout(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    plans: list[dict],
+    *,
+    pack: bool = False,
+) -> None:
+    """Dead-simple checkout: product name (if any) + Stars row + crypto row per plan."""
+    if not msg:
+        return
+    if not plans:
+        await msg.reply_text("No products listed right now.")
+        return
+    rows = _plan_checkout_keyboard_rows(plans, pack=pack)
+    if not rows:
+        await msg.reply_text("No checkout options for these products.")
+        return
+    kb = InlineKeyboardMarkup(rows)
+    if len(plans) == 1:
+        text = str(plans[0].get("name") or "").strip() or "·"
+    else:
+        text = "·"
+    await msg.reply_text(text, reply_markup=kb)
+
+
 def _subscription_wallet_row_label(p: dict, c_label: str) -> str:
-    """Shorter crypto row: keep currency once, avoid 64-char overflow with long plan names."""
+    """Shorter crypto row: show billed USD when NOWPayments min floor applies."""
+    from app.services.nowpayments_client import plan_nowpayments_usd_quote
+
     name = str(p.get("name") or "Plan").strip()
     cshort = (c_label or "Crypto").strip() or "Crypto"
     if cshort in ("USDT (TRC-20)", "USDT"):
         cshort = "USDT"
     elif len(cshort) > 10:
         cshort = cshort[:9] + "…"
-    s = f"{cshort} · {name}"
+    override = p.get("nowpayments_price_usd")
+    try:
+        override_f = float(override) if override is not None else None
+    except (TypeError, ValueError):
+        override_f = None
+    quote = plan_nowpayments_usd_quote(
+        price_stars=int(p.get("price_stars") or 0),
+        nowpayments_price_usd=override_f if override_f and override_f > 0 else None,
+    )
+    billed = float(quote.get("billed_usd") or 0)
+    usd_tag = f"${billed:.0f}" if billed >= 10 else f"${billed:.2f}"
+    s = f"{usd_tag} {cshort} · {name}"
     if len(s) > 64:
-        s = f"{cshort} · {_truncate_btn(name, 44)}"
+        s = f"{usd_tag} {cshort} · {_truncate_btn(name, 36)}"
     return _truncate_btn(s, 64)
+
+
+def _plan_show_crypto_checkout(p: dict) -> bool:
+    from app.services.nowpayments_client import plan_crypto_checkout_eligible
+
+    override = p.get("nowpayments_price_usd")
+    try:
+        override_f = float(override) if override is not None else None
+    except (TypeError, ValueError):
+        override_f = None
+    return plan_crypto_checkout_eligible(
+        price_stars=int(p.get("price_stars") or 0),
+        nowpayments_price_usd=override_f if override_f and override_f > 0 else None,
+        bot_section=str(p.get("bot_section") or "main"),
+    )
 
 
 async def send_subscription_catalog_message(
@@ -1291,7 +1487,7 @@ async def send_subscription_catalog_message(
     section: str = "main",
     title: str = "💎 **Premium Access**",
 ) -> None:
-    """List subscription products for one bot section — Stars + wallet/manual rows."""
+    """Subscription checkout — price on each button, no instructional catalog prose."""
     if not msg:
         return
 
@@ -1300,51 +1496,12 @@ async def send_subscription_catalog_message(
     if not plans:
         section_hint = " (/loot section)" if section == "loot" else ""
         await msg.reply_text(
-            f"{title}\n\nNo subscription plans are listed yet{section_hint}. "
-            "Ask the admin to add products in the dashboard (product type: subscription).",
-            parse_mode="Markdown",
+            f"No subscription plans are listed yet{section_hint}. "
+            f"(Catalog source: {API_BASE.rstrip('/')}; ensure TBCC-Backend is running.)",
         )
         return
 
-    # Two separate messages so Stars rows stay on-screen; wallet grid matches by plan order.
-    # 2+ buttons per row (configurable) — Telegram does not support custom-emoji *entities* on button labels; use
-    # standard emoji/Unicode; Premium "letter" custom emoji are best in message *text* with MessageEntity, not in keyboards.
-    c_label = _nowpayments_currency_label(None)
-    cols = int(st.get("subscription_catalog_columns") or _subscription_catalog_columns())
-    star_btns: list[InlineKeyboardButton] = []
-    wallet_btns: list[InlineKeyboardButton] = []
-    for p in plans:
-        pid = int(p["id"])
-        star_btns.append(
-            InlineKeyboardButton(
-                _truncate_btn(_subscription_stars_row_label(p), 64),
-                callback_data=f"plan_{pid}",
-            )
-        )
-        wallet_btns.append(
-            InlineKeyboardButton(
-                _subscription_wallet_row_label(p, c_label),
-                callback_data=f"ext_plan_{pid}",
-            )
-        )
-    stars_kb = _inline_buttons_in_rows(star_btns, cols)
-    wallet_kb = _inline_buttons_in_rows(wallet_btns, cols)
-
-    await msg.reply_text(
-        f"{title} — Telegram Stars\n\n"
-        "Tap a plan to open an in-app Stars invoice.\n"
-        "⚡ Fastest checkout path.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(stars_kb),
-    )
-    c_hint = _nowpayments_currency_label(None)
-    await msg.reply_text(
-        f"💳 **Pay with crypto** — {c_hint}\n\n"
-        "Same plans as above. **Each row** matches the Stars grid — left-to-right, then next row. "
-        "You get the pay page, **wallet + amount**, or manual code (EPO) if something fails.",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(wallet_kb),
-    )
+    await send_simple_plan_checkout(msg, context, plans)
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1352,9 +1509,13 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = update.effective_message
     if not msg:
         return
+    user = update.effective_user
     st = await _get_runtime_settings()
-    title = str(st.get("subscribe_title_main") or "💎 **Premium Access**")
-    await send_subscription_catalog_message(msg, context, section="main", title=title)
+    plans = await fetch_plans(section="main", min_stars=int(st.get("min_subscription_stars") or 0))
+    if len(plans) == 1 and user:
+        await _send_stars_invoice(context, msg, user.id, plans[0])
+        return
+    await send_simple_plan_checkout(msg, context, plans)
 
 
 def _bundle_caption_html(p: dict) -> str:
@@ -1402,28 +1563,11 @@ def _bundle_pick_keyboard(bundles: list[dict]) -> InlineKeyboardMarkup:
 
 
 async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_TYPE, p: dict) -> None:
-    """
-    Send one pack: description + Stars Buy + separate wallet row (same as old per-pack catalog).
-    """
+    """Send one pack preview (optional promo images) + simple Stars / crypto buttons."""
     pid = p.get("id")
-    stars = int(p.get("price_stars") or 0)
     promo_urls = _plan_promo_urls(p)[:10]
     cap = _bundle_caption_html(p)
-    kb_stars = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(_truncate_btn(f"Buy — {stars} ⭐"), callback_data=f"pack_{pid}")]]
-    )
-    pname = str(p.get("name") or f"pack #{pid}")
-    c_label = _nowpayments_currency_label(None)
-    kb_wallet = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    _truncate_btn(f"{c_label} — {pname}", 64),
-                    callback_data=f"ext_pack_{pid}",
-                )
-            ]
-        ]
-    )
+    kb = InlineKeyboardMarkup(_plan_checkout_keyboard_rows([p], pack=True))
     try:
         resolved: list[InputFile | str] = []
         for u in promo_urls:
@@ -1441,11 +1585,11 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
             )
 
         if not resolved:
-            await msg.reply_text(text=cap, parse_mode="HTML", reply_markup=kb_stars)
+            await msg.reply_text(text=cap, parse_mode="HTML", reply_markup=kb)
         elif len(resolved) == 1:
             photo = resolved[0]
             await msg.reply_photo(
-                photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb_stars
+                photo=photo, caption=cap, parse_mode="HTML", reply_markup=kb
             )
         else:
             media: list[InputMediaPhoto] = []
@@ -1456,25 +1600,16 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
                     media.append(InputMediaPhoto(media=ph))
             await msg.reply_media_group(media=media)
             await msg.reply_text(
-                f"⬇️ <b>{html.escape(str(p.get('name') or 'Pack'))}</b> — Stars checkout",
+                html.escape(str(p.get("name") or "Pack")),
                 parse_mode="HTML",
-                reply_markup=kb_stars,
+                reply_markup=kb,
             )
     except Exception as e:
         logger.warning("bundle detail send failed plan_id=%s: %s", pid, e)
         try:
-            await msg.reply_text(text=cap, parse_mode="HTML", reply_markup=kb_stars)
+            await msg.reply_text(text=cap, parse_mode="HTML", reply_markup=kb)
         except Exception as e2:
             logger.warning("bundle detail fallback send failed: %s", e2)
-    try:
-        await msg.reply_text(
-            f"💳 <b>Crypto (NOWPayments)</b> — {html.escape(c_label)}\n"
-            "<b>Direct wallet or hosted link</b> — tap:",
-            parse_mode="HTML",
-            reply_markup=kb_wallet,
-        )
-    except Exception as e:
-        logger.warning("bundle wallet keyboard send failed plan_id=%s: %s", pid, e)
 
 
 async def send_bundle_catalog_message(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1600,7 +1735,10 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
 
     plan = await fetch_plan_by_id(pid)
     if not plan:
-        await msg.reply_text("Product not found or inactive.")
+        await msg.reply_text(
+            "Product not found or inactive. If this persists, ensure TBCC-Backend is running on "
+            f"{API_BASE.rstrip('/')}."
+        )
         return
     ptype = (plan.get("product_type") or "subscription").lower()
     if want == "subscription" and ptype != "subscription":
@@ -1621,31 +1759,28 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
 
     instr = result.get("instructions_html") or ""
     ref = (result.get("order") or {}).get("reference_code", "?")
-    header = f"<b>Order</b> <code>{html.escape(str(ref))}</code>\n\n"
     pay_url = result.get("crypto_pay_url")
     details = result.get("crypto_pay_details")
+    if pay_url:
+        label = _truncate_btn(_simple_crypto_btn_label(plan), 64)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(label, url=str(pay_url)[:512])]])
+        title = html.escape(str(plan.get("name") or "Checkout"))
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        try:
+            await msg.reply_text(title, parse_mode="HTML", reply_markup=kb)
+        except BadRequest as e:
+            logger.warning("crypto pay button message failed: %s", e)
+            eu = html.escape(str(pay_url), quote=True)
+            await msg.reply_text(f'{title}\n<a href="{eu}">{label}</a>', parse_mode="HTML")
+        return
+
+    header = f"<b>Order</b> <code>{html.escape(str(ref))}</code>\n\n"
     body = ""
     pay_extra = ""
-    if pay_url:
-        pay_currency = (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip()
-        coin_lbl = _nowpayments_currency_label(pay_currency or None)
-        coin_hint = (
-            f"Coin: <code>{html.escape(pay_currency)}</code>"
-            if pay_currency
-            else "Pick a coin on the next page."
-        )
-        eu = html.escape(str(pay_url), quote=True)
-        body = (
-            f"✅ <b>Hosted checkout</b> — {html.escape(coin_lbl)}\n"
-            "<i>Unlocks when payment confirms.</i>"
-        )
-        pay_extra += (
-            "\n\n🔗 <a href=\"" + eu + "\">Open pay page</a>\n" + coin_hint
-        )
-        pay_extra += (
-            "\n\nStuck? Reference: <code>" + html.escape(str(ref)) + "</code>"
-        )
-    elif details:
+    if details:
         meta0 = result.get("crypto_nowpayments_meta")
         pc = (
             (meta0.get("pay_currency") if isinstance(meta0, dict) else None)
@@ -1723,13 +1858,15 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
         pass
 
 
-async def _send_stars_invoice_for_private_chat(
+async def _send_stars_invoice(
     context: ContextTypes.DEFAULT_TYPE,
     msg,
     buyer_telegram_user_id: int,
     plan: dict,
+    *,
+    skip_promo: bool = False,
 ) -> None:
-    """Send Telegram Stars invoice (same flow as catalog Buy) — private chat only."""
+    """Send Telegram Stars invoice — works in DM, groups, and channels where the bot can post."""
     plan_id = int(plan.get("id") or 0)
     ptype = (plan.get("product_type") or "subscription").lower()
     price_stars = int(plan.get("price_stars") or 0)
@@ -1737,20 +1874,17 @@ async def _send_stars_invoice_for_private_chat(
         await msg.reply_text("This product has no price set.")
         return
 
-    desc = _pick_display_description(plan)
-    if not desc:
-        if ptype == "bundle":
-            desc = "Digital pack — images & videos"
-        else:
-            desc = f"Subscription — {plan.get('duration_days', 30)} days access"
+    desc = _pick_display_description(plan) or plan_invoice_description(plan)
 
-    invoice_payload = (
-        f"sub_{plan_id}_{buyer_telegram_user_id}"
-        if ptype == "subscription"
-        else f"bundle_{plan_id}_{buyer_telegram_user_id}"
+    invoice_payload = stars_invoice_payload(
+        plan_id,
+        product_type=ptype,
+        user_id=buyer_telegram_user_id,
     )
 
-    album_sent = await _maybe_send_promo_album_before_invoice(msg, plan)
+    album_sent = False
+    if not skip_promo:
+        album_sent = await _maybe_send_promo_album_before_invoice(msg, plan)
 
     promo_urls = _plan_promo_urls(plan)
     promo = "" if album_sent else (promo_urls[0] if promo_urls else "")
@@ -1788,48 +1922,62 @@ async def _send_stars_invoice_for_private_chat(
 async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send invoice when user picks subscription (plan_) or pack (pack_)."""
     query = update.callback_query
-    await query.answer()
+    if not query:
+        return
 
     if not query.data:
+        await query.answer()
         return
     parts = query.data.split("_", 1)
     if len(parts) != 2:
+        await query.answer()
         return
     kind, rest = parts[0], parts[1]
     if kind not in ("plan", "pack") or not rest.isdigit():
+        await query.answer()
         return
 
     plan_id = int(rest)
     plan = await fetch_plan_by_id(plan_id)
     if not plan:
-        await query.edit_message_text("Product not found or no longer available.")
+        await query.answer(
+            "Catalog temporarily unavailable — is TBCC-Backend running? Tap again in a moment.",
+            show_alert=True,
+        )
+        logger.warning("checkout callback plan_%s: catalog lookup failed (API %s)", plan_id, API_BASE)
         return
 
     ptype = (plan.get("product_type") or "subscription").lower()
     if kind == "plan" and ptype != "subscription":
-        await query.edit_message_text("Product not found or no longer available.")
+        await query.answer("That product is no longer a subscription.", show_alert=True)
         return
     if kind == "pack" and ptype != "bundle":
-        await query.edit_message_text("Product not found or no longer available.")
+        await query.answer("That product is no longer a pack.", show_alert=True)
         return
 
     price_stars = plan.get("price_stars", 0)
     if price_stars <= 0:
-        await query.edit_message_text("This product has no price set.")
+        await query.answer("This product has no Stars price set.", show_alert=True)
         return
 
+    await query.answer()
     if not query.message:
         return
-    await _send_stars_invoice_for_private_chat(context, query.message, query.from_user.id, plan)
+    try:
+        await _send_stars_invoice(
+            context, query.message, query.from_user.id, plan, skip_promo=True
+        )
+    except Exception as e:
+        logger.exception("Stars invoice failed plan_id=%s: %s", plan_id, e)
+        await query.message.reply_text(
+            "Could not open the Stars invoice. Try again in a moment or use /subscribe."
+        )
+        return
 
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as e:
         logger.debug("edit_message_reply_markup after invoice: %s", e)
-    try:
-        await query.message.reply_text("⬇️ Complete payment in the invoice above.")
-    except Exception:
-        pass
 
 
 async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2006,13 +2154,13 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         link = sub.get("invite_link")
         if link:
-            text = (
-                "✅ **Payment successful!**\n\n"
-                "You have been granted access. Join the premium channel here:\n"
-                f"👉 {link}\n\n"
-                "If you were already added, you can use this link as a backup."
-                f"{progress_line}"
-            )
+            from app.services.aof_vip_fulfillment import vip_welcome_message_html
+
+            text = vip_welcome_message_html(invite_link=link)
+            if progress_line:
+                text = f"{text}\n\n{sub.get('milestone_progress', '').strip()}"
+            await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=False)
+            return
         else:
             text = (
                 "✅ **Payment successful!**\n\n"
@@ -2133,6 +2281,12 @@ async def _post_init(app: Application) -> None:
         logger.warning("set_my_description failed: %s", e)
 
 
+async def on_vip_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from app.services.aof_vip_member_sync import handle_vip_chat_member_update
+
+    await handle_vip_chat_member_update(update, context)
+
+
 def main() -> None:
     token = os.environ.get("BOT_TOKEN", "").strip()
     if not token:
@@ -2227,6 +2381,8 @@ def main() -> None:
     app.add_handler(
         MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
     )
+    app.add_handler(ChatMemberHandler(on_vip_chat_member, ChatMemberHandler.CHAT_MEMBER))
+    app.add_error_handler(make_error_handler("payment-bot"))
 
     print(
         "Payment bot running. Commands: /start, /help, /shop, /loot, /subscribe, /packs, /referral, /status, /resolve, /macrosearch, /videofind, /macroaddsource"

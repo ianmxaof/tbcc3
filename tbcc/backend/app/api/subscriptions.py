@@ -32,10 +32,15 @@ def _build_subscription_api_result(
         result["referrer_id"] = referrer_id_for_response
     if plan.channel_id:
         from app.models.channel import Channel
+        from app.services.aof_vip_fulfillment import fulfillment_invite_link
 
-        ch = db.query(Channel).filter(Channel.id == plan.channel_id).first()
-        if ch and ch.invite_link:
-            result["invite_link"] = ch.invite_link
+        invite = fulfillment_invite_link(db, plan)
+        if invite:
+            result["invite_link"] = invite
+        else:
+            ch = db.query(Channel).filter(Channel.id == plan.channel_id).first()
+            if ch and ch.invite_link:
+                result["invite_link"] = ch.invite_link
     if is_bundle:
         parts = bundle_parts_for_api(plan)
         n = len(parts)
@@ -243,6 +248,19 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         external_order_id=int(data["external_order_id"]) if data.get("external_order_id") else None,
         reference_code=(str(data.get("reference_code") or "").strip() or None),
     )
+
+    if not is_bundle:
+        try:
+            from app.workers.vip_welcome_worker import send_subscription_welcome_dm
+
+            send_subscription_welcome_dm.delay(
+                int(telegram_user_id),
+                int(plan_id),
+                charge_id,
+                str(payment_method or ""),
+            )
+        except Exception:
+            pass
 
     result = _build_subscription_api_result(
         db,

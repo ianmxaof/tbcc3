@@ -31,6 +31,7 @@ celery.conf.include = [
     "app.workers.scheduler_worker",
     "app.workers.subscription_worker",
     "app.workers.grant_access_worker",
+    "app.workers.vip_welcome_worker",
     "app.workers.milestone_worker",
     "app.workers.landing_bulletin_worker",
     "app.workers.media_auto_tag_worker",
@@ -39,12 +40,26 @@ celery.conf.include = [
     "app.workers.loot_promo_worker",
     "app.workers.import_telegram_worker",
     "app.workers.myjd_worker",
+    "app.workers.mega_scraper_worker",
+    "app.workers.buffer_armory_worker",
+    "app.workers.network_liveness_worker",
+    "app.workers.content_performance_worker",
+    "app.workers.drop_countdown_worker",
+    "app.workers.topic_mirror_worker",
+    "app.workers.storage_pool_seed_worker",
+    "app.workers.vip_weekly_mega_worker",
+    "app.workers.thumbnail_warm_worker",
+    "app.workers.k2s_mirror_worker",
+    "app.workers.income_poll_worker",
+    "app.workers.erome_analytics_worker",
+    "app.workers.emoji_factory_worker",
 ]
 
 celery.conf.task_routes = {
     "app.workers.scraper_worker.*": {"queue": "scrape"},
+    "app.workers.mega_scraper_worker.*": {"queue": "scrape"},
     "app.workers.scrape_scheduler_worker.*": {"queue": "scrape"},
-    "app.workers.scheduler_worker.*": {"queue": "post"},
+    "app.workers.scheduler_worker.*": {"queue": "celery"},
     "app.workers.poster_worker.*": {"queue": "post"},
     "app.workers.subscription_worker.*": {"queue": "subscription"},
     "app.workers.grant_access_worker.*": {"queue": "subscription"},
@@ -57,6 +72,16 @@ celery.conf.task_routes = {
     "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
     "app.workers.link_resolver_worker.*": {"queue": "celery"},
     "app.workers.myjd_worker.*": {"queue": "celery"},
+    "app.workers.network_liveness_worker.*": {"queue": "subscription"},
+    "app.workers.drop_countdown_worker.*": {"queue": "subscription"},
+    "app.workers.topic_mirror_worker.*": {"queue": "telegram"},
+    "app.workers.thumbnail_warm_worker.*": {"queue": "telegram"},
+    "app.workers.k2s_mirror_worker.*": {"queue": "celery"},
+    "app.workers.storage_pool_seed_worker.*": {"queue": "celery"},
+    "app.workers.content_performance_worker.*": {"queue": "celery"},
+    "app.workers.income_poll_worker.*": {"queue": "celery"},
+    "app.workers.erome_analytics_worker.*": {"queue": "celery"},
+    "app.workers.emoji_factory_worker.*": {"queue": "celery"},
 }
 
 # AOF landing bulletin: task runs every hour UTC; task checks dashboard/env hour (no beat restart needed).
@@ -100,4 +125,99 @@ celery.conf.beat_schedule = {
         "task": "app.workers.scrape_scheduler_worker.tick_scheduled_scrapes",
         "schedule": crontab(minute="*/5"),
     },
+    "buffer-armory-refill": {
+        "task": "app.workers.buffer_armory_worker.refill_buffer_armory",
+        "schedule": crontab(minute=15, hour="*/6"),
+    },
 }
+
+
+def _liveness_fomo_crontab_hours() -> str:
+    raw = (os.getenv("TBCC_LIVENESS_MILESTONE_FOMO_HOURS") or "6").strip()
+    try:
+        n = max(1, min(24, int(raw)))
+    except ValueError:
+        n = 6
+    return f"*/{n}"
+
+
+def _view_refresh_crontab_minutes() -> str:
+    raw = (os.getenv("TBCC_VIEW_REFRESH_BEAT_MINUTES") or "30").strip()
+    try:
+        n = max(5, min(59, int(raw)))
+    except ValueError:
+        n = 30
+    return f"*/{n}"
+
+
+celery.conf.beat_schedule["refresh-post-views"] = {
+    "task": "app.workers.content_performance_worker.refresh_post_views",
+    "schedule": crontab(minute=_view_refresh_crontab_minutes()),
+}
+
+celery.conf.beat_schedule["aof-milestone-fomo"] = {
+    "task": "app.workers.network_liveness_worker.post_milestone_fomo",
+    "schedule": crontab(minute=20, hour=_liveness_fomo_crontab_hours()),
+}
+
+celery.conf.beat_schedule["vip-weekly-mega"] = {
+    "task": "app.workers.vip_weekly_mega_worker.run_weekly_vip_mega",
+    "schedule": crontab(minute=5, hour="*"),
+}
+
+
+def _storage_pool_seed_crontab_hours() -> str:
+    raw = (os.getenv("TBCC_STORAGE_POOL_SEED_HOURS") or "4").strip()
+    try:
+        n = max(1, min(24, int(raw)))
+    except ValueError:
+        n = 4
+    return f"*/{n}"
+
+
+celery.conf.beat_schedule["storage-pool-seed"] = {
+    "task": "app.workers.storage_pool_seed_worker.seed_pools_from_storage_hub",
+    "schedule": crontab(minute=40, hour=_storage_pool_seed_crontab_hours()),
+}
+
+
+def _income_poll_crontab_hours() -> str:
+    raw = (os.getenv("TBCC_INCOME_POLL_HOURS") or "6").strip()
+    try:
+        n = max(1, min(168, int(raw)))
+    except ValueError:
+        n = 6
+    return f"*/{n}"
+
+
+if (os.getenv("TBCC_INCOME_POLL_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    celery.conf.beat_schedule["income-poll"] = {
+        "task": "app.workers.income_poll_worker.poll_income_sources",
+        "schedule": crontab(minute=25, hour=_income_poll_crontab_hours()),
+    }
+
+
+def _erome_view_sync_crontab_hours() -> str:
+    raw = (os.getenv("TBCC_EROME_VIEW_SYNC_HOURS") or "6").strip()
+    try:
+        n = max(1, min(24, int(raw)))
+    except ValueError:
+        n = 6
+    return f"*/{n}"
+
+
+if (os.getenv("TBCC_EROME_VIEW_SYNC_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    celery.conf.beat_schedule["erome-view-sync"] = {
+        "task": "app.workers.erome_analytics_worker.sync_erome_views",
+        "schedule": crontab(minute=10, hour=_erome_view_sync_crontab_hours()),
+    }
