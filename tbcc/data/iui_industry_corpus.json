@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "source_label": "IIU",
+  "topics": [
+    {
+      "slug": "industry-statistics",
+      "title": "Adult industry statistics 2025/26",
+      "tags": "iui,industry,statistics,macro,benchmark",
+      "body": "Key SFW industry statistics useful for TBCC operators:\n\n- Global adult traffic remains concentrated on a handful of tube and creator platforms; long-tail Telegram networks capture engagement but rarely publish verifiable macro stats.\n- US remains the largest premium-spend market; LATAM and SEA show faster mobile growth rates.\n- Creator subscription revenue continues to outpace traditional tube CPM in many niches.\n- Use these figures as **external priors** only — TBCC growth_attribution and Stars revenue are your authoritative conversion data.\n\nTBCC action: compare VIP conversion hours against US premium peak window (19–23 local); flag misalignment in content_signals."
+    },
+    {
+      "slug": "demographics",
+      "title": "Demographics and device behavior",
+      "tags": "iui,demographics,mobile,geo,behavior",
+      "body": "Demographic and behavioral research highlights:\n\n- Mobile sessions dominate discovery (typically 70%+); desktop retains higher average session value on paywalled hubs.\n- Female viewership share is rising in surveyed markets — affects teaser tone and suggestive-tier packaging.\n- Regional category preferences differ (US vs EU vs LATAM); geo-aware copy helps on AllMyLinks exits.\n\nTBCC action: enable GA4 deviceCategory and country dimensions on hub traffic; bias Buffer IG carousel when mobile share >65%."
+    },
+    {
+      "slug": "trends",
+      "title": "Category and search trends 2026",
+      "tags": "iui,trends,categories,search,demand",
+      "body": "Trend research pattern:\n\n- Evergreen lanes (amateur, MILF, college-legal) stay top search buckets year over year.\n- Format trends (short vertical, TikTok-style) often outperform niche renames — treat as surface bias not just tag.\n- AI companion and synthetic content are fastest-growing **technology** trends, distinct from live-action category demand.\n- Payment method preferences vary by geo (crypto vs card vs Stars).\n\nTBCC action: run category_demand_crosswalk weekly; prioritize under-supplied high-demand slugs in pool seeding."
+    },
+    {
+      "slug": "platform-analysis",
+      "title": "Platform analysis framework",
+      "tags": "iui,platform,reddit,buffer,telegram,distribution",
+      "body": "Platform analysis for operators:\n\n- Tubes optimize for SEO crawl and watch-time; Telegram optimizes for retention and direct conversion.\n- Reddit requires subreddit-specific cadence, karma gates, and link policies — TBCC RedditSubredditProfile pattern is the right abstraction.\n- X/Buffer surfaces reward freshness, native media, and UTM-tracked hub exits.\n- Treat each outbound surface as a **distribution profile**: cadence cap, media requirement, ban risk, monetization model.\n\nTBCC action: generalize Reddit profile model to X and Buffer channels in campaign_deploy ledger."
+    },
+    {
+      "slug": "seo-optimization",
+      "title": "Adult SEO vault — Telegram-relevant chapters",
+      "tags": "iui,seo,utm,reddit,freshness,aio",
+      "body": "From adult SEO curriculum — parts that translate to Telegram-first ops:\n\n- UTM discipline on every hub link (source/medium/campaign) — TBCC utm_links.py foundation.\n- Sustainable Reddit traffic: eligibility gates, cadence caps, variation — not raw link spam.\n- Freshness / QDF: dated copy and category keywords in captions — campaign_surface_copy.\n- AIO/GEO: structured hub pages and llms.txt matter only if you operate ranked web properties.\n\nTBCC action: vault web-schema modules are low priority unless aof-forum or landing sites become ranking targets."
+    },
+    {
+      "slug": "technology",
+      "title": "Technology trends — AI, moderation, VR",
+      "tags": "iui,technology,ai,moderation,companion",
+      "body": "Technology trend summary:\n\n- AI companions and generative tools are expanding fastest; distinguish **generation analytics** from **distribution analytics**.\n- NSFW classifiers have known false-positive rates — use tier gating before Reddit/Buffer deploy.\n- VR remains niche relative to mobile short-form.\n\nTBCC action: document classifier FP rates; gate surface eligibility via nsfw_classifier + deploy profiles."
+    },
+    {
+      "slug": "laws-regulations",
+      "title": "Laws and regulations overview",
+      "tags": "iui,law,compliance,age-verification,geo",
+      "body": "Regulatory landscape (high level):\n\n- Age verification requirements vary sharply by US state and EU market.\n- AI-generated and deepfake content faces increasing takedown and labeling rules.\n- Outbound link audits (affiliate rot, deindexed gates) reduce compliance and SEO risk.\n\nTBCC action: add compliance_policy records before expanding web hubs; link_gate flows are primitive gates only."
+    },
+    {
+      "slug": "adult-seo-vault",
+      "title": "Operator research loop",
+      "tags": "iui,research,publishing,authority,signals",
+      "body": "IIU meta-model: anonymized aggregated traffic → reports → authority → SEO.\n\nTBCC can **export** the same loop from first-party data:\n\n- Weekly AOF Network Signal Report from content_signals markdown.\n- Anonymized peak hours, caption lift, conversion by lane — publishable as SFW Telegram growth ops research.\n- Secretary RAG ingests IIU summaries + internal flywheel digests for operator Q&A.\n\nTBCC action: ingest this corpus via POST /secretary-knowledge/import-iui-corpus; seed benchmarks via POST /analytics/industry-benchmarks/seed."
+    }
+  ]
+}

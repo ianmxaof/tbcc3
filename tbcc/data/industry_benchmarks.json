@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "source": "IIU-style curated priors (SFW summaries for TBCC scheduling intelligence)",
+  "effective_year": 2026,
+  "macro": [
+    {
+      "slug": "us-premium-spend-index",
+      "title": "US premium spend peak window",
+      "topic_type": "macro",
+      "summary": "Industry data suggests US adult premium spend clusters 19:00–23:00 local time; mobile checkout share exceeds desktop in this window.",
+      "benchmark_json": {"peak_hours_local": [19, 20, 21, 22, 23], "mobile_checkout_share": 0.62},
+      "demand_index": null,
+      "source_url": "https://inside.theporn.com/topic/industry-statistics/",
+      "source_label": "IIU"
+    },
+    {
+      "slug": "mobile-traffic-share",
+      "title": "Mobile-first hub traffic",
+      "topic_type": "demographic",
+      "summary": "Roughly 70–75% of adult discovery traffic is mobile; media-heavy surfaces (IG carousel, short video) outperform text-only on mobile exits.",
+      "benchmark_json": {"mobile_session_share": 0.72},
+      "demand_index": null,
+      "source_url": "https://inside.theporn.com/topic/demographics/",
+      "source_label": "IIU"
+    },
+    {
+      "slug": "creator-economy-size",
+      "title": "Creator economy scale (reference)",
+      "topic_type": "macro",
+      "summary": "Creator-platform revenue continues double-digit YoY growth; subscription + tips remain primary monetization vs tube ad rev.",
+      "benchmark_json": {"market_note": "Use as ARPU context only — TBCC first-party Stars data is authoritative."},
+      "demand_index": null,
+      "source_url": "https://inside.theporn.com/topic/industry-statistics/",
+      "source_label": "IIU"
+    }
+  ],
+  "categories": [
+    {"slug": "amateur-girls", "title": "Amateur", "demand_index": 92, "summary": "Consistently top-tier search demand; strong on Reddit and tube discovery."},
+    {"slug": "milf", "title": "MILF", "demand_index": 88, "summary": "High evergreen demand; strong US prime-time engagement."},
+    {"slug": "legal-teens", "title": "Legal teens / college", "demand_index": 85, "summary": "High search volume; compliance-sensitive labeling required on web surfaces."},
+    {"slug": "thick-booty", "title": "Thick / big booty", "demand_index": 84, "summary": "Strong short-form and carousel performance."},
+    {"slug": "blowjobs", "title": "Oral", "demand_index": 80, "summary": "Stable category demand across platforms."},
+    {"slug": "real-couples", "title": "Real couples", "demand_index": 78, "summary": "Authenticity trend; good for suggestive-to-explicit funnel."},
+    {"slug": "just-boobs", "title": "Boobs / topless", "demand_index": 76, "summary": "Works well on suggestive tiers and SFW-adjacent teasers."},
+    {"slug": "tik-tok", "title": "TikTok-style / short vertical", "demand_index": 74, "summary": "Format trend more than niche; bias mobile surfaces."},
+    {"slug": "rough-sex", "title": "Rough / intense", "demand_index": 72, "summary": "Niche but loyal; gate carefully on Reddit policy profiles."},
+    {"slug": "lips-that-grip", "title": "Lips that grip", "demand_index": 70, "summary": "Mid-high tube search; tag overlap with amateur."},
+    {"slug": "real-orgasms", "title": "Real orgasms / authentic", "demand_index": 68, "summary": "Authenticity sub-trend; caption A/B friendly."},
+    {"slug": "goon", "title": "Goon / hypno-adjacent", "demand_index": 65, "summary": "Community-driven Telegram lane; not broad SEO but high engagement per subscriber."},
+    {"slug": "ai-companion", "title": "AI companion / chat", "demand_index": 90, "summary": "Fastest-growing tech vertical; pairs with TBCC companion bot."},
+    {"slug": "hentai", "title": "Hentai / animated", "demand_index": 86, "summary": "Global search leader; distinct from live-action supply."},
+    {"slug": "cosplay", "title": "Cosplay", "demand_index": 71, "summary": "Seasonal spikes around conventions and game releases."}
+  ]
+}
