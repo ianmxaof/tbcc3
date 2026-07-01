@@ -1,0 +1,60 @@
+name: TBCC backend tests
+
+# Pytest coverage for the growth-signal / ops-flywheel surfaces on every push/PR
+# that touches the backend or the MCP server. Kept lean: SQLite in-memory fixtures
+# only, no Postgres/Redis/Telethon services required.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tbcc/backend/**"
+      - "tbcc/mcp-server/**"
+      - ".github/workflows/tbcc-backend-tests.yml"
+  pull_request:
+    paths:
+      - "tbcc/backend/**"
+      - "tbcc/mcp-server/**"
+      - ".github/workflows/tbcc-backend-tests.yml"
+
+defaults:
+  run:
+    working-directory: tbcc/backend
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tbcc/backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      # Required gate: the surfaces this workstream owns must stay green.
+      # These run on real in-memory SQLite fixtures (see tests/conftest.py).
+      - name: Gate — growth + ops tests
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_content_signals.py \
+            tests/test_growth_reaction.py \
+            tests/test_ops_workflow_runner.py \
+            tests/test_ops_tool_permissions.py
+
+      # Informational: full suite. Non-blocking today because ~12 pre-existing
+      # tests fail for unrelated reasons (missing async plugin, stale mocks in
+      # companion/secretary suites). Triage tracked in the growth-reaction
+      # handoff; promote to a required step once the suite is green.
+      - name: Full suite (non-blocking)
+        continue-on-error: true
+        run: python -m pytest -q -p no:cacheprovider tests/
