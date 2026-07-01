@@ -65,10 +65,11 @@ $opsMessage = @(
 ) -join " "
 
 $growthMessage = @(
-  "TBCC growth report (skill: tbcc-growth-signals): mcporter call tbcc.analytics_content_performance run_tick=true days=14."
-  "Deliver the FULL markdown report with a 2-sentence executive summary at the top (top opportunity + suggested action)."
-  "If digest_changed is true, also call tbcc.growth_signal_proposals days=14 and list each pending proposal id + action_kind so I can approve one."
-  "If no high-confidence signals, say so in one line. Never create posts, change schedules, deposit, or act on a proposal without my OK."
+  "TBCC growth report (skill: tbcc-growth-signals): FIRST mcporter call tbcc.growth_signals_eligibility."
+  "If eligible=false, reply ONE line with the reason and STOP (no tick, no proposals, save tokens)."
+  "If eligible=true: mcporter call tbcc.analytics_content_performance run_tick=true days=14."
+  "If digest_changed is true, also call tbcc.growth_signal_proposals days=14 and list each pending proposal id + action_kind."
+  "Deliver full markdown + 2-sentence executive summary. Never create posts, schedules, deposit, or act on a proposal without my OK."
 ) -join " "
 
 function New-CronJob {

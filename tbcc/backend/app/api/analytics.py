@@ -395,6 +395,14 @@ def growth_signals_status_route():
     return growth_signals_status()
 
 
+@router.get("/signals/eligibility")
+def growth_signals_eligibility_route(db: Session = Depends(get_db)):
+    """Whether a growth tick / view refresh is worth running (no side effects)."""
+    from app.services.content_signals import growth_signals_eligibility
+
+    return growth_signals_eligibility(db)
+
+
 @router.get("/signals")
 def growth_signals_compute(
     db: Session = Depends(get_db),

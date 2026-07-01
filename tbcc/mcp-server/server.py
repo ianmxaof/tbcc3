@@ -415,7 +415,13 @@ def analytics_content_performance(days: int = 14, run_tick: bool = True) -> str:
     """
     days = max(1, min(90, days))
     if run_tick:
+        elig = _request("GET", "/analytics/signals/eligibility")
+        if not elig.get("eligible"):
+            reason = elig.get("reason") or "insufficient_data"
+            return f"_Growth tick skipped — {reason} (no Telethon/OpenClaw work)._"
         tick = _request("POST", "/analytics/signals/tick", params={"refresh_views": "true", "push_inbox": "false"})
+        if tick.get("skipped"):
+            return tick.get("markdown") or f"_Growth tick skipped — {tick.get('skip_reason', 'no data')}._"
         report = tick.get("report") or {}
         md = tick.get("markdown")
         if md:
@@ -437,6 +443,13 @@ def analytics_content_performance(days: int = 14, run_tick: bool = True) -> str:
         lines.append("_Insufficient data — need more posted deliveries with view refresh._")
     lines.append("")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def growth_signals_eligibility() -> str:
+    """Check whether growth tick / view refresh is worth running (no Telethon cost if false)."""
+    out = _request("GET", "/analytics/signals/eligibility")
+    return _pretty(out)
 
 
 @mcp.tool()

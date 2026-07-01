@@ -208,3 +208,39 @@ def test_tick_disabled_short_circuits(db, monkeypatch):
     monkeypatch.setenv("TBCC_GROWTH_SIGNALS_ENABLED", "off")
     result = cs.tick_growth_signals(db, refresh_views=False)
     assert result == {"ok": True, "enabled": False, "skipped": True}
+
+
+def test_eligibility_skips_empty_ledger(db, monkeypatch):
+    monkeypatch.setenv("TBCC_GROWTH_TICK_SKIP_EMPTY", "1")
+    monkeypatch.setenv("TBCC_GROWTH_TICK_MIN_REFRESHABLE_DELIVERIES", "3")
+    monkeypatch.setenv("TBCC_GROWTH_TICK_MIN_VIEW_ROWS", "3")
+    out = cs.assess_growth_tick_eligibility(db)
+    assert out["eligible"] is False
+    assert "insufficient_data" in out["reason"]
+
+
+def test_eligibility_allows_with_refreshable_rows(db, monkeypatch):
+    monkeypatch.setenv("TBCC_GROWTH_TICK_SKIP_EMPTY", "1")
+    monkeypatch.setenv("TBCC_GROWTH_TICK_MIN_REFRESHABLE_DELIVERIES", "2")
+    now = datetime.utcnow()
+    for i in range(3):
+        db.add(
+            PostDeliveryMetric(
+                created_at=now - timedelta(days=1),
+                event_type="scheduled_post_sent",
+                channel_id=1,
+                channel_identifier="@ch",
+                telegram_message_id=100 + i,
+            )
+        )
+    db.commit()
+    out = cs.assess_growth_tick_eligibility(db)
+    assert out["eligible"] is True
+    assert out["can_refresh_views"] is True
+
+
+def test_tick_skips_when_insufficient_data(db, monkeypatch):
+    monkeypatch.setenv("TBCC_GROWTH_TICK_SKIP_EMPTY", "1")
+    result = cs.tick_growth_signals(db, refresh_views=False, push_inbox_on_change=False)
+    assert result["skipped"] is True
+    assert result["proposed_actions"] == []

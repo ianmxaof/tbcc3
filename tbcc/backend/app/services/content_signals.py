@@ -117,6 +117,108 @@ def max_signals_returned() -> int:
     return _env_int("TBCC_SIGNAL_MAX_RESULTS", 8, lo=3, hi=25)
 
 
+def skip_empty_growth_ticks() -> bool:
+    """Skip growth tick / OpenClaw report when there is nothing actionable to compute."""
+    return (os.getenv("TBCC_GROWTH_TICK_SKIP_EMPTY") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def min_refreshable_deliveries() -> int:
+    return _env_int("TBCC_GROWTH_TICK_MIN_REFRESHABLE_DELIVERIES", 3, lo=1, hi=200)
+
+
+def min_view_rows_for_signals() -> int:
+    return _env_int("TBCC_GROWTH_TICK_MIN_VIEW_ROWS", 3, lo=1, hi=500)
+
+
+def growth_data_footprint(db: Session, *, days: int | None = None) -> dict[str, Any]:
+    """Counts delivery / view / attribution rows in the signal lookback window."""
+    window_days = days or signal_lookback_days()
+    since = datetime.utcnow() - timedelta(days=window_days)
+    attr_since = since
+
+    total_deliveries = (
+        db.query(PostDeliveryMetric).filter(PostDeliveryMetric.created_at >= since).count()
+    )
+    refreshable = (
+        db.query(PostDeliveryMetric)
+        .filter(
+            PostDeliveryMetric.created_at >= since,
+            PostDeliveryMetric.telegram_message_id.isnot(None),
+            PostDeliveryMetric.channel_identifier.isnot(None),
+        )
+        .count()
+    )
+    with_views = (
+        db.query(PostDeliveryMetric)
+        .filter(
+            PostDeliveryMetric.created_at >= since,
+            PostDeliveryMetric.views_latest.isnot(None),
+        )
+        .count()
+    )
+    attribution_events = (
+        db.query(GrowthAttributionEvent)
+        .filter(GrowthAttributionEvent.created_at >= attr_since)
+        .count()
+    )
+    return {
+        "lookback_days": window_days,
+        "total_deliveries": total_deliveries,
+        "refreshable_deliveries": refreshable,
+        "deliveries_with_views": with_views,
+        "attribution_events": attribution_events,
+        "thresholds": {
+            "min_refreshable_deliveries": min_refreshable_deliveries(),
+            "min_view_rows": min_view_rows_for_signals(),
+            "min_conversions_per_hour": min_conversions_per_hour(),
+        },
+    }
+
+
+def assess_growth_tick_eligibility(db: Session, *, days: int | None = None) -> dict[str, Any]:
+    """
+    Decide whether a growth tick (view refresh + signal rank + proposals) is worth running.
+    Saves Telethon polls and OpenClaw tokens when the ledger is too sparse.
+    """
+    if not signals_enabled():
+        return {"eligible": False, "reason": "signals_disabled", "footprint": {}}
+
+    footprint = growth_data_footprint(db, days=days)
+    min_refresh = min_refreshable_deliveries()
+    min_views = min_view_rows_for_signals()
+    min_attr = min_conversions_per_hour()
+
+    can_refresh = footprint["refreshable_deliveries"] >= min_refresh
+    can_rank_views = footprint["deliveries_with_views"] >= min_views
+    can_rank_conversions = footprint["attribution_events"] >= min_attr
+    eligible = can_refresh or can_rank_views or can_rank_conversions
+
+    if not skip_empty_growth_ticks():
+        eligible = True
+
+    reason = "ok"
+    if not eligible:
+        reason = (
+            "insufficient_data: need "
+            f">={min_refresh} refreshable deliveries, "
+            f">={min_views} rows with views, or "
+            f">={min_attr} attribution events"
+        )
+
+    return {
+        "eligible": eligible,
+        "reason": reason,
+        "can_refresh_views": can_refresh,
+        "can_rank_signals": can_rank_views or can_rank_conversions,
+        "footprint": footprint,
+    }
+
+
 def _redis_client():
     import redis
 
@@ -491,12 +593,33 @@ def tick_growth_signals(
     if not signals_enabled():
         return {"ok": True, "enabled": False, "skipped": True}
 
+    eligibility = assess_growth_tick_eligibility(db)
+    if not eligibility.get("eligible"):
+        return {
+            "ok": True,
+            "enabled": True,
+            "skipped": True,
+            "skip_reason": eligibility.get("reason"),
+            "eligibility": eligibility,
+            "digest_changed": False,
+            "view_refresh": {"skipped": True, "reason": eligibility.get("reason")},
+            "report": {"ok": True, "enabled": True, "signals": []},
+            "markdown": "_Growth tick skipped — insufficient delivery/view/attribution data._",
+            "proposed_actions": [],
+        }
+
     view_refresh: dict[str, Any] = {"skipped": True}
-    if refresh_views and performance_enabled():
+    if refresh_views and performance_enabled() and eligibility.get("can_refresh_views"):
         try:
             view_refresh = refresh_delivery_views_sync(db, limit=200)
         except Exception as e:
             view_refresh = {"ok": False, "error": str(e)}
+    elif refresh_views and performance_enabled() and not eligibility.get("can_refresh_views"):
+        view_refresh = {
+            "skipped": True,
+            "reason": "insufficient_refreshable_deliveries",
+            "footprint": eligibility.get("footprint"),
+        }
 
     report = compute_strong_signals(db)
     digest = _digest_hash(report)
@@ -590,3 +713,10 @@ def growth_signals_status() -> dict[str, Any]:
         "last_tick_unix": float(last_tick) if last_tick else None,
         "last_digest": last_digest,
     }
+
+
+def growth_signals_eligibility(db: Session) -> dict[str, Any]:
+    """Public eligibility probe for OpenClaw / dashboard — no side effects."""
+    out = assess_growth_tick_eligibility(db)
+    out["skip_empty_ticks"] = skip_empty_growth_ticks()
+    return out
