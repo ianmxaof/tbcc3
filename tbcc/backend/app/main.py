@@ -71,6 +71,10 @@ def on_startup():
             focus_watch_loop_enabled,
             evaluate_and_maybe_auto_apply,
         )
+        from app.services.system_health import (
+            auto_remediate_health_conflicts,
+            scheduler_watchdog_tick,
+        )
         import threading
 
         if focus_watch_loop_enabled():
@@ -82,6 +86,9 @@ def on_startup():
                     time.sleep(25)
                     try:
                         evaluate_and_maybe_auto_apply()
+                        # Watchdog owns the post-queue lane; run it before auto_remediate.
+                        scheduler_watchdog_tick()
+                        auto_remediate_health_conflicts()
                     except Exception:
                         logger.debug("focus watch loop tick failed", exc_info=True)
 
@@ -91,6 +98,10 @@ def on_startup():
                 parts.append("auto-react")
             if focus_auto_import_enabled():
                 parts.append("auto-import-burst")
+            from app.services.system_health import health_auto_remediate_enabled
+
+            if health_auto_remediate_enabled():
+                parts.append("auto-remediate")
             logger.info("TBCC focus watch loop: %s", ", ".join(parts) or "on")
     except Exception:
         logger.debug("focus watch loop not started", exc_info=True)
@@ -1369,6 +1380,18 @@ def health_system():
         body["focus"] = None
     status = 200 if body.get("ok") else 503
     return JSONResponse(content=body, status_code=status, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/health/scheduling/fast")
+def health_scheduling_fast():
+    """
+    Lightweight scheduling status for dashboards/watchdogs — must respond <500ms.
+    Reads the background-maintained scan cache (no powershell/netstat) plus cheap probes.
+    """
+    from app.services.system_health import scheduling_fast_snapshot
+
+    body = scheduling_fast_snapshot()
+    return JSONResponse(content=body, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/health/system/cleanup-uvicorn-orphans")
