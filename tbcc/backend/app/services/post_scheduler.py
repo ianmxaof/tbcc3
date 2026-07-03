@@ -323,6 +323,19 @@ def clear_post_scheduling_redis_state() -> dict[str, int]:
     return cleared
 
 
+def _migrate_scheduler_tasks_off_post_queue() -> dict[str, Any]:
+    """Move legacy scheduler tasks off the pool post queue after post_scheduler split."""
+    from app.services.celery_queue_ops import purge_queue_tasks_matching
+
+    return purge_queue_tasks_matching(
+        POOL_POST_QUEUE,
+        task_substrings=[
+            "drain_scheduled_post_queue",
+            "post_scheduled_text",
+        ],
+    )
+
+
 def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
     """
     Unblock stalled schedulers: purge stale post-queue tasks, clear Redis enqueue locks,
@@ -331,6 +344,7 @@ def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
     from app.services.celery_queue_ops import purge_celery_queues, purge_post_pool_tasks_from_queue
 
     out: dict = {"ok": True}
+    out["migrate_post_queue"] = _migrate_scheduler_tasks_off_post_queue()
     if purge_post_queue:
         out["purge"] = purge_celery_queues([SCHEDULER_POST_QUEUE, POOL_POST_QUEUE], min_length=0)
     else:
