@@ -52,10 +52,32 @@ def test_schedule_pool_enqueues_when_due():
     db.query.side_effect = [pool_q, ch_q]
     now = datetime.utcnow()
     with patch("app.services.post_scheduler.pool_auto_post_enabled", return_value=True):
-        with patch("app.services.post_scheduler.post_pool") as delay:
-            _schedule_pool_interval_posts(db, now)
-            delay.delay.assert_called_once_with(7, "@testch")
-            assert pool.last_posted == now
+        with patch("app.services.post_scheduler.pool_autopost_pause_when_overdue", return_value=False):
+            with patch("app.services.post_scheduler.pool_queue_length", return_value=0):
+                with patch("app.services.post_scheduler.post_pool") as delay:
+                    _schedule_pool_interval_posts(db, now)
+                    delay.delay.assert_called_once_with(7, "@testch")
+                    assert pool.last_posted == now
+
+
+def test_pool_autopost_skipped_when_any_scheduler_overdue():
+    db = MagicMock()
+    pool = MagicMock()
+    pool.id = 7
+    pool.auto_post_enabled = True
+    pool.interval_minutes = 60
+    pool.last_posted = None
+    pool.channel_id = 1
+    db.query.return_value.all.return_value = [pool]
+    with patch("app.services.post_scheduler.pool_auto_post_enabled", return_value=True):
+        with patch("app.services.post_scheduler.pool_autopost_pause_when_overdue", return_value=True):
+            with patch(
+                "app.services.post_scheduler.count_overdue_scheduled_posts",
+                return_value=[{"id": 1}],
+            ):
+                with patch("app.services.post_scheduler.post_pool") as delay:
+                    _schedule_pool_interval_posts(db, datetime.utcnow())
+                    delay.delay.assert_not_called()
 
 
 def test_check_and_schedule_commits():

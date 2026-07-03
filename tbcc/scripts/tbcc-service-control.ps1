@@ -17,6 +17,73 @@ function Get-TbccControlPythonCmd {
   return "python"
 }
 
+function Set-TbccBackendRestartGrace {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int]$Seconds = 0
+  )
+  $py = Get-TbccControlPythonCmd
+  $backendDir = Join-Path $TbccRoot "backend"
+  $script = Join-Path $backendDir "scripts\set_backend_restart_grace.py"
+  if (-not (Test-Path -LiteralPath $script)) { return @{ ok = $false } }
+  $args = @("--mark")
+  if ($Seconds -gt 0) { $args += @("--seconds", [string]$Seconds) }
+  $out = & $py $script @args 2>&1
+  return @{ ok = ($LASTEXITCODE -eq 0); output = ($out | Out-String).Trim() }
+}
+
+function Clear-TbccBackendRestartGrace {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int]$TailSeconds = -1
+  )
+  $py = Get-TbccControlPythonCmd
+  $backendDir = Join-Path $TbccRoot "backend"
+  $script = Join-Path $backendDir "scripts\set_backend_restart_grace.py"
+  if (-not (Test-Path -LiteralPath $script)) { return @{ ok = $false } }
+  $args = @("--clear")
+  if ($TailSeconds -ge 0) { $args += @("--tail", [string]$TailSeconds) }
+  $out = & $py $script @args 2>&1
+  return @{ ok = ($LASTEXITCODE -eq 0); output = ($out | Out-String).Trim() }
+}
+
+function Wait-TbccBackendHealth {
+  param(
+    [string]$Url = "http://127.0.0.1:8000/health",
+    [int]$TimeoutSec = 60
+  )
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+      if ($r.StatusCode -eq 200) { return $true }
+    } catch {}
+    Start-Sleep -Seconds 1
+  }
+  return $false
+}
+
+$script:TbccWin32ProcessCache = $null
+$script:TbccWin32ProcessCacheAt = $null
+
+function Get-TbccWin32ProcessListCached {
+  <# WMI full-process scan is expensive; share a short TTL cache for tray/panel/audit. #>
+  param([int]$MaxAgeSec = 15)
+  $now = Get-Date
+  if (
+    $script:TbccWin32ProcessCache -and $script:TbccWin32ProcessCacheAt -and
+    (($now - $script:TbccWin32ProcessCacheAt).TotalSeconds -lt $MaxAgeSec)
+  ) {
+    return $script:TbccWin32ProcessCache
+  }
+  $script:TbccWin32ProcessCache = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+      $_.Name -match '^(python|py|node|bun|redis|postgres|com\.docker|wsl|WindowsTerminal|wt|cmd)\.exe$' -or
+      $_.Name -eq 'vmmemWSL'
+    })
+  $script:TbccWin32ProcessCacheAt = $now
+  return $script:TbccWin32ProcessCache
+}
+
 function Read-TbccControlDotEnv {
   param([string]$Path)
   $map = @{}
@@ -32,6 +99,54 @@ function Read-TbccControlDotEnv {
     $map[$k] = $v
   }
   return $map
+}
+
+function Get-TbccStackProfile {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $raw = ($dotEnv['TBCC_STACK_PROFILE'] -as [string]).Trim().ToLower()
+  if ($raw -eq 'lean') { return 'lean' }
+  return 'full'
+}
+
+function Set-TbccStackProfile {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][ValidateSet('lean', 'full')][string]$Profile
+  )
+  $envPath = Join-Path $TbccRoot ".env"
+  $lines = @()
+  if (Test-Path -LiteralPath $envPath) {
+    $lines = @(Get-Content -LiteralPath $envPath -Encoding UTF8 -ErrorAction Stop)
+  }
+  $found = $false
+  $out = New-Object System.Collections.ArrayList
+  foreach ($line in $lines) {
+    if ($line -match '^\s*#?\s*TBCC_STACK_PROFILE\s*=') {
+      $found = $true
+      if ($Profile -eq 'lean') {
+        [void]$out.Add('TBCC_STACK_PROFILE=lean')
+      }
+      continue
+    }
+    [void]$out.Add($line)
+  }
+  if (-not $found -and $Profile -eq 'lean') {
+    [void]$out.Add('')
+    [void]$out.Add('# Stack profile (tray: Stack profile menu)')
+    [void]$out.Add('TBCC_STACK_PROFILE=lean')
+  }
+  if ($lines.Count -gt 0 -or $Profile -eq 'lean') {
+    Set-Content -LiteralPath $envPath -Value ($out.ToArray()) -Encoding UTF8
+  }
+  return $Profile
+}
+
+function Get-TbccStackProfileLabel {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $p = Get-TbccStackProfile -TbccRoot $TbccRoot
+  if ($p -eq 'lean') { return 'lean' }
+  return 'full'
 }
 
 function Get-TbccTerminalWindowPrefs {
@@ -74,6 +189,47 @@ function Get-TbccTerminalWindowPrefs {
     WtWidth  = $wtW
     WtHeight = $wtH
   }
+}
+
+function Test-TbccWtLaunchMinimized {
+  <# New TBCC WT windows: minimized by default so cold start does not steal focus. TBCC_WT_LAUNCH_MINIMIZED=0 to disable. #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $raw = ($env:TBCC_WT_LAUNCH_MINIMIZED -as [string])
+  if (-not $raw) {
+    $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+    $raw = ($dotEnv['TBCC_WT_LAUNCH_MINIMIZED'] -as [string]).Trim()
+  }
+  if (-not $raw) { return $true }
+  return $raw.Trim().ToLower() -notin @('0', 'false', 'no', 'off')
+}
+
+function Test-TbccBackgroundServiceStartEnabled {
+  <# Auto-restarts (StackWatch, health remediate) run headless when no TBCC WT window exists. #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $raw = ($dotEnv['TBCC_BACKGROUND_SERVICE_START'] -as [string]).Trim().ToLower()
+  if ($raw -match '^(0|false|no|off)$') { return $false }
+  return $true
+}
+
+function Start-TbccStackServiceHeadless {
+  param(
+    [Parameter(Mandatory = $true)]$Service,
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$UseErrorHubWrapper,
+    [Parameter(Mandatory = $true)][string]$Command
+  )
+  if ($UseErrorHubWrapper) {
+    $runner = Join-Path $TbccRoot "scripts\run-tbcc-service.ps1"
+    if (-not (Test-Path -LiteralPath $runner)) { return $false }
+    $null = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+      "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $runner,
+      "-TbccRoot", $TbccRoot, "-ServiceName", $Service.Title
+    ) -WindowStyle Hidden -PassThru
+    return $true
+  }
+  $null = Start-Process -FilePath $env:ComSpec -ArgumentList @("/c", $Command) -WindowStyle Hidden -PassThru
+  return $true
 }
 
 function Test-TbccControlLocalUrl {
@@ -180,8 +336,62 @@ function Test-TbccProcessIsTbccManagedShell {
   if ($CommandLine -match 'run-tbcc-service\.ps1') { return $true }
   if ($CommandLine -match 'run-tbcc-orchestrator\.ps1|tbcc-orchestrate\.ps1') { return $true }
   if ($CommandLine -match 'tbcc-error-hub\.ps1|show-tbcc-error-hub') { return $true }
+  if ($CommandLine -match 'run-tbcc-stackwatch\.ps1|show-tbcc-processes\.ps1') { return $true }
   if ($CommandLine -match 'tbcc-stop-full-stack\.ps1|tbcc-cold-start\.ps1|tbcc-restart-full-stack\.ps1') { return $true }
   return $false
+}
+
+function Stop-TbccStrayStackProcesses {
+  <#
+  Final sweep: kill all TBCC python/node workers under the repo root (duplicates, orphans, lean violations).
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int[]]$ExcludeProcessIds = @()
+  )
+  $exclude = @(Get-TbccStopExcludeProcessIds -Extra $ExcludeProcessIds)
+  $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  $esc = [regex]::Escape($TbccRoot)
+  $killed = @()
+
+  $pyPatterns = @(
+    'uvicorn\s+app\.main',
+    'celery\s+-A\s+app\.workers',
+    'app\.workers\.celery_app',
+        'bots\.(payment_bot|loot_bot|secretary_bot|companion_bot|macro_search_bot|album_composer_bot|llm_chat_bot)',
+    'run_nsfw_detect',
+    'run_clip_categorize',
+    'lustpress',
+    'watch_folder_organizer',
+    'show-tbcc-processes\.ps1',
+    'run-tbcc-stackwatch\.ps1'
+  )
+
+  foreach ($pr in $all) {
+    if ($exclude -contains [int]$pr.ProcessId) { continue }
+    $cmd = [string]$pr.CommandLine
+    if (-not $cmd -or $cmd -notmatch $esc) { continue }
+    $name = [string]$pr.Name
+    $match = $false
+    if ($name -match '^(python|py)\.exe$') {
+      foreach ($pat in $pyPatterns) {
+        if ($cmd -match $pat) { $match = $true; break }
+      }
+      if (-not $match -and $cmd -match ($esc + '\\backend\\')) { $match = $true }
+    } elseif ($name -eq 'node.exe' -and (
+        ($cmd -match ($esc + '\\dashboard\\') -and $cmd -match 'vite|npm') -or
+        ($cmd -match 'aof-forum' -and $cmd -match 'next dev|next-server')
+      )) {
+      $match = $true
+    } elseif ($name -eq 'bun.exe' -and $cmd -match ($esc + '\\')) {
+      $match = $true
+    }
+    if (-not $match) { continue }
+    if (Test-TbccProcessIsIdeShellHost -Process $pr -AllProcesses $all -IdeProtected $exclude) { continue }
+    $n = Stop-TbccProcessTree -ProcessId $pr.ProcessId -ExcludeProcessIds $exclude -AllProcesses $all
+    if ($n -gt 0) { $killed += [int]$pr.ProcessId }
+  }
+  return @($killed | Select-Object -Unique)
 }
 
 function Test-TbccProcessIsTbccWtHost {
@@ -222,29 +432,162 @@ function Stop-TbccProcessesByCommandMatch {
 }
 
 function Stop-TbccProcessesByServiceTitle {
-  param([string]$Title, [string]$TbccRoot)
+  param(
+    [string]$Title,
+    [string]$TbccRoot,
+    [switch]$GracefulTabClose,
+    [int]$TabWaitSeconds = 12
+  )
   $killed = @()
   $pat = 'run-tbcc-service\.ps1.*-ServiceName\s+' + [regex]::Escape($Title)
-  $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat)
   $pat2 = 'run-tbcc-service\.ps1.*-ServiceName\s+' + [regex]::Escape('"' + $Title + '"')
-  $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat2)
   $pat3 = 'title\s+"' + [regex]::Escape($Title) + '"'
-  $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat3)
+
+  if ($GracefulTabClose) {
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat3)
+    $deadline = (Get-Date).AddSeconds($TabWaitSeconds)
+    while ((Get-Date) -lt $deadline) {
+      $wrappers = @()
+      if (Get-Command Get-TbccServiceTabWrapperProcesses -ErrorAction SilentlyContinue) {
+        $wrappers = @(Get-TbccServiceTabWrapperProcesses -ServiceName $Title)
+      } else {
+        $hub = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+        if (Test-Path -LiteralPath $hub) {
+          . $hub
+          $wrappers = @(Get-TbccServiceTabWrapperProcesses -ServiceName $Title)
+        }
+      }
+      if ($wrappers.Count -eq 0) { break }
+      Start-Sleep -Milliseconds 250
+    }
+  } else {
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat)
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat2)
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat3)
+  }
+
+  $wrappersLeft = @()
+  if (Get-Command Get-TbccServiceTabWrapperProcesses -ErrorAction SilentlyContinue) {
+    $wrappersLeft = @(Get-TbccServiceTabWrapperProcesses -ServiceName $Title)
+  }
+  if ($wrappersLeft.Count -gt 0) {
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat)
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat2)
+  }
+
+  if ($TbccRoot -and (Get-Command Invoke-TbccCloseServiceTab -ErrorAction SilentlyContinue)) {
+    Start-Sleep -Milliseconds 200
+    $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $Title
+  } elseif ($TbccRoot) {
+    $hub = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+    if (Test-Path -LiteralPath $hub) {
+      . $hub
+      Start-Sleep -Milliseconds 200
+      $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $Title
+    }
+  }
   return @($killed | Select-Object -Unique)
+}
+
+$script:TbccMenuDefaultOffServiceIds = @('llm_chat', 'watch', 'forum', 'album_composer', 'macro_search')
+
+function Get-TbccOpenClawGatewayPort {
+  param($DotEnv = $null)
+  $raw = if ($DotEnv) { $DotEnv['TBCC_OPENCLAW_GATEWAY_PORT'] } else { $null }
+  if (-not $raw) { $raw = $env:TBCC_OPENCLAW_GATEWAY_PORT }
+  if ($raw -and ($raw -as [string]).Trim() -match '^\d+$') {
+    return [int]($raw -as [string]).Trim()
+  }
+  return 18789
+}
+
+function Test-TbccOpenClawCliInstalled {
+  if (Get-Command openclaw -ErrorAction SilentlyContinue) { return $true }
+  if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE ".openclaw\gateway.cmd")) { return $true }
+  return Test-Path -LiteralPath (Join-Path $env:APPDATA "npm\node_modules\openclaw\dist\index.js")
+}
+
+function Test-TbccOpenClawAutoStartEnabled {
+  param($DotEnv = $null)
+  $raw = if ($DotEnv) { $DotEnv['TBCC_OPENCLAW_AUTO_START'] } else { $null }
+  if (-not $raw) { $raw = $env:TBCC_OPENCLAW_AUTO_START }
+  if (-not $raw) { return $true }
+  return (($raw -as [string]).Trim().ToLower() -match '^(1|true|yes|on)$')
+}
+
+function Test-TbccOpenClawConfigured {
+  $cfg = Join-Path $env:USERPROFILE ".openclaw"
+  if (Test-Path -LiteralPath $cfg) { return $true }
+  if (-not (Test-TbccOpenClawCliInstalled)) { return $false }
+  try {
+    & openclaw config get gateway.port 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+  } catch {
+    return $false
+  }
+}
+
+function Get-TbccOpenClawGatewayLaunchCmd {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $runScript = Join-Path $TbccRoot "scripts\run-openclaw-gateway.ps1"
+  return 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + $runScript + '" -TbccRoot "' + $TbccRoot + '"'
+}
+
+function Get-TbccOpenClawGatewayCommandMatch {
+  return '(?i)run-openclaw-gateway\.ps1|node_modules[/\\]openclaw[/\\].*\bgateway\b|\.openclaw[/\\]gateway\.cmd|openclaw(\.cmd)?\s+gateway'
+}
+
+function Stop-TbccOpenClawGatewaySurfaces {
+  <#
+  Kill TBCC-managed OpenClaw gateway (WT tab, run-openclaw-gateway.ps1, node on :18789).
+  Does not stop the separate Windows Scheduled Task "OpenClaw Gateway" from openclaw onboard.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int[]]$ExcludeProcessIds = @()
+  )
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  if (-not (Test-TbccOpenClawAutoStartEnabled -DotEnv $dotEnv)) { return @() }
+  $port = Get-TbccOpenClawGatewayPort -DotEnv $dotEnv
+  $killed = @()
+  foreach ($pat in @(Get-TbccOpenClawGatewayCommandMatch)) {
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat -ExcludeProcessIds $ExcludeProcessIds)
+  }
+  $killed += @(Stop-TbccListenersOnPort -Port $port -ExcludeProcessIds $ExcludeProcessIds)
+  if ($TbccRoot) {
+    $killed += @(Stop-TbccProcessesByServiceTitle -Title "OpenClaw-Gateway" -TbccRoot $TbccRoot)
+  }
+  return @($killed | Select-Object -Unique)
+}
+
+function Get-TbccStackServiceById {
+  param(
+    [Parameter(Mandatory = $true)][string]$ServiceId,
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$FullStack,
+    [switch]$MenuCatalog
+  )
+  return @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog |
+    Where-Object { $_.Id -eq $ServiceId } | Select-Object -First 1)
 }
 
 function Get-TbccStackServices {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
-    [switch]$FullStack
+    [switch]$FullStack,
+    [switch]$MenuCatalog
   )
   $py = Get-TbccControlPythonCmd
   $backendDir = Join-Path $TbccRoot "backend"
   $dashboardDir = Join-Path $TbccRoot "dashboard"
   $aofForumDir = Join-Path (Split-Path $TbccRoot -Parent) "aof-forum"
+  $dashMatch = '(?i)' + [regex]::Escape($dashboardDir) + '.*(vite|npm run dev|npm\.cmd)'
+  $forumMatch = '(?i)' + [regex]::Escape($aofForumDir) + '.*(next dev|next-server|npm run dev|npm\.cmd)'
   $servicesDir = Join-Path $TbccRoot "services"
   $hasForum = Test-Path (Join-Path $aofForumDir "package.json")
   $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $stackProfile = ($dotEnv['TBCC_STACK_PROFILE'] -as [string]).Trim().ToLower()
+  $leanStack = $stackProfile -eq 'lean'
 
   # Match start.ps1: no --reload unless TBCC_UVICORN_RELOAD=1 in .env (avoids orphan workers on Windows).
   $uvicornReload = ''
@@ -258,27 +601,34 @@ function Get-TbccStackServices {
       Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m uvicorn app.main:app --host 127.0.0.1 --port 8000' + $uvicornReload)
     })
   [void]$list.Add([pscustomobject]@{
-      Id = "dashboard"; Title = "TBCC-Dashboard"; Port = 5173; CommandMatch = "vite|npm run dev";
+      Id = "dashboard"; Title = "TBCC-Dashboard"; Port = 5173; CommandMatch = $dashMatch;
       Command = ('cd /d "' + $dashboardDir + '" & npm run dev')
     })
-  if ($hasForum) {
+  if ($hasForum -and (-not $leanStack -or $MenuCatalog)) {
     [void]$list.Add([pscustomobject]@{
-        Id = "forum"; Title = "AOF-Forum"; Port = 3001; CommandMatch = "next dev|aof-forum";
+        Id = "forum"; Title = "AOF-Forum"; Port = 3001; CommandMatch = $forumMatch;
         Command = ('cd /d "' + $aofForumDir + '" & npm run dev')
       })
   }
 
+  $celeryHomeQueues = ($dotEnv['TBCC_CELERY_HOME_QUEUES'] -as [string]).Trim()
+  if (-not $celeryHomeQueues) { $celeryHomeQueues = 'celery,scrape,subscription,telegram' }
+
   if ($FullStack) {
     [void]$list.Add([pscustomobject]@{
         Id = "celery"; Title = "TBCC-Celery"; Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q celery";
-        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,scrape,subscription,telegram')
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q ' + $celeryHomeQueues)
       })
     [void]$list.Add([pscustomobject]@{
-        Id = "celery_post"; Title = "TBCC-Celery-Post"; Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q post";
+        Id = "celery_post"; Title = "TBCC-Celery-Post"; Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q post -n post@";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post -n post@%h')
       })
     [void]$list.Add([pscustomobject]@{
-        Id = "beat"; Title = "TBCC-Beat"; Port = 0; CommandMatch = "celery.*beat|app\.workers\.celery_app beat";
+        Id = "celery_post_scheduler"; Title = "TBCC-Celery-Post-Scheduler"; Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q post_scheduler";
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post_scheduler -n scheduler@%h')
+      })
+    [void]$list.Add([pscustomobject]@{
+        Id = "beat"; Title = "TBCC-Beat"; Port = 0; CommandMatch = "app\.workers\.celery_app beat";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app beat -l info')
       })
     [void]$list.Add([pscustomobject]@{
@@ -290,21 +640,59 @@ function Get-TbccStackServices {
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.secretary_bot')
       })
     [void]$list.Add([pscustomobject]@{
-        Id = "macro_search"; Title = "TBCC-MacroSearchBot"; Port = 0; CommandMatch = "bots\.macro_search_bot";
-        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.macro_search_bot')
+        Id = "companion"; Title = "TBCC-CompanionBot"; MenuLabel = "TBCC-CompanionBot (spicy)";
+        Port = 0; CommandMatch = "bots\.companion_bot";
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.companion_bot')
       })
+    [void]$list.Add([pscustomobject]@{
+        Id = "admin"; Title = "TBCC-AdminBot"; MenuLabel = "TBCC-AdminBot (Storage /erome)";
+        Port = 0; CommandMatch = "bots\.admin_bot";
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.admin_bot')
+      })
+    if (-not $leanStack -or $MenuCatalog) {
+      [void]$list.Add([pscustomobject]@{
+          Id = "macro_search"; Title = "TBCC-MacroSearchBot"; Port = 0; CommandMatch = "bots\.macro_search_bot";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.macro_search_bot')
+        })
+    }
     [void]$list.Add([pscustomobject]@{
         Id = "loot"; Title = "TBCC-LootBot"; Port = 0; CommandMatch = "bots\.loot_bot";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.loot_bot')
       })
-    [void]$list.Add([pscustomobject]@{
-        Id = "album_composer"; Title = "TBCC-AlbumComposer"; Port = 0; CommandMatch = "bots\.album_composer_bot";
-        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.album_composer_bot')
-      })
+    if (-not $leanStack -or $MenuCatalog) {
+      [void]$list.Add([pscustomobject]@{
+          Id = "album_composer"; Title = "TBCC-AlbumComposer"; MenuLabel = "TBCC-AlbumComposer (remixer)";
+          Port = 0; CommandMatch = "bots\.album_composer_bot";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.album_composer_bot')
+        })
+    }
+    if ((Test-TbccOpenClawAutoStartEnabled -DotEnv $dotEnv) -and (Test-TbccOpenClawCliInstalled)) {
+      $ocPort = Get-TbccOpenClawGatewayPort -DotEnv $dotEnv
+      $runOc = Join-Path $TbccRoot "scripts\run-openclaw-gateway.ps1"
+      [void]$list.Add([pscustomobject]@{
+          Id = "openclaw"; Title = "OpenClaw-Gateway"; Port = $ocPort;
+          CommandMatch = (Get-TbccOpenClawGatewayCommandMatch);
+          Command = ('powershell -NoProfile -ExecutionPolicy Bypass -File "' + $runOc + '" -TbccRoot "' + $TbccRoot + '"')
+        })
+    }
+    if ($MenuCatalog) {
+      [void]$list.Add([pscustomobject]@{
+          Id = "llm_chat"; Title = "TBCC-LlmChatBot"; Port = 0; CommandMatch = "bots\.llm_chat_bot";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.llm_chat_bot')
+        })
+      [void]$list.Add([pscustomobject]@{
+          Id = "watch"; Title = "TBCC-WatchOrganizer"; Port = 0; CommandMatch = "watch_folder_organizer";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m app.services.watch_folder_organizer')
+        })
+    }
   }
 
+  $skipEnrichment = (-not $MenuCatalog) -and (
+    $leanStack -or (($dotEnv['TBCC_SKIP_ENRICHMENT'] -as [string]).Trim().ToLower() -match '^(1|true|yes)$')
+  )
   $nsfwUrl = $dotEnv["TBCC_NSFW_DETECT_URL"]
-  if ((Test-TbccControlLocalUrl $nsfwUrl) -and (Test-Path (Join-Path $servicesDir "run_nsfw_detect.py"))) {
+  $nsfwOk = $MenuCatalog -or ((Test-TbccControlLocalUrl $nsfwUrl) -and -not $skipEnrichment)
+  if ($nsfwOk -and (Test-Path (Join-Path $servicesDir "run_nsfw_detect.py"))) {
     [void]$list.Add([pscustomobject]@{
         Id = "nsfw"; Title = "TBCC-NSFW-Detect"; Port = 8001; CommandMatch = "run_nsfw_detect";
         Command = ('cd /d "' + $servicesDir + '" & ' + $py + ' run_nsfw_detect.py')
@@ -313,7 +701,8 @@ function Get-TbccStackServices {
 
   $lustUrl = $dotEnv["TBCC_LUSTPRESS_URL"]
   $lustDir = Join-Path $servicesDir "lustpress"
-  if ((Test-TbccControlLocalUrl $lustUrl) -and (Test-Path (Join-Path $lustDir "package.json"))) {
+  $lustOk = $MenuCatalog -or ((Test-TbccControlLocalUrl $lustUrl) -and -not $skipEnrichment)
+  if ($lustOk -and (Test-Path (Join-Path $lustDir "package.json"))) {
     $bun = $null
     try { $bun = (Get-Command "bun" -ErrorAction Stop).Source } catch {}
     if (-not $bun) {
@@ -322,7 +711,7 @@ function Get-TbccStackServices {
     if ($bun -and (Test-Path -LiteralPath $bun)) {
       $bunQ = '"' + $bun + '"'
       [void]$list.Add([pscustomobject]@{
-          Id = "lustpress"; Title = "TBCC-Lustpress"; Port = 3000; CommandMatch = "lustpress|bun.*start";
+          Id = "lustpress"; Title = "TBCC-Lustpress"; Port = 3000; CommandMatch = "lustpress[\\/].*\bbun\b|\bbun\.exe\b run start:(dev|prod)";
           Command = ('cd /d "' + $lustDir + '" & ' + $bunQ + ' run start:dev')
         })
     }
@@ -330,8 +719,9 @@ function Get-TbccStackServices {
 
   $clipUrl = $dotEnv["TBCC_CLIP_CATEGORIZE_URL"]
   $clipCats = $dotEnv["TBCC_CLIP_CATEGORIES_FILE"]
-  if ((Test-TbccControlLocalUrl $clipUrl) -and (Test-Path (Join-Path $servicesDir "run_clip_categorize.py"))) {
-    if ($clipCats -and (Test-Path -LiteralPath $clipCats)) {
+  $clipOk = $MenuCatalog -or ((Test-TbccControlLocalUrl $clipUrl) -and -not $skipEnrichment)
+  if ($clipOk -and (Test-Path (Join-Path $servicesDir "run_clip_categorize.py"))) {
+    if ($MenuCatalog -or ($clipCats -and (Test-Path -LiteralPath $clipCats))) {
       [void]$list.Add([pscustomobject]@{
           Id = "clip"; Title = "TBCC-CLIP-Categorize"; Port = 8002; CommandMatch = "run_clip_categorize";
           Command = ('cd /d "' + $servicesDir + '" & ' + $py + ' run_clip_categorize.py')
@@ -404,6 +794,291 @@ function Test-TbccServiceProcessRunning {
   return ($alive.Count -gt 0)
 }
 
+function Get-TbccServiceWorkerLeafPids {
+  <# py.exe launcher + python.exe child = one worker; count leaf PIDs only. #>
+  param(
+    $MatchedProcesses,
+    $AllProcesses
+  )
+  $pids = @($MatchedProcesses | ForEach-Object { [int]$_.ProcessId } | Select-Object -Unique)
+  if ($pids.Count -le 1) { return $pids }
+  $leaf = New-Object System.Collections.ArrayList
+  foreach ($pr in $MatchedProcesses) {
+    $procId = [int]$pr.ProcessId
+    if ($leaf -contains $procId) { continue }
+    $name = [string]$pr.Name
+    if ($name -eq 'cmd.exe') {
+      # npm/vite wrappers: child may not match CommandMatch (e.g. npm.cmd) — skip any cmd with children.
+      $anyKids = @($AllProcesses | Where-Object { $_.ParentProcessId -eq $procId })
+      if ($anyKids.Count -gt 0) { continue }
+    }
+    if ($name -eq 'py.exe') {
+      $kids = @($AllProcesses | Where-Object { $_.ParentProcessId -eq $procId -and $pids -contains [int]$_.ProcessId })
+      if ($kids.Count -gt 0) { continue }
+    }
+    if ($name -eq 'node.exe') {
+      $kids = @($AllProcesses | Where-Object { $_.ParentProcessId -eq $procId -and $pids -contains [int]$_.ProcessId })
+      if ($kids.Count -gt 0) { continue }
+    }
+    [void]$leaf.Add($procId)
+  }
+  return @($leaf | Select-Object -Unique)
+}
+
+function Get-TbccServiceWorkerProcesses {
+  param(
+    $Service,
+    $AllProcesses = $null
+  )
+  if (-not $Service.CommandMatch) { return @() }
+  if (-not $AllProcesses) {
+    $AllProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  }
+  $matched = @($AllProcesses | Where-Object { $_.CommandLine -and ($_.CommandLine -match $Service.CommandMatch) })
+  $leafPids = @(Get-TbccServiceWorkerLeafPids -MatchedProcesses $matched -AllProcesses $AllProcesses)
+  if ($leafPids.Count -eq 0) { return @() }
+  return @($AllProcesses | Where-Object { $leafPids -contains [int]$_.ProcessId })
+}
+
+function Stop-TbccServiceWorkerDuplicates {
+  <# Keep one worker (newest); kill older copies and py.exe launcher trees. #>
+  param(
+    [Parameter(Mandatory = $true)]$Service,
+    [int[]]$ExcludeProcessIds = @()
+  )
+  $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  $workers = @(Get-TbccServiceWorkerProcesses -Service $Service -AllProcesses $all)
+  if ($workers.Count -le 1) { return @() }
+  $sorted = @($workers | Sort-Object { $_.CreationDate } -Descending)
+  $keep = [int]$sorted[0].ProcessId
+  $killed = @()
+  foreach ($w in $sorted | Select-Object -Skip 1) {
+    $workerPid = [int]$w.ProcessId
+    if ($ExcludeProcessIds -contains $workerPid) { continue }
+    $n = Stop-TbccProcessTree -ProcessId $workerPid -ExcludeProcessIds $ExcludeProcessIds -AllProcesses $all
+    if ($n -gt 0) { $killed += $workerPid }
+  }
+  # Orphan py.exe launcher (child python already dead).
+  $pat = 'py\.exe.*' + $Service.CommandMatch
+  $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat -ExcludeProcessIds $ExcludeProcessIds)
+  return @($killed | Select-Object -Unique)
+}
+
+function Get-TbccSchedulingStackServices {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$FullStack
+  )
+  $full = $true
+  if ($PSBoundParameters.ContainsKey('FullStack')) { $full = [bool]$FullStack }
+  return @(
+    Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$full |
+      Where-Object { $_.Id -in @('beat', 'celery', 'celery_post', 'celery_post_scheduler') }
+  )
+}
+
+function Clear-TbccSchedulingWorkersBeforeLaunch {
+  <#
+  Kill every Beat / Celery / Celery-Post worker before opening fresh WT tabs.
+  Prevents duplicate workers when prior tabs closed slowly or restarts stack on the same window.
+  #>
+  param([int]$SettleMs = 600)
+  $patterns = @(
+    'app\.workers\.celery_app beat',
+    'app\.workers\.celery_app worker.*-Q\s+celery',
+    'app\.workers\.celery_app worker.*-Q\s+post'
+  )
+  $killed = @()
+  foreach ($pat in $patterns) {
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $pat)
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern ('py\.exe.*' + $pat))
+  }
+  $killed = @($killed | Select-Object -Unique)
+  if ($killed.Count -gt 0 -and $SettleMs -gt 0) {
+    Start-Sleep -Milliseconds $SettleMs
+  }
+  return $killed.Count
+}
+
+function Test-TbccServiceWrapperStarting {
+  param([Parameter(Mandatory = $true)][string]$Title)
+  if (-not (Get-Command Get-TbccProcessAuditMatches -ErrorAction SilentlyContinue)) { return $false }
+  $esc = [regex]::Escape($Title)
+  $pat = 'run-tbcc-service\.ps1.*-ServiceName\s+("?' + $esc + '"?)'
+  return @(Get-TbccProcessAuditMatches -Pattern $pat).Count -gt 0
+}
+
+function Ensure-TbccStackWorkersSingleton {
+  <#
+  Trim to one worker per stack service (bots, backend workers, Celery, etc.).
+  Restarts any that are missing when TbccRoot is provided (unless -TrimOnly).
+  #>
+  param(
+    [string]$TbccRoot = "",
+    [switch]$FullStack,
+    [switch]$TrimOnly,
+    [string[]]$ServiceIds = @()
+  )
+  $report = @()
+  $services = @()
+  if ($TbccRoot) {
+    $services = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack)
+  }
+  if ($ServiceIds.Count -gt 0) {
+    $services = @($services | Where-Object { $_.Id -in $ServiceIds })
+  }
+  if ($services.Count -eq 0) {
+    $services = @(
+      [pscustomobject]@{ Id = "beat"; Title = "TBCC-Beat"; CommandMatch = 'app\.workers\.celery_app beat' },
+      [pscustomobject]@{ Id = "celery"; Title = "TBCC-Celery"; CommandMatch = 'app\.workers\.celery_app worker.*-Q\s+celery' },
+      [pscustomobject]@{ Id = "celery_post"; Title = "TBCC-Celery-Post"; CommandMatch = 'app\.workers\.celery_app worker.*-Q\s+post' }
+    )
+  }
+  foreach ($svc in $services) {
+    if (-not $svc.CommandMatch) { continue }
+    $trimmed = @(Stop-TbccServiceWorkerDuplicates -Service $svc)
+    $remaining = @(Get-TbccServiceWorkerProcesses -Service $svc)
+    $kept = if ($remaining.Count -gt 0) { [int]$remaining[0].ProcessId } else { 0 }
+    if ($remaining.Count -gt 1) {
+      $null = Stop-TbccServiceWorkerDuplicates -Service $svc
+      $remaining = @(Get-TbccServiceWorkerProcesses -Service $svc)
+      $kept = if ($remaining.Count -gt 0) { [int]$remaining[0].ProcessId } else { 0 }
+    }
+    $restarted = $false
+    if (-not $TrimOnly -and $kept -eq 0 -and $TbccRoot -and $svc.Command) {
+      if (Test-TbccServiceWrapperStarting -Title $svc.Title) {
+        $report += [pscustomobject]@{
+          Id = $svc.Id
+          Title = $svc.Title
+          KeptPid = 0
+          Trimmed = $trimmed.Count
+          Restarted = $false
+        }
+        continue
+      }
+      Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper -Background -Force | Out-Null
+      Start-Sleep -Seconds 6
+      $after = @(Get-TbccServiceWorkerProcesses -Service $svc)
+      $kept = if ($after.Count -gt 0) { [int]$after[0].ProcessId } else { 0 }
+      $restarted = $true
+    }
+    $report += [pscustomobject]@{
+      Id = $svc.Id
+      Title = $svc.Title
+      KeptPid = $kept
+      Trimmed = $trimmed.Count
+      Restarted = $restarted
+    }
+  }
+  return $report
+}
+
+function Ensure-TbccSchedulingWorkersSingleton {
+  <# Trim/restart Beat, Celery, Celery-Post only (StackWatch + orchestrator scheduling lane). #>
+  param(
+    [string]$TbccRoot = "",
+    [switch]$FullStack,
+    [switch]$TrimOnly
+  )
+  return @(Ensure-TbccStackWorkersSingleton -TbccRoot $TbccRoot -FullStack:$FullStack -TrimOnly:$TrimOnly `
+    -ServiceIds @('beat', 'celery', 'celery_post', 'celery_post_scheduler'))
+}
+
+function Remove-TbccStackPairsAlreadyRunning {
+  <#
+  Trim duplicate workers and skip opening WT tabs when exactly one worker is already up.
+  Applies to all stack services (backend, bots, Celery, etc.), not only scheduling workers.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Titles,
+    [Parameter(Mandatory = $true)][string[]]$Commands,
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$FullStack
+  )
+  if ($Titles.Count -ne $Commands.Count) {
+    throw "Remove-TbccStackPairsAlreadyRunning: Titles and Commands count must match."
+  }
+  $serviceMap = @{}
+  foreach ($svc in (Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog)) {
+    $serviceMap[$svc.Title] = $svc
+    if ($svc.MenuLabel) { $serviceMap[[string]$svc.MenuLabel] = $svc }
+  }
+  $outT = New-Object System.Collections.ArrayList
+  $outC = New-Object System.Collections.ArrayList
+  $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  for ($i = 0; $i -lt $Titles.Count; $i++) {
+    $title = $Titles[$i]
+    if (-not $serviceMap.ContainsKey($title)) {
+      [void]$outT.Add($title)
+      [void]$outC.Add($Commands[$i])
+      continue
+    }
+    $svc = $serviceMap[$title]
+    $workers = @(Get-TbccServiceWorkerProcesses -Service $svc -AllProcesses $all)
+    if ($workers.Count -gt 1) {
+      $trimmed = @(Stop-TbccServiceWorkerDuplicates -Service $svc)
+      if ($trimmed.Count -gt 0) {
+        Write-Host (
+          "  [trim] " + $title + " removed " + $trimmed.Count + " duplicate worker(s) before launch"
+        ) -ForegroundColor Yellow
+      }
+      $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+      $workers = @(Get-TbccServiceWorkerProcesses -Service $svc -AllProcesses $all)
+    }
+    $wrappers = @()
+    if (Get-Command Get-TbccServiceTabWrapperProcesses -ErrorAction SilentlyContinue) {
+      $wrappers = @(Get-TbccServiceTabWrapperProcesses -ServiceName $title -AllProcesses $all)
+    }
+    if ($wrappers.Count -gt 1) {
+      $sortedW = @($wrappers | Sort-Object { $_.CreationDate })
+      foreach ($dup in ($sortedW | Select-Object -Skip 1)) {
+        try { Stop-Process -Id $dup.ProcessId -Force -ErrorAction Stop } catch {}
+      }
+      $wrappers = @($sortedW | Select-Object -First 1)
+      Write-Host ("  [trim] " + $title + " closed duplicate WT tab wrapper(s) before launch") -ForegroundColor Yellow
+    }
+    $alreadyUp = ($workers.Count -ge 1)
+    if (-not $alreadyUp -and $svc.Port -gt 0) {
+      $alreadyUp = Test-TbccPortListening -Port $svc.Port
+    }
+    if ($alreadyUp -and $wrappers.Count -ge 1) {
+      $pidNote = if ($workers.Count -ge 1) { "pid " + $workers[0].ProcessId } else { "port " + $svc.Port }
+      Write-Host ("  [skip] " + $title + " (worker + tab already running, " + $pidNote + ")") -ForegroundColor DarkGray
+      continue
+    }
+    if ($alreadyUp -and $wrappers.Count -eq 0) {
+      Write-Host ("  [relaunch] " + $title + " worker without tab - stopping orphan worker") -ForegroundColor Yellow
+      $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
+      Start-Sleep -Milliseconds 500
+      $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    } elseif (-not $alreadyUp -and $wrappers.Count -ge 1) {
+      Write-Host ("  [cleanup] " + $title + " zombie tab (no worker) - closing stale shell") -ForegroundColor Yellow
+      if (Get-Command Invoke-TbccCloseServiceTab -ErrorAction SilentlyContinue) {
+        $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $title
+      } else {
+        $hub = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+        if (Test-Path -LiteralPath $hub) {
+          . $hub
+          $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $title
+        }
+      }
+      Start-Sleep -Milliseconds 300
+    }
+    [void]$outT.Add($title)
+    [void]$outC.Add($Commands[$i])
+  }
+  return @{ Titles = @($outT.ToArray()); Commands = @($outC.ToArray()) }
+}
+
+function Remove-TbccSchedulingPairsAlreadyRunning {
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Titles,
+    [Parameter(Mandatory = $true)][string[]]$Commands,
+    [Parameter(Mandatory = $true)][string]$TbccRoot
+  )
+  return Remove-TbccStackPairsAlreadyRunning -Titles $Titles -Commands $Commands -TbccRoot $TbccRoot -FullStack
+}
+
 function Get-TbccServiceStatusLabel {
   param(
     $Service,
@@ -458,7 +1133,10 @@ function Test-TbccServiceUserEnabled {
     [Parameter(Mandatory = $true)][string]$TbccRoot
   )
   $toggles = Read-TbccServiceToggles -TbccRoot $TbccRoot
-  if (-not $toggles.ContainsKey($ServiceId)) { return $true }
+  if (-not $toggles.ContainsKey($ServiceId)) {
+    if ($ServiceId -in $script:TbccMenuDefaultOffServiceIds) { return $false }
+    return $true
+  }
   return [bool]$toggles[$ServiceId]
 }
 
@@ -479,7 +1157,8 @@ function Test-TbccServiceTitleUserEnabled {
     [Parameter(Mandatory = $true)][string]$TbccRoot
   )
   if ($Title -eq "TBCC-Errors") { return $true }
-  $svc = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack | Where-Object { $_.Title -eq $Title } | Select-Object -First 1)
+  $svc = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack -MenuCatalog |
+    Where-Object { $_.Title -eq $Title } | Select-Object -First 1)
   if (-not $svc) { return $true }
   return Test-TbccServiceUserEnabled -ServiceId $svc.Id -TbccRoot $TbccRoot
 }
@@ -502,6 +1181,90 @@ function Select-TbccStartedServicePairs {
       [void]$outC.Add($Commands[$i])
     } else {
       Write-Host ("  [skip] " + $Titles[$i] + " (disabled in tray Services menu)") -ForegroundColor DarkGray
+    }
+  }
+  return @{ Titles = @($outT.ToArray()); Commands = @($outC.ToArray()) }
+}
+
+function Get-TbccRestartSnapshotPath {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  return Join-Path $TbccRoot ".tbcc-run\restart-service-snapshot.json"
+}
+
+function Save-TbccRestartServiceSnapshot {
+  <# Record which service tabs were up before tray Restart all (lean/full profile unchanged). #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $path = Get-TbccRestartSnapshotPath -TbccRoot $TbccRoot
+  $runDir = Split-Path -Parent $path
+  if (-not (Test-Path -LiteralPath $runDir)) {
+    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+  }
+  $cache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack -MenuCatalog
+  $titles = New-Object System.Collections.ArrayList
+  foreach ($entry in $cache.ById.Values) {
+    if ($entry.Status -eq "up") {
+      [void]$titles.Add([string]$entry.Service.Title)
+    }
+  }
+  foreach ($aux in @("TBCC-Errors", "TBCC-StackWatch", "OpenClaw-Gateway")) {
+    if ($titles -contains $aux) { continue }
+    if (Test-TbccServiceRecentHubActivity -Title $aux -TbccRoot $TbccRoot) {
+      [void]$titles.Add($aux)
+    }
+  }
+  $payload = @{
+    savedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    profile    = (Get-TbccStackProfile -TbccRoot $TbccRoot)
+    titles     = @($titles | Select-Object -Unique)
+  }
+  Set-Content -LiteralPath $path -Value ($payload | ConvertTo-Json -Compress) -Encoding UTF8
+  Write-Host ("  [restart] Snapshot {0} running tab(s) ({1} profile)." -f $payload.titles.Count, $payload.profile) -ForegroundColor Gray
+  return @($payload.titles)
+}
+
+function Clear-TbccRestartServiceSnapshot {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $path = Get-TbccRestartSnapshotPath -TbccRoot $TbccRoot
+  if (Test-Path -LiteralPath $path) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Read-TbccRestartServiceSnapshot {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $path = Get-TbccRestartSnapshotPath -TbccRoot $TbccRoot
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  try {
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    return ($raw | ConvertFrom-Json)
+  } catch {
+    return $null
+  }
+}
+
+function Select-TbccRestartSnapshotServicePairs {
+  <# Tray Restart all: relaunch only tabs that were running; clear snapshot after read. #>
+  param(
+    [Parameter(Mandatory = $true)][string[]]$Titles,
+    [Parameter(Mandatory = $true)][string[]]$Commands,
+    [Parameter(Mandatory = $true)][string]$TbccRoot
+  )
+  if ($Titles.Count -ne $Commands.Count) {
+    throw "Select-TbccRestartSnapshotServicePairs: Titles and Commands count must match."
+  }
+  $snap = Read-TbccRestartServiceSnapshot -TbccRoot $TbccRoot
+  if (-not $snap -or -not $snap.titles) {
+    return @{ Titles = $Titles; Commands = $Commands }
+  }
+  $allowed = @($snap.titles | ForEach-Object { "$_" })
+  $outT = New-Object System.Collections.ArrayList
+  $outC = New-Object System.Collections.ArrayList
+  for ($i = 0; $i -lt $Titles.Count; $i++) {
+    if ($allowed -contains $Titles[$i]) {
+      [void]$outT.Add($Titles[$i])
+      [void]$outC.Add($Commands[$i])
+    } else {
+      Write-Host ("  [restart-skip] " + $Titles[$i] + " (was not running before restart)") -ForegroundColor DarkGray
     }
   }
   return @{ Titles = @($outT.ToArray()); Commands = @($outC.ToArray()) }
@@ -551,17 +1314,31 @@ function Test-TbccServiceRecentHubErrors {
 function Get-TbccServiceMenuText {
   param($Service)
   $portLabel = if ($Service.Port -gt 0) { " :" + $Service.Port } else { "" }
-  return ($Service.Title + $portLabel)
+  $label = if ($Service.MenuLabel) { [string]$Service.MenuLabel } else { [string]$Service.Title }
+  return ($label + $portLabel)
+}
+
+function Get-TbccServiceMenuDisplayText {
+  param(
+    $Service,
+    [string]$Status,
+    [bool]$UserEnabled
+  )
+  $base = Get-TbccServiceMenuText -Service $Service
+  if (-not $UserEnabled) { return ("[off] " + $base) }
+  if ($Status -eq "up") { return ("[on] " + $base) }
+  return ("[--] " + $base)
 }
 
 function Update-TbccServiceStatusCache {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
-    [switch]$FullStack
+    [switch]$FullStack,
+    [switch]$MenuCatalog
   )
-  $services = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack)
+  $services = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog)
   $ports = Get-TbccListeningPortSet
-  $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  $procs = @(Get-TbccWin32ProcessListCached)
   $byId = @{}
   $up = 0
   $enabled = 0
@@ -636,9 +1413,10 @@ function Update-TbccSupervisorTrayStatus {
     $Cache = $null
   )
   $sum = Get-TbccStackStatusSummary -TbccRoot $TbccRoot -FullStack:$FullStack -Cache $Cache
-  $NotifyIcon.Text = ("TBCC Supervisor ({0}/{1} on)" -f $sum.EnabledUp, $sum.Enabled)
+  $profileTag = Get-TbccStackProfileLabel -TbccRoot $TbccRoot
+  $NotifyIcon.Text = ("TBCC Supervisor ({0}/{1} running, {2})" -f $sum.EnabledUp, $sum.Enabled, $profileTag)
   if ($NotifyIcon.Text.Length -gt 63) {
-    $NotifyIcon.Text = ("TBCC ({0}/{1} on)" -f $sum.EnabledUp, $sum.Enabled)
+    $NotifyIcon.Text = ("TBCC ({0}/{1} run, {2})" -f $sum.EnabledUp, $sum.Enabled, $profileTag)
   }
 }
 
@@ -647,11 +1425,12 @@ function Invoke-TbccServiceMenuAction {
     [Parameter(Mandatory = $true)][string]$ServiceId,
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$FullStack,
+    [switch]$MenuCatalog,
     [switch]$ForceRestart,
     [scriptblock]$OnNotify
   )
-  $svc = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack |
-    Where-Object { $_.Id -eq $ServiceId } | Select-Object -First 1)
+  if (-not $PSBoundParameters.ContainsKey('MenuCatalog')) { $MenuCatalog = $true }
+  $svc = @(Get-TbccStackServiceById -ServiceId $ServiceId -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog)
   if (-not $svc) { throw ("Unknown service id: " + $ServiceId) }
 
   $notify = {
@@ -704,17 +1483,20 @@ function Initialize-TbccServiceToggleMenu {
   <#
   Services submenu (Extensity-style): white = enabled, gray = disabled. Click toggles; Ctrl+click restarts.
   Returns hashtable serviceId -> ToolStripMenuItem for live UI updates.
+  MenuCatalog lists every optional process (lean stack still controls cold-start only).
   #>
   param(
     [Parameter(Mandatory = $true)]$MenuItem,
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$FullStack,
+    [switch]$MenuCatalog,
     [scriptblock]$OnNotify,
     [scriptblock]$OnChanged
   )
+  if (-not $PSBoundParameters.ContainsKey('MenuCatalog')) { $MenuCatalog = $true }
   Clear-TbccRestartServiceMenu -MenuItem $MenuItem
   $map = @{}
-  foreach ($svc in (Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack)) {
+  foreach ($svc in (Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog)) {
     $item = New-Object System.Windows.Forms.ToolStripMenuItem
     $item.Text = Get-TbccServiceMenuText -Service $svc
     $item.Tag = @{ Id = $svc.Id; Title = $svc.Title; TbccUserEnabled = $true }
@@ -723,7 +1505,7 @@ function Initialize-TbccServiceToggleMenu {
       param($sender, $e)
       $ctrl = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Control) -ne 0
       try {
-        Invoke-TbccServiceMenuAction -ServiceId $sid -TbccRoot $TbccRoot -FullStack:$FullStack `
+        Invoke-TbccServiceMenuAction -ServiceId $sid -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog `
           -ForceRestart:$ctrl -OnNotify $OnNotify
         if ($OnChanged) { & $OnChanged }
       } catch {
@@ -734,8 +1516,8 @@ function Initialize-TbccServiceToggleMenu {
     $map[$svc.Id] = $item
   }
   $hint = New-Object System.Windows.Forms.ToolStripMenuItem
-  $hint.Text = "Click toggle | Ctrl+click restart"
-  $hint.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false }
+  $hint.Text = "[on] running  [--] stopped  [off] disabled  |  click toggle  Ctrl restart"
+  $hint.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
   $hint.Enabled = $false
   [void]$MenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
   [void]$MenuItem.DropDownItems.Add($hint)
@@ -752,19 +1534,21 @@ function Apply-TbccServiceMenuItemsUi {
     $row = $Cache.ById[$id]
     if (-not $row) { continue }
     $item = $MenuItemsById[$id]
-    $item.Text = $row.Text
+    if ($item.Tag -and $item.Tag.TbccMenuHint) { continue }
+    $running = ($row.Status -eq "up")
+    $item.Text = Get-TbccServiceMenuDisplayText -Service $row.Service -Status $row.Status -UserEnabled:([bool]$row.UserEnabled)
     if (-not $item.Tag) { $item.Tag = @{} }
     $item.Tag.TbccUserEnabled = [bool]$row.UserEnabled
-    $item.Tag.Running = ($row.Status -eq "up")
+    $item.Tag.TbccRunning = $running
     $item.Enabled = $true
     if ($row.UserEnabled) {
-      if ($row.Status -eq "up") {
-        $item.ToolTipText = "Running - click to disable | Ctrl+click restart"
+      if ($running) {
+        $item.ToolTipText = "Running - click to stop/disable | Ctrl+click restart"
       } else {
-        $item.ToolTipText = "Enabled but stopped - click to disable | Ctrl+click restart"
+        $item.ToolTipText = "Stopped (enabled) - click to disable | Ctrl+click start"
       }
     } else {
-      $item.ToolTipText = "Disabled - click to enable"
+      $item.ToolTipText = "Disabled - click to enable and start"
     }
   }
 }
@@ -792,7 +1576,8 @@ function Apply-TbccRestartServiceMenuLabels {
 function Stop-TbccStackService {
   param(
     [Parameter(Mandatory = $true)]$Service,
-    [string]$TbccRoot
+    [string]$TbccRoot,
+    [switch]$GracefulTabClose
   )
   $exclude = @()
   if ($TbccRoot) {
@@ -803,12 +1588,42 @@ function Stop-TbccStackService {
     $killed += @(Stop-TbccListenersOnPort -Port $Service.Port -ExcludeProcessIds $exclude)
   }
   if ($Service.CommandMatch) {
-    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $Service.CommandMatch)
+    $null = Stop-TbccServiceWorkerDuplicates -Service $Service -ExcludeProcessIds $exclude
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern $Service.CommandMatch -ExcludeProcessIds $exclude)
+    $killed += @(Stop-TbccProcessesByCommandMatch -Pattern ('py\.exe.*' + $Service.CommandMatch) -ExcludeProcessIds $exclude)
   }
   if ($TbccRoot) {
-    $killed += @(Stop-TbccProcessesByServiceTitle -Title $Service.Title -TbccRoot $TbccRoot)
+    $killed += @(Stop-TbccProcessesByServiceTitle -Title $Service.Title -TbccRoot $TbccRoot -GracefulTabClose:$GracefulTabClose)
   }
   return @($killed | Select-Object -Unique)
+}
+
+function Wait-TbccServiceTabClosed {
+  param(
+    [Parameter(Mandatory = $true)][string]$Title,
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int]$MaxWaitSeconds = 12
+  )
+  $deadline = (Get-Date).AddSeconds($MaxWaitSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $wrappers = @()
+    if (Get-Command Get-TbccServiceTabWrapperProcesses -ErrorAction SilentlyContinue) {
+      $wrappers = @(Get-TbccServiceTabWrapperProcesses -ServiceName $Title)
+    }
+    $sessionPath = $null
+    $shellPath = $null
+    if (Get-Command Get-TbccServiceTabSessionPath -ErrorAction SilentlyContinue) {
+      $sessionPath = Get-TbccServiceTabSessionPath -TbccRoot $TbccRoot -ServiceName $Title
+    }
+    if (Get-Command Get-TbccServiceTabShellPidPath -ErrorAction SilentlyContinue) {
+      $shellPath = Get-TbccServiceTabShellPidPath -TbccRoot $TbccRoot -ServiceName $Title
+    }
+    $sessionGone = (-not $sessionPath) -or (-not (Test-Path -LiteralPath $sessionPath))
+    $shellGone = (-not $shellPath) -or (-not (Test-Path -LiteralPath $shellPath))
+    if ($wrappers.Count -eq 0 -and $sessionGone -and $shellGone) { return $true }
+    Start-Sleep -Milliseconds 250
+  }
+  return $false
 }
 
 function Get-TbccWtHostPid {
@@ -823,7 +1638,7 @@ function Get-TbccWtHostPid {
       $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$pidVal" -ErrorAction SilentlyContinue
       if (-not $proc) { continue }
       $pn = [string]$proc.Name
-      if ($pn -ieq 'WindowsTerminal.exe' -or $pn -ieq 'wt.exe') { return $pidVal }
+      if ($pn -ieq 'WindowsTerminal.exe') { return $pidVal }
     } catch {}
   }
   $hosts = @(Get-TbccWindowsTerminalHostPids -TbccRoot $TbccRoot)
@@ -832,20 +1647,24 @@ function Get-TbccWtHostPid {
 }
 
 function Get-TbccWtExePath {
-  $wtExe = $null
+  foreach ($p in @(
+    (Join-Path ${env:ProgramFiles} "Windows Terminal\wt.exe"),
+    (Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\wt.exe")
+  )) {
+    if (Test-Path -LiteralPath $p) { return $p }
+  }
+  try {
+    $pkg = Get-AppxPackage -Name Microsoft.WindowsTerminal -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pkg -and $pkg.InstallLocation) {
+      $appxWt = Join-Path $pkg.InstallLocation "wt.exe"
+      if (Test-Path -LiteralPath $appxWt) { return $appxWt }
+    }
+  } catch {}
   try {
     $c = Get-Command "wt.exe" -ErrorAction Stop
-    $wtExe = $c.Source
+    return $c.Source
   } catch {}
-  if (-not $wtExe) {
-    foreach ($p in @(
-      (Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\wt.exe"),
-      (Join-Path ${env:ProgramFiles} "Windows Terminal\wt.exe")
-    )) {
-      if (Test-Path -LiteralPath $p) { return $p }
-    }
-  }
-  return $wtExe
+  return $null
 }
 
 function Start-TbccWtTab {
@@ -858,7 +1677,8 @@ function Start-TbccWtTab {
     [Parameter(Mandatory = $true)][string]$Title,
     [Parameter(Mandatory = $true)][string]$Command,
     [int]$WtHostPid = 0,
-    [switch]$NewWindow
+    [switch]$NewWindow,
+    [switch]$Minimized
   )
   $wtExe = Get-TbccWtExePath
   if (-not $wtExe) { return $false }
@@ -885,21 +1705,25 @@ function Start-TbccWtTab {
   }
 
   if (Get-Command Add-TbccWtTabShellInvocation -ErrorAction SilentlyContinue) {
-    Add-TbccWtTabShellInvocation -ArgumentList $al -Title $Title -Command $Command -Cols $prefs.Cols -Lines $prefs.Lines
+    Add-TbccWtTabShellInvocation -ArgumentList $al -TbccRoot $TbccRoot -Title $Title -Command $Command -Cols $prefs.Cols -Lines $prefs.Lines
   } else {
-    $part1 = "mode con: cols=$($prefs.Cols) lines=$($prefs.Lines)"
-    $part2 = 'title "' + $Title + '"'
-    $run = $part1 + ' & ' + $part2 + ' & ' + $Command
-    [void]$al.Add('new-tab')
-    [void]$al.Add('--title')
-    [void]$al.Add($Title)
-    [void]$al.Add('cmd')
-    [void]$al.Add('/k')
-    [void]$al.Add($run)
+    $null = Register-TbccSelfClosingServiceTab -TbccRoot $TbccRoot -ServiceName $Title -Command $Command
+    $runner = Join-Path $TbccRoot "scripts\run-tbcc-service.ps1"
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', $runner, '-TbccRoot', $TbccRoot, '-ServiceName', $Title
+    ) -WindowStyle Normal
+    return $true
   }
 
-  $proc = Start-Process -FilePath $wtExe -ArgumentList @($al.ToArray()) -WindowStyle Normal -PassThru
-  if ($proc -and ($NewWindow -or -not $WtHostPid)) {
+  $openingNewWindow = ($NewWindow -or -not $WtHostPid)
+  if (-not $openingNewWindow -and (Get-Command Invoke-TbccWtCommandSilent -ErrorAction SilentlyContinue)) {
+    $null = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @($al.ToArray())
+    return $true
+  }
+  $winStyle = if ($openingNewWindow -and $Minimized) { 'Minimized' } else { 'Normal' }
+  $proc = Start-Process -FilePath $wtExe -ArgumentList @($al.ToArray()) -WindowStyle $winStyle -PassThru
+  if ($proc -and $openingNewWindow) {
     Register-TbccWtTabHostFromLauncher -TbccRoot $TbccRoot -LauncherPid $proc.Id
   }
   return $true
@@ -998,7 +1822,7 @@ function Test-TbccOrchestratorRunning {
 }
 
 function Get-TbccStackResidualSummary {
-  <# Services/ports/WT hosts still active after a stop attempt. #>
+  <# Stack services still running after a stop attempt (not WT window presence). #>
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$FullStack
@@ -1011,22 +1835,22 @@ function Get-TbccStackResidualSummary {
       [void]$issues.Add([string]$entry.Text)
     }
   }
-  $wt = @(Get-TbccWindowsTerminalHostPids -TbccRoot $TbccRoot)
-  if ($wt.Count -gt 0) {
-    [void]$issues.Add(("TBCC terminal window(s) ({0})" -f $wt.Count))
-  }
   return @($issues.ToArray())
 }
 
 function Get-TbccEnabledServicesDownSummary {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
-    [switch]$FullStack
+    [switch]$FullStack,
+    [string[]]$OnlyTitles = @()
   )
   $down = New-Object System.Collections.ArrayList
   $cache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack
+  $scope = @($OnlyTitles | Where-Object { $_ })
+  $scoped = ($scope.Count -gt 0)
   foreach ($id in @($cache.ById.Keys)) {
     $entry = $cache.ById[$id]
+    if ($scoped -and ($scope -notcontains $entry.Service.Title)) { continue }
     if ($entry.UserEnabled -and $entry.Status -ne "up") {
       [void]$down.Add([string]$entry.Text)
     }
@@ -1040,15 +1864,15 @@ function Build-TbccOrchestratorStopMessage {
     [Parameter(Mandatory = $true)][bool]$FullyStopped
   )
   if ($FullyStopped) {
-    return "All TBCC services and terminal tabs are stopped. Safe to start again."
+    return "All TBCC services stopped. Safe to cold-start again."
   }
   $left = @(Get-TbccStackResidualSummary -TbccRoot $TbccRoot -FullStack)
   if ($left.Count -eq 0) {
-    return "Stop finished but some ports or processes may still be active. Check show-tbcc-processes.ps1."
+    return "Stop finished - no stack services detected running."
   }
   $list = ($left | Select-Object -First 4) -join ", "
   if ($left.Count -gt 4) { $list += (" (+{0} more)" -f ($left.Count - 4)) }
-  return ("Stop finished with issues - still active: " + $list)
+  return ("Still running: " + $list + ". Tray: Stop again or Cleanup orphan API workers.")
 }
 
 function Build-TbccOrchestratorStartMessage {
@@ -1056,14 +1880,15 @@ function Build-TbccOrchestratorStartMessage {
     [Parameter(Mandatory = $true)][ValidateSet("Restart", "ColdStart")][string]$Action,
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [bool]$PriorStackStopped = $true,
-    [string]$StartFailure = ""
+    [string]$StartFailure = "",
+    [string[]]$ExpectedTitles = @()
   )
   if ($StartFailure) {
     $verb = if ($Action -eq "ColdStart") { "Cold start" } else { "Restart" }
     return ($verb + " failed - " + $StartFailure)
   }
   $cache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack
-  $down = @(Get-TbccEnabledServicesDownSummary -TbccRoot $TbccRoot -FullStack)
+  $down = @(Get-TbccEnabledServicesDownSummary -TbccRoot $TbccRoot -FullStack -OnlyTitles $ExpectedTitles)
   $verb = if ($Action -eq "ColdStart") { "Cold start" } else { "Restart" }
   if ($down.Count -eq 0) {
     $msg = ("{0} complete - all enabled services are up ({1}/{2})." -f $verb, $cache.EnabledUp, $cache.Enabled)
@@ -1124,7 +1949,7 @@ function Wait-TbccStackServicesStopped {
 
 function Stop-TbccStackGracefully {
   <#
-  Stop TBCC services one-by-one so each tab closes; keep Windows Terminal host + orchestrator tab.
+  Stop TBCC services one-by-one so each tab closes as its worker exits; keep Windows Terminal host + orchestrator tab.
   #>
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
@@ -1137,6 +1962,10 @@ function Stop-TbccStackGracefully {
   $exclude += @(Get-TbccOrchestratorProcessTreeIds -Extra $ExcludeProcessIds)
   $exclude = @($exclude | Select-Object -Unique)
 
+  $hubScript = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+  if (Test-Path -LiteralPath $hubScript) { . $hubScript }
+  Refresh-TbccWtHostPid -TbccRoot $TbccRoot
+
   $services = Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack
   $ordered = @($services | Sort-Object {
     if ($_.Id -eq 'backend') { 1000 }
@@ -1145,17 +1974,59 @@ function Stop-TbccStackGracefully {
   })
 
   foreach ($svc in $ordered) {
-    Write-Host ("  stopping " + $svc.Title + "...") -ForegroundColor Yellow
-    $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
-    Start-Sleep -Milliseconds 350
+    Write-Host ("  stopping " + $svc.Title + " (close tab)...") -ForegroundColor Yellow
+    $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot -GracefulTabClose
+    $tabClosed = Wait-TbccServiceTabClosed -Title $svc.Title -TbccRoot $TbccRoot -MaxWaitSeconds 12
+    if (-not $tabClosed) {
+      Write-Host ("    tab still open for " + $svc.Title + " - forcing close") -ForegroundColor DarkYellow
+      if (Get-Command Invoke-TbccCloseServiceTab -ErrorAction SilentlyContinue) {
+        $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $svc.Title
+      }
+    }
+  }
+
+  if (Get-Command Invoke-TbccSweepStaleServiceTabShells -ErrorAction SilentlyContinue) {
+    Invoke-TbccSweepStaleServiceTabShells -TbccRoot $TbccRoot
   }
 
   $null = Stop-TbccProcessesByCommandMatch -Pattern 'run-tbcc-service\.ps1' -ExcludeProcessIds $exclude
   $null = Stop-TbccProcessesByCommandMatch -Pattern 'show-tbcc-error-hub' -ExcludeProcessIds $exclude
-  $null = Stop-TbccProcessesByCommandMatch -Pattern 'title\s+"(TBCC-|AOF-Forum)' -ExcludeProcessIds $exclude
+  $null = Stop-TbccProcessesByCommandMatch -Pattern 'run-tbcc-stackwatch\.ps1|show-tbcc-processes\.ps1' -ExcludeProcessIds $exclude
+  $null = Stop-TbccProcessesByCommandMatch -Pattern 'title\s+"(TBCC-|AOF-Forum|OpenClaw-Gateway)' -ExcludeProcessIds $exclude
 
   foreach ($svc in ($services | Where-Object { $_.Port -gt 0 })) {
     $null = Stop-TbccListenersOnPort -Port $svc.Port -ExcludeProcessIds $exclude
+  }
+
+  $stray = @(Stop-TbccStrayStackProcesses -TbccRoot $TbccRoot -ExcludeProcessIds $exclude)
+  if ($stray.Count -gt 0) {
+    Write-Host ("  killed {0} stray TBCC worker(s)" -f $stray.Count) -ForegroundColor DarkYellow
+  }
+
+  # Hub / audit tabs are not stack services but keep ports and confuse supervisor counts.
+  foreach ($hubTitle in @('TBCC-Errors', 'TBCC-StackWatch')) {
+    $null = Stop-TbccProcessesByServiceTitle -Title $hubTitle -TbccRoot $TbccRoot
+    if (Get-Command Invoke-TbccCloseServiceTab -ErrorAction SilentlyContinue) {
+      $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $hubTitle
+    }
+  }
+
+  # Second pass — force anything still listening / matching stack patterns.
+  Start-Sleep -Milliseconds 400
+  foreach ($svc in $services) {
+    if (Test-TbccServiceProcessRunning -Service $svc) {
+      Write-Host ("  force stop " + $svc.Title + "...") -ForegroundColor DarkYellow
+      $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
+    }
+  }
+  $stray2 = @(Stop-TbccStrayStackProcesses -TbccRoot $TbccRoot -ExcludeProcessIds $exclude)
+  if ($stray2.Count -gt 0) {
+    Write-Host ("  killed {0} lingering worker(s) on pass 2" -f $stray2.Count) -ForegroundColor DarkYellow
+  }
+
+  $ocKilled = @(Stop-TbccOpenClawGatewaySurfaces -TbccRoot $TbccRoot -ExcludeProcessIds $exclude)
+  if ($ocKilled.Count -gt 0) {
+    Write-Host ("  stopped OpenClaw gateway ({0} process(es))" -f $ocKilled.Count) -ForegroundColor DarkGray
   }
 
   $cleanupOrphans = Join-Path $TbccRoot "scripts\tbcc-cleanup-orphans.ps1"
@@ -1165,6 +2036,16 @@ function Stop-TbccStackGracefully {
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $cleanupOrphans
       ) -WindowStyle Hidden -Wait | Out-Null
     } catch {}
+  }
+
+  if (Get-Command Invoke-TbccProcessAudit -ErrorAction SilentlyContinue) {
+    $null = Invoke-TbccProcessAudit -TbccRoot $TbccRoot -Full -LogIssues -Quiet -Phase "post-stop"
+  } else {
+    $auditMod = Join-Path $TbccRoot "scripts\tbcc-process-audit.ps1"
+    if (Test-Path -LiteralPath $auditMod) {
+      . $auditMod
+      $null = Invoke-TbccProcessAudit -TbccRoot $TbccRoot -Full -LogIssues -Quiet -Phase "post-stop"
+    }
   }
 
   if ($Wait) {
@@ -1218,11 +2099,14 @@ function Invoke-TbccOrchestrateInWt {
   }
 
   $cmd = Get-TbccOrchestratorWrapperCmd -TbccRoot $TbccRoot -Action $Action -NoOpen:$NoOpen
+  if ($Action -in @('ColdStart', 'Restart') -and (Get-Command Clear-TbccSchedulingWorkersBeforeLaunch -ErrorAction SilentlyContinue)) {
+    $null = Clear-TbccSchedulingWorkersBeforeLaunch -SettleMs 500
+  }
   try {
     if ($hostPid) {
       $ok = Start-TbccWtTab -TbccRoot $TbccRoot -Title "TBCC-Orchestrator" -Command $cmd -WtHostPid $hostPid
     } else {
-      $ok = Start-TbccWtTab -TbccRoot $TbccRoot -Title "TBCC-Orchestrator" -Command $cmd -NewWindow
+      $ok = Start-TbccWtTab -TbccRoot $TbccRoot -Title "TBCC-Orchestrator" -Command $cmd -NewWindow -Minimized
     }
     if (-not $ok) {
       throw "Could not open TBCC-Orchestrator tab (wt.exe missing or failed)."
@@ -1281,21 +2165,35 @@ function Start-TbccWtTabs {
       }
     }
     if (Get-Command Add-TbccWtTabShellInvocation -ErrorAction SilentlyContinue) {
-      Add-TbccWtTabShellInvocation -ArgumentList $al -Title $Titles[$i] -Command $Commands[$i] -Cols $Cols -Lines $Lines
+      Add-TbccWtTabShellInvocation -ArgumentList $al -TbccRoot $TbccRoot -Title $Titles[$i] -Command $Commands[$i] -Cols $Cols -Lines $Lines
     } else {
-      $part1 = "mode con: cols=$Cols lines=$Lines"
-      $part2 = [string]::Concat('title "', $Titles[$i], '"')
-      $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Commands[$i])
+      $wrap = Register-TbccSelfClosingServiceTab -TbccRoot $TbccRoot -ServiceName $Titles[$i] -Command $Commands[$i]
+      $runner = Join-Path $TbccRoot "scripts\run-tbcc-service.ps1"
       [void]$al.Add('new-tab')
       [void]$al.Add('--title')
       [void]$al.Add($Titles[$i])
-      [void]$al.Add('cmd')
-      [void]$al.Add('/k')
-      [void]$al.Add($run)
+      [void]$al.Add('powershell')
+      [void]$al.Add('-NoProfile')
+      [void]$al.Add('-NonInteractive')
+      [void]$al.Add('-ExecutionPolicy')
+      [void]$al.Add('Bypass')
+      [void]$al.Add('-File')
+      [void]$al.Add($runner)
+      [void]$al.Add('-TbccRoot')
+      [void]$al.Add($TbccRoot)
+      [void]$al.Add('-ServiceName')
+      [void]$al.Add($Titles[$i])
     }
   }
 
-  $proc = Start-Process -FilePath $wtExe -ArgumentList @($al.ToArray()) -WindowStyle Normal -PassThru
+  if ($reuseWindow -and (Get-Command Invoke-TbccWtCommandSilent -ErrorAction SilentlyContinue)) {
+    $null = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @($al.ToArray()) -TimeoutMs 120000
+    Refresh-TbccWtHostPid -TbccRoot $TbccRoot -PreferredPid $WtHostPid
+    return $true
+  }
+
+  $winStyle = if (Test-TbccWtLaunchMinimized -TbccRoot $TbccRoot) { 'Minimized' } else { 'Normal' }
+  $proc = Start-Process -FilePath $wtExe -ArgumentList @($al.ToArray()) -WindowStyle $winStyle -PassThru
   if ($proc -and -not $reuseWindow) {
     Register-TbccWtTabHostFromLauncher -TbccRoot $TbccRoot -LauncherPid $proc.Id
   } elseif ($reuseWindow) {
@@ -1304,26 +2202,106 @@ function Start-TbccWtTabs {
   return $true
 }
 
+function Invoke-TbccPrepareWtTabLaunch {
+  <# Clear stale tab registry and zombie shells before opening a fresh WT tab batch. #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $hub = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+  if (-not (Test-Path -LiteralPath $hub)) { return }
+  . $hub
+  if (Get-Command Invoke-TbccSweepStaleServiceTabShells -ErrorAction SilentlyContinue) {
+    Invoke-TbccSweepStaleServiceTabShells -TbccRoot $TbccRoot
+  }
+  $tabDir = Get-TbccServiceTabDir -TbccRoot $TbccRoot
+  if (-not (Test-Path -LiteralPath $tabDir)) { return }
+  $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  foreach ($shellFile in @(Get-ChildItem -LiteralPath $tabDir -Filter '*.shell.pid' -ErrorAction SilentlyContinue)) {
+    $svc = $shellFile.BaseName
+    try {
+      $shellPid = [int]((Get-Content -LiteralPath $shellFile.FullName -Raw -ErrorAction Stop).Trim())
+      $live = $all | Where-Object { $_.ProcessId -eq $shellPid } | Select-Object -First 1
+      if (-not $live) {
+        Clear-TbccServiceTabSession -TbccRoot $TbccRoot -ServiceName $svc
+        Clear-TbccServiceTabShell -TbccRoot $TbccRoot -ServiceName $svc
+      }
+    } catch {
+      Remove-Item -LiteralPath $shellFile.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Start-TbccStackService {
   param(
     [Parameter(Mandatory = $true)]$Service,
     [Parameter(Mandatory = $true)][string]$TbccRoot,
-    [switch]$UseErrorHubWrapper
+    [switch]$UseErrorHubWrapper,
+    [switch]$Force,
+    [switch]$Background
   )
   $cmd = $Service.Command
   if (-not $cmd) { throw ("No command for service " + $Service.Title) }
 
-  $run = $cmd
+  $hubPath = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+  if (-not $PSBoundParameters.ContainsKey('UseErrorHubWrapper') -and (Test-Path -LiteralPath $hubPath)) {
+    $UseErrorHubWrapper = $true
+  }
+
+  $null = Stop-TbccServiceWorkerDuplicates -Service $Service
+
+  $remaining = @(Get-TbccServiceWorkerProcesses -Service $Service)
+  if ($remaining.Count -gt 1) {
+    Write-Warning (
+      "{0}: {1} workers still running after dedupe - retrying kill (PIDs {2})" -f
+      $Service.Title, $remaining.Count, (($remaining | ForEach-Object { $_.ProcessId }) -join ", ")
+    )
+    $null = Stop-TbccServiceWorkerDuplicates -Service $Service
+    $remaining = @(Get-TbccServiceWorkerProcesses -Service $Service)
+  }
+
+  if ($Force -and $remaining.Count -ge 1) {
+    $exclude = @(Get-TbccStopExcludeProcessIds)
+    $null = Stop-TbccProcessesByCommandMatch -Pattern $Service.CommandMatch -ExcludeProcessIds $exclude
+    $null = Stop-TbccProcessesByCommandMatch -Pattern ('py\.exe.*' + $Service.CommandMatch) -ExcludeProcessIds $exclude
+    Start-Sleep -Milliseconds 400
+  }
+
+  if (-not $Force -and (Test-TbccServiceProcessRunning -Service $Service)) {
+    return
+  }
+
+  $hubReady = $false
   if ($UseErrorHubWrapper) {
     $hubPath = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
     if (Test-Path -LiteralPath $hubPath) {
       . $hubPath
       $null = Register-TbccServiceLauncher -TbccRoot $TbccRoot -ServiceName $Service.Title -Command $cmd
-      $run = Get-TbccServiceWrapperCmd -TbccRoot $TbccRoot -ServiceName $Service.Title
+      $hubReady = $true
     }
   }
 
-  if (Start-TbccWtTab -TbccRoot $TbccRoot -Title $Service.Title -Command $run) {
+  $wtHost = Get-TbccWtHostPid -TbccRoot $TbccRoot
+  $useHeadless = $Background -or (
+    (Test-TbccBackgroundServiceStartEnabled -TbccRoot $TbccRoot) -and -not $wtHost
+  )
+  if ($useHeadless) {
+    $null = Start-TbccStackServiceHeadless -Service $Service -TbccRoot $TbccRoot `
+      -UseErrorHubWrapper:($hubReady) -Command $cmd
+    return
+  }
+
+  $run = if ($hubReady) {
+    Get-TbccServiceWrapperCmd -TbccRoot $TbccRoot -ServiceName $Service.Title
+  } else { $cmd }
+
+  if (Start-TbccWtTab -TbccRoot $TbccRoot -Title $Service.Title -Command $run -WtHostPid $(if ($wtHost) { $wtHost } else { 0 })) {
+    return
+  }
+
+  if ($hubReady) {
+    $runner = Join-Path $TbccRoot "scripts\run-tbcc-service.ps1"
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', $runner, '-TbccRoot', $TbccRoot, '-ServiceName', $Service.Title
+    ) -WindowStyle Minimized
     return
   }
 
@@ -1332,7 +2310,37 @@ function Start-TbccStackService {
   $part2 = 'title "' + $Service.Title + '"'
   $part3 = $run
   $full = $part1 + " & " + $part2 + " & " + $part3
-  Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", $full) -WindowStyle Normal
+  Start-Process -FilePath $env:ComSpec -ArgumentList @("/c", $full) -WindowStyle Minimized
+}
+
+function Get-TbccSecretaryStackService {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $py = Get-TbccControlPythonCmd
+  $backendDir = Join-Path $TbccRoot "backend"
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $token = ($dotEnv["TBCC_SECRETARY_BOT_TOKEN"] -as [string]).Trim()
+  if (-not $token) { $token = ($dotEnv["SECRETARY_BOT_TOKEN"] -as [string]).Trim() }
+  if (-not $token) { return $null }
+  return [pscustomobject]@{
+    Id = "secretary"
+    Title = "TBCC-SecretaryBot"
+    Port = 0
+    CommandMatch = "bots\.secretary_bot"
+    Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.secretary_bot')
+  }
+}
+
+function Restart-TbccSecretaryBot {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$UseErrorHubWrapper
+  )
+  $svc = Get-TbccSecretaryStackService -TbccRoot $TbccRoot
+  if (-not $svc) { throw "TBCC_SECRETARY_BOT_TOKEN not set in tbcc/.env" }
+  $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
+  Start-Sleep -Milliseconds 800
+  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper
+  return $svc
 }
 
 function Restart-TbccStackService {
@@ -1340,14 +2348,38 @@ function Restart-TbccStackService {
     [Parameter(Mandatory = $true)][string]$ServiceId,
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$FullStack,
-    [switch]$UseErrorHubWrapper
+    [switch]$UseErrorHubWrapper,
+    [switch]$Background
   )
-  $svc = Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack |
-    Where-Object { $_.Id -eq $ServiceId } | Select-Object -First 1
+  $svc = Get-TbccStackServiceById -ServiceId $ServiceId -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog
   if (-not $svc) { throw ("Unknown service id: " + $ServiceId) }
-  $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
-  Start-Sleep -Milliseconds 800
-  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper
+  if ($ServiceId -eq "backend") {
+    $null = Set-TbccBackendRestartGrace -TbccRoot $TbccRoot
+  }
+  $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot -GracefulTabClose
+  if ($TbccRoot -and (Get-Command Wait-TbccServiceTabClosed -ErrorAction SilentlyContinue)) {
+    $gone = Wait-TbccServiceTabClosed -Title $svc.Title -TbccRoot $TbccRoot -MaxWaitSeconds 10
+    if (-not $gone -and (Get-Command Invoke-TbccCloseServiceTab -ErrorAction SilentlyContinue)) {
+      $hub = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+      if (Test-Path -LiteralPath $hub) { . $hub }
+      $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $svc.Title
+      Start-Sleep -Milliseconds 400
+    }
+  } else {
+    Start-Sleep -Milliseconds 1500
+  }
+  $still = Test-TbccServiceProcessRunning -Service $svc
+  if ($still) {
+    $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
+    Start-Sleep -Milliseconds 800
+  }
+  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper -Force -Background:$Background
+  if ($ServiceId -eq "backend") {
+    $up = Wait-TbccBackendHealth -TimeoutSec 90
+    if ($up) {
+      $null = Clear-TbccBackendRestartGrace -TbccRoot $TbccRoot
+    }
+  }
   return $svc
 }
 
@@ -1409,7 +2441,7 @@ function Test-TbccProcessCommandIsTbcc {
   }
   if ($CommandLine -match 'title\s+"(TBCC-|AOF-Forum)') { return $true }
   if ($CommandLine -match '--title\s+(TBCC-|AOF-Forum)') { return $true }
-  if ($CommandLine -match 'run-tbcc-service\.ps1|tbcc-error-hub\.ps1|show-tbcc-error-hub|tbcc-restart-full-stack\.ps1') {
+  if ($CommandLine -match 'run-tbcc-service\.ps1|tbcc-error-hub\.ps1|show-tbcc-error-hub|run-tbcc-stackwatch\.ps1|show-tbcc-processes\.ps1|tbcc-restart-full-stack\.ps1') {
     return $true
   }
   if ($TbccRoot) {
@@ -1591,15 +2623,22 @@ function Stop-TbccPriorStackWindows {
     [int]$MaxWaitSeconds = 45
   )
   $exclude = @(Get-TbccStopExcludeProcessIds -Extra $ExcludeProcessIds)
-  $null = Stop-TbccAllStackServices -TbccRoot $TbccRoot -FullStack:$FullStack
+  $hubScript = Join-Path $TbccRoot "scripts\tbcc-error-hub.ps1"
+  if (Test-Path -LiteralPath $hubScript) {
+    . $hubScript
+    $null = Stop-TbccStackGracefully -TbccRoot $TbccRoot -FullStack:$FullStack -ExcludeProcessIds $exclude
+  } else {
+    $null = Stop-TbccAllStackServices -TbccRoot $TbccRoot -FullStack:$FullStack
+  }
   Stop-TbccWindowsTerminalHosts -TbccRoot $TbccRoot -ExcludeProcessIds $exclude
 
   $allProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
   # Only TBCC-titled external shells — never blanket-kill start.ps1 (would hit IDE terminals with tbcc cwd).
-  $null = Stop-TbccProcessesByCommandMatch -Pattern 'title\s+"(TBCC-|AOF-Forum)' -ExcludeProcessIds $exclude
+  $null = Stop-TbccProcessesByCommandMatch -Pattern 'title\s+"(TBCC-|AOF-Forum|OpenClaw-Gateway)' -ExcludeProcessIds $exclude
   $null = Stop-TbccProcessesByCommandMatch -Pattern 'run-tbcc-service\.ps1' -ExcludeProcessIds $exclude
   $null = Stop-TbccProcessesByCommandMatch -Pattern 'tbcc-error-hub\.ps1' -ExcludeProcessIds $exclude
   $null = Stop-TbccProcessesByCommandMatch -Pattern 'show-tbcc-error-hub' -ExcludeProcessIds $exclude
+  $null = Stop-TbccProcessesByCommandMatch -Pattern 'run-tbcc-stackwatch\.ps1|show-tbcc-processes\.ps1' -ExcludeProcessIds $exclude
 
   try {
     $procs = $allProcs |
@@ -1617,6 +2656,8 @@ function Stop-TbccPriorStackWindows {
 
   # Second pass: tab shells can outlive a partial kill.
   Stop-TbccWindowsTerminalHosts -TbccRoot $TbccRoot -ExcludeProcessIds $exclude
+
+  $stray = @(Stop-TbccStrayStackProcesses -TbccRoot $TbccRoot -ExcludeProcessIds $exclude)
 
   $cleanupOrphans = Join-Path $TbccRoot "scripts\tbcc-cleanup-orphans.ps1"
   if (Test-Path -LiteralPath $cleanupOrphans) {
@@ -1648,6 +2689,16 @@ function Invoke-TbccColdStart {
   Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
 }
 
+function Invoke-TbccFullStackLaunch {
+  <# Set full profile (remove lean) then cold-start all default services. #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$NoOpenBrowser
+  )
+  Set-TbccStackProfile -TbccRoot $TbccRoot -Profile full | Out-Null
+  Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
+}
+
 function Invoke-TbccColdStartFromTray {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
@@ -1656,9 +2707,27 @@ function Invoke-TbccColdStartFromTray {
   Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
 }
 
-function Invoke-TbccRestartFullStack {
+function Invoke-TbccLeanStackLaunch {
+  <#
+  One-shot lean profile + cold start (MacroSearch/AlbumComposer + enrichment sidecars skipped; Secretary included).
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$NoOpenBrowser
+  )
+  Set-TbccStackProfile -TbccRoot $TbccRoot -Profile lean | Out-Null
+  Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
+}
+
+function Invoke-TbccRestartStack {
+  <# Stop all TBCC tabs, then relaunch only services that were running (profile unchanged). #>
   param([Parameter(Mandatory = $true)][string]$TbccRoot)
   Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action Restart -NoOpen
+}
+
+function Invoke-TbccRestartFullStack {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  Invoke-TbccRestartStack -TbccRoot $TbccRoot
 }
 
 function Invoke-TbccStopFullStack {

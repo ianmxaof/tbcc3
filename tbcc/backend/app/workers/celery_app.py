@@ -60,6 +60,9 @@ celery.conf.task_routes = {
     "app.workers.mega_scraper_worker.*": {"queue": "scrape"},
     "app.workers.scrape_scheduler_worker.*": {"queue": "scrape"},
     "app.workers.scheduler_worker.*": {"queue": "celery"},
+    # Scheduler lane (Beat due rows + manual Post now) — isolated from pool auto-post.
+    "app.workers.poster_worker.post_scheduled_text": {"queue": "post_scheduler"},
+    "app.workers.poster_worker.drain_scheduled_post_queue": {"queue": "post_scheduler"},
     "app.workers.poster_worker.*": {"queue": "post"},
     "app.workers.subscription_worker.*": {"queue": "subscription"},
     "app.workers.grant_access_worker.*": {"queue": "subscription"},
@@ -220,4 +223,37 @@ if (os.getenv("TBCC_EROME_VIEW_SYNC_ENABLED") or "1").strip().lower() not in (
     celery.conf.beat_schedule["erome-view-sync"] = {
         "task": "app.workers.erome_analytics_worker.sync_erome_views",
         "schedule": crontab(minute=10, hour=_erome_view_sync_crontab_hours()),
+    }
+
+
+def _export_flywheel_crontab_minutes() -> str:
+    raw = (os.getenv("TBCC_EXPORT_FLYWHEEL_TICK_MINUTES") or "15").strip()
+    try:
+        n = max(5, min(120, int(raw)))
+    except ValueError:
+        n = 15
+    return f"*/{n}"
+
+
+if (os.getenv("TBCC_EXPORT_FLYWHEEL_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    celery.conf.beat_schedule["export-flywheel-tick"] = {
+        "task": "app.workers.export_flywheel_worker.export_flywheel_tick",
+        "schedule": crontab(minute=_export_flywheel_crontab_minutes()),
+    }
+
+
+if (os.getenv("TBCC_BUFFER_METRICS_SYNC_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    celery.conf.beat_schedule["buffer-metrics-sync"] = {
+        "task": "app.workers.buffer_metrics_worker.sync_buffer_metrics",
+        "schedule": crontab(minute=45, hour="*/2"),
     }

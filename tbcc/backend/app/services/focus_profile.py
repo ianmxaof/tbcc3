@@ -33,7 +33,7 @@ REDIS_KEY_LAST_IMPORT_ACTIVITY = "tbcc:focus:last_import_activity"
 VALID_PROFILES = frozenset({"off", "import_burst", "telegram_relief", "watch_folder", "minimal"})
 
 # Service ids from Get-TbccStackServices (tbcc-service-control.ps1) — never stop these in any profile.
-CORE_ALWAYS_UP = frozenset({"backend", "celery", "celery_post", "dashboard", "beat"})
+CORE_ALWAYS_UP = frozenset({"backend", "celery", "celery_post", "celery_post_scheduler", "dashboard", "beat"})
 
 # Beat is never stopped — focus profiles use pause_beat so TBCC-Beat can stay up 24/7.
 PROFILE_STOP_SERVICES: dict[str, list[str]] = {
@@ -72,14 +72,15 @@ PROFILE_STOP_SERVICES: dict[str, list[str]] = {
 PROFILE_FLAGS: dict[str, dict[str, bool]] = {
     "import_burst": {
         "import_focus": True,
-        "pause_auto_tag": False,
+        "pause_auto_tag": True,
         "pause_beat": True,
-        "skip_sidecar_enrich": False,
+        "skip_sidecar_enrich": True,
     },
     "telegram_relief": {
         "import_focus": False,
         "pause_auto_tag": True,
-        "pause_beat": True,
+        # Keep Beat scheduling on — relief stops NSFW/CLIP/Lustpress Telethon contention only.
+        "pause_beat": False,
         "skip_sidecar_enrich": True,
     },
     "watch_folder": {
@@ -135,6 +136,15 @@ def focus_lock_window_s() -> int:
         return 120
 
 
+def focus_telegram_relief_restore_minutes() -> int:
+    """Auto-restore telegram_relief after session is calm this many minutes."""
+    raw = (os.getenv("TBCC_FOCUS_TELEGRAM_RELIEF_RESTORE_MIN") or "5").strip()
+    try:
+        return max(1, min(60, int(raw)))
+    except ValueError:
+        return 5
+
+
 def focus_idle_restore_minutes() -> int:
     try:
         return max(5, int(os.getenv("TBCC_FOCUS_IDLE_RESTORE_MIN") or "20"))
@@ -152,7 +162,15 @@ def focus_import_idle_restore_minutes() -> int:
     return focus_idle_restore_minutes()
 
 
-def count_active_import_jobs() -> int:
+def focus_import_queue_only_restore_minutes() -> int:
+    """When imports are only queued (none processing), restore focus sooner."""
+    try:
+        return max(2, int(os.getenv("TBCC_FOCUS_IMPORT_QUEUE_ONLY_RESTORE_MIN") or "3"))
+    except ValueError:
+        return 3
+
+
+def count_active_import_jobs(*, include_queued: bool = True) -> int:
     """Non-terminal import jobs updated in the last 2 hours (same rule as /import/queue/status)."""
     try:
         from datetime import timedelta
@@ -164,11 +182,35 @@ def count_active_import_jobs() -> int:
         db = SessionLocal()
         try:
             cutoff = datetime.utcnow() - timedelta(hours=2)
+            q = db.query(ImportJob).filter(
+                ImportJob.updated_at >= cutoff,
+                ~ImportJob.status.in_(list(TERMINAL_STATUSES)),
+            )
+            if not include_queued:
+                q = q.filter(ImportJob.status != "queued")
+            return int(q.count())
+        finally:
+            db.close()
+    except Exception:
+        return 0
+
+
+def count_processing_import_jobs() -> int:
+    """Imports actively consuming workers — only these should block scheduling restore."""
+    try:
+        from datetime import timedelta
+
+        from app.database.session import SessionLocal
+        from app.models.import_job import ImportJob
+
+        db = SessionLocal()
+        try:
+            cutoff = datetime.utcnow() - timedelta(hours=2)
             return int(
                 db.query(ImportJob)
                 .filter(
                     ImportJob.updated_at >= cutoff,
-                    ~ImportJob.status.in_(list(TERMINAL_STATUSES)),
+                    ImportJob.status == "processing",
                 )
                 .count()
             )
@@ -316,6 +358,24 @@ def lock_events_recent_count() -> int:
         return 0
 
 
+def session_lock_storm_threshold() -> int:
+    """
+    Lock count that counts as a real storm (toasts / auto telegram_relief).
+    Higher while imports are active — deposit + CLIP downloads briefly share Telethon sessions.
+    """
+    base = focus_lock_threshold()
+    try:
+        if count_active_import_jobs() > 0:
+            return max(base + 4, base * 3)
+    except Exception:
+        pass
+    return base
+
+
+def session_lock_storm_active() -> bool:
+    return lock_events_recent_count() >= session_lock_storm_threshold()
+
+
 def _invoke_focus_ps1(profile: str, action: str) -> dict[str, Any]:
     if platform.system() != "Windows":
         return {"ok": False, "error": "focus_profiles require Windows (PowerShell service control)"}
@@ -437,7 +497,7 @@ def evaluate_focus_triggers() -> dict[str, Any]:
     suggested: str | None = None
     lock_n = lock_events_recent_count()
 
-    if lock_n >= focus_lock_threshold():
+    if session_lock_storm_active():
         triggers.append(
             {
                 "code": "session_lock_storm",
@@ -448,15 +508,18 @@ def evaluate_focus_triggers() -> dict[str, Any]:
         )
         suggested = "telegram_relief"
 
-    active = count_active_import_jobs()
+    processing = count_processing_import_jobs()
+    queued = count_active_import_jobs(include_queued=True) - processing
     burst_threshold = focus_import_jobs_threshold()
-    if active >= burst_threshold and state["profile"] == "off":
+    if processing >= burst_threshold and state["profile"] == "off":
         triggers.append(
             {
                 "code": "import_queue_busy",
                 "severity": "warning",
                 "message": (
-                    f"{active} active import jobs — "
+                    f"{processing} import jobs running"
+                    + (f" ({queued} queued)" if queued else "")
+                    + " — "
                     + (
                         "import_burst will auto-apply"
                         if focus_auto_import_enabled()
@@ -502,7 +565,9 @@ def evaluate_focus_triggers() -> dict[str, Any]:
         "triggers": triggers,
         "suggested_profile": suggested,
         "lock_events": lock_n,
-        "active_import_jobs": active,
+        "active_import_jobs": processing + queued,
+        "processing_import_jobs": processing,
+        "queued_import_jobs": queued,
         "auto_react_enabled": focus_auto_react_enabled(),
         "auto_import_enabled": focus_auto_import_enabled(),
     }
@@ -528,7 +593,7 @@ def on_fast_import_queued(source: str = "import") -> dict[str, Any] | None:
     touch_import_activity()
     if not focus_auto_import_enabled():
         return None
-    if lock_events_recent_count() >= focus_lock_threshold():
+    if session_lock_storm_active():
         return None
     state = get_focus_state()
     if state["profile"] != "off":
@@ -540,19 +605,35 @@ def on_fast_import_queued(source: str = "import") -> dict[str, Any] | None:
     )
 
 
+def sync_focus_flags_from_profile() -> bool:
+    """Refresh Redis flags when PROFILE_FLAGS change (e.g. telegram_relief no longer pauses Beat)."""
+    st = get_focus_state()
+    profile = (st.get("profile") or "off").strip().lower()
+    if profile == "off":
+        return False
+    expected = PROFILE_FLAGS.get(profile, {})
+    current = dict(st.get("flags") or {})
+    if current == expected:
+        return False
+    _redis_set(REDIS_KEY_FLAGS, json.dumps(expected))
+    return True
+
+
 def evaluate_and_maybe_auto_apply() -> dict[str, Any]:
+    sync_focus_flags_from_profile()
     ev = evaluate_focus_triggers()
     ev["auto_applied"] = False
     state = get_focus_state()
     lock_n = lock_events_recent_count()
-    active = count_active_import_jobs()
+    processing = count_processing_import_jobs()
+    queued = count_active_import_jobs(include_queued=True) - processing
 
-    if active > 0:
+    if processing > 0:
         touch_import_activity()
 
     if state["profile"] != "off":
         if (
-            lock_n >= focus_lock_threshold()
+            session_lock_storm_active()
             and state["profile"] != "telegram_relief"
             and focus_auto_react_enabled()
         ):
@@ -565,29 +646,43 @@ def evaluate_and_maybe_auto_apply() -> dict[str, Any]:
             ev["apply_result"] = applied
             return ev
 
-        if state["profile"] == "telegram_relief" and focus_auto_react_enabled() and lock_n < 1:
-            idle_min = _minutes_since_iso(state.get("since") or "")
-            if idle_min is not None and idle_min >= focus_idle_restore_minutes():
-                ev["auto_restored"] = restore_focus_profile(reason="Auto-restore after idle (session calm)")
+        if state["profile"] == "telegram_relief" and focus_auto_react_enabled():
+            if not session_lock_storm_active():
+                idle_min = _minutes_since_iso(state.get("since") or "")
+                restore_after = focus_telegram_relief_restore_minutes()
+                if idle_min is not None and idle_min >= restore_after:
+                    ev["auto_restored"] = restore_focus_profile(
+                        reason=f"Auto-restore: session calm for {int(idle_min)}m"
+                    )
+            elif lock_n < 1:
+                idle_min = _minutes_since_iso(state.get("since") or "")
+                if idle_min is not None and idle_min >= focus_idle_restore_minutes():
+                    ev["auto_restored"] = restore_focus_profile(reason="Auto-restore after idle (session calm)")
 
         elif (
             state["profile"] == "import_burst"
             and state.get("auto")
             and focus_auto_import_enabled()
-            and active == 0
+            and processing == 0
         ):
             idle_min = _minutes_since_import_activity()
             if idle_min is None:
                 idle_min = _minutes_since_iso(state.get("since") or "")
             restore_after = focus_import_idle_restore_minutes()
+            if queued > 0:
+                # Stale queued backlog should not block scheduling indefinitely.
+                restore_after = min(restore_after, focus_import_queue_only_restore_minutes())
             if idle_min is not None and idle_min >= restore_after:
                 ev["auto_restored"] = restore_focus_profile(
-                    reason=f"Auto-restore: no active imports for {int(idle_min)}m"
+                    reason=(
+                        f"Auto-restore: no running imports for {int(idle_min)}m"
+                        + (f" ({queued} still queued)" if queued else "")
+                    )
                 )
 
         return ev
 
-    if focus_auto_react_enabled() and lock_n >= focus_lock_threshold():
+    if focus_auto_react_enabled() and session_lock_storm_active():
         applied = apply_focus_profile(
             "telegram_relief",
             reason="Auto: Telethon session lock storm detected",
@@ -597,10 +692,13 @@ def evaluate_and_maybe_auto_apply() -> dict[str, Any]:
         ev["apply_result"] = applied
         return ev
 
-    if focus_auto_import_enabled() and active >= focus_import_jobs_threshold():
+    if focus_auto_import_enabled() and processing >= focus_import_jobs_threshold():
         applied = apply_focus_profile(
             "import_burst",
-            reason=f"Auto: {active} active import jobs (threshold {focus_import_jobs_threshold()})",
+            reason=(
+                f"Auto: {processing} import jobs running (threshold {focus_import_jobs_threshold()})"
+                + (f", {queued} queued" if queued else "")
+            ),
             auto=True,
         )
         ev["auto_applied"] = applied.get("ok", False)

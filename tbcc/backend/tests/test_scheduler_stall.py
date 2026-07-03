@@ -157,36 +157,18 @@ def test_watchdog_resume_on_deep_queue_even_without_overdue():
     assert any(a["action"] == "resume_scheduled_posting" for a in out["actions"])
 
 
-def test_watchdog_no_resume_when_overdue_but_queue_empty():
+def test_watchdog_resume_when_overdue_and_empty_scheduler_queue():
     sh.reset_scheduler_watchdog_state()
-    stack, _ = _watchdog_env(overdue=2, post_len=0)
+    stack, mark = _watchdog_env(overdue=2, post_len=0)
     with stack:
         with patch(
             "app.services.post_scheduler.resume_scheduled_posting",
             return_value={"ok": True},
         ) as resume:
             out = sh.scheduler_watchdog_tick()
-    # First tick: streak == 1, so pool-purge (b) does not fire yet either.
-    resume.assert_not_called()
-    assert out["actions"] == []
-
-
-def test_watchdog_pool_purge_when_overdue_persists_with_empty_queue():
-    sh.reset_scheduler_watchdog_state()
-    with patch(
-        "app.services.celery_queue_ops.purge_post_pool_tasks_from_queue",
-        return_value={"ok": True, "removed": 1},
-    ) as purge:
-        # Tick 1: streak -> 1, no action. Tick 2: streak -> 2, action (b) fires.
-        stack1, _ = _watchdog_env(overdue=3, post_len=0)
-        with stack1:
-            sh.scheduler_watchdog_tick()
-        stack2, mark2 = _watchdog_env(overdue=3, post_len=0)
-        with stack2:
-            out = sh.scheduler_watchdog_tick()
-    purge.assert_called_once()
-    mark2.assert_any_call(["watchdog_pool_purge"])
-    assert any(a["action"] == "purge_pool_clear_locks" for a in out["actions"])
+    resume.assert_called_once_with(purge_post_queue=True)
+    mark.assert_any_call(["resume_scheduled_posting"])
+    assert any(a["action"] == "resume_scheduled_posting" for a in out["actions"])
 
 
 def test_watchdog_import_burst_restores_only_after_dwell():
@@ -236,7 +218,7 @@ def test_fast_snapshot_uses_cache_and_never_scans():
     sh.reset_scheduler_watchdog_state()
     with patch(
         "app.services.system_health.cached_scheduling_health",
-        return_value={"beat_running": True, "celery_post_worker_running": False},
+        return_value={"beat_running": True, "celery_post_scheduler_worker_running": True},
     ):
         with patch("app.services.post_scheduler._post_queue_length", return_value=4):
             with patch(
@@ -254,7 +236,7 @@ def test_fast_snapshot_uses_cache_and_never_scans():
                     ):
                         snap = sh.scheduling_fast_snapshot()
     assert snap["beat_up"] is True
-    assert snap["celery_post_up"] is False
+    assert snap["celery_post_up"] is True
     assert snap["post_queue_depth"] == 4
     assert snap["overdue_count"] == 1
     assert snap["focus"] == "off"

@@ -17,10 +17,29 @@ import { SilentTelegramSendOption } from "./SilentTelegramSendOption";
 import { SchedulerOverviewBand } from "./SchedulerOverviewBand";
 import { SchedulerIntervalCountdown, useSchedulerClock } from "./SchedulerIntervalCountdown";
 import {
-  computeSchedulerCountdown,
-  countdownStatusLabel,
   type SchedulingStackHealth,
 } from "../utils/schedulerIntervalCountdown";
+import {
+  classifySchedulerPost,
+  computeTransportStats,
+  HIDE_SENT_STORAGE_KEY,
+  inferSchedulerGroup,
+  isSentOneShot,
+  LIST_MODE_STORAGE_KEY,
+  matchesStatusFilter,
+  readHideSentOneShots,
+  readSchedulerListMode,
+  SCHEDULER_GROUP_DEFAULT_EXPANDED,
+  SCHEDULER_GROUP_LABELS,
+  SCHEDULER_GROUP_ORDER,
+  shouldUseFastSchedulerPoll,
+  type SchedulerGroupId,
+  type SchedulerListMode,
+  type SchedulerStatusFilter,
+} from "../utils/schedulerPostStatus";
+import { SchedulerTransportBar } from "./SchedulerTransportBar";
+import { SchedulerGroupSection } from "./SchedulerGroupSection";
+import { SchedulerPostStatusCell } from "./SchedulerPostStatusCell";
 import { MediaPoolSelect } from "./MediaPoolSelect";
 import {
   poolSelectFromPost,
@@ -122,10 +141,14 @@ async function fetchSchedulingHealth(): Promise<SchedulingStackHealth> {
     return {
       beatRunning: Boolean(s.beat_running),
       celeryPostRunning: Boolean(s.celery_post_worker_running),
+      celeryPostSchedulerRunning: Boolean(
+        s.celery_post_scheduler_worker_running ?? s.celery_post_worker_running
+      ),
       schedulingPaused: Boolean(s.scheduling_paused_by_focus),
+      focusProfile: typeof s.focus_profile === "string" ? s.focus_profile : undefined,
     };
   } catch {
-    return { beatRunning: false, celeryPostRunning: false, schedulingPaused: false };
+    return { beatRunning: false, celeryPostRunning: false, celeryPostSchedulerRunning: false, schedulingPaused: false };
   }
 }
 
@@ -211,6 +234,9 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
   const [editCheckoutReferralCode, setEditCheckoutReferralCode] = useState("");
   const [editScheduleError, setEditScheduleError] = useState<string | null>(null);
   const [triggerNotice, setTriggerNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [listMode, setListMode] = useState<SchedulerListMode>(() => readSchedulerListMode());
+  const [hideSentOneShots, setHideSentOneShots] = useState(() => readHideSentOneShots(readSchedulerListMode()));
+  const [statusFilter, setStatusFilter] = useState<SchedulerStatusFilter>("all");
 
   const { data: pools = [] } = useQuery({
     queryKey: ["pools"],
@@ -220,17 +246,46 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
     queryKey: ["channels"],
     queryFn: () => api.channels.list(),
   });
-  const { data: scheduledPosts = [] } = useQuery({
-    queryKey: ["scheduledPosts"],
-    queryFn: () => api.scheduledPosts.list(),
-    refetchInterval: 30_000,
-  });
   const { data: schedulingHealth } = useQuery({
     queryKey: ["health", "scheduling"],
     queryFn: fetchSchedulingHealth,
     refetchInterval: 15_000,
   });
   const schedulerNowMs = useSchedulerClock();
+  const [postsPollMs, setPostsPollMs] = useState(30_000);
+  const { data: scheduledPosts = [] } = useQuery({
+    queryKey: ["scheduledPosts"],
+    queryFn: () => api.scheduledPosts.list(),
+    refetchInterval: postsPollMs,
+  });
+  const transportStats = useMemo(
+    () => computeTransportStats(scheduledPosts as Array<Record<string, unknown>>, schedulingHealth, schedulerNowMs),
+    [scheduledPosts, schedulingHealth, schedulerNowMs]
+  );
+  useEffect(() => {
+    const next = compactRecurringOnly
+      ? 30_000
+      : shouldUseFastSchedulerPoll(transportStats, schedulingHealth)
+        ? 15_000
+        : 30_000;
+    setPostsPollMs((prev) => (prev === next ? prev : next));
+  }, [compactRecurringOnly, transportStats, schedulingHealth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(LIST_MODE_STORAGE_KEY, listMode);
+    } catch {
+      /* ignore */
+    }
+  }, [listMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDE_SENT_STORAGE_KEY, hideSentOneShots ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [hideSentOneShots]);
   const { data: subscriptionPlansRaw = [] } = useQuery({
     queryKey: ["subscriptionPlans"],
     queryFn: () => api.subscriptionPlans.list(),
@@ -530,13 +585,23 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
     | { kind: "campaign"; campaign_group_id: string; posts: Array<Record<string, unknown>> }
     | { kind: "single"; post: Record<string, unknown> };
 
-  const displayRows: DisplayRow[] = useMemo(() => {
-    const flat = compactRecurringOnly
+  const visiblePosts = useMemo(() => {
+    let flat = compactRecurringOnly
       ? (scheduledPosts as Array<Record<string, unknown>>).filter((p) => !!p.interval_minutes)
       : (scheduledPosts as Array<Record<string, unknown>>);
+    if (hideSentOneShots) flat = flat.filter((p) => !isSentOneShot(p));
+    if (statusFilter !== "all") {
+      flat = flat.filter((p) =>
+        matchesStatusFilter(classifySchedulerPost(p, schedulingHealth, schedulerNowMs), statusFilter)
+      );
+    }
+    return flat;
+  }, [scheduledPosts, compactRecurringOnly, hideSentOneShots, statusFilter, schedulingHealth, schedulerNowMs]);
+
+  const displayRows: DisplayRow[] = useMemo(() => {
     const byCg = new Map<string, Array<Record<string, unknown>>>();
     const singles: Array<Record<string, unknown>> = [];
-    for (const p of flat) {
+    for (const p of visiblePosts) {
       const cg = p.campaign_group_id as string | null | undefined;
       if (cg && typeof cg === "string") {
         const arr = byCg.get(cg) ?? [];
@@ -564,13 +629,253 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
       return idA - idB;
     });
     return out;
-  }, [scheduledPosts, compactRecurringOnly]);
+  }, [visiblePosts]);
+
+  const leanGroupedRows = useMemo(() => {
+    if (listMode !== "lean") return null;
+    const buckets = new Map<SchedulerGroupId, DisplayRow[]>();
+    for (const gid of SCHEDULER_GROUP_ORDER) buckets.set(gid, []);
+    for (const row of displayRows) {
+      const p = row.kind === "campaign" ? row.posts[0] : row.post;
+      const gid = inferSchedulerGroup(p.name, p.scheduler_category);
+      buckets.get(gid)?.push(row);
+    }
+    return buckets;
+  }, [displayRows, listMode]);
 
   const thCell = "text-left px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap";
   const tdCell = "px-2 py-1 text-[11px] leading-snug text-slate-300";
   const tdCellTop = "px-2 py-1 text-[11px] leading-snug text-slate-300 align-top";
   const btnSm =
     "px-1.5 py-0.5 rounded text-[10px] leading-tight font-medium whitespace-nowrap disabled:opacity-50";
+
+  const renderDisplayRow = (row: DisplayRow) => {
+    const p = row.kind === "campaign" ? row.posts[0] : row.post;
+    const channelCell =
+      row.kind === "campaign"
+        ? row.posts.map((x) => String(x.channel_name || x.channel_id)).join(", ")
+        : String(p.channel_name || p.channel_id);
+    const rowKey = row.kind === "campaign" ? `campaign-${row.campaign_group_id}` : String(p.id);
+    const recurring = !!p.interval_minutes;
+    const lastPost = p.last_posted_at;
+    const cvRow = p.content_variations;
+    const rotating = Array.isArray(cvRow) && cvRow.length >= 2;
+    const textPreview = String(p.content || "").slice(0, 40);
+    const preview = rotating ? `${cvRow.length} captions (rotating)` : textPreview;
+    const poolSelectId = poolSelectFromPost(p);
+    const poolId = p.pool_id != null ? Number(p.pool_id) : 0;
+    const poolRec = poolId > 0 ? poolMap[String(poolId)] : undefined;
+    const poolName = poolSelectLabel(poolSelectId, poolRec ? String(poolRec?.name || poolId) : undefined);
+    const poolApproved = poolRec != null ? Number(poolRec.approved_count ?? 0) : 0;
+    const poolAlbumSize = poolRec != null ? Number(poolRec.album_size ?? 5) : 0;
+    const poolLastRun = poolRec?.last_posted ? String(poolRec.last_posted) : "";
+    const attUrls = Array.isArray(p.attachment_urls)
+      ? (p.attachment_urls as string[]).filter((x) => String(x).trim())
+      : [];
+    const btnCount = parseButtonsFromPost(p).length;
+    const bufferMirror = Boolean(p.buffer_mirror_enabled);
+    const bufferPublishNow = Boolean(p.buffer_publish_now);
+    const bufferQueueLen = Array.isArray(p.buffer_x_queue) ? p.buffer_x_queue.length : 0;
+    const llmRewrite = Boolean(p.caption_llm_rewrite_enabled);
+    const llmMode = String(p.caption_llm_rewrite_mode || "");
+    const flags = [
+      p.send_silent ? "silent" : null,
+      p.pin_after_send ? "pin after" : null,
+      btnCount ? `${btnCount} btn` : null,
+    ].filter(Boolean);
+    const hasAlbumOrPool = scheduledPostHasAlbumOrPool(p);
+
+    return (
+      <tr
+        key={rowKey}
+        className="border-t border-slate-700/60 hover:bg-slate-800/40 cursor-pointer"
+        onClick={() => openEditor(p)}
+        title="Click row to edit schedule, caption, and pool album options"
+      >
+        <td className={tdCell}>
+          {String(p.name || "—")}
+          {row.kind === "campaign" ? (
+            <span className="ml-1 text-[10px] text-cyan-400/90">
+              ({row.posts.length} ch
+              {row.posts[0]?.campaign_random_channel ? " · random" : ""})
+            </span>
+          ) : null}
+        </td>
+        <td
+          className={`${tdCell} max-w-[10rem]`}
+          title={
+            p.message_thread_id != null && p.message_thread_id !== undefined
+              ? `${channelCell} · Topic #${p.message_thread_id}`
+              : channelCell
+          }
+        >
+          <div className="truncate text-slate-200">
+            {channelCell}
+            {p.message_thread_id != null && p.message_thread_id !== undefined ? (
+              <span className="text-slate-500 font-normal"> · #{String(p.message_thread_id)}</span>
+            ) : null}
+          </div>
+        </td>
+        <td className={tdCellTop}>
+          <div className="flex flex-col gap-0.5">
+            <span className="text-slate-400 text-[10px]">Telegram</span>
+            {bufferMirror ? (
+              <span
+                className="inline-flex w-fit items-center rounded px-1 py-px text-[10px] font-medium bg-sky-900/60 text-sky-300 border border-sky-700/50"
+                title={
+                  bufferQueueLen > 0
+                    ? `${bufferQueueLen} TBCC-stored X caption(s); next Telegram send uses #1, then Buffer queue`
+                    : "Mirrors Telegram caption to Buffer on each send"
+                }
+              >
+                Buffer → X
+                {bufferPublishNow ? " · instant" : " · buffer queue"}
+                {bufferQueueLen > 0 ? ` · ${bufferQueueLen} TBCC` : bufferPublishNow ? "" : " · mirror TG"}
+              </span>
+            ) : (
+              <span className="text-slate-600 text-xs">—</span>
+            )}
+            {llmRewrite ? (
+              <span
+                className="inline-flex w-fit items-center rounded px-1 py-px text-[10px] font-medium bg-violet-900/50 text-violet-300 border border-violet-700/50"
+                title={
+                  llmMode === "random"
+                    ? "LLM may rephrase caption on random sends"
+                    : `LLM rephrase every ${Number(p.caption_llm_rewrite_interval) || "?"} send(s)`
+                }
+              >
+                LLM rewrite · {llmMode === "random" ? "random" : `every ${Number(p.caption_llm_rewrite_interval) || "?"}`}
+              </span>
+            ) : null}
+          </div>
+        </td>
+        <td
+          className={`${tdCell} max-w-[9rem] truncate text-slate-400`}
+          title={rotating ? String(cvRow.join(" | ")).slice(0, 500) : String(p.content || "")}
+        >
+          {rotating ? preview : `${textPreview}${String(p.content || "").length > 40 ? "…" : ""}`}
+        </td>
+        <td className={`${tdCellTop} w-[6.5rem]`} onClick={(e) => e.stopPropagation()}>
+          <SchedulerIntervalCountdown
+            lastPostedAt={lastPost}
+            intervalMinutes={p.interval_minutes}
+            scheduledAt={p.scheduled_at}
+            sentAt={p.sent_at}
+            autoPausedAt={p.posting_auto_paused_at}
+            scheduling={schedulingHealth ?? undefined}
+            nowMs={schedulerNowMs}
+          />
+        </td>
+        <td className={`${tdCellTop} max-w-[5.5rem] text-slate-400`} onClick={(e) => e.stopPropagation()}>
+          {recurring ? (
+            <span className="text-[10px] text-slate-400">
+              Every {Number(p.interval_minutes)} min
+              {lastPost ? (
+                <span className="block text-slate-500 mt-0.5 truncate" title={formatUtcWithLocalHint(String(lastPost))}>
+                  Last {formatPtForDashboard(String(lastPost))} PT
+                </span>
+              ) : (
+                <span className="block text-amber-500/90 mt-0.5">Awaiting first post</span>
+              )}
+            </span>
+          ) : p.scheduled_at ? (
+            <span className="text-[10px]" title={formatUtcWithLocalHint(String(p.scheduled_at))}>
+              {formatPtForDashboard(String(p.scheduled_at))} PT
+            </span>
+          ) : (
+            "—"
+          )}
+        </td>
+        <td
+          className={`${tdCell} max-w-[8rem] border-l border-slate-700/50`}
+          title={[
+            poolSelectUsesPool(poolSelectId)
+              ? poolSelectUsesSpecificPool(poolSelectId)
+                ? `${poolName} · ${poolApproved}/${poolAlbumSize}`
+                : poolName
+              : poolName,
+            poolLastRun && poolSelectUsesSpecificPool(poolSelectId)
+              ? `Pool run ${formatUtcForDashboard(poolLastRun)}`
+              : null,
+            attUrls.length ? `${attUrls.length} promo` : null,
+            flags.join(" · "),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        >
+          {poolSelectUsesPool(poolSelectId) ? (
+            <span className="block min-w-0 truncate">
+              <span className="text-slate-200">{poolName}</span>
+              {poolSelectUsesSpecificPool(poolSelectId) ? (
+                <span className={`tabular-nums ${poolApproved > 0 ? "text-cyan-400" : "text-slate-500"}`}>
+                  {" "}
+                  · {poolApproved}/{poolAlbumSize}
+                </span>
+              ) : null}
+            </span>
+          ) : (
+            <span className="text-slate-600">—</span>
+          )}
+          {attUrls.length > 0 || flags.length > 0 ? (
+            <span className="text-[10px] text-slate-500 block truncate">
+              {[attUrls.length ? `${attUrls.length} promo` : null, ...flags].filter(Boolean).join(" · ")}
+            </span>
+          ) : null}
+        </td>
+        <td className={tdCell}>
+          <SchedulerPostStatusCell
+            post={p}
+            scheduling={schedulingHealth}
+            nowMs={schedulerNowMs}
+            showTroubleDetail={statusFilter !== "all"}
+          />
+        </td>
+        <td className={`${tdCell} flex flex-wrap gap-1`} onClick={(e) => e.stopPropagation()}>
+          {(recurring || !p.sent_at) && (
+            <button
+              type="button"
+              onClick={() => triggerScheduledPost.mutate({ id: Number(p.id) })}
+              disabled={triggerScheduledPost.isPending}
+              className={`${btnSm} bg-slate-600 text-slate-200 hover:bg-slate-500`}
+              title={
+                row.kind === "campaign"
+                  ? row.posts[0]?.campaign_random_channel
+                    ? "Queues one send to a random channel in this campaign"
+                    : "Queues one Celery run for all channels in this campaign"
+                  : undefined
+              }
+            >
+              Post now
+            </button>
+          )}
+          {hasAlbumOrPool && (
+            <button
+              type="button"
+              onClick={() => triggerScheduledPost.mutate({ id: Number(p.id), reshuffle: true })}
+              disabled={triggerScheduledPost.isPending}
+              className={`${btnSm} bg-violet-800/90 text-violet-100 hover:bg-violet-700/90`}
+              title={
+                hasAlbumOrPool
+                  ? row.kind === "campaign"
+                    ? "Queue send with shuffled album/pool order (requires pool, promo URLs, or picked media)"
+                    : "Randomize promo/media order for this send (requires pool, promo URLs, or picked media)"
+                  : "Only available when job has a pool, promo URLs, or picked media"
+              }
+            >
+              Repost shuffled
+            </button>
+          )}
+          <button
+            onClick={() => deleteScheduledPost.mutate(Number(p.id))}
+            disabled={deleteScheduledPost.isPending}
+            className={`${btnSm} bg-red-900/60 text-red-200/90 hover:bg-red-800/60`}
+          >
+            Delete
+          </button>
+        </td>
+      </tr>
+    );
+  };
 
   return (
     <>
@@ -1145,6 +1450,46 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
         />
       )}
 
+      {!compactRecurringOnly ? (
+        <SchedulerTransportBar
+          stats={transportStats}
+          scheduling={schedulingHealth}
+          statusFilter={statusFilter}
+          onStatusFilterChange={setStatusFilter}
+        />
+      ) : null}
+
+      {!compactRecurringOnly ? (
+        <div className="mb-2 flex flex-wrap items-center gap-3 text-[11px]">
+          <span className="text-slate-500 uppercase tracking-wide text-[10px] font-semibold">View</span>
+          <div className="inline-flex rounded border border-slate-600 overflow-hidden">
+            <button
+              type="button"
+              className={`px-2.5 py-1 ${listMode === "lean" ? "bg-cyan-900/50 text-cyan-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"}`}
+              onClick={() => setListMode("lean")}
+            >
+              Lean
+            </button>
+            <button
+              type="button"
+              className={`px-2.5 py-1 border-l border-slate-600 ${listMode === "details" ? "bg-cyan-900/50 text-cyan-200" : "bg-slate-800 text-slate-400 hover:bg-slate-700"}`}
+              onClick={() => setListMode("details")}
+            >
+              Details
+            </button>
+          </div>
+          <label className="inline-flex items-center gap-1.5 text-slate-400 cursor-pointer">
+            <input
+              type="checkbox"
+              className="rounded border-slate-500"
+              checked={hideSentOneShots}
+              onChange={(e) => setHideSentOneShots(e.target.checked)}
+            />
+            Hide sent one-shots
+          </label>
+        </div>
+      ) : null}
+
       <div className="tbcc-panel overflow-x-auto rounded-lg border border-slate-600/90">
         <table className="w-full text-[11px] border-collapse">
           <thead>
@@ -1161,268 +1506,33 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
             </tr>
           </thead>
           <tbody>
-            {displayRows.map((row) => {
-              const p =
-                row.kind === "campaign"
-                  ? row.posts[0]
-                  : row.post;
-              const channelCell =
-                row.kind === "campaign"
-                  ? row.posts.map((x) => String(x.channel_name || x.channel_id)).join(", ")
-                  : String(p.channel_name || p.channel_id);
-              const rowKey =
-                row.kind === "campaign" ? `campaign-${row.campaign_group_id}` : String(p.id);
-              const recurring = !!p.interval_minutes;
-              const lastPost = p.last_posted_at;
-              const countdownSnap = computeSchedulerCountdown({
-                lastPostedAt: lastPost,
-                intervalMinutes: p.interval_minutes,
-                scheduledAt: p.scheduled_at,
-                sentAt: p.sent_at,
-                autoPausedAt: p.posting_auto_paused_at,
-                nowMs: schedulerNowMs,
-              });
-              const statusUi =
-                countdownSnap != null
-                  ? countdownStatusLabel(countdownSnap, schedulingHealth ?? undefined)
-                  : null;
-              const cvRow = p.content_variations;
-              const rotating = Array.isArray(cvRow) && cvRow.length >= 2;
-              const textPreview = String(p.content || "").slice(0, 40);
-              const preview = rotating ? `${cvRow.length} captions (rotating)` : textPreview;
-              const poolSelectId = poolSelectFromPost(p);
-              const poolId = p.pool_id != null ? Number(p.pool_id) : 0;
-              const poolRec = poolId > 0 ? poolMap[String(poolId)] : undefined;
-              const poolName = poolSelectLabel(poolSelectId, poolRec ? String(poolRec?.name || poolId) : undefined);
-              const poolApproved = poolRec != null ? Number(poolRec.approved_count ?? 0) : 0;
-              const poolAlbumSize = poolRec != null ? Number(poolRec.album_size ?? 5) : 0;
-              const poolLastRun = poolRec?.last_posted ? String(poolRec.last_posted) : "";
-              const attUrls = Array.isArray(p.attachment_urls)
-                ? (p.attachment_urls as string[]).filter((x) => String(x).trim())
-                : [];
-              const btnCount = parseButtonsFromPost(p).length;
-              const bufferMirror = Boolean(p.buffer_mirror_enabled);
-              const bufferPublishNow = Boolean(p.buffer_publish_now);
-              const bufferQueueLen = Array.isArray(p.buffer_x_queue) ? p.buffer_x_queue.length : 0;
-              const llmRewrite = Boolean(p.caption_llm_rewrite_enabled);
-              const llmMode = String(p.caption_llm_rewrite_mode || "");
-              const flags = [
-                p.send_silent ? "silent" : null,
-                p.pin_after_send ? "pin after" : null,
-                btnCount ? `${btnCount} btn` : null,
-              ].filter(Boolean);
-              return (
-                <tr
-                  key={rowKey}
-                  className="border-t border-slate-700/60 hover:bg-slate-800/40 cursor-pointer"
-                  onClick={() => openEditor(p)}
-                  title="Click row to edit schedule, caption, and pool album options"
-                >
-                  <td className={tdCell}>
-                    {String(p.name || "—")}
-                    {row.kind === "campaign" ? (
-                      <span className="ml-1 text-[10px] text-cyan-400/90">
-                        ({row.posts.length} ch
-                        {row.posts[0]?.campaign_random_channel ? " · random" : ""})
-                      </span>
-                    ) : null}
-                  </td>
-                  <td
-                    className={`${tdCell} max-w-[10rem]`}
-                    title={
-                      p.message_thread_id != null && p.message_thread_id !== undefined
-                        ? `${channelCell} · Topic #${p.message_thread_id}`
-                        : channelCell
-                    }
-                  >
-                    <div className="truncate text-slate-200">
-                      {channelCell}
-                      {p.message_thread_id != null && p.message_thread_id !== undefined ? (
-                        <span className="text-slate-500 font-normal">
-                          {" "}
-                          · #{String(p.message_thread_id)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </td>
-                  <td className={tdCellTop}>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-slate-400 text-[10px]">Telegram</span>
-                      {bufferMirror ? (
-                        <span
-                          className="inline-flex w-fit items-center rounded px-1 py-px text-[10px] font-medium bg-sky-900/60 text-sky-300 border border-sky-700/50"
-                          title={
-                            bufferQueueLen > 0
-                              ? `${bufferQueueLen} TBCC-stored X caption(s); next Telegram send uses #1, then Buffer queue`
-                              : "Mirrors Telegram caption to Buffer on each send"
-                          }
-                        >
-                          Buffer → X
-                          {bufferPublishNow ? " · instant" : " · buffer queue"}
-                          {bufferQueueLen > 0 ? ` · ${bufferQueueLen} TBCC` : bufferPublishNow ? "" : " · mirror TG"}
-                        </span>
-                      ) : (
-                        <span className="text-slate-600 text-xs">—</span>
-                      )}
-                      {llmRewrite ? (
-                        <span
-                          className="inline-flex w-fit items-center rounded px-1 py-px text-[10px] font-medium bg-violet-900/50 text-violet-300 border border-violet-700/50"
-                          title={
-                            llmMode === "random"
-                              ? "LLM may rephrase caption on random sends"
-                              : `LLM rephrase every ${Number(p.caption_llm_rewrite_interval) || "?"} send(s)`
-                          }
-                        >
-                          LLM rewrite · {llmMode === "random" ? "random" : `every ${Number(p.caption_llm_rewrite_interval) || "?"}`}
-                        </span>
-                      ) : null}
-                    </div>
-                  </td>
-                  <td
-                    className={`${tdCell} max-w-[9rem] truncate text-slate-400`}
-                    title={rotating ? String(cvRow.join(" | ")).slice(0, 500) : String(p.content || "")}
-                  >
-                    {rotating ? preview : `${textPreview}${String(p.content || "").length > 40 ? "…" : ""}`}
-                  </td>
-                  <td
-                    className={`${tdCellTop} w-[6.5rem]`}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <SchedulerIntervalCountdown
-                      lastPostedAt={lastPost}
-                      intervalMinutes={p.interval_minutes}
-                      scheduledAt={p.scheduled_at}
-                      sentAt={p.sent_at}
-                      autoPausedAt={p.posting_auto_paused_at}
-                      scheduling={schedulingHealth ?? undefined}
+            {listMode === "lean" && leanGroupedRows && !compactRecurringOnly
+              ? SCHEDULER_GROUP_ORDER.flatMap((gid) => {
+                  const rows = leanGroupedRows.get(gid) ?? [];
+                  if (!rows.length) return [];
+                  const postsInGroup = rows.flatMap((r) => (r.kind === "campaign" ? r.posts : [r.post]));
+                  return [
+                    <SchedulerGroupSection
+                      key={gid}
+                      title={SCHEDULER_GROUP_LABELS[gid]}
+                      posts={postsInGroup}
+                      defaultExpanded={SCHEDULER_GROUP_DEFAULT_EXPANDED[gid]}
+                      scheduling={schedulingHealth}
                       nowMs={schedulerNowMs}
-                    />
-                  </td>
-                  <td
-                    className={`${tdCellTop} max-w-[5.5rem] text-slate-400`}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {recurring ? (
-                      <span className="text-[10px] text-slate-400">
-                        Every {Number(p.interval_minutes)} min
-                        {lastPost ? (
-                          <span className="block text-slate-500 mt-0.5 truncate" title={formatUtcWithLocalHint(String(lastPost))}>
-                            Last {formatPtForDashboard(String(lastPost))} PT
-                          </span>
-                        ) : (
-                          <span className="block text-amber-500/90 mt-0.5">Awaiting first post</span>
-                        )}
-                      </span>
-                    ) : p.scheduled_at ? (
-                      <span className="text-[10px]" title={formatUtcWithLocalHint(String(p.scheduled_at))}>
-                        {formatPtForDashboard(String(p.scheduled_at))} PT
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td
-                    className={`${tdCell} max-w-[8rem] border-l border-slate-700/50`}
-                    title={
-                      [
-                        poolSelectUsesPool(poolSelectId)
-                          ? poolSelectUsesSpecificPool(poolSelectId)
-                            ? `${poolName} · ${poolApproved}/${poolAlbumSize}`
-                            : poolName
-                          : poolName,
-                        poolLastRun && poolSelectUsesSpecificPool(poolSelectId)
-                          ? `Pool run ${formatUtcForDashboard(poolLastRun)}`
-                          : null,
-                        attUrls.length ? `${attUrls.length} promo` : null,
-                        flags.join(" · "),
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")
-                    }
-                  >
-                    {poolSelectUsesPool(poolSelectId) ? (
-                      <span className="block min-w-0 truncate">
-                        <span className="text-slate-200">{poolName}</span>
-                        {poolSelectUsesSpecificPool(poolSelectId) ? (
-                          <span className={`tabular-nums ${poolApproved > 0 ? "text-cyan-400" : "text-slate-500"}`}>
-                            {" "}
-                            · {poolApproved}/{poolAlbumSize}
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : (
-                      <span className="text-slate-600">—</span>
-                    )}
-                    {attUrls.length > 0 || flags.length > 0 ? (
-                      <span className="text-[10px] text-slate-500 block truncate">
-                        {[attUrls.length ? `${attUrls.length} promo` : null, ...flags].filter(Boolean).join(" · ")}
-                      </span>
-                    ) : null}
-                  </td>
-                  <td className={tdCell}>
-                    {statusUi ? (
-                      <span
-                        className={`text-[10px] font-medium ${statusUi.className}`}
-                        title={
-                          p.posting_auto_pause_reason
-                            ? String(p.posting_auto_pause_reason)
-                            : statusUi.title
-                        }
-                      >
-                        {statusUi.label}
-                      </span>
-                    ) : (
-                      <span className="text-slate-500 text-[10px]">—</span>
-                    )}
-                  </td>
-                  <td className={`${tdCell} flex flex-wrap gap-1`} onClick={(e) => e.stopPropagation()}>
-                    {(recurring || !p.sent_at) && (
-                      <button
-                        type="button"
-                        onClick={() => triggerScheduledPost.mutate({ id: Number(p.id) })}
-                        disabled={triggerScheduledPost.isPending}
-                        className={`${btnSm} bg-slate-600 text-slate-200 hover:bg-slate-500`}
-                        title={
-                          row.kind === "campaign"
-                            ? row.posts[0]?.campaign_random_channel
-                              ? "Queues one send to a random channel in this campaign"
-                              : "Queues one Celery run for all channels in this campaign"
-                            : undefined
-                        }
-                      >
-                        Post now
-                      </button>
-                    )}
-                    {scheduledPostHasAlbumOrPool(p) && (
-                        <button
-                          type="button"
-                          onClick={() => triggerScheduledPost.mutate({ id: Number(p.id), reshuffle: true })}
-                          disabled={triggerScheduledPost.isPending}
-                          className={`${btnSm} bg-violet-800/90 text-violet-100 hover:bg-violet-700/90`}
-                          title={
-                            row.kind === "campaign"
-                              ? "Queue send to all campaign channels with promo/media order randomized for this run only (new Telegram messages). For one-time jobs that already ran, this is how you repost."
-                              : "Randomize promo/media order for this send only and queue Celery (new Telegram message). One-time jobs that already ran can only be reposted this way."
-                          }
-                        >
-                          Repost shuffled
-                        </button>
-                      )}
-                    <button
-                      onClick={() => deleteScheduledPost.mutate(Number(p.id))}
-                      disabled={deleteScheduledPost.isPending}
-                      className={`${btnSm} bg-red-900/60 text-red-200/90 hover:bg-red-800/60`}
                     >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
+                      {rows.map((row) => renderDisplayRow(row))}
+                    </SchedulerGroupSection>,
+                  ];
+                })
+              : displayRows.map((row) => renderDisplayRow(row))}
             {displayRows.length === 0 && (
               <tr>
                 <td colSpan={SCHED_COLS} className="px-2 py-3 text-[11px] text-slate-500 text-center">
-                  {compactRecurringOnly ? "No recurring posting jobs." : "No scheduled posts."}
+                  {compactRecurringOnly
+                    ? "No recurring posting jobs."
+                    : statusFilter !== "all"
+                      ? "No jobs match this filter."
+                      : "No scheduled posts."}
                 </td>
               </tr>
             )}

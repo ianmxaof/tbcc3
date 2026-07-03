@@ -39,6 +39,10 @@ CONFLICT_ACTIONS: dict[str, dict[str, str]] = {
     "beat_down": {"action": "start_scheduling_stack", "action_label": "Start Beat + Celery"},
     "celery_worker_down": {"action": "start_scheduling_stack", "action_label": "Start Beat + Celery"},
     "celery_post_worker_down": {"action": "start_scheduling_stack", "action_label": "Start Beat + Celery"},
+    "celery_post_scheduler_worker_down": {
+        "action": "start_scheduling_stack",
+        "action_label": "Start Beat + Celery",
+    },
     "celery_post_worker_duplicate": {
         "action": "trim_scheduling_workers",
         "action_label": "Trim duplicate workers",
@@ -349,7 +353,7 @@ def start_tbcc_stack_services(service_ids: list[str]) -> dict[str, Any]:
         return {"ok": False, "error": "stack service launch is Windows-only"}
     root = _tbcc_root()
     script = root / "scripts" / "_start-scheduling-stack.ps1"
-    if script.is_file() and set(service_ids) >= {"beat", "celery", "celery_post"}:
+    if script.is_file() and {"beat", "celery", "celery_post", "celery_post_scheduler"} <= set(service_ids):
         try:
             proc = subprocess.run(
                 [
@@ -461,9 +465,10 @@ def remediate_system_issues(codes: list[str] | None = None) -> dict[str, Any]:
         "beat_down" in want
         or "celery_worker_down" in want
         or "celery_post_worker_down" in want
+        or "celery_post_scheduler_worker_down" in want
         or "start_scheduling_stack" in want
     ):
-        r = start_tbcc_stack_services(["beat", "celery", "celery_post"])
+        r = start_tbcc_stack_services(["beat", "celery", "celery_post", "celery_post_scheduler"])
         results.append({"code": "start_scheduling_stack", **r})
 
     if "session_lock_storm" in want or "focus_telegram_relief" in want:
@@ -527,10 +532,18 @@ def remediate_system_issues(codes: list[str] | None = None) -> dict[str, Any]:
 def _scheduling_process_counts() -> dict[str, int]:
     beat = _win_leaf_worker_count(r"app\.workers\.celery_app beat")
     worker = _win_leaf_worker_count(r"app\.workers\.celery_app worker.*-Q\s+celery")
-    post = _win_leaf_worker_count(
-        r"app\.workers\.celery_app worker.*-Q\s+post|celery.*-n\s+post@"
+    post_scheduler = _win_leaf_worker_count(
+        r"app\.workers\.celery_app worker.*-Q\s+post_scheduler|-n\s+scheduler@"
     )
-    return {"beat": beat, "celery_worker": worker, "celery_post": post}
+    post = _win_leaf_worker_count(
+        r"app\.workers\.celery_app worker.*-Q\s+post\s+-n\s+post@"
+    )
+    return {
+        "beat": beat,
+        "celery_worker": worker,
+        "celery_post_scheduler": post_scheduler,
+        "celery_post": post,
+    }
 
 
 # Background-maintained cache of the (expensive) scheduling process scan so the fast
@@ -550,6 +563,7 @@ def collect_scheduling_health() -> dict[str, Any]:
     """Beat + Celery worker presence for pool/scheduled post cron (Windows process match)."""
     counts = _scheduling_process_counts()
     post_workers = counts["celery_post"]
+    scheduler_workers = counts["celery_post_scheduler"]
     pause = False
     focus_profile = "off"
     try:
@@ -569,9 +583,11 @@ def collect_scheduling_health() -> dict[str, Any]:
     result = {
         "beat_processes": counts["beat"],
         "celery_worker_processes": counts["celery_worker"],
+        "celery_post_scheduler_worker_processes": scheduler_workers,
         "celery_post_worker_processes": post_workers,
         "beat_running": counts["beat"] > 0,
         "celery_worker_running": counts["celery_worker"] > 0,
+        "celery_post_scheduler_worker_running": scheduler_workers > 0,
         "celery_post_worker_running": post_workers > 0,
         "pool_auto_post_enabled": pool_auto,
         "scheduling_paused_by_focus": pause,
@@ -748,15 +764,21 @@ def collect_system_health() -> dict[str, Any]:
 
         backlog_threshold = post_queue_backlog_threshold()
         if redis_ok and (post_len >= backlog_threshold or celery_len >= 200):
+            if post_len >= backlog_threshold:
+                backlog_msg = (
+                    f"Post queue backed up ({post_len} tasks, threshold {backlog_threshold}) — "
+                    "scheduled posts are stalled behind pool auto-post jobs."
+                )
+            else:
+                backlog_msg = (
+                    f"Celery home queue deep ({celery_len} tasks, threshold 200) — "
+                    "Beat ticks may be delayed; post queue currently empty."
+                )
             conflicts.append(
                 _conflict(
                     "celery_queue_backlog",
                     "critical",
-                    (
-                        f"Post queue backed up ({post_len} tasks, threshold {backlog_threshold}) — "
-                        "scheduled posts are stalled behind pool auto-post jobs. "
-                        "Resume scheduled posting to purge stale tasks and re-enqueue."
-                    ),
+                    backlog_msg + " Resume scheduled posting to purge stale tasks and re-enqueue.",
                     action="resume_scheduled_posting",
                     action_label="Resume scheduled posting",
                 )
@@ -805,12 +827,20 @@ def collect_system_health() -> dict[str, Any]:
                 "TBCC-Celery worker is not running — imports and side tasks will stall.",
             )
         )
+    if redis_ok and not sched.get("celery_post_scheduler_worker_running"):
+        conflicts.append(
+            _conflict(
+                "celery_post_scheduler_worker_down",
+                "critical",
+                "TBCC-Celery-Post-Scheduler is not running — channel schedulers will not send. Start TBCC-Celery-Post-Scheduler (full stack).",
+            )
+        )
     if redis_ok and not sched.get("celery_post_worker_running"):
         conflicts.append(
             _conflict(
                 "celery_post_worker_down",
                 "critical",
-                "TBCC-Celery-Post is not running — scheduled posts and pool cron will not send. Start TBCC-Celery-Post (full stack).",
+                "TBCC-Celery-Post is not running — pool auto-post and relay posts will not send. Start TBCC-Celery-Post (full stack).",
             )
         )
     post_n = int(sched.get("celery_post_worker_processes") or 0)
@@ -1083,10 +1113,16 @@ def auto_remediate_health_conflicts() -> dict[str, Any]:
         elif _auto_remediate_cooldown_ok("restore_focus"):
             to_fix.append("restore_focus")
 
-    worker_down = {"beat_down", "celery_worker_down", "celery_post_worker_down"} & codes
+    worker_down = {
+        "beat_down",
+        "celery_worker_down",
+        "celery_post_worker_down",
+        "celery_post_scheduler_worker_down",
+    } & codes
     if worker_down and _auto_remediate_cooldown_ok("start_scheduling_stack"):
         to_fix.append("beat_down")
         to_fix.append("celery_post_worker_down")
+        to_fix.append("celery_post_scheduler_worker_down")
 
     # Post-queue lane (schedulers_overdue / celery_queue_backlog / resume_scheduled_posting)
     # is owned by scheduler_watchdog_tick, which runs earlier in the same watch loop with
@@ -1202,10 +1238,8 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
         backlog_threshold = 5
 
     if enabled:
-        # (a) Overdue with work queued, OR the post queue is backed up (pool jobs starving
-        #     schedulers): purge stale post-queue tasks, clear enqueue locks, and re-run
-        #     check_and_schedule so overdue interval jobs enqueue first.
-        resume_needed = (overdue > 0 and post_len > 0) or (post_len >= backlog_threshold)
+        # Overdue schedulers OR scheduler-lane backlog: purge, clear locks, re-enqueue.
+        resume_needed = overdue > 0 or post_len >= backlog_threshold
         if resume_needed and _auto_remediate_cooldown_ok("resume_scheduled_posting"):
             try:
                 r = resume_scheduled_posting(purge_post_queue=True)
@@ -1214,35 +1248,12 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
             _mark_auto_remediate_cooldown(["resume_scheduled_posting"])
             _record_watchdog_action(
                 "resume_scheduled_posting",
-                f"overdue={overdue} post_queue={post_len} backlog_threshold={backlog_threshold}",
-                actions,
-                r,
-            )
-        # (b) Overdue persists (>=2 ticks) with an EMPTY post queue: nothing is enqueued, so
-        #     resume (a) would no-op. Root cause is stale enqueue locks / lingering pool tasks.
-        elif (
-            overdue > 0
-            and _WATCHDOG_OVERDUE_STREAK >= 2
-            and post_len == 0
-            and _auto_remediate_cooldown_ok("watchdog_pool_purge")
-        ):
-            try:
-                from app.services.celery_queue_ops import purge_post_pool_tasks_from_queue
-
-                purge = purge_post_pool_tasks_from_queue()
-                redis_cleared = clear_post_scheduling_redis_state()
-                r: dict[str, Any] = {"ok": True, "purge": purge, "redis": redis_cleared}
-            except Exception as e:
-                r = {"ok": False, "error": str(e)[:200]}
-            _mark_auto_remediate_cooldown(["watchdog_pool_purge"])
-            _record_watchdog_action(
-                "purge_pool_clear_locks",
-                f"overdue={overdue} streak={_WATCHDOG_OVERDUE_STREAK} post_queue=0",
+                f"overdue={overdue} scheduler_queue={post_len} backlog_threshold={backlog_threshold}",
                 actions,
                 r,
             )
 
-        # (c) import_burst paused Beat but no import job has been *processing* for the dwell
+        # import_burst paused Beat but no import job has been *processing* for the dwell
         #     window — restore focus so schedulers resume. Queued-only imports never qualify.
         if focus_profile == "import_burst" and beat_paused:
             try:
@@ -1326,7 +1337,8 @@ def scheduling_fast_snapshot() -> dict[str, Any]:
     return {
         "focus": focus,
         "beat_up": bool(sched.get("beat_running")) if sched else None,
-        "celery_post_up": bool(sched.get("celery_post_worker_running")) if sched else None,
+        "celery_post_up": bool(sched.get("celery_post_scheduler_worker_running")) if sched else None,
+        "celery_pool_post_up": bool(sched.get("celery_post_worker_running")) if sched else None,
         "post_queue_depth": post_len,
         "overdue_count": overdue,
         "last_watchdog_action": _WATCHDOG_LAST_ACTION,

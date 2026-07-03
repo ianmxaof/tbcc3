@@ -5,6 +5,7 @@ export type SchedulerCountdownPhase =
   | "running"
   | "stalled"
   | "paused"
+  | "focus_paused"
   | "sent"
   | "pending_one_time";
 
@@ -22,6 +23,7 @@ export type SchedulerCountdownSnapshot = {
 export type SchedulingStackHealth = {
   beatRunning: boolean;
   celeryPostRunning: boolean;
+  celeryPostSchedulerRunning?: boolean;
   schedulingPaused: boolean;
 };
 
@@ -150,10 +152,17 @@ export function computeSchedulerCountdown(params: {
   };
 }
 
+export function schedulingWorkersHealthy(health?: SchedulingStackHealth | null): boolean {
+  if (!health) return true;
+  const schedulerLane =
+    health.celeryPostSchedulerRunning ?? health.celeryPostRunning ?? false;
+  return Boolean(health.beatRunning && schedulerLane);
+}
+
 export function schedulingStackHealthy(health?: SchedulingStackHealth | null): boolean {
   if (!health) return true;
   if (health.schedulingPaused) return false;
-  return health.beatRunning && health.celeryPostRunning;
+  return schedulingWorkersHealthy(health);
 }
 
 export function effectiveCountdownPhase(
@@ -163,7 +172,14 @@ export function effectiveCountdownPhase(
   if (snapshot.phase === "paused" || snapshot.phase === "sent" || snapshot.phase === "idle") {
     return snapshot.phase;
   }
-  if (!schedulingStackHealthy(health) && snapshot.mode === "recurring") {
+  if (
+    health?.schedulingPaused &&
+    schedulingWorkersHealthy(health) &&
+    snapshot.mode === "recurring"
+  ) {
+    return "focus_paused";
+  }
+  if (!schedulingWorkersHealthy(health) && snapshot.mode === "recurring") {
     if (snapshot.phase === "running") return "stalled";
     if (snapshot.phase === "stalled") return "stalled";
   }
@@ -175,6 +191,7 @@ const phaseTimerClass: Record<SchedulerCountdownPhase, string> = {
   running: "text-emerald-400",
   stalled: "text-yellow-400",
   paused: "text-rose-400",
+  focus_paused: "text-cyan-400",
   sent: "text-slate-500",
   pending_one_time: "text-cyan-300",
 };
@@ -184,6 +201,7 @@ const phaseStatusClass: Record<SchedulerCountdownPhase, string> = {
   running: "text-emerald-400/90",
   stalled: "text-yellow-400/90",
   paused: "text-rose-400",
+  focus_paused: "text-cyan-300/90",
   sent: "text-emerald-400/90",
   pending_one_time: "text-cyan-300/90",
 };
@@ -205,6 +223,13 @@ export function countdownStatusLabel(
 
   if (phase === "paused") {
     return { label: "Auto-paused", className: cls, title: "Too many send failures — beat will not enqueue until cleared." };
+  }
+  if (phase === "focus_paused") {
+    return {
+      label: "Focus paused",
+      className: cls,
+      title: "Focus profile paused Beat scheduling (imports or relief). Workers are up — posts resume when focus ends.",
+    };
   }
   if (phase === "sent") {
     return { label: "Sent", className: cls, title: "One-time job already sent." };
