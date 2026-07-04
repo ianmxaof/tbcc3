@@ -163,7 +163,10 @@ async def reset_admin_client() -> None:
 async def _connect_admin_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
+    from app.utils.telethon_session import prepare_session_sqlite_file
+
     stem = _telegram_session_path()
+    prepare_session_sqlite_file(stem)
     client = TelegramClient(stem, int(os.environ["API_ID"]), os.environ["API_HASH"])
     await client.connect()
     configure_telethon_sqlite_session(client)
@@ -327,10 +330,13 @@ async def reset_album_client() -> None:
 async def _connect_album_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
+    from app.utils.telethon_session import prepare_session_sqlite_file
+
     stem = album_composer_session_stem()
     album_path = stem + ".session"
     if not os.path.isfile(album_path):
         _try_bootstrap_album_from_admin()
+    prepare_session_sqlite_file(stem)
     client = TelegramClient(stem, int(os.environ["API_ID"]), os.environ["API_HASH"])
     await client.connect()
     configure_telethon_sqlite_session(client)
@@ -376,10 +382,22 @@ async def run_telegram_album_composer_io(
     """
     Album Composer hot path — uses admin_album.session (separate SQLite file).
     Does NOT wait on tbcc:lock:admin_telegram_session (Celery import queue).
+    Still serializes MTProto via tbcc:lock:telegram_account_mtproto when enabled.
     """
+    from app.services.telethon_session_lock import (
+        acquire_telegram_account_lock_async,
+        release_telegram_account_lock_async,
+        telegram_account_lock_enabled,
+    )
+
     last_err: BaseException | None = None
     for attempt in range(max_attempts):
+        account_token = ""
         try:
+            if telegram_account_lock_enabled():
+                account_token = await acquire_telegram_account_lock_async(
+                    album_composer_lock_timeout_s()
+                )
             async with _album_import_lock:
                 storage = await get_album_telegram_storage()
                 return await fn(storage)
@@ -398,6 +416,9 @@ async def run_telegram_album_composer_io(
                 await asyncio.sleep(delay)
                 continue
             raise
+        finally:
+            if account_token:
+                await release_telegram_account_lock_async(account_token)
     if last_err is not None:
         raise last_err
     raise RuntimeError("Album composer Telegram I/O failed without exception")
@@ -458,10 +479,13 @@ async def reset_import_client() -> None:
 async def _connect_import_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
+    from app.utils.telethon_session import prepare_session_sqlite_file
+
     stem = import_session_stem()
     import_path = stem + ".session"
     if not os.path.isfile(import_path):
         _try_bootstrap_import_from_admin()
+    prepare_session_sqlite_file(stem)
     client = TelegramClient(stem, int(os.environ["API_ID"]), os.environ["API_HASH"])
     await client.connect()
     configure_telethon_sqlite_session(client)
@@ -606,6 +630,23 @@ async def run_telegram_client_io(fn: Callable[[TelegramClient], Awaitable[T]]) -
     if last_err is not None:
         raise last_err
     raise RuntimeError("Telegram client I/O failed without exception")
+
+
+async def check_import_telegram_session() -> dict:
+    """Probe the import Telethon session (Saved Messages / context-menu sends)."""
+    try:
+        storage = await get_import_telegram_storage()
+        me = await storage.client.get_me()
+        username = getattr(me, "username", None) or ""
+        return {
+            "ok": True,
+            "user_id": me.id,
+            "username": username,
+            "session": Path(import_session_stem()).name,
+            "import_shares_admin_file": import_sessions_share_admin_file(),
+        }
+    except Exception as e:
+        return {"ok": False, "error": friendly_telegram_error(e)}
 
 
 async def check_admin_telegram_session() -> dict:
