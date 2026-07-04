@@ -33,6 +33,12 @@ def buffer_x_overflow_suffix(url: str) -> str:
 
 
 def resolve_overflow_url(*, post: ScheduledTextPost | None = None, db: Session | None = None) -> str:
+    from app.services.aof_social_links import x_linkvertise_enabled, x_outbound_url
+
+    if not x_linkvertise_enabled():
+        direct = x_outbound_url()
+        if direct:
+            return direct
     env = (os.environ.get("TBCC_BUFFER_X_OVERFLOW_URL") or "").strip()
     if env:
         return env

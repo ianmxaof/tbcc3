@@ -712,6 +712,9 @@ def _find_or_create_scheduler(db: Session, net_ch, channel_id: int) -> Scheduled
         .first()
     )
     if sched:
+        from app.services.scheduler_category import apply_scheduler_category
+
+        apply_scheduler_category(sched, "main_lane")
         return sched
     sched = (
         db.query(ScheduledTextPost)
@@ -724,7 +727,10 @@ def _find_or_create_scheduler(db: Session, net_ch, channel_id: int) -> Scheduled
         .first()
     )
     if sched:
+        from app.services.scheduler_category import apply_scheduler_category
+
         sched.name = net_ch.scheduler_name
+        apply_scheduler_category(sched, "main_lane")
         return sched
     sched = ScheduledTextPost(
         name=net_ch.scheduler_name,
@@ -736,6 +742,9 @@ def _find_or_create_scheduler(db: Session, net_ch, channel_id: int) -> Scheduled
         created_at=datetime.now(timezone.utc),
         last_posted_at=datetime.now(timezone.utc),
     )
+    from app.services.scheduler_category import apply_scheduler_category
+
+    apply_scheduler_category(sched, "main_lane")
     db.add(sched)
     db.flush()
     return sched
@@ -818,12 +827,14 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
                 pin_after_send=True,
                 send_silent=False,
                 created_at=datetime.now(timezone.utc),
+                scheduler_category="promo_bulletin",
             )
             db.add(pinned)
             db.flush()
         elif pinned and execute:
             pinned.content = bulletin
             pinned.pin_after_send = True
+            pinned.scheduler_category = pinned.scheduler_category or "promo_bulletin"
         rows.append(
             {
                 "key": "pinned_bulletin",

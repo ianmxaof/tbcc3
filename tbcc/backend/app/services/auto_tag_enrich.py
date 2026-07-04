@@ -17,7 +17,18 @@ logger = logging.getLogger(__name__)
 
 
 def enrich_pipeline_enabled() -> bool:
-    if (os.getenv("TBCC_AUTO_TAG_ON_IMPORT") or "").strip().lower() in ("1", "true", "yes"):
+    """
+    Heavy import enrich (NSFW/CLIP/Lustpress Celery jobs + Telethon downloads).
+
+    TBCC_ENRICH_ON_IMPORT=0 — kill switch (recommended for /deposit).
+    TBCC_ENRICH_ON_IMPORT=1 — force on even without sidecar URLs.
+    When unset: only sidecar URLs (NSFW/CLIP/Lustpress) enable enrich — NOT
+    TBCC_AUTO_TAG_ON_IMPORT alone (LLM vision uses enqueue_auto_tag_llm_if_enabled).
+    """
+    raw = (os.getenv("TBCC_ENRICH_ON_IMPORT") or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
         return True
     from app.services.clip_classifier import clip_classifier_enabled
     from app.services.lustpress_metadata import lustpress_enabled
@@ -157,7 +168,7 @@ async def _fetch_image_bytes_for_classify(media_id: int) -> bytes | None:
     finally:
         db.close()
 
-    data, mime = await _fetch_media_bytes_and_type(ctx)
+    data, mime = await _fetch_media_bytes_and_type_via_import(ctx)
     if not data:
         return None
     if mt == "video":
@@ -171,9 +182,17 @@ async def _fetch_image_bytes_for_classify(media_id: int) -> bytes | None:
     return None
 
 
+def _fetch_classify_bytes_sync(media_id: int) -> bytes | None:
+    """Run classify download on the Celery worker loop (import session, no per-call loop teardown)."""
+    from app.services.import_job_runner import _run_on_worker_loop
+
+    return _run_on_worker_loop(_fetch_image_bytes_for_classify(media_id))
+
+
 def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
     """Sync Celery entry: lustpress → nsfw → optional LLM enqueue."""
-    import asyncio
+    if not enrich_pipeline_enabled():
+        return {"ok": True, "media_id": media_id, "skipped": "enrich_disabled"}
 
     try:
         from app.services.focus_profile import pause_auto_tag_work, skip_sidecar_enrich
@@ -248,13 +267,7 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
             if mt == "video" or (
                 classify_url and not classify_url.lower().split("?", 1)[0].endswith((".jpg", ".jpeg", ".png", ".webp", ".gif"))
             ):
-                loop = asyncio.new_event_loop()
-                try:
-                    asyncio.set_event_loop(loop)
-                    img_bytes = loop.run_until_complete(_fetch_image_bytes_for_classify(media_id))
-                finally:
-                    loop.close()
-                    asyncio.set_event_loop(None)
+                img_bytes = _fetch_classify_bytes_sync(media_id)
             if img_bytes:
                 res = classify_image_bytes(img_bytes)
             elif classify_url and mt in ("photo", "gif", ""):
@@ -289,13 +302,7 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
         clip_tag_count = 0
         img_for_clip = img_bytes
         if not img_for_clip and mt in ("photo", "gif", ""):
-            loop = asyncio.new_event_loop()
-            try:
-                asyncio.set_event_loop(loop)
-                img_for_clip = loop.run_until_complete(_fetch_image_bytes_for_classify(media_id))
-            finally:
-                loop.close()
-                asyncio.set_event_loop(None)
+            img_for_clip = _fetch_classify_bytes_sync(media_id)
         if img_for_clip and not _skip_sidecar:
             from app.services.clip_classifier import clip_classifier_enabled
 
@@ -313,6 +320,7 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
                     if slug_pairs:
                         clip_tag_count = _apply_metadata_tags(db, media_id, slug_pairs)
                         out["clip_tags"] = clip_tag_count
+                    out["clip_confident"] = clip_confident
                     try:
                         raw_cj = m.classification_json
                         extras = json.loads(raw_cj) if raw_cj else {}
@@ -328,6 +336,10 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
         if route.get("applied"):
             db.commit()
         out["route"] = route
+
+        from app.services.storage_deposit_auto_approve import maybe_auto_approve_storage_deposit_media
+
+        out["auto_approve"] = maybe_auto_approve_storage_deposit_media(db, media_id, out)
 
         topic_count = _count_non_rule_tags(db, media_id)
         if _should_enqueue_llm(
@@ -369,9 +381,6 @@ def enqueue_auto_tag_enrich_if_enabled(media_id: int) -> None:
     except Exception:
         pass
     if not enrich_pipeline_enabled():
-        from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
-
-        enqueue_auto_tag_llm_if_enabled(media_id)
         return
     try:
         from app.workers.media_auto_tag_worker import auto_tag_media_enrich

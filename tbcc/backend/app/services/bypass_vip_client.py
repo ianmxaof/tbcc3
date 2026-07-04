@@ -1,7 +1,11 @@
-"""HTTP client for Bypass.vip (or compatible) premium API.
+"""HTTP client for Bypass.vip (premium key or official free tier).
 
-Docs pointer: https://api.bypass.vip/ — request shape may vary by plan.
-Tune TBCC_BYPASS_* env vars if your key uses a different path or parameters.
+Official snippets: https://github.com/bypass-vip/bypass.vip
+  Free:  GET https://api.bypass.vip/bypass?url=<encoded>
+  Premium: same path + key query param (or /v1 per plan — tune env).
+
+Website captcha (bypass.vip UI) does not apply to headless API calls; free API is
+rate-limited only. Premium: https://bypass.vip/premium
 """
 
 from __future__ import annotations
@@ -27,18 +31,37 @@ class BypassResolveResult:
     raw_status_code: int | None
 
 
-def bypass_configured() -> bool:
-    if (os.getenv("TBCC_BYPASS_ENABLED") or "1").strip().lower() in ("0", "false", "no"):
+def _bypass_enabled_flag() -> bool:
+    return (os.getenv("TBCC_BYPASS_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
+
+
+def bypass_free_mode() -> bool:
+    """Official unauthenticated API (heavy rate limits)."""
+    if not _bypass_enabled_flag():
         return False
-    return bool((os.getenv("TBCC_BYPASS_API_KEY") or "").strip())
+    if (os.getenv("TBCC_BYPASS_API_KEY") or "").strip():
+        return False
+    return (os.getenv("TBCC_BYPASS_FREE") or "1").strip().lower() not in ("0", "false", "no")
+
+
+def bypass_configured() -> bool:
+    """True when premium key is set OR free tier is allowed."""
+    if not _bypass_enabled_flag():
+        return False
+    if (os.getenv("TBCC_BYPASS_API_KEY") or "").strip():
+        return True
+    return bypass_free_mode()
 
 
 def _base_url() -> str:
     return (os.getenv("TBCC_BYPASS_API_BASE_URL") or "https://api.bypass.vip").rstrip("/")
 
 
-def _path() -> str:
-    return (os.getenv("TBCC_BYPASS_API_PATH") or "/v1").strip() or "/v1"
+def _path(*, premium: bool) -> str:
+    raw = (os.getenv("TBCC_BYPASS_API_PATH") or "").strip()
+    if raw:
+        return raw if raw.startswith("/") else f"/{raw}"
+    return "/v1" if premium else "/bypass"
 
 
 def _timeout_s() -> float:
@@ -71,8 +94,15 @@ def _parse_provider_payload(data: Any) -> tuple[str | None, str | None]:
     if st == "success":
         for k in ("result", "url", "destination", "link", "bypassed"):
             v = data.get(k)
-            if isinstance(v, str) and v.strip().startswith("http"):
-                return v.strip(), None
+            if not isinstance(v, str):
+                continue
+            s = v.strip()
+            if s.startswith("http://") or s.startswith("https://"):
+                if "discord" in s.lower() and "bypass" in s.lower() and "shut" in s.lower():
+                    return None, "free_api_shutdown_use_premium"
+                return s, None
+            if "shut down" in s.lower() or "free api" in s.lower():
+                return None, "free_api_shutdown_use_premium"
         return None, "success_without_url"
     if st == "error":
         msg = data.get("message") or data.get("error") or data.get("msg")
@@ -88,31 +118,38 @@ def _parse_provider_payload(data: Any) -> tuple[str | None, str | None]:
 def resolve_bypass_url(target_url: str) -> BypassResolveResult:
     """
     Call provider with the normalized HTTPS URL to resolve.
+    Premium when TBCC_BYPASS_API_KEY is set; else official free /bypass if TBCC_BYPASS_FREE=1.
     """
-    key = (os.getenv("TBCC_BYPASS_API_KEY") or "").strip()
-    if not key:
+    if not bypass_configured():
         return BypassResolveResult(
             ok=False,
             final_url=None,
-            error_message="TBCC_BYPASS_API_KEY not set",
+            error_message="Bypass disabled (set TBCC_BYPASS_API_KEY or TBCC_BYPASS_FREE=1)",
             latency_ms=0,
             raw_status_code=None,
         )
+    key = (os.getenv("TBCC_BYPASS_API_KEY") or "").strip()
+    premium = bool(key)
     method = (os.getenv("TBCC_BYPASS_HTTP_METHOD") or "GET").upper().strip()
     base = _base_url()
-    path = _path()
+    path = _path(premium=premium)
     full = urljoin(base + "/", path.lstrip("/"))
     t0 = time.perf_counter()
     try:
         with httpx.Client(timeout=_timeout_s()) as client:
             if method == "POST":
+                body: dict[str, str] = {"url": target_url}
+                if key:
+                    body["key"] = key
                 r = client.post(
                     full,
-                    json={"url": target_url, "key": key},
+                    json=body,
                     headers={"Content-Type": "application/json"},
                 )
             else:
-                q = f"{_url_param()}={quote(target_url, safe='')}&{_key_param()}={quote(key, safe='')}"
+                q = f"{_url_param()}={quote(target_url, safe='')}"
+                if key:
+                    q += f"&{_key_param()}={quote(key, safe='')}"
                 joiner = "&" if "?" in full else "?"
                 r = client.get(f"{full}{joiner}{q}")
     except httpx.TimeoutException:

@@ -144,6 +144,8 @@ if ($Action -eq "Stop") {
 
   Write-OrchestratorPhase "TBCC shutdown - stopping services (tabs will close)..."
 
+  Refresh-TbccWtHostPid -TbccRoot $TbccRoot
+
   $gone = Stop-TbccStackGracefully -TbccRoot $TbccRoot -FullStack -ExcludeProcessIds @($PID) -Wait -MaxWaitSeconds 60
 
   $msg = Build-TbccOrchestratorStopMessage -TbccRoot $TbccRoot -FullyStopped:$gone
@@ -169,11 +171,25 @@ if ($Action -eq "Stop") {
 if ($Action -eq "ColdStart") {
 
   Write-OrchestratorPhase "TBCC cold start - stopping prior stack..."
+  if (Get-Command Clear-TbccRestartServiceSnapshot -ErrorAction SilentlyContinue) {
+    Clear-TbccRestartServiceSnapshot -TbccRoot $TbccRoot
+  }
 
 } else {
 
   Write-OrchestratorPhase "TBCC restart - stopping services (tabs will close)..."
+  if (Get-Command Save-TbccRestartServiceSnapshot -ErrorAction SilentlyContinue) {
+    $null = Save-TbccRestartServiceSnapshot -TbccRoot $TbccRoot
+  }
 
+}
+
+$restartExpectedTitles = @()
+if ($Action -eq "Restart" -and (Get-Command Read-TbccRestartServiceSnapshot -ErrorAction SilentlyContinue)) {
+  $snapPre = Read-TbccRestartServiceSnapshot -TbccRoot $TbccRoot
+  if ($snapPre -and $snapPre.titles) {
+    $restartExpectedTitles = @($snapPre.titles | ForEach-Object { "$_" })
+  }
 }
 
 
@@ -181,13 +197,36 @@ if ($Action -eq "ColdStart") {
 $priorGone = Stop-TbccStackGracefully -TbccRoot $TbccRoot -FullStack -ExcludeProcessIds @($PID) -Wait -MaxWaitSeconds 60
 
 if ($priorGone) {
-
   Write-Host "  Prior stack stopped." -ForegroundColor Green
-
 } else {
-
   Write-Host "  WARNING: Prior stack may still be running." -ForegroundColor Yellow
+  if (Get-Command Clear-TbccSchedulingWorkersBeforeLaunch -ErrorAction SilentlyContinue) {
+    $extra = Clear-TbccSchedulingWorkersBeforeLaunch -SettleMs 900
+    if ($extra -gt 0) {
+      Write-Host ("  Force-cleared {0} scheduling worker(s) after incomplete stop." -f $extra) -ForegroundColor Yellow
+    }
+  }
+}
 
+if (Get-Command Clear-TbccSchedulingWorkersBeforeLaunch -ErrorAction SilentlyContinue) {
+  $cleared = Clear-TbccSchedulingWorkersBeforeLaunch
+  if ($cleared -gt 0) {
+    Write-Host ("  Cleared {0} orphan scheduling worker(s) before relaunch." -f $cleared) -ForegroundColor Yellow
+  }
+}
+
+$clearPostRedis = Join-Path $TbccRoot "backend\scripts\clear_post_scheduling_redis.py"
+if (Test-Path -LiteralPath $clearPostRedis) {
+  Write-OrchestratorPhase "Clearing post-scheduler Redis locks (restart hook)..."
+  try {
+    $py = Get-TbccControlPythonCmd
+    $out = & $py $clearPostRedis 2>&1
+    Write-Host ("  " + ($out | Out-String).Trim()) -ForegroundColor Gray
+    Write-OrchestratorLog ("post redis clear: " + ($out | Out-String).Trim())
+  } catch {
+    Write-Host ("  WARNING: post Redis clear failed: " + $_.Exception.Message) -ForegroundColor Yellow
+    Write-OrchestratorLog ("post redis clear failed: " + $_.Exception.Message)
+  }
 }
 
 
@@ -218,6 +257,10 @@ if ($wtHost) {
 
   Write-Host ("  Reusing Windows Terminal window (pid {0})..." -f $wtHost) -ForegroundColor Gray
 
+}
+
+if (Get-Command Invoke-TbccPrepareWtTabLaunch -ErrorAction SilentlyContinue) {
+  Invoke-TbccPrepareWtTabLaunch -TbccRoot $TbccRoot
 }
 
 
@@ -252,13 +295,27 @@ try {
 
   Write-Host "  Waiting for services to come up..." -ForegroundColor Gray
 
-  Start-Sleep -Seconds 6
+  Start-Sleep -Seconds 12
 
-  $down = @(Get-TbccEnabledServicesDownSummary -TbccRoot $TbccRoot -FullStack)
+  if (Get-Command Ensure-TbccSchedulingWorkersSingleton -ErrorAction SilentlyContinue) {
+    $trimReport = @(Ensure-TbccStackWorkersSingleton -TbccRoot $TbccRoot -FullStack -TrimOnly)
+    $trimmedTotal = ($trimReport | ForEach-Object { [int]$_.Trimmed } | Measure-Object -Sum).Sum
+    if ($trimmedTotal -gt 0) {
+      Write-Host ("  Trimmed {0} duplicate stack worker(s) after start." -f $trimmedTotal) -ForegroundColor Yellow
+    }
+  }
+
+  $auditMod = Join-Path $PSScriptRoot "tbcc-process-audit.ps1"
+  if (Test-Path -LiteralPath $auditMod) {
+    . $auditMod
+    $null = Invoke-TbccProcessAudit -TbccRoot $TbccRoot -Full -LogIssues -Quiet -Phase "post-start"
+  }
+
+  $down = @(Get-TbccEnabledServicesDownSummary -TbccRoot $TbccRoot -FullStack -OnlyTitles $restartExpectedTitles)
 
   $ok = ($down.Count -eq 0)
 
-  $msg = Build-TbccOrchestratorStartMessage -Action $Action -TbccRoot $TbccRoot -PriorStackStopped:$priorGone
+  $msg = Build-TbccOrchestratorStartMessage -Action $Action -TbccRoot $TbccRoot -PriorStackStopped:$priorGone -ExpectedTitles $restartExpectedTitles
 
   if ($ok) {
 
@@ -268,6 +325,10 @@ try {
 
     Write-Host "  WARNING: Some enabled services are not up yet." -ForegroundColor Yellow
 
+  }
+
+  if (Get-Command Clear-TbccRestartServiceSnapshot -ErrorAction SilentlyContinue) {
+    Clear-TbccRestartServiceSnapshot -TbccRoot $TbccRoot
   }
 
   Write-Host "Orchestrator closing (service tabs are running)." -ForegroundColor DarkGray

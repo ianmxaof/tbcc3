@@ -19,30 +19,74 @@ export function SecretarySettingsPanel() {
   const ov = settingsQ.data?.overrides ?? {};
 
   const [formatOn, setFormatOn] = useState(true);
+  const [feVerbosity, setFeVerbosity] = useState<"compact" | "standard">("compact");
+  const [publicFaq, setPublicFaq] = useState(false);
   const [llmRefine, setLlmRefine] = useState(false);
+  const [llmProvider, setLlmProvider] = useState<"openai" | "openrouter">("openai");
+  const [llmModel, setLlmModel] = useState("");
+  const [llmBaseUrl, setLlmBaseUrl] = useState("");
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [clearLlmKey, setClearLlmKey] = useState(false);
   const [ragOn, setRagOn] = useState(true);
   const [ragTopK, setRagTopK] = useState("4");
   const [promptExtra, setPromptExtra] = useState("");
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [clearSystemPrompt, setClearSystemPrompt] = useState(false);
 
   useEffect(() => {
     if (!eff && !ov) return;
     setFormatOn(Boolean(ov.format_engine_enabled ?? eff?.format_engine_enabled ?? true));
+    setFeVerbosity((ov.fe_verbosity ?? eff?.fe_verbosity ?? "compact") as "compact" | "standard");
+    setPublicFaq(Boolean(ov.public_faq_enabled ?? eff?.public_faq_enabled ?? true));
     setLlmRefine(Boolean(ov.llm_refine_on_phase_change ?? eff?.llm_refine_on_phase_change ?? false));
+    setLlmProvider((ov.llm_provider ?? eff?.llm_provider ?? "openai") as "openai" | "openrouter");
+    setLlmModel(String(ov.llm_model ?? eff?.llm_model ?? ""));
+    setLlmBaseUrl(String(ov.llm_base_url ?? eff?.llm_base_url ?? ""));
     setRagOn(Boolean(ov.rag_enabled ?? eff?.rag_enabled ?? true));
     setRagTopK(String(ov.rag_top_k ?? eff?.rag_top_k ?? 4));
     setPromptExtra(String(ov.system_prompt_extra ?? eff?.system_prompt_extra ?? ""));
+    setSystemPrompt(String(ov.system_prompt ?? eff?.system_prompt ?? ""));
   }, [eff, ov]);
 
   const saveSettings = useMutation({
     mutationFn: () =>
       api.secretary.settings.patch({
         format_engine_enabled: formatOn,
+        fe_verbosity: feVerbosity,
+        public_faq_enabled: publicFaq,
         llm_refine_on_phase_change: llmRefine,
+        llm_provider: llmProvider,
+        llm_model: llmModel.trim() || undefined,
+        llm_base_url: llmBaseUrl.trim() || undefined,
+        llm_api_key: llmApiKey.trim() || undefined,
+        clear_llm_api_key: clearLlmKey || undefined,
         rag_enabled: ragOn,
         rag_top_k: Math.max(1, Math.min(12, parseInt(ragTopK, 10) || 4)),
+        system_prompt: clearSystemPrompt ? undefined : systemPrompt.trim() || undefined,
+        clear_system_prompt: clearSystemPrompt || undefined,
         system_prompt_extra: promptExtra.trim() || undefined,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["secretarySettings"] }),
+    onSuccess: () => {
+      setLlmApiKey("");
+      setClearSystemPrompt(false);
+      qc.invalidateQueries({ queryKey: ["secretarySettings"] });
+    },
+  });
+
+  const [llmTestResult, setLlmTestResult] = useState<string | null>(null);
+
+  const testLlm = useMutation({
+    mutationFn: () => api.secretary.settings.testLlm(),
+    onSuccess: (data) => {
+      if (data.ok) {
+        setLlmTestResult(
+          `OK — ${data.latency_ms}ms — ${data.reply_preview ?? ""} (${data.endpoint ?? ""})`
+        );
+      } else {
+        setLlmTestResult(`Failed [${data.stage}]: ${data.message ?? "unknown"}`);
+      }
+    },
+    onError: (e) => setLlmTestResult(String(e)),
   });
 
   const [ctxSearch, setCtxSearch] = useState("");
@@ -168,10 +212,80 @@ export function SecretarySettingsPanel() {
                 <input type="checkbox" checked={formatOn} onChange={(e) => setFormatOn(e.target.checked)} />
                 Format Engine enabled (persistent context + phases)
               </label>
+              <div>
+                <label className="block text-xs text-slate-400 mb-1">Format Engine verbosity</label>
+                <select
+                  className="rounded bg-slate-800 border border-slate-600 px-2 py-1 text-sm"
+                  value={feVerbosity}
+                  onChange={(e) => setFeVerbosity(e.target.value as "compact" | "standard")}
+                >
+                  <option value="compact">Compact (default — short LLM suffix)</option>
+                  <option value="standard">Standard (full FE block)</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input type="checkbox" checked={publicFaq} onChange={(e) => setPublicFaq(e.target.checked)} />
+                Public FAQ DMs (off = admin-only bot except Business supervise)
+              </label>
               <label className="flex items-center gap-2 text-sm text-slate-200">
                 <input type="checkbox" checked={llmRefine} onChange={(e) => setLlmRefine(e.target.checked)} />
-                LLM emotion refine on phase transitions (uses OpenAI)
+                LLM emotion refine on phase transitions
               </label>
+              <section className="rounded border border-slate-700/80 p-3 space-y-3">
+                <h3 className="text-sm font-medium text-cyan-200">Secretary LLM (admin)</h3>
+                {eff.llm?.api_key_hint && (
+                  <p className="text-xs text-slate-500">
+                    Active key: <code className="text-slate-400">{eff.llm.api_key_hint}</code>
+                    {eff.llm.api_key_override ? " (dashboard override)" : " (from .env)"}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-400 mb-1">Provider</label>
+                    <select
+                      className="rounded bg-slate-800 border border-slate-600 px-2 py-1 text-sm"
+                      value={llmProvider}
+                      onChange={(e) => setLlmProvider(e.target.value as "openai" | "openrouter")}
+                    >
+                      <option value="openai">OpenAI</option>
+                      <option value="openrouter">OpenRouter</option>
+                    </select>
+                  </div>
+                  <div className="flex-1 min-w-[12rem]">
+                    <label className="block text-xs text-slate-400 mb-1">Model</label>
+                    <input
+                      className="w-full rounded bg-slate-800 border border-slate-600 px-2 py-1 text-sm font-mono"
+                      value={llmModel}
+                      onChange={(e) => setLlmModel(e.target.value)}
+                      placeholder="gpt-4o-mini or openrouter model id"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">API key override (leave blank to keep)</label>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    className="w-full rounded bg-slate-800 border border-slate-600 px-2 py-1 text-sm font-mono"
+                    value={llmApiKey}
+                    onChange={(e) => setLlmApiKey(e.target.value)}
+                    placeholder="sk-… or or-…"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  <input type="checkbox" checked={clearLlmKey} onChange={(e) => setClearLlmKey(e.target.checked)} />
+                  Clear dashboard API key override (fall back to .env)
+                </label>
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">API endpoint URL (OpenRouter / custom OpenAI)</label>
+                  <input
+                    className="w-full rounded bg-slate-800 border border-slate-600 px-2 py-1 text-sm font-mono"
+                    value={llmBaseUrl}
+                    onChange={(e) => setLlmBaseUrl(e.target.value)}
+                    placeholder="https://openrouter.ai/api/v1"
+                  />
+                </div>
+              </section>
               <label className="flex items-center gap-2 text-sm text-slate-200">
                 <input type="checkbox" checked={ragOn} onChange={(e) => setRagOn(e.target.checked)} />
                 FAQ RAG retrieval enabled
@@ -185,6 +299,28 @@ export function SecretarySettingsPanel() {
                 />
               </div>
               <div>
+                <label className="block text-xs text-slate-400 mb-1">
+                  System prompt{" "}
+                  {eff.system_prompt_source ? (
+                    <span className="text-slate-500">(source: {eff.system_prompt_source})</span>
+                  ) : null}
+                </label>
+                <textarea
+                  className="w-full min-h-[120px] rounded bg-slate-800 border border-slate-600 px-3 py-2 text-sm font-mono"
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="Full secretary persona / rules (also editable via /sysprompt in Telegram)"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={clearSystemPrompt}
+                  onChange={(e) => setClearSystemPrompt(e.target.checked)}
+                />
+                Clear dashboard system prompt override
+              </label>
+              <div>
                 <label className="block text-xs text-slate-400 mb-1">Extra system prompt (appended)</label>
                 <textarea
                   className="w-full min-h-[80px] rounded bg-slate-800 border border-slate-600 px-3 py-2 text-sm font-mono"
@@ -194,10 +330,10 @@ export function SecretarySettingsPanel() {
                 />
               </div>
               <p className="text-xs text-slate-500">
-                Env fallbacks: TBCC_FORMAT_ENGINE_ENABLED, TBCC_FORMAT_ENGINE_LLM_REFINE, TBCC_SECRETARY_RAG_ENABLED,
-                TBCC_SECRETARY_RAG_EMBEDDINGS (optional vector search).
+                Env fallbacks: TBCC_FORMAT_ENGINE_VERBOSITY, TBCC_SECRETARY_PUBLIC_FAQ, TBCC_LLM_PROVIDER,
+                TBCC_OPENROUTER_API_KEY / TBCC_OPENAI_API_KEY. Dashboard LLM key overrides .env for secretary only.
               </p>
-              <button
+                <button
                 type="button"
                 disabled={saveSettings.isPending}
                 onClick={() => saveSettings.mutate()}
@@ -205,7 +341,20 @@ export function SecretarySettingsPanel() {
               >
                 {saveSettings.isPending ? "Saving…" : "Save settings"}
               </button>
+              <button
+                type="button"
+                disabled={testLlm.isPending}
+                onClick={() => testLlm.mutate()}
+                className="px-4 py-2 rounded bg-slate-700 hover:bg-slate-600 text-sm font-medium disabled:opacity-50"
+              >
+                {testLlm.isPending ? "Testing…" : "Test LLM connection"}
+              </button>
               {saveSettings.isSuccess && <p className="text-sm text-emerald-400">Saved.</p>}
+              {llmTestResult && (
+                <p className={`text-sm ${llmTestResult.startsWith("OK") ? "text-emerald-400" : "text-amber-300"}`}>
+                  {llmTestResult}
+                </p>
+              )}
             </>
           )}
         </section>

@@ -11,6 +11,7 @@ from typing import Any
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+from app.services.media_sniff import sniff_media_kind
 from app.services.erome_upload_provision import (
     UploadResult,
     load_flow_config,
@@ -29,16 +30,24 @@ _EROME_GROUP_WAIT_ENV = "TBCC_EROME_GROUPED_WAIT_SEC"
 
 
 def erome_auto_upload_enabled() -> bool:
-    raw = (os.getenv(_EROME_AUTO_ENV) or "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    raw = (os.getenv(_EROME_AUTO_ENV) or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def erome_max_files_per_album() -> int:
-    raw = (os.getenv(_EROME_MAX_FILES_ENV) or "20").strip()
+    raw = (os.getenv(_EROME_MAX_FILES_ENV) or "50").strip()
     try:
-        return max(1, min(50, int(raw)))
+        return max(1, min(100, int(raw)))
     except ValueError:
-        return 20
+        return 50
+
+
+def erome_upload_job_key(message) -> int:
+    """Dedup key for in-flight uploads — albums share grouped_id."""
+    gid = getattr(message, "grouped_id", None)
+    if gid:
+        return int(gid)
+    return int(message.id)
 
 
 def erome_grouped_wait_sec() -> float:
@@ -143,11 +152,36 @@ async def download_messages_to_staging(
         if not data or len(data) < 200:
             logger.warning("erome ingest empty download msg=%s", getattr(msg, "id", "?"))
             continue
+        kind, ext = sniff_media_kind(data)
+        if kind == "document" and ext == "bin":
+            logger.warning("erome ingest unsupported media msg=%s", getattr(msg, "id", "?"))
+            continue
         ext = _ext_for_message(data, msg)
         path = folder / f"{idx:03d}_{int(msg.id)}.{ext}"
         path.write_bytes(data)
         saved.append(path)
     return saved
+
+
+def filter_valid_staged_files(files: list[Path]) -> tuple[list[Path], list[str]]:
+    """Drop corrupt/unknown files before watermark + Erome upload."""
+    ok: list[Path] = []
+    skipped: list[str] = []
+    for path in files:
+        try:
+            raw = path.read_bytes()
+        except Exception as e:
+            skipped.append(f"{path.name}:read_failed:{e}")
+            continue
+        if len(raw) < 200:
+            skipped.append(f"{path.name}:too_small")
+            continue
+        kind, ext = sniff_media_kind(raw)
+        if kind == "document" and ext == "bin":
+            skipped.append(f"{path.name}:unknown_format")
+            continue
+        ok.append(path)
+    return ok, skipped
 
 
 def watermark_staged_files(files: list[Path]) -> int:
@@ -158,9 +192,28 @@ def upload_staged_folder(
     folder: Path,
     *,
     title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
     max_files: int | None = None,
     skip_watermark: bool = False,
+    source: str = "staging",
+    network_key: str | None = None,
+    watermark: dict | None = None,
+    crop: dict | None = None,
+    content_notes: str | None = None,
+    force_policy: bool = False,
+    headed: bool = False,
+    keep_open: bool = False,
+    db=None,
 ) -> UploadResult:
+    from app.services.erome_upload_analytics import (
+        EromeUploadParams,
+        collect_staging_metadata,
+        merge_sidecar_params,
+        record_erome_upload,
+    )
+    from app.services.erome_upload_policy import check_upload_policy, policy_block_message
+
     if not selectors_ready(load_flow_config()):
         return UploadResult(ok=False, staging_path=str(folder), error="erome_flow_not_configured")
     cfg = load_flow_config()
@@ -168,9 +221,73 @@ def upload_staged_folder(
     scan = scan_staging_folder(folder, allowed_extensions=cfg.allowed_extensions, max_files=lim)
     if not scan.ok:
         return UploadResult(ok=False, staging_path=str(folder), error="no_media_files")
+
+    valid, skipped = filter_valid_staged_files(scan.files)
+    if skipped:
+        logger.warning("erome staging skipped invalid files: %s", skipped[:5])
+    if not valid:
+        return UploadResult(
+            ok=False,
+            staging_path=str(folder),
+            error="invalid_media_files",
+        )
+    scan.files = valid
+
+    params = merge_sidecar_params(
+        folder,
+        EromeUploadParams(
+            title=title,
+            description=description,
+            tags=list(tags or []),
+            source=source,
+            network_key=network_key,
+            staging_path=str(folder),
+            watermark=watermark,
+            crop=crop,
+            content_notes=content_notes,
+            file_count=len(scan.files),
+            force_policy=force_policy,
+        ),
+    )
+
+    verdict = check_upload_policy(
+        title=params.title,
+        description=params.description,
+        file_count=len(scan.files),
+        tags=params.tags,
+        source=source,
+        force=force_policy,
+    )
+    if not verdict.allowed:
+        return UploadResult(
+            ok=False,
+            staging_path=str(folder),
+            title=params.title,
+            error=f"policy_blocked:{policy_block_message(verdict)}",
+        )
+
     if not skip_watermark:
         watermark_staged_files(scan.files)
-    return upload_local_folder(folder, title=title, max_files=lim)
+
+    staging_meta = collect_staging_metadata(scan.files)
+    result = upload_local_folder(
+        folder,
+        title=params.title,
+        description=params.description,
+        tags=params.tags,
+        max_files=lim,
+        headed=headed,
+        keep_open=keep_open,
+    )
+
+    record_erome_upload(
+        params,
+        result.to_dict(),
+        staging_meta=staging_meta,
+        policy=verdict.to_dict(),
+        db=db,
+    )
+    return result
 
 
 async def ingest_telegram_messages_to_erome(
@@ -188,11 +305,24 @@ async def ingest_telegram_messages_to_erome(
     files = await download_messages_to_staging(client, messages, folder)
     if not files:
         return {"ok": False, "error": "download_failed", "staging_path": str(folder)}
+    valid, skipped = filter_valid_staged_files(files)
+    if skipped:
+        logger.warning("erome ingest skipped invalid files: %s", skipped[:5])
+    files = valid
+    if not files:
+        return {
+            "ok": False,
+            "error": "invalid_media_files",
+            "staging_path": str(folder),
+            "skipped": skipped[:10],
+        }
     album_title = (title or "").strip() or album_title_from_messages(messages)
     result = await asyncio.to_thread(
         upload_staged_folder,
         folder,
         title=album_title,
+        source="telegram",
+        force_policy=False,
     )
     body = result.to_dict()
     body["ok"] = bool(result.ok)
@@ -202,9 +332,81 @@ async def ingest_telegram_messages_to_erome(
     return body
 
 
+def stage_processed_bytes_for_erome(
+    items: list[tuple[bytes, str]],
+    *,
+    batch_key: str,
+) -> tuple[Path, list[Path]]:
+    """Write pre-processed (crop/watermark) bytes into an Erome staging folder."""
+    from app.services.media_sniff import sniff_media_kind
+
+    folder = erome_staging_dir() / "composer" / batch_key
+    folder.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for idx, (data, hint) in enumerate(items):
+        _kind, ext = sniff_media_kind(data)
+        if not ext or ext == "bin":
+            ext = "mp4" if hint == "video" else "jpg"
+        path = folder / f"{idx:03d}.{ext}"
+        path.write_bytes(data)
+        paths.append(path)
+    return folder, paths
+
+
+async def upload_processed_bytes_to_erome(
+    items: list[tuple[bytes, str]],
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    max_files: int | None = None,
+    skip_watermark: bool = True,
+    source: str = "composer",
+    watermark: dict | None = None,
+    crop: dict | None = None,
+    content_notes: str | None = None,
+    force_policy: bool = False,
+    db=None,
+) -> dict[str, Any]:
+    """Album Composer / API path — bytes already cropped/watermarked."""
+    import time
+
+    if not items:
+        return {"ok": False, "error": "no_media"}
+    batch_key = f"cmp_{int(time.time())}_{len(items)}"
+    folder, paths = stage_processed_bytes_for_erome(items, batch_key=batch_key)
+    cfg = load_flow_config()
+    album_title = (title or "").strip() or cfg.album_title_default or "AOF Network"
+    result = await asyncio.to_thread(
+        upload_staged_folder,
+        folder,
+        title=album_title,
+        description=description,
+        tags=tags,
+        max_files=max_files,
+        skip_watermark=skip_watermark,
+        source=source,
+        watermark=watermark,
+        crop=crop,
+        content_notes=content_notes,
+        force_policy=force_policy,
+        db=db,
+    )
+    body = result.to_dict()
+    body["ok"] = bool(result.ok)
+    body["file_count"] = len(paths)
+    body["title"] = album_title
+    if result.error and result.error.startswith("policy_blocked:"):
+        body["policy_blocked"] = True
+        body["error"] = result.error.split(":", 1)[-1]
+    return body
+
+
 def format_erome_upload_reply(report: dict[str, Any], *, html: bool = False) -> str:
     if not report.get("ok"):
         err = report.get("error") or "unknown"
+        if err == "invalid_media_files":
+            err = "downloaded files were empty or unsupported format"
         if html:
             return f"❌ <b>Erome upload failed</b>\n<code>{err}</code>"
         return f"❌ Erome upload failed: `{err}`"

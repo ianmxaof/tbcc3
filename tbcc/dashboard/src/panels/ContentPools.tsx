@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useState } from "react";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
@@ -695,6 +696,13 @@ export function ContentPools() {
                 </td>
                 <td className="p-3">
                   <div className="flex flex-wrap gap-2">
+                    <Link
+                      to={`/curate?pool_id=${p.id}&status=pending`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="px-2 py-1 bg-cyan-900/70 text-cyan-100 rounded text-sm hover:bg-cyan-800/80"
+                    >
+                      Curate
+                    </Link>
                     <button
                       type="button"
                       onClick={(e) => {

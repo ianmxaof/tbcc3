@@ -74,13 +74,15 @@ curl -X POST http://127.0.0.1:8000/ops/triage/run -H "Content-Type: application/
 | `TBCC_FLYWHEEL_APPROVAL=1` | Approve/Reject in Secretary before destructive fixes |
 | `TBCC_CURSOR_TRIAGE_ENABLED=1` | Agent triage button (needs `CURSOR_API_KEY`) |
 
-**OpenClaw stub (one-shot tick):**
+**TBCC flywheel tick (internal event bus — one-shot):**
 
 ```powershell
 cd tbcc\scripts
-.\run-openclaw-ops-tick.ps1
-.\run-openclaw-ops-tick.ps1 -DryRun   # if you add the switch later
+.\run-tbcc-flywheel-tick.ps1
+.\run-tbcc-flywheel-tick.ps1 -DryRun   # if you add the switch later
 ```
+
+Deprecated alias: `.\run-openclaw-ops-tick.ps1`
 
 **Skill registry** (`app/services/ops_flywheel.py`):
 

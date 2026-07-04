@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -14,7 +14,8 @@ from app.models.secretary_knowledge import SecretaryKnowledgeEntry
 from app.models.secretary_settings import ROW_ID, SecretarySettings
 from app.models.secretary_user_context import SecretaryMessageRecord, SecretaryUserContext
 from app.services.format_engine import PHASES, _load_format, _save_format, context_to_dict, reset_user_context
-from app.services.secretary_llm import complete_secretary_chat, default_system_prompt, openai_configured
+from app.services.secretary_llm import complete_secretary_chat, default_system_prompt
+from app.services.secretary_llm_config import secretary_llm_configured, secretary_llm_status
 from app.services.secretary_rag import build_rag_context_suffix, import_docs_from_tbcc, reindex_embeddings, search_knowledge
 from app.services.secretary_settings_effective import ensure_settings_row, get_effective_secretary_settings
 
@@ -23,9 +24,18 @@ router = APIRouter()
 
 class SecretarySettingsPatch(BaseModel):
     format_engine_enabled: bool | None = None
+    fe_verbosity: Literal["compact", "standard"] | None = None
+    public_faq_enabled: bool | None = None
     llm_refine_on_phase_change: bool | None = None
+    llm_provider: Literal["openai", "openrouter"] | None = None
+    llm_api_key: str | None = Field(None, max_length=512)
+    clear_llm_api_key: bool | None = None
+    llm_model: str | None = Field(None, max_length=128)
+    llm_base_url: str | None = Field(None, max_length=256)
     rag_enabled: bool | None = None
     rag_top_k: int | None = Field(None, ge=1, le=12)
+    system_prompt: str | None = Field(None, max_length=12000)
+    clear_system_prompt: bool | None = None
     system_prompt_extra: str | None = None
 
 
@@ -54,30 +64,71 @@ class TestReplyIn(BaseModel):
 def _settings_overrides(row: SecretarySettings) -> dict[str, Any]:
     return {
         "format_engine_enabled": row.format_engine_enabled,
+        "fe_verbosity": row.fe_verbosity,
+        "public_faq_enabled": row.public_faq_enabled,
         "llm_refine_on_phase_change": row.llm_refine_on_phase_change,
+        "llm_provider": row.llm_provider,
+        "llm_model": row.llm_model,
+        "llm_base_url": row.llm_base_url,
+        "llm_api_key_set": bool((row.llm_api_key or "").strip()),
         "rag_enabled": row.rag_enabled,
         "rag_top_k": row.rag_top_k,
+        "system_prompt_set": bool((row.system_prompt or "").strip()),
         "system_prompt_extra": row.system_prompt_extra,
     }
 
 
+def _settings_response(db: Session) -> dict[str, Any]:
+    row = ensure_settings_row(db)
+    eff = get_effective_secretary_settings(db)
+    llm = secretary_llm_status(db)
+    public_eff = {k: v for k, v in eff.items() if k != "llm_api_key"}
+    public_eff["llm"] = llm
+    return {"effective": public_eff, "overrides": _settings_overrides(row)}
+
+
 @router.get("/secretary-settings")
 def get_secretary_settings(db: Session = Depends(get_db)):
-    row = ensure_settings_row(db)
-    return {"effective": get_effective_secretary_settings(db), "overrides": _settings_overrides(row)}
+    return _settings_response(db)
 
 
 @router.patch("/secretary-settings")
 def patch_secretary_settings(body: SecretarySettingsPatch, db: Session = Depends(get_db)):
     row = ensure_settings_row(db)
     data = body.model_dump(exclude_unset=True)
+    clear_key = bool(data.pop("clear_llm_api_key", False))
+    clear_prompt = bool(data.pop("clear_system_prompt", False))
+    api_key = data.pop("llm_api_key", None)
+    system_prompt = data.pop("system_prompt", None)
     for k, v in data.items():
         if k == "system_prompt_extra" and v is not None:
             v = str(v).strip() or None
+        if k == "llm_model" and v is not None:
+            v = str(v).strip() or None
+        if k == "llm_base_url" and v is not None:
+            v = str(v).strip() or None
         setattr(row, k, v)
+    if clear_key:
+        row.llm_api_key = None
+    elif api_key is not None:
+        row.llm_api_key = str(api_key).strip() or None
+    if clear_prompt:
+        row.system_prompt = None
+    elif system_prompt is not None:
+        cleaned = str(system_prompt).strip() or None
+        if cleaned and len(cleaned) > 12000:
+            raise HTTPException(status_code=400, detail="system_prompt too long (max 12000)")
+        row.system_prompt = cleaned
     db.commit()
     db.refresh(row)
-    return {"ok": True, "effective": get_effective_secretary_settings(db), "overrides": _settings_overrides(row)}
+    return {"ok": True, **_settings_response(db)}
+
+
+@router.post("/secretary-settings/test-llm")
+def test_secretary_llm_endpoint(db: Session = Depends(get_db)):
+    from app.services.secretary_llm_config import test_secretary_llm
+
+    return test_secretary_llm(db=db)
 
 
 @router.get("/secretary-contexts")
@@ -233,6 +284,14 @@ def import_knowledge_docs(db: Session = Depends(get_db)):
     return import_docs_from_tbcc(db=db)
 
 
+@router.post("/secretary-knowledge/import-iui-corpus")
+def import_iui_knowledge_corpus(db: Session = Depends(get_db)):
+    """Import IIU SFW industry research summaries into secretary RAG."""
+    from app.services.industry_intelligence import import_iui_corpus
+
+    return import_iui_corpus(db)
+
+
 @router.post("/secretary-knowledge/reindex-embeddings")
 def reindex_knowledge_embeddings(db: Session = Depends(get_db)):
     return reindex_embeddings(db)
@@ -250,7 +309,7 @@ def search_knowledge_api(body: dict, db: Session = Depends(get_db)):
 
 @router.post("/secretary-settings/test-reply")
 async def test_secretary_reply(body: TestReplyIn, db: Session = Depends(get_db)):
-    if not openai_configured():
+    if not secretary_llm_configured():
         raise HTTPException(status_code=503, detail="OpenAI not configured")
 
     eff = get_effective_secretary_settings(db)

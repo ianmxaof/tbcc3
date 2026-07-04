@@ -54,7 +54,7 @@ def _normalize_buffer_x_queue(raw: list | None) -> list[dict]:
         if iu.startswith("https://"):
             entry["image_url"] = iu[:2048]
         out.append(entry)
-        if len(out) >= 10:
+        if len(out) >= 16:
             break
     return out
 
@@ -107,6 +107,10 @@ def scheduled_post_to_api_dict(post: ScheduledTextPost) -> dict:
         d["buttons"] = []
     d["buffer_x_queue"] = post.get_buffer_x_queue()
     d.pop("buffer_x_queue_json", None)
+    from app.services.campaign_surface_copy import get_surface_copy_raw
+
+    d["surface_copy"] = get_surface_copy_raw(post) or None
+    d.pop("surface_copy_json", None)
     return d
 
 
@@ -240,6 +244,16 @@ def _patch_scheduled_post_core(
         post.buffer_mirror_enabled = bool(body.buffer_mirror_enabled)
     if "buffer_publish_now" in fs:
         post.buffer_publish_now = bool(body.buffer_publish_now)
+    if "discord_mirror_enabled" in fs:
+        post.discord_mirror_enabled = bool(body.discord_mirror_enabled)
+    if "reddit_mirror_enabled" in fs:
+        post.reddit_mirror_enabled = bool(body.reddit_mirror_enabled)
+    if "erome_mirror_enabled" in fs:
+        post.erome_mirror_enabled = bool(body.erome_mirror_enabled)
+    if "surface_copy" in fs:
+        from app.services.campaign_surface_copy import set_surface_copy
+
+        set_surface_copy(post, body.surface_copy)
     if "caption_llm_rewrite_enabled" in fs:
         post.caption_llm_rewrite_enabled = bool(body.caption_llm_rewrite_enabled)
         if not post.caption_llm_rewrite_enabled:
@@ -317,6 +331,13 @@ class ScheduledPostCreate(BaseModel):
     )
     buffer_mirror_enabled: bool = False
     buffer_publish_now: bool = False
+    discord_mirror_enabled: bool = False
+    reddit_mirror_enabled: bool = False
+    erome_mirror_enabled: bool = False
+    surface_copy: dict | None = Field(
+        default=None,
+        description='Per-platform copy overrides: {"x","ig_threads","discord"} or {"variations":[...]}',
+    )
     buffer_x_queue: list[BufferXQueueItem] | None = None
     caption_llm_rewrite_enabled: bool = False
     caption_llm_rewrite_mode: str | None = Field(
@@ -360,6 +381,10 @@ class ScheduledPostUpdate(BaseModel):
     checkout_referral_code: str | None = None
     buffer_mirror_enabled: bool | None = None
     buffer_publish_now: bool | None = None
+    discord_mirror_enabled: bool | None = None
+    reddit_mirror_enabled: bool | None = None
+    erome_mirror_enabled: bool | None = None
+    surface_copy: dict | None = None
     buffer_x_queue: list[BufferXQueueItem] | None = None
     caption_llm_rewrite_enabled: bool | None = None
     caption_llm_rewrite_mode: str | None = None
@@ -478,6 +503,9 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
                 ),
                 buffer_mirror_enabled=bool(getattr(body, "buffer_mirror_enabled", False)),
                 buffer_publish_now=bool(getattr(body, "buffer_publish_now", False)),
+                discord_mirror_enabled=bool(getattr(body, "discord_mirror_enabled", False)),
+                reddit_mirror_enabled=bool(getattr(body, "reddit_mirror_enabled", False)),
+                erome_mirror_enabled=bool(getattr(body, "erome_mirror_enabled", False)),
                 caption_llm_rewrite_enabled=bool(getattr(body, "caption_llm_rewrite_enabled", False)),
                 caption_llm_rewrite_mode=(
                     (body.caption_llm_rewrite_mode or "").strip().lower() or None
@@ -489,6 +517,13 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
             )
             if body.buffer_x_queue is not None:
                 post.set_buffer_x_queue(_normalize_buffer_x_queue([x.model_dump() for x in body.buffer_x_queue]))
+            if body.surface_copy is not None:
+                from app.services.campaign_surface_copy import set_surface_copy
+
+                set_surface_copy(post, body.surface_copy)
+            from app.services.scheduler_category import apply_scheduler_category
+
+            apply_scheduler_category(post)
             db.add(post)
             created.append(post)
         for p in created:
@@ -557,6 +592,15 @@ def delete_scheduled_campaign(campaign_group_id: str, db: Session = Depends(get_
     if not n:
         return {"error": "Campaign not found"}
     return {"deleted": n, "campaign_group_id": campaign_group_id}
+
+
+@router.post("/resume-all")
+def resume_all_scheduled_posting(db: Session = Depends(get_db)):
+    """Clear post-queue backlog and re-enqueue overdue scheduled posts (does not auto-pause rows)."""
+    from app.services.post_scheduler import resume_scheduled_posting
+
+    _ = db  # ensure DB reachable
+    return resume_scheduled_posting(purge_post_queue=True)
 
 
 @router.post("/campaign/{campaign_group_id}/trigger")

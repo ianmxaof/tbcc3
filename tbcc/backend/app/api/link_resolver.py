@@ -19,7 +19,7 @@ from app.api.external_payment_orders import _require_internal
 from app.database.session import get_db
 from app.models.link_resolver_request import LinkResolverRequest
 from app.schemas.common import orm_to_dict
-from app.services.bypass_vip_client import bypass_configured
+from app.services.bypass_vip_client import bypass_configured, bypass_free_mode
 from app.services.link_resolver_tier import effective_link_resolver_tier
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ def link_resolver_config(_: None = Depends(_require_internal)):
     enabled = (os.getenv("TBCC_BYPASS_ENABLED") or "1").strip().lower() not in ("0", "false", "no")
     return {
         "bypass_configured": bypass_configured(),
+        "bypass_free_mode": bypass_free_mode(),
         "bypass_enabled_flag": enabled,
     }
 
@@ -62,11 +63,6 @@ def create_request(
     db: Session = Depends(get_db),
     _: None = Depends(_require_internal),
 ):
-    if not bypass_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="Link resolver disabled: set TBCC_BYPASS_API_KEY (and TBCC_BYPASS_ENABLED=1).",
-        )
     tier = effective_link_resolver_tier(db, body.telegram_user_id)
     public_id = str(uuid.uuid4())
     now = datetime.utcnow()

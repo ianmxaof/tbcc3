@@ -419,7 +419,7 @@ def main() -> int:
     ia.set_defaults(func=cmd_income_add)
     isync = inc_sub.add_parser("sync", help="Sync external platforms (delta from cumulative totals)")
     isync.add_argument("--sources", default="", help="Comma-separated: linkvertise,admaven,workink,bmc")
-    isync.add_argument("--headed", action="store_true", help="Headed browser for Linkvertise")
+    isync.add_argument("--headed", action="store_true", help="Headed browser for gate dashboard scrape")
     isync.set_defaults(func=cmd_income_sync)
 
     args = p.parse_args()

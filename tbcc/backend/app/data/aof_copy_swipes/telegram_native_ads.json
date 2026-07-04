@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "description": "Curated Telegram-native promo swipes — inspiration only, never paste verbatim. Adapt via aof_copy_swipe service.",
+  "swipes": [
+    {
+      "id": "library-curator-lifetime-v1",
+      "source": "telegram_bot_unknown",
+      "captured_at": "2026-07-02",
+      "format": "bot_welcome",
+      "tags": ["library", "scale_proof", "value_anchor", "lifetime_pricing", "personal_curator"],
+      "tactics": [
+        "not_a_regular_channel",
+        "first_person_builder",
+        "emoji_bullet_inventory",
+        "price_comparison_anchor",
+        "forever_access_framing",
+        "start_cta"
+      ],
+      "raw_body": "🔥 THIS IS NOT A REGULAR OR UNIQUE CHANNEL.\n\nI spent years building this library.\nNot copying. Not reposting. But creating.\n\nWhat's inside:\n\n📸 Over 25,000 photos – each hand-selected\n🎥 Over 9,000 videos – original, exclusive, never-before-seen\n✨ Daily updates – fresh content, always\n🚫 No spam – only pure, high-quality material\n\nAnd the best part?\n\nYou get all this – forever – for just $59.99.\n\nThat's less than a two-month Netflix subscription.\n\nThat's less than one night out.\n\nThat's less than dinner for two.\n\nBut you get over 34,000 files that you can access anytime, anywhere.\n\n/start",
+      "notes": "Classic curator-library pitch. Scale numbers + value anchoring against everyday spend. Personal 'I built this' voice."
+    },
+    {
+      "id": "nostalgia-preservation-v1",
+      "source": "telegram_bot_unknown",
+      "captured_at": "2026-07-02",
+      "format": "bot_welcome",
+      "tags": ["nostalgia", "scarcity", "preservation", "exclusive_archive"],
+      "tactics": [
+        "nostalgia_hook",
+        "loss_framing",
+        "last_place_on_earth",
+        "emoji_checklist",
+        "emotional_why_join"
+      ],
+      "raw_body": "🎶 REMEMBER MAMBO?\n\nThe energy. The vibe. The moments you thought would last forever.\n\nThey didn't.\n\nMost of those recordings are gone now.\nDeleted. Blocked. Lost forever.\n\nBut not all of them.\n\nI preserved over 2,400 original videos.\nFull recordings. Rare footage. High quality.\n\nThis is the last place where these videos still exist.\n\nWhat you get:\n\n✅ 2,400+ exclusive videos\n✅ Full performances, backstage, rare cuts\n✅ Original quality – no watermarks, no reposts\n✅ New content added regularly\n\nWhy join?\n\nBecause you loved Mambo.\nBecause you want to relive those moments.\nBecause this material will never be available again.",
+      "notes": "Nostalgia + extinction framing. Emotional 'why join' beats feature lists. Works for lane-specific nostalgia drops."
+    },
+    {
+      "id": "deposit-exclusive-v2",
+      "source": "telegram_bot_unknown",
+      "captured_at": "2026-07-02",
+      "format": "bot_welcome",
+      "tags": ["library", "scale_proof", "anti_repost", "daily_updates"],
+      "tactics": [
+        "imagine_having_framing",
+        "not_typical_telegram",
+        "curated_library",
+        "no_restrictions_flex",
+        "start_cta"
+      ],
+      "raw_body": "🔥 VOYEURS PRO EXCLUSIVE CONTENT DEPOSIT — 25,000 PHOTOS + 9,000 VIDEOS\n\nImagine having over 34,000 unique pieces of content at your fingertips.\nNo reposts. No watermarks. No boring information.\n\nI spent years creating this private channel—and it's packed with:\n\n📸 25,000 high-quality photos\n🎥 9,000 exclusive videos\n✨ Daily updates—fresh content every day\n🚫 No spam, no ads, no reposts\n\nThis is NOT your typical Telegram channel.\n\nThis is a carefully curated library—everything is original, everything is hand-picked, and everything is available without any Telegram restrictions.\n\n/start",
+      "notes": "Shorter variant of library pitch. 'Imagine having' opener + anti-typical-Telegram differentiation."
+    },
+    {
+      "id": "multi-channel-bundle-offer-v1",
+      "source": "telegram_bot_unknown",
+      "captured_at": "2026-07-02",
+      "format": "bot_promo",
+      "tags": ["bundle", "tiered_pricing", "multi_channel", "limited_promo"],
+      "tactics": [
+        "friends_great_offer_opener",
+        "choose_your_lane",
+        "tiered_subscription_table",
+        "pack_discount_math",
+        "repository_not_chat",
+        "growing_channel_promo_window",
+        "urgency_without_hard_deadline"
+      ],
+      "raw_body": "🚀 FRIENDS, I HAVE A GREAT OFFER FOR YOU!\n\nI run several private channels. Each one has its own theme, but each one is about quality.\nJust choose the one that best suits you.\n\nNow you can join any of them at a great discount! For one channel:\n\n📌 7-day subscription from $5.99 to $7.99 — Depends on the channel.\n📌 6-month subscription from $16.99 to $19.99 — Depends on the channel.\n📌 Unlimited access (one-time payment) from $32.99 to $59.99 — Depends on the channel.\n----------------------------------------------------------------------------------------------\nIf you buy all 12 channels in a pack.\n📌 7-day trial: $29.99 — for all 12 channels.\n📌 Lifetime access (one-time payment): $199.99 — for all 12 channels.\n\nWhen I created these channels, I wanted them to be more than just \"another chat,\" but a true repository of unique content.\nNow inside:\n✅ Tons of content in different channels\n✅ Only unique videos and photos\n✅ Daily updates\n✅ No spam or flooding\n\nAnd I think I've succeeded.\nAll of this in one place. Always at hand. And without being blocked by Telegram.\n\nAnd yes, there's a discount on entry right now (because the channel is growing, and I decided it's a good time to invite new people).\nI don't know how long the promotion will last, so it's best not to delay.",
+      "notes": "Multi-lane network pitch. Tier table + bundle math. Soft urgency ('growing channel' promo). Maps well to AOF addlist + VIP tiers."
+    },
+    {
+      "id": "prelaunch-early-access-v1",
+      "source": "telegram_network_promo_unknown",
+      "captured_at": "2026-07-03",
+      "format": "network_promo_opener",
+      "tags": ["pre_launch", "early_access", "soft_urgency", "unicode_voice"],
+      "tactics": [
+        "pre_launch_early_access",
+        "dropping_links_early",
+        "before_the_hype",
+        "early_adopter_regret"
+      ],
+      "raw_body": "🔓 Got access to a fresh private network before the public launch\n\n🔗 Dropping the links here early\n\n🌟 Send requests now and get in before the hype starts",
+      "notes": "Unicode-styled opener (math monospace in original). Insider pre-launch frame — maps to AOF growth window + early hub drops."
+    },
+    {
+      "id": "network-tiered-directory-v1",
+      "source": "telegram_network_promo_unknown",
+      "captured_at": "2026-07-03",
+      "format": "network_lane_directory",
+      "tags": ["multi_lane", "directory", "emoji_tiers", "unicode_lane_names"],
+      "tactics": [
+        "multi_part_lane_directory",
+        "emoji_tier_grouping",
+        "choose_your_lane"
+      ],
+      "raw_body": "Part 1\n\n💜 Lane name — public tier (invite)\n💜 Lane name — public tier (invite)\n💜 Lane name — public tier (invite)\n[...repeat per lane...]\n\nPart 2\n\n🔐 Restricted / premium lane (invite)\n🔐 Premium lane (invite)\n🍭 Themed lane — stylized unicode name (invite)\n🍭 Themed lane (invite)\n🍒 Category lane — MILF / amateur / etc. (invite)\n🍒 Category lane (invite)\n🤪 Alt / humor / uncensored lane (invite)",
+      "notes": "50+ competitor lanes in original — stored as structural template only. Emoji tiers: 💜 public, 🔐 locked, 🍭 themed, 🍒 category bucket, 🤪 misc. Wire to aof_network.py promos, never paste competitor invites."
+    },
+    {
+      "id": "addlist-one-tap-punch-v1",
+      "source": "telegram_network_promo_unknown",
+      "captured_at": "2026-07-03",
+      "format": "network_addlist_cta",
+      "tags": ["addlist", "one_click", "high_energy", "network_unlock"],
+      "tactics": [
+        "early_adopter_regret",
+        "addlist_one_click_punch",
+        "imagine_having_framing"
+      ],
+      "raw_body": "👌 The ones getting in now will understand later\n\nALL CHANNELS. ONE CLICK. RIGHT FUCKING NOW 😳💦\n\nHundreds of sluts moaning, squirting, getting railed in every hole you can imagine.\n\nOne tap — full network unlocked 🔥",
+      "notes": "Punchy addlist middle — caps energy + visceral one-liner + single addlist CTA. Adapt middle line for AOF edge; swap addlist URL for AOF addlist."
+    },
+    {
+      "id": "tools-hub-footer-v1",
+      "source": "telegram_network_promo_unknown",
+      "captured_at": "2026-07-03",
+      "format": "network_footer",
+      "tags": ["affiliate_tools", "folder_cta", "hub_cta", "subscribe_closer"],
+      "tactics": [
+        "tools_hub_footer",
+        "emoji_bullet_inventory",
+        "start_cta"
+      ],
+      "raw_body": "The MUST-HAVE TOOLS:\n✅ Tool one — bot or affiliate link\n✅ Tool two — bot or affiliate link\n✅ Tool three — voyeur / AI / stars vendor\n[...]\n\n📂 All at one tap 👉 FOLDER (addlist link)\n🔗 Channels hub 👉 LINKS (hub invite)\n\n🌐 Promo 👉 @promo_handle\n\n🔥 Subscribe now — the next fantasy drops soon.",
+      "notes": "Footer block: tools checklist + dual folder/hub CTAs + promo handle + subscribe closer. Map tools to @aofsubscriptions_bot, LOOT, companion — not competitor affiliates."
+    }
+  ]
+}

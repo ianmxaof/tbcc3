@@ -112,7 +112,95 @@ class ForumPostAlbumFromBotBody(BaseModel):
     watermark: WatermarkOptions | None = None
 
 
+class ForumEromeUploadFromBotBody(BaseModel):
+    """Album Composer → crop/watermark → Playwright Erome album upload."""
 
+    media_count: int = Field(..., ge=1, le=100)
+    message_ids: list[int] = Field(default_factory=list, max_length=100)
+    anchor_max_message_id: int | None = None
+    bot_username: str = Field(..., min_length=1, max_length=128)
+    title: str | None = Field(None, max_length=120)
+    description: str | None = Field(None, max_length=500)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    caption: str = ""
+    files: list[dict] = Field(default_factory=list, max_length=100)
+    crop: ImageCropSettings | None = None
+    watermark: WatermarkOptions | None = None
+    max_files: int | None = Field(None, ge=1, le=100)
+    force_policy: bool = False
+
+
+@router.post("/erome-upload-from-bot")
+async def forum_erome_upload_from_bot(body: ForumEromeUploadFromBotBody, db: Session = Depends(get_db)):
+    """Process staged album-bot media and publish one watermarked Erome album."""
+    from app.api.import_ import (
+        SavedFromBotFileItem,
+        _download_album_bot_processed_bytes,
+        _exc_detail,
+    )
+    from app.services.erome_telegram_ingest import (
+        erome_max_files_per_album,
+        format_erome_upload_reply,
+        upload_processed_bytes_to_erome,
+    )
+
+    bot_peer = body.bot_username.strip().lstrip("@")
+    crop = body.crop
+    wm = body.watermark
+    if wm is None:
+        wm = WatermarkOptions(enabled=True)
+    elif wm.enabled is None and not wm.skip:
+        wm = wm.model_copy(update={"enabled": True})
+    file_items = [SavedFromBotFileItem(**f) if isinstance(f, dict) else f for f in (body.files or [])]
+    try:
+        processed = await _download_album_bot_processed_bytes(
+            bot_peer=bot_peer,
+            media_count=body.media_count,
+            message_ids=body.message_ids or None,
+            anchor_max_message_id=body.anchor_max_message_id,
+            files=file_items or None,
+            db=db,
+            crop=crop,
+            wm=wm,
+            context="erome",
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"Could not prepare media: {_exc_detail(e)}"}
+
+    if not processed:
+        return {"ok": False, "error": "No media downloaded for Erome upload"}
+
+    from app.services.erome_upload_analytics import parse_erome_caption
+
+    cap = (body.caption or "").strip()
+    cap_title, cap_tags, cap_desc = parse_erome_caption(cap)
+    title = (body.title or "").strip() or cap_title or (cap.split("\n", 1)[0].strip()[:120] if cap else None)
+    tags = [t.strip() for t in (body.tags or []) if t.strip()] or cap_tags
+    description = (body.description or "").strip() or cap_desc
+    lim = body.max_files if body.max_files is not None else erome_max_files_per_album()
+    if len(processed) > lim:
+        processed = processed[:lim]
+
+    wm_payload = wm.model_dump(exclude_none=True) if wm else None
+    crop_payload = crop.model_dump(exclude_none=True) if crop else None
+
+    report = await upload_processed_bytes_to_erome(
+        processed,
+        title=title,
+        description=description,
+        tags=tags,
+        max_files=lim,
+        skip_watermark=True,
+        source="album_composer",
+        watermark=wm_payload,
+        crop=crop_payload,
+        force_policy=body.force_policy,
+        db=db,
+    )
+    if not report.get("ok"):
+        return report
+    report["reply_text"] = format_erome_upload_reply(report, html=False)
+    return report
 
 
 @router.post("/post-album")
@@ -203,10 +291,9 @@ async def forum_post_album_from_bot(body: ForumPostAlbumFromBotBody, db: Session
 
     from app.api.import_ import (
         SavedFromBotFileItem,
-        _album_composer_bot_token,
-        _download_bot_api_file,
+        _download_album_bot_processed_bytes,
+        _exc_detail,
         _gallery_send_promo_item,
-        _process_media_bytes,
         _watermark_should_apply,
     )
     from app.services.scheduled_post_service import _build_reply_markup
@@ -221,39 +308,22 @@ async def forum_post_album_from_bot(body: ForumPostAlbumFromBotBody, db: Session
     use_bytes = use_crop or use_wm
 
     if use_bytes:
-        processed: list[tuple[bytes, str]] = []
+        file_items = [
+            SavedFromBotFileItem(**f) if isinstance(f, dict) else f for f in (body.files or [])
+        ]
         try:
-            if body.files:
-                token = _album_composer_bot_token()
-                if not token:
-                    return {"ok": False, "error": "TBCC_ALBUM_COMPOSER_BOT_TOKEN not set"}
-                file_items = [SavedFromBotFileItem(**f) if isinstance(f, dict) else f for f in body.files]
-                for fi in file_items:
-                    data = await _download_bot_api_file(fi.file_id, token)
-                    kind = (fi.kind or "photo").lower()
-                    if kind not in ("photo", "video"):
-                        kind = "photo"
-                    data = _process_media_bytes(data, kind, db, crop=crop, wm=wm)
-                    processed.append((data, kind))
-            else:
-
-                async def _download_telethon(storage):
-                    nonlocal processed
-                    items = await storage.download_bot_batch_bytes(
-                        bot_peer,
-                        body.media_count,
-                        message_ids=body.message_ids or None,
-                        anchor_max_message_id=body.anchor_max_message_id,
-                    )
-                    processed = [
-                        (_process_media_bytes(data, kind, db, crop=crop, wm=wm), kind)
-                        for data, kind in items
-                    ]
-                    return processed
-
-                await run_telegram_album_composer_io(_download_telethon)
+            processed = await _download_album_bot_processed_bytes(
+                bot_peer=bot_peer,
+                media_count=body.media_count,
+                message_ids=body.message_ids or None,
+                anchor_max_message_id=body.anchor_max_message_id,
+                files=file_items or None,
+                db=db,
+                crop=crop,
+                wm=wm,
+            )
         except Exception as e:
-            return {"ok": False, "error": f"Could not download from album bot: {e}"}
+            return {"ok": False, "error": f"Could not download from album bot: {_exc_detail(e)}"}
 
         if not processed:
             return {"ok": False, "error": "No media downloaded for watermark/crop send"}
@@ -262,7 +332,7 @@ async def forum_post_album_from_bot(body: ForumPostAlbumFromBotBody, db: Session
 
         try:
             poster_storage = TelegramStorage(poster_client)
-            return await poster_storage.post_bytes_to_channel(
+            result = await poster_storage.post_bytes_to_channel(
                 post_destination,
                 processed,
                 body.message_thread_id,
@@ -275,6 +345,18 @@ async def forum_post_album_from_bot(body: ForumPostAlbumFromBotBody, db: Session
         except Exception as e:
             logger.warning("post-album-from-bot bytes pipeline failed: %s", e, exc_info=True)
             return {"ok": False, "error": friendly_telegram_error(e)}
+        if result.get("ok"):
+            from app.services.main_channel_post_divider import maybe_send_main_channel_post_divider
+
+            await maybe_send_main_channel_post_divider(
+                poster_client,
+                post_destination,
+                db,
+                channel_identifier=ch.identifier,
+                message_thread_id=body.message_thread_id,
+                send_silent=bool(body.send_silent),
+            )
+        return result
 
     async def _job(storage):
         return await post_bot_messages_to_forum_topic(
@@ -293,11 +375,23 @@ async def forum_post_album_from_bot(body: ForumPostAlbumFromBotBody, db: Session
         )
 
     try:
-        return await run_telegram_album_composer_io(_job)
-
+        result = await run_telegram_album_composer_io(_job)
     except Exception as e:
 
         logger.warning("post-album-from-bot failed: %s", e, exc_info=True)
 
         return {"ok": False, "error": friendly_telegram_error(e)}
+
+    if result.get("ok"):
+        from app.services.main_channel_post_divider import maybe_send_main_channel_post_divider
+
+        await maybe_send_main_channel_post_divider(
+            poster_client,
+            post_destination,
+            db,
+            channel_identifier=ch.identifier,
+            message_thread_id=body.message_thread_id,
+            send_silent=bool(body.send_silent),
+        )
+    return result
 

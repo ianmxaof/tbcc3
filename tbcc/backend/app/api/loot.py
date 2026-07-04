@@ -19,8 +19,15 @@ from app.models.loot import LootModifier, LootPoolEligibility
 from app.schemas.common import orm_to_dict
 from app.services.bundle_storage import MAX_BUNDLE_ZIP_BYTES, bundle_root, is_zip_magic
 from app.services.loot_free_pull import build_free_pull_preview, commit_free_pull
+from app.services.loot_vip_daily_pull import (
+    build_vip_daily_pull_preview,
+    commit_vip_daily_pull,
+    vip_daily_pull_available,
+    vip_daily_pull_used_today,
+)
 from app.services.loot_roll_preview import build_roll_preview
 from app.services.loot_creator_submit import submit_creator_profile
+from app.services.loot_player_modifiers import record_modifiers_seen
 from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining
 from app.services.loot_referral import (
     bonus_free_pulls_for,
@@ -35,6 +42,26 @@ from app.services.loot_player_stats import record_roll
 from app.services.loot_preview_delivery import send_loot_free_pull_to_chat, send_loot_preview_to_chat
 
 router = APIRouter()
+
+
+def _run_loot_async(coro):
+    """
+    Run Telethon + PTB delivery off the uvicorn worker loop.
+    Resets the admin session client so Saved Messages downloads succeed.
+    """
+    import concurrent.futures
+
+    async def _inner():
+        from app.services.telegram_admin import reset_admin_client
+
+        await reset_admin_client()
+        return await coro
+
+    def _worker():
+        return asyncio.run(_inner())
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_worker).result(timeout=300)
 
 
 class LootModifierCreate(BaseModel):
@@ -65,6 +92,26 @@ class LootModifierFromUrlBody(BaseModel):
     as_zip_pack: bool = False
     random_high_tier: bool = False
     include_zip_promo: bool | None = None
+    run_pipeline: bool = False
+    wire_packs_scheduler: bool = False
+
+
+class PackPoolQueueBody(BaseModel):
+    """Queue a URL into the shared AOF pack + loot modifier pool."""
+
+    url: str = Field(..., min_length=8, max_length=8192)
+    label: str | None = Field(None, max_length=256)
+    source_note: str | None = Field(None, max_length=2000)
+    weight_base: float = Field(1.0, ge=0.0, le=1000.0)
+    rarity_focus: float | None = Field(None, ge=0.0, le=1000.0)
+    min_rarity_tier: int | None = Field(None, ge=1, le=10)
+    active: bool = True
+    wire_packs_scheduler: bool = False
+    archive_entry_id: int | None = None
+    preview_media_ids: list[int] | None = Field(
+        None,
+        description="Promo-pool media ids — pack preview stills for AOF PACKS channel albums",
+    )
 
 
 class LootModifierFromUrlBatchBody(BaseModel):
@@ -109,6 +156,7 @@ def _preview_caption_text(preview: dict) -> str:
         f"🎁 <b>Loot Dry Roll</b>\n"
         f"Interval: <code>{preview.get('interval_code') or '-'}</code>\n"
         f"Tier: <b>{preview.get('rarity_tier') or '-'}</b>\n"
+        f"Base roll: <b>{preview.get('base_roll_tier') or preview.get('rarity_tier') or '-'}</b>\n"
         f"Album size: <b>{preview.get('album_size') or 0}</b>\n"
         f"Modifier slots: <b>{preview.get('modifier_slot_count') or 0}</b>\n\n"
         f"<b>Media IDs</b>\n"
@@ -151,6 +199,101 @@ async def create_modifier_from_url(
         return await _create_modifier_from_url_impl(body, db)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/pack-pool/queue")
+def queue_pack_pool_url(
+    body: PackPoolQueueBody,
+    db: Session = Depends(get_db),
+):
+    """Resolve, gate-wrap, and queue a URL in the shared AOF pack + loot modifier pool."""
+    from app.services.loot_pack_pool import (
+        PACK_QUEUE_MARKER,
+        queue_url_to_pack_pool,
+        refresh_aof_packs_scheduler,
+    )
+
+    result = queue_url_to_pack_pool(
+        db,
+        body.url,
+        label=body.label,
+        source_note=(body.source_note or "").strip() or PACK_QUEUE_MARKER,
+        weight_base=body.weight_base,
+        rarity_focus=body.rarity_focus,
+        min_rarity_tier=body.min_rarity_tier,
+        active=body.active,
+        archive_entry_id=body.archive_entry_id,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "queue_failed")
+    if body.preview_media_ids and result.get("created"):
+        from app.models.content_pool import ContentPool
+        from app.services.aof_packs_post_copy import attach_preview_media_to_modifier
+        from app.services.loot_pack_pool import POOL_NAME
+
+        mod_id = (result.get("modifier") or {}).get("id")
+        mod = db.query(LootModifier).filter(LootModifier.id == mod_id).first() if mod_id else None
+        pool = db.query(ContentPool).filter(ContentPool.name == POOL_NAME).first()
+        if mod:
+            result["previews"] = attach_preview_media_to_modifier(
+                db,
+                mod,
+                body.preview_media_ids,
+                pool_id=int(pool.id) if pool else None,
+            )
+    if body.wire_packs_scheduler and result.get("created"):
+        result["scheduler"] = refresh_aof_packs_scheduler(db)
+    return result
+
+
+@router.post("/pack-pool/refresh-scheduler")
+def refresh_pack_pool_scheduler(db: Session = Depends(get_db)):
+    """Re-wire AOF PACKS seed rotation from active pack-pool modifiers."""
+    from app.services.loot_pack_pool import refresh_aof_packs_scheduler
+
+    result = refresh_aof_packs_scheduler(db)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "refresh_failed")
+    return result
+
+
+class PackModifierPreviewsBody(BaseModel):
+    """Attach promo-pool preview stills to a pack modifier (shown in PACKS channel albums)."""
+
+    media_ids: list[int] = Field(..., min_length=1, max_length=12)
+    wire_packs_scheduler: bool = False
+
+
+@router.post("/pack-pool/modifiers/{modifier_id}/previews")
+def attach_pack_modifier_previews(
+    modifier_id: int,
+    body: PackModifierPreviewsBody,
+    db: Session = Depends(get_db),
+):
+    """Tag media + store preview_ids on a mega_pack row for rich AOF PACKS posts."""
+    from app.models.content_pool import ContentPool
+    from app.services.aof_packs_post_copy import attach_preview_media_to_modifier
+    from app.services.loot_pack_pool import POOL_NAME, refresh_aof_packs_scheduler
+
+    mod = (
+        db.query(LootModifier)
+        .filter(LootModifier.id == modifier_id, LootModifier.kind == "mega_pack")
+        .first()
+    )
+    if not mod:
+        raise HTTPException(status_code=404, detail="modifier_not_found")
+    pool = db.query(ContentPool).filter(ContentPool.name == POOL_NAME).first()
+    result = attach_preview_media_to_modifier(
+        db,
+        mod,
+        body.media_ids,
+        pool_id=int(pool.id) if pool else None,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "attach_failed")
+    if body.wire_packs_scheduler:
+        result["scheduler"] = refresh_aof_packs_scheduler(db)
+    return result
 
 
 async def _create_modifier_from_url_impl(body: LootModifierFromUrlBody, db: Session) -> dict:
@@ -214,6 +357,32 @@ async def _create_modifier_from_url_impl(body: LootModifierFromUrlBody, db: Sess
     kind = (body.kind or "other").strip()
     if kind not in ("mega_pack", "telegram_group", "telegram_channel", "internal_route", "other"):
         kind = "other"
+
+    use_pipeline = bool(body.run_pipeline or kind == "mega_pack")
+    if use_pipeline:
+        from app.services.loot_pack_pool import (
+            PACK_QUEUE_MARKER,
+            queue_url_to_pack_pool,
+            refresh_aof_packs_scheduler,
+        )
+
+        note = (body.source_note or "").strip() or PACK_QUEUE_MARKER
+        result = queue_url_to_pack_pool(
+            db,
+            url,
+            label=body.label,
+            source_note=note,
+            weight_base=body.weight_base,
+            rarity_focus=body.rarity_focus if body.rarity_focus != 1.0 else None,
+            min_rarity_tier=min_tier,
+            active=body.active,
+        )
+        if not result.get("ok"):
+            raise ValueError(result.get("error") or "pipeline_failed")
+        if body.wire_packs_scheduler and result.get("created"):
+            result["scheduler"] = refresh_aof_packs_scheduler(db)
+        return result
+
     m = LootModifier(
         kind=kind,
         label=_label_from_url(url, body.label),
@@ -263,6 +432,7 @@ async def create_modifiers_from_url_batch(
     fail_count = 0
     simple_pending: list[tuple[int, LootModifierFromUrlBody, LootModifier]] = []
     zip_pending: list[tuple[int, LootModifierFromUrlBody]] = []
+    pack_pending: list[tuple[int, LootModifierFromUrlBody]] = []
 
     for i, item in enumerate(body.items):
         url = (item.url or "").strip()
@@ -272,6 +442,8 @@ async def create_modifiers_from_url_batch(
             continue
         if item.as_zip_pack:
             zip_pending.append((i, item))
+        elif (item.kind or "").strip() == "mega_pack" or item.run_pipeline:
+            pack_pending.append((i, item))
         else:
             simple_pending.append((i, item, _simple_modifier_model(item)))
 
@@ -307,8 +479,30 @@ async def create_modifiers_from_url_batch(
                     "index": i,
                     "url": (item.url or "").strip(),
                     "ok": True,
-                    "modifier_id": d.get("id"),
+                    "modifier_id": d.get("id") or (d.get("modifier") or {}).get("id"),
                     "as_zip_pack": True,
+                }
+            )
+            ok_count += 1
+        except HTTPException as e:
+            detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+            results.append({"index": i, "url": (item.url or "").strip(), "ok": False, "error": detail})
+            fail_count += 1
+        except ValueError as e:
+            results.append({"index": i, "url": (item.url or "").strip(), "ok": False, "error": str(e)})
+            fail_count += 1
+
+    for i, item in pack_pending:
+        try:
+            d = await _create_modifier_from_url_impl(item, db)
+            results.append(
+                {
+                    "index": i,
+                    "url": (item.url or "").strip(),
+                    "ok": True,
+                    "modifier_id": d.get("id") or (d.get("modifier") or {}).get("id"),
+                    "duplicate": bool(d.get("duplicate")),
+                    "pack_pool": True,
                 }
             )
             ok_count += 1
@@ -506,7 +700,7 @@ def loot_referral_status(
 
 @router.post("/creator-submit")
 def loot_creator_submit(body: LootCreatorSubmitBody, db: Session = Depends(get_db)):
-    """OnlyFans profile → active loot modifier (tier 5+). Self-serve for models."""
+    """Creator profile → active loot modifier (tier 5+). Self-serve for models."""
     try:
         return submit_creator_profile(
             db,
@@ -576,18 +770,112 @@ def claim_free_pull(
     rem_before = int(preview.get("free_pulls_remaining_before") or 0)
 
     async def _run():
-        return await send_loot_free_pull_to_chat(
-            db,
-            bot=bot,
-            chat_id=int(telegram_user_id),
-            preview=preview,
-            spoiler_default=spoiler,
-            payment_bot_username=_payment_bot_username(),
-            free_pulls_remaining=max(0, rem_before - 1),
-        )
+        from app.database.session import SessionLocal
 
-    delivery = asyncio.run(_run())
-    preview = commit_free_pull(db, telegram_user_id, preview)
+        worker_db = SessionLocal()
+        try:
+            return await send_loot_free_pull_to_chat(
+                worker_db,
+                bot=bot,
+                chat_id=int(telegram_user_id),
+                preview=preview,
+                spoiler_default=spoiler,
+                payment_bot_username=_payment_bot_username(),
+                free_pulls_remaining=max(0, rem_before - 1),
+            )
+        finally:
+            worker_db.close()
+
+    delivery = _run_loot_async(_run())
+    if int(delivery.get("media_sent") or 0) > 0:
+        preview = commit_free_pull(db, telegram_user_id, preview)
+    else:
+        preview = dict(preview)
+        preview["free_pulls_remaining"] = rem_before
+    return {
+        "ok": True,
+        "sent_to": telegram_user_id,
+        "preview": preview,
+        "delivery": delivery,
+    }
+
+
+@router.get("/vip-daily-pull/status")
+def vip_daily_pull_status(
+    telegram_user_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    uid = int(telegram_user_id)
+    from app.services.subscription_access import is_aof_vip_subscriber
+
+    return {
+        "telegram_user_id": uid,
+        "is_vip_subscriber": is_aof_vip_subscriber(db, uid),
+        "available_today": vip_daily_pull_available(db, uid),
+        "claimed_today": vip_daily_pull_used_today(db, uid),
+    }
+
+
+@router.post("/vip-daily-pull/claim")
+def claim_vip_daily_pull(
+    telegram_user_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    """VIP subscriber daily god roll — high tier, one per UTC day."""
+    preview = build_vip_daily_pull_preview(db, telegram_user_id=telegram_user_id)
+    if not preview.get("ok"):
+        reason = preview.get("reason") or "roll_failed"
+        if reason == "not_vip_subscriber":
+            pay = _payment_bot_username()
+            pay_hint = f"https://t.me/{pay}?start=subscribe" if pay else "payment bot /subscribe"
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "reason": reason,
+                    "message": preview.get("message") or "AOF VIP subscription required.",
+                    "payment_link": pay_hint,
+                },
+            )
+        if reason == "vip_daily_already_claimed":
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "reason": reason,
+                    "message": preview.get("message") or "Daily god roll already claimed today.",
+                },
+            )
+        raise HTTPException(status_code=400, detail=preview.get("reason") or "roll failed")
+
+    token = resolve_bot_token_raw(db)
+    if not token:
+        raise HTTPException(status_code=400, detail="Loot bot token not configured")
+    bot = Bot(
+        token=token,
+        request=HTTPXRequest(connect_timeout=30.0, read_timeout=180.0, write_timeout=180.0),
+    )
+    eff = get_effective_loot_bot_settings(db)
+    spoiler = bool(eff.get("drop_spoiler_default", True))
+
+    async def _run():
+        from app.database.session import SessionLocal
+
+        worker_db = SessionLocal()
+        try:
+            return await send_loot_free_pull_to_chat(
+                worker_db,
+                bot=bot,
+                chat_id=int(telegram_user_id),
+                preview=preview,
+                spoiler_default=spoiler,
+                payment_bot_username=_payment_bot_username(),
+                free_pulls_remaining=None,
+            )
+        finally:
+            worker_db.close()
+
+    delivery = _run_loot_async(_run())
+    if int(delivery.get("media_sent") or 0) > 0:
+        preview = commit_vip_daily_pull(db, telegram_user_id, preview)
     return {
         "ok": True,
         "sent_to": telegram_user_id,
@@ -634,6 +922,26 @@ def seed_loot_room_eligibility(db: Session = Depends(get_db)):
 
     rows = seed_loot_room_pool_eligibility(db)
     return {"ok": True, "count": len(rows), "pools": rows}
+
+
+@router.post("/seed-content-pool-eligibility")
+def seed_content_pool_eligibility(db: Session = Depends(get_db)):
+    """
+    Map live content pools (with approved media) into loot_pool_eligibility so rolls
+    draw from the existing library. Disables empty LOOT ROOM placeholder pools.
+    Safe to call again (upserts).
+    """
+    from app.services.loot_pool_eligibility_seed import seed_content_pool_loot_eligibility
+
+    report = seed_content_pool_loot_eligibility(db)
+    return {"ok": True, **report}
+
+
+@router.get("/tier-coverage")
+def loot_tier_coverage(db: Session = Depends(get_db)):
+    from app.services.loot_pool_eligibility_seed import tier_coverage_report
+
+    return tier_coverage_report(db)
 
 
 class LootPoolEligibilityUpsert(BaseModel):
@@ -692,15 +1000,23 @@ def send_preview_dm(
     spoiler = bool(eff.get("drop_spoiler_default", True))
 
     async def _run():
-        if text_only:
-            text = _preview_caption_text(preview)
-            await bot.send_message(chat_id=target, text=text, parse_mode="HTML", disable_web_page_preview=False)
-            return {"text_only": True}
         return await send_loot_preview_to_chat(
             db, bot=bot, chat_id=target, preview=preview, spoiler_default=spoiler
         )
 
-    delivery = asyncio.run(_run())
+    if text_only:
+
+        async def _text_only():
+            text = _preview_caption_text(preview)
+            await bot.send_message(chat_id=target, text=text, parse_mode="HTML", disable_web_page_preview=False)
+            return {"text_only": True}
+
+        delivery = asyncio.run(_text_only())
+    else:
+        delivery = _run_loot_async(_run())
     if preview.get("ok") and not text_only:
         record_roll(db, target)
+        mod_ids = [int(m["id"]) for m in (preview.get("modifiers") or []) if m.get("id") is not None]
+        if mod_ids:
+            record_modifiers_seen(db, int(target), mod_ids)
     return {"ok": True, "sent_to": target, "preview": preview, "delivery": delivery}

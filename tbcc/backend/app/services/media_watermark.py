@@ -174,11 +174,11 @@ def watermark_opacity() -> float:
 
 
 def watermark_size_ratio() -> float:
-    raw = (os.getenv("TBCC_WATERMARK_SIZE_RATIO") or "0.024").strip()
+    raw = (os.getenv("TBCC_WATERMARK_SIZE_RATIO") or "0.045").strip()
     try:
         return max(0.012, min(0.08, float(raw)))
     except ValueError:
-        return 0.024
+        return 0.045
 
 
 def watermark_margin_px() -> int:

@@ -55,6 +55,10 @@ CONFLICT_ACTIONS: dict[str, dict[str, str]] = {
         "action": "trim_scheduling_workers",
         "action_label": "Trim duplicate Celery",
     },
+    "admin_bot_duplicate": {
+        "action": "stop_admin_bot_duplicates",
+        "action_label": "Stop duplicate admin bots",
+    },
 }
 
 from sqlalchemy import text
@@ -284,6 +288,33 @@ def trim_scheduling_worker_duplicates() -> dict[str, Any]:
         return {"ok": False, "error": str(e)[:300]}
 
 
+def stop_admin_bot_duplicates(*, keep_lowest_pid: bool = True) -> dict[str, Any]:
+    """Kill extra admin_bot processes (py.exe/python.exe pairs deduped). Keeps one worker."""
+    if platform.system() != "Windows":
+        return {"ok": True, "killed": 0, "note": "not_windows"}
+    procs = _win_leaf_workers_matching(r"-m\s+bots\.admin_bot|admin_bot\.py")
+    if len(procs) <= 1:
+        return {"ok": True, "killed": 0, "remaining": len(procs)}
+    ordered = sorted(procs, key=lambda p: int(p.get("pid") or 0))
+    keep = ordered[0 if keep_lowest_pid else -1]
+    keep_pid = int(keep.get("pid") or 0)
+    killed: list[int] = []
+    for p in ordered:
+        pid = int(p.get("pid") or 0)
+        if not pid or pid == keep_pid:
+            continue
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                timeout=30,
+            )
+            killed.append(pid)
+        except Exception as e:
+            logger.warning("stop_admin_bot_duplicates taskkill pid=%s: %s", pid, e)
+    return {"ok": True, "killed": len(killed), "killed_pids": killed, "kept_pid": keep_pid}
+
+
 def _maybe_auto_trim_scheduling_duplicates(sched: dict[str, Any]) -> None:
     """Best-effort singleton trim when health poll sees duplicate Beat/Celery workers (cooldown)."""
     if platform.system() != "Windows":
@@ -343,6 +374,44 @@ def start_docker_infra(services: list[str]) -> dict[str, Any]:
         }
     except FileNotFoundError:
         return {"ok": False, "error": "docker not on PATH"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+def restart_tbcc_stack_service(service_id: str) -> dict[str, Any]:
+    """Force-stop one stack worker and launch a fresh tab (Windows only)."""
+    if platform.system() != "Windows":
+        return {"ok": False, "error": "stack service launch is Windows-only"}
+    sid = (service_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": "no service id"}
+    root = _tbcc_root()
+    ps1 = root / "scripts" / "tbcc-service-control.ps1"
+    if not ps1.is_file():
+        return {"ok": False, "error": f"missing {ps1}"}
+    ps_cmd = (
+        f'. "{ps1}"; '
+        f'$root = "{root}"; '
+        f'$svc = Get-TbccStackServices -TbccRoot $root -FullStack | Where-Object {{ $_.Id -eq "{sid}" }} | Select-Object -First 1; '
+        f'if (-not $svc) {{ exit 2 }}; '
+        f'foreach ($p in @(Get-TbccServiceWorkerProcesses -Service $svc)) {{ try {{ Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop }} catch {{}} }}; '
+        f'Start-TbccStackService -Service $svc -TbccRoot $root -UseErrorHubWrapper -Background -Force | Out-Null'
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            cwd=str(root),
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "service": sid,
+            "stdout": (proc.stdout or "")[-500:],
+            "stderr": (proc.stderr or "")[-500:],
+            "returncode": proc.returncode,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)[:300]}
 
@@ -460,6 +529,10 @@ def remediate_system_issues(codes: list[str] | None = None) -> dict[str, Any]:
     ):
         r = trim_scheduling_worker_duplicates()
         results.append({"code": "trim_scheduling_workers", **r})
+
+    if "admin_bot_duplicate" in want or "stop_admin_bot_duplicates" in want:
+        r = stop_admin_bot_duplicates()
+        results.append({"code": "stop_admin_bot_duplicates", **r})
 
     if (
         "beat_down" in want
@@ -680,13 +753,24 @@ def collect_system_health() -> dict[str, Any]:
             )
         )
 
-    admin_bot = _win_processes_matching("admin_bot\\.py")
-    if admin_bot:
+    admin_bot = _win_leaf_workers_matching(r"-m\s+bots\.admin_bot|admin_bot\.py")
+    if len(admin_bot) > 1:
+        conflicts.append(
+            _conflict(
+                "admin_bot_duplicate",
+                "critical",
+                (
+                    f"admin_bot running ({len(admin_bot)} process(es)) — duplicates add Telethon load "
+                    "and Celery backlog. Not tied to browser tabs; usually duplicate tray/manual starts."
+                ),
+            )
+        )
+    elif admin_bot:
         conflicts.append(
             _conflict(
                 "admin_bot_running",
                 "warning",
-                f"admin_bot running ({len(admin_bot)} process(es))",
+                f"admin_bot running ({len(admin_bot)} process) — optional; stop if not using Storage Hub /erome",
             )
         )
 
@@ -1040,6 +1124,7 @@ _AUTO_REMEDIATE_COOLDOWN_S: dict[str, int] = {
     # enough to clear overdue schedulers within the 5-minute unattended SLO.
     "resume_scheduled_posting": 30,
     "watchdog_pool_purge": 30,
+    "restart_post_scheduler_worker": 120,
     "start_scheduling_stack": 300,
 }
 
@@ -1154,6 +1239,35 @@ def auto_remediate_health_conflicts() -> dict[str, Any]:
 _WATCHDOG_OVERDUE_STREAK = 0
 _WATCHDOG_IMPORT_IDLE_SINCE: datetime | None = None
 _WATCHDOG_LAST_ACTION: dict[str, Any] | None = None
+_WATCHDOG_DRAIN_STUCK: dict[str, Any] | None = None
+
+
+def _watchdog_drain_stuck_seconds() -> int:
+    raw = (os.getenv("TBCC_WATCHDOG_DRAIN_STUCK_S") or "90").strip()
+    try:
+        return max(30, min(600, int(raw)))
+    except ValueError:
+        return 90
+
+
+def _watchdog_drain_consumer_stuck(snap: dict[str, Any]) -> bool:
+    """True when due_queue work is not draining for long enough to restart the scheduler worker."""
+    due_len = int(snap.get("due_len") or 0)
+    sched_len = int(snap.get("scheduler_queue") or 0)
+    if due_len <= 0:
+        return False
+    # Stale tick with no Celery task — ensure_scheduled_drain_running handles this.
+    if sched_len <= 0:
+        return False
+    global _WATCHDOG_DRAIN_STUCK
+    key = (due_len, sched_len)
+    now = datetime.utcnow()
+    prev = _WATCHDOG_DRAIN_STUCK or {}
+    if prev.get("key") == key and prev.get("since"):
+        idle_s = (now - prev["since"]).total_seconds()
+        return idle_s >= float(_watchdog_drain_stuck_seconds())
+    _WATCHDOG_DRAIN_STUCK = {"key": key, "since": now, "due_len": due_len, "sched_len": sched_len}
+    return False
 
 
 def _watchdog_import_idle_dwell_minutes() -> int:
@@ -1167,10 +1281,11 @@ def _watchdog_import_idle_dwell_minutes() -> int:
 
 def reset_scheduler_watchdog_state() -> None:
     """Reset in-memory watchdog state (test hook / manual reset). Cooldowns are file-based."""
-    global _WATCHDOG_OVERDUE_STREAK, _WATCHDOG_IMPORT_IDLE_SINCE, _WATCHDOG_LAST_ACTION
+    global _WATCHDOG_OVERDUE_STREAK, _WATCHDOG_IMPORT_IDLE_SINCE, _WATCHDOG_LAST_ACTION, _WATCHDOG_DRAIN_STUCK
     _WATCHDOG_OVERDUE_STREAK = 0
     _WATCHDOG_IMPORT_IDLE_SINCE = None
     _WATCHDOG_LAST_ACTION = None
+    _WATCHDOG_DRAIN_STUCK = None
 
 
 def _record_watchdog_action(
@@ -1188,13 +1303,15 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
     Closed-loop scheduler recovery. Owns the post-queue lane and import_burst restore.
     Refreshes the cached scheduling scan every tick so /health/scheduling/fast stays cheap.
     """
-    global _WATCHDOG_OVERDUE_STREAK, _WATCHDOG_IMPORT_IDLE_SINCE
+    global _WATCHDOG_OVERDUE_STREAK, _WATCHDOG_IMPORT_IDLE_SINCE, _WATCHDOG_DRAIN_STUCK
 
     from app.services.post_scheduler import (
         _post_queue_length,
         clear_post_scheduling_redis_state,
+        ensure_scheduled_drain_running,
         post_queue_backlog_threshold,
         resume_scheduled_posting,
+        scheduled_drain_snapshot,
         schedulers_stall_summary,
     )
 
@@ -1238,6 +1355,36 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
         backlog_threshold = 5
 
     if enabled:
+        drain_snap = scheduled_drain_snapshot()
+        due_len = int(drain_snap.get("due_len") or 0)
+        if due_len > 0:
+            try:
+                drain_kick = ensure_scheduled_drain_running()
+            except Exception as e:
+                drain_kick = {"ok": False, "error": str(e)[:200]}
+            if drain_kick.get("action") not in (None, "none", "drain_pending"):
+                _record_watchdog_action(
+                    "ensure_scheduled_drain",
+                    f"due_len={due_len} action={drain_kick.get('action')}",
+                    actions,
+                    drain_kick,
+                )
+
+        if due_len > 0 and _watchdog_drain_consumer_stuck(drain_snap):
+            if _auto_remediate_cooldown_ok("restart_post_scheduler_worker"):
+                try:
+                    r = restart_tbcc_stack_service("celery_post_scheduler")
+                except Exception as e:
+                    r = {"ok": False, "error": str(e)[:200]}
+                _mark_auto_remediate_cooldown(["restart_post_scheduler_worker"])
+                _WATCHDOG_DRAIN_STUCK = None
+                _record_watchdog_action(
+                    "restart_post_scheduler_worker",
+                    f"due_len={due_len} scheduler_queue={drain_snap.get('scheduler_queue')}",
+                    actions,
+                    r,
+                )
+
         # Overdue schedulers OR scheduler-lane backlog: purge, clear locks, re-enqueue.
         resume_needed = overdue > 0 or post_len >= backlog_threshold
         if resume_needed and _auto_remediate_cooldown_ok("resume_scheduled_posting"):

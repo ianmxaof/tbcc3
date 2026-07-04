@@ -203,6 +203,63 @@ def _recommendation_score(media, stats: dict) -> float:
     return (source_rate * 0.34) + (tag_rate * 0.32) + (type_rate * 0.20) + (tier_rate * 0.10) + (base * 0.04)
 
 
+def _is_storage_hub_source(source_channel: str | None) -> bool:
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+
+    sc = (source_channel or "").strip()
+    if not sc:
+        return False
+    if sc == STORAGE_HUB_IDENT:
+        return True
+    try:
+        return int(sc) == int(STORAGE_HUB_IDENT)
+    except ValueError:
+        return False
+
+
+async def _download_from_chat(client, chat_ident: str, msg_id: int) -> bytes:
+    """Download bytes from a Storage Hub in-chat message (index-only deposit rows)."""
+    from app.utils.telegram_peer import resolve_telethon_entity
+
+    entity = await resolve_telethon_entity(client, chat_ident)
+    messages = await client.get_messages(entity, ids=int(msg_id))
+    msg = _coerce_single_message(messages)
+    if not msg or not msg.media:
+        raise HTTPException(status_code=404, detail="Media not found in Storage Hub topic")
+    buf = io.BytesIO()
+    await client.download_media(msg, file=buf)
+    out = buf.getvalue()
+    if not out:
+        messages = await client.get_messages(entity, ids=int(msg_id))
+        msg = _coerce_single_message(messages)
+        if not msg or not msg.media:
+            raise HTTPException(status_code=404, detail="Media not found in Storage Hub after refresh")
+        buf = io.BytesIO()
+        await client.download_media(msg, file=buf)
+        out = buf.getvalue()
+    return out
+
+
+async def _download_from_saved(client, msg_id: int) -> bytes:
+    """Download bytes from Saved Messages; BytesIO is more reliable than passing `bytes` type."""
+    messages = await client.get_messages("me", ids=msg_id)
+    msg = _coerce_single_message(messages)
+    if not msg or not msg.media:
+        raise HTTPException(status_code=404, detail="Media not found in Telegram")
+    buf = io.BytesIO()
+    await client.download_media(msg, file=buf)
+    out = buf.getvalue()
+    if not out:
+        messages = await client.get_messages("me", ids=msg.id)
+        msg = _coerce_single_message(messages)
+        if not msg or not msg.media:
+            raise HTTPException(status_code=404, detail="Media not found in Telegram after refresh")
+        buf = io.BytesIO()
+        await client.download_media(msg, file=buf)
+        out = buf.getvalue()
+    return out
+
+
 async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, str]:
     """Local pool file, HTTP(S) direct URL, or download from Telegram Saved Messages."""
     from app.database.session import SessionLocal
@@ -231,32 +288,25 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
 
     from app.services.telegram_admin import run_telegram_io
 
-    async def _download_from_saved(client, msg_id: int):
-        """Download bytes from Saved Messages; BytesIO is more reliable than passing `bytes` type."""
-        messages = await client.get_messages("me", ids=msg_id)
-        msg = _coerce_single_message(messages)
-        if not msg or not msg.media:
-            raise HTTPException(status_code=404, detail="Media not found in Telegram")
-        buf = io.BytesIO()
-        await client.download_media(msg, file=buf)
-        out = buf.getvalue()
-        if not out:
-            # File reference may be stale — refetch message once (Telegram invalidates refs periodically).
-            messages = await client.get_messages("me", ids=msg.id)
-            msg = _coerce_single_message(messages)
-            if not msg or not msg.media:
-                raise HTTPException(status_code=404, detail="Media not found in Telegram after refresh")
-            buf = io.BytesIO()
-            await client.download_media(msg, file=buf)
-            out = buf.getvalue()
-        return out
-
     # Scraped / Telethon-imported rows store the origin as https://t.me/channel — that is HTML, not bytes.
     # The real file is always in Saved Messages at telegram_message_id (same as poster / album pipeline).
     if ctx.telegram_message_id is not None:
 
+        hub_ident = (ctx.source_channel or "").strip()
+        use_hub = _is_storage_hub_source(hub_ident)
+
         async def _download_job(storage):
             client = storage.client
+            if use_hub:
+                try:
+                    return await _download_from_chat(client, hub_ident, int(ctx.telegram_message_id))
+                except FileReferenceExpiredError:
+                    logger.warning(
+                        "File reference expired for hub media id=%s msg=%s; refetching",
+                        ctx.id,
+                        ctx.telegram_message_id,
+                    )
+                    return await _download_from_chat(client, hub_ident, int(ctx.telegram_message_id))
             try:
                 return await _download_from_saved(client, ctx.telegram_message_id)
             except FileReferenceExpiredError:
@@ -302,6 +352,73 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
                 return data, ct
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail="Failed to fetch media URL") from e
+
+    raise HTTPException(status_code=404, detail="No Telegram message id or fetchable URL for this media")
+
+
+async def _fetch_media_bytes_and_type_via_import(ctx: MediaFetchContext) -> tuple[bytes, str]:
+    """Same as _fetch_media_bytes_and_type but uses admin_import.session (Celery enrich / imports)."""
+    from app.services.local_media_storage import LOCAL_TELEGRAM_MESSAGE_ID, local_media_path
+
+    if ctx.telegram_message_id == LOCAL_TELEGRAM_MESSAGE_ID:
+        return await _fetch_media_bytes_and_type(ctx)
+
+    url = str(ctx.source_channel or "").strip()
+    if url.startswith(("http://", "https://")) and looks_like_tbcc_internal_media_url(url):
+        url = ""
+
+    if ctx.telegram_message_id is not None:
+        from app.services.telegram_admin import run_telegram_import_io
+
+        hub_ident = (ctx.source_channel or "").strip()
+        use_hub = _is_storage_hub_source(hub_ident)
+
+        async def _download_job(storage):
+            client = storage.client
+            if use_hub:
+                try:
+                    return await _download_from_chat(client, hub_ident, int(ctx.telegram_message_id))
+                except FileReferenceExpiredError:
+                    logger.warning(
+                        "File reference expired for hub media id=%s msg=%s; refetching (import)",
+                        ctx.id,
+                        ctx.telegram_message_id,
+                    )
+                    return await _download_from_chat(client, hub_ident, int(ctx.telegram_message_id))
+            try:
+                return await _download_from_saved(client, ctx.telegram_message_id)
+            except FileReferenceExpiredError:
+                logger.warning(
+                    "File reference expired for media id=%s msg=%s; refetching (import session)",
+                    ctx.id,
+                    ctx.telegram_message_id,
+                )
+                messages = await client.get_messages("me", ids=ctx.telegram_message_id)
+                msg = _coerce_single_message(messages)
+                if not msg or not msg.media:
+                    raise HTTPException(status_code=404, detail="Media not found in Telegram") from None
+                buf = io.BytesIO()
+                await client.download_media(msg, file=buf)
+                return buf.getvalue()
+
+        try:
+            data = await run_telegram_import_io(_download_job)
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e) or "Telegram not configured") from e
+        except Exception as e:
+            logger.exception("Telegram import-session download failed for media id=%s", ctx.id)
+            raise HTTPException(status_code=502, detail="Telegram download failed: " + str(e)) from e
+
+        if not data:
+            raise HTTPException(status_code=502, detail="Empty download")
+        kind, ext = sniff_media_kind(data)
+        ct = _MIME_FROM_EXT.get(ext, "application/octet-stream")
+        return data, ct
+
+    if url.startswith(("http://", "https://")):
+        return await _fetch_media_bytes_and_type(ctx)
 
     raise HTTPException(status_code=404, detail="No Telegram message id or fetchable URL for this media")
 
@@ -354,6 +471,30 @@ async def _fetch_saved_message_thumbnail_bytes(ctx: MediaFetchContext) -> tuple[
         return None
 
 
+def _gallery_page_limit(requested: int | None = None) -> int:
+    """Per-pool gallery pages — smaller than the main library cap to avoid thumbnail storms."""
+    raw = (os.getenv("TBCC_GALLERY_PAGE_SIZE") or "24").strip()
+    try:
+        ceiling = max(1, min(60, int(raw)))
+    except ValueError:
+        ceiling = 24
+    if requested is not None and requested > 0:
+        return min(requested, ceiling)
+    return ceiling
+
+
+def _media_row_dict(media, *, minimal: bool = False) -> dict:
+    if not minimal:
+        return orm_to_dict(media)
+    return {
+        "id": int(media.id),
+        "media_type": media.media_type,
+        "status": media.status,
+        "pool_id": media.pool_id,
+        "nsfw_tier": media.nsfw_tier,
+    }
+
+
 @router.get("/")
 def list_media(
     db: Session = Depends(get_db),
@@ -364,6 +505,8 @@ def list_media(
     sort: str | None = None,
     target_pool_id: int | None = None,
     limit: int | None = None,
+    before_id: int | None = None,
+    fields: str | None = None,
 ):
     from app.models.media import Media
     from app.models.tbcc_tag import TbccTag, MediaTagLink
@@ -388,19 +531,92 @@ def list_media(
     elif tag and tag.strip():
         needle = f"%{tag.strip().lower()}%"
         q = q.filter(Media.tags.isnot(None)).filter(Media.tags.ilike(needle))
-    items = q.order_by(Media.id.desc()).limit(_media_list_limit(limit)).all()
+    minimal = (fields or "").strip().lower() == "minimal"
+    page_cap = _gallery_page_limit(limit) if minimal else _media_list_limit(limit)
+    if before_id is not None and int(before_id) > 0:
+        q = q.filter(Media.id < int(before_id))
+    items = q.order_by(Media.id.desc()).limit(page_cap).all()
     sort_mode = (sort or "").strip().lower()
     model_pool_id = target_pool_id if target_pool_id is not None else pool_id
     if sort_mode == "recommended" and model_pool_id is not None and items:
         stats = _build_pool_preference_stats(db, int(model_pool_id))
         scored: list[dict] = []
         for m in items:
-            d = orm_to_dict(m)
+            d = _media_row_dict(m, minimal=minimal)
             d["recommendation_score"] = round(_recommendation_score(m, stats), 6)
             scored.append(d)
         scored.sort(key=lambda x: (float(x.get("recommendation_score", 0.0)), int(x.get("id") or 0)), reverse=True)
         return scored
-    return [orm_to_dict(m) for m in items]
+    return [_media_row_dict(m, minimal=minimal) for m in items]
+
+
+@router.get("/pending-summary")
+def pending_media_summary(db: Session = Depends(get_db)):
+    """Pending + in-queue approval counts (global and per pool) for dashboard backlog banners."""
+    from app.models.content_pool import ContentPool
+    from app.models.media import Media
+    from sqlalchemy import case, func
+
+    in_queue_statuses = ("pending", "approved")
+
+    total_pending = (
+        db.query(func.count(Media.id)).filter(Media.status == "pending").scalar() or 0
+    )
+    total_queue = (
+        db.query(func.count(Media.id))
+        .filter(Media.status.in_(in_queue_statuses))
+        .scalar()
+        or 0
+    )
+    rows = (
+        db.query(
+            ContentPool.id,
+            ContentPool.name,
+            func.sum(case((Media.status == "pending", 1), else_=0)).label("pending"),
+            func.count(Media.id).label("queue_total"),
+        )
+        .join(Media, Media.pool_id == ContentPool.id)
+        .filter(Media.status.in_(in_queue_statuses))
+        .group_by(ContentPool.id, ContentPool.name)
+        .order_by(func.sum(case((Media.status == "pending", 1), else_=0)).desc())
+        .all()
+    )
+    # Media rows without a matching pool still count globally above; optional unassigned bucket:
+    unassigned_pending = (
+        db.query(func.count(Media.id))
+        .filter(Media.status == "pending", Media.pool_id.is_(None))
+        .scalar()
+        or 0
+    )
+    unassigned_queue = (
+        db.query(func.count(Media.id))
+        .filter(Media.status.in_(in_queue_statuses), Media.pool_id.is_(None))
+        .scalar()
+        or 0
+    )
+    pools_out = [
+        {
+            "pool_id": int(pid),
+            "pool_name": str(name or ""),
+            "pending": int(pending or 0),
+            "queue_total": int(queue_total or 0),
+        }
+        for pid, name, pending, queue_total in rows
+    ]
+    if unassigned_queue > 0:
+        pools_out.append(
+            {
+                "pool_id": 0,
+                "pool_name": "(no pool)",
+                "pending": int(unassigned_pending),
+                "queue_total": int(unassigned_queue),
+            }
+        )
+    return {
+        "total_pending": int(total_pending),
+        "total_queue": int(total_queue),
+        "pools": pools_out,
+    }
 
 
 @router.get("/{media_id}")
@@ -461,8 +677,26 @@ def _thumbnail_file_response(path) -> FileResponse:
     )
 
 
+@router.post("/thumbnails/warm")
+def warm_media_thumbnails(body: dict = Body(...)):
+    """
+    Queue Celery to download missing previews on the telegram worker (import session).
+    Dashboard grids call this for the visible page — no Telethon on the API process.
+    """
+    from app.services.thumb_cache_service import queue_thumbnail_warm
+
+    raw_ids = body.get("ids") if isinstance(body, dict) else None
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="Expected JSON body { ids: number[] }")
+    return queue_thumbnail_warm(raw_ids)
+
+
 @router.get("/{media_id}/thumbnail")
-async def get_media_thumbnail(media_id: int, refresh: bool = False):
+async def get_media_thumbnail(
+    media_id: int,
+    refresh: bool = False,
+    cache_only: bool = False,
+):
     """
     Grid / preview thumbnail, served from a persistent on-disk cache.
 
@@ -470,7 +704,8 @@ async def get_media_thumbnail(media_id: int, refresh: bool = False):
                  gallery solid while imports / sends / scraping / bulk approve run.
     Negative   → 404 (frontend shows a numeric placeholder); avoids re-hitting Telegram
                  every reload for posterless videos / failed fetches.
-    Cold miss  → download once via the throttled Telegram path, store JPEG, then serve.
+    Cold miss  → by default queues Celery warm (TBCC_THUMBNAIL_API_TELEGRAM=0); optional
+                 inline Telegram fetch when TBCC_THUMBNAIL_API_TELEGRAM=1.
     """
     from app.services.media_cache_storage import (
         cached_thumb_path,
@@ -480,6 +715,7 @@ async def get_media_thumbnail(media_id: int, refresh: bool = False):
         write_thumb_atomic,
     )
     from app.services.telethon_thumb import NO_PREVIEW, fetch_thumbnail_bytes
+    from app.services.thumb_cache_service import api_thumbnail_telegram_enabled, queue_thumbnail_warm
 
     if refresh:
         clear_cached_thumb(media_id)
@@ -487,8 +723,21 @@ async def get_media_thumbnail(media_id: int, refresh: bool = False):
     cached = cached_thumb_path(media_id)
     if cached is not None:
         return _thumbnail_file_response(cached)
+    if cache_only:
+        raise HTTPException(
+            status_code=404,
+            detail="Thumbnail not cached yet (cache_only mode — no Telegram fetch)",
+        )
     if not refresh and negative_marker_fresh(media_id):
         raise HTTPException(status_code=404, detail="No preview available for this media")
+
+    if not api_thumbnail_telegram_enabled():
+        queue_thumbnail_warm([media_id])
+        raise HTTPException(
+            status_code=404,
+            detail="Thumbnail warming — retry shortly",
+            headers={"Retry-After": "3", "X-TBCC-Thumb-Warm": "1"},
+        )
 
     async with _thumb_miss_lock(media_id):
         # Re-check: another request may have populated the cache while we waited.

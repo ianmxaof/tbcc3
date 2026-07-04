@@ -1,0 +1,28 @@
+{
+  "name": "TBCC weekly ship log tick",
+  "description": "Monday 09:00 — draft from git, post Buffer Idea or queue X on milestone. Zero manual /ship-log.",
+  "workflow": {
+    "triggers": [
+      {
+        "cron": {
+          "cron": "0 9 * * 1"
+        }
+      }
+    ],
+    "actions": [],
+    "prompts": [
+      {
+        "prompt": "TBCC automated ship log tick (no user commands).\n\n1. cd tbcc/backend\n2. py -3.13 scripts/run_ship_log_tick.py\n3. If exit non-zero, report stderr only.\n4. Output: action taken (skip | idea | queue), char count, first 120 chars of text.\n\nDo not edit code. Do not commit. Buffer credentials come from tbcc/.env via load_tbcc_dotenv.\n\nMilestone posts use outcome language only — never disclose scheduler internals, queue names, or proprietary architecture."
+      }
+    ],
+    "model": "",
+    "agentOptions": {
+      "skipInstall": false
+    },
+    "memoryEnabled": true,
+    "gitConfig": {
+      "repo": "ianmxaof/tbcc3",
+      "branch": "main"
+    }
+  }
+}

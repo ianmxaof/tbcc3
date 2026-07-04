@@ -347,7 +347,7 @@ async def upload_promo_image(file: UploadFile = File(...)):
 def get_plan(plan_id: int, db: Session = Depends(get_db)):
     p = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == plan_id).first()
     if not p:
-        return {"error": "Not found"}
+        raise HTTPException(status_code=404, detail="Plan not found")
     d = _plan_dict(p)
     _attach_tags_to_plan_dicts(db, [p], [d])
     return d

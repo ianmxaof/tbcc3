@@ -172,6 +172,7 @@ def run_create_from_upload(
     loop_sec: float,
     crf: int,
     static: bool,
+    job_dir: Path | None = None,
 ) -> dict:
     if not ffmpeg_available():
         raise RuntimeError("ffmpeg not on PATH — install ffmpeg and retry")
@@ -187,12 +188,15 @@ def run_create_from_upload(
     if not static and loop_sec > MAX_ANIMATED_LOOP_SEC:
         raise ValueError(f"Animated loop max {MAX_ANIMATED_LOOP_SEC:.0f}s (Telegram custom emoji guideline).")
 
-    job_dir = new_job_dir()
+    job_dir = job_dir.resolve() if job_dir is not None else new_job_dir()
+    job_dir.mkdir(parents=True, exist_ok=True)
+
     pack_dir = job_dir / "pack-out"
     pack_dir.mkdir(parents=True, exist_ok=True)
 
     staged = job_dir / f"upload{suf}"
-    shutil.copy2(uploaded_path, staged)
+    if uploaded_path.resolve() != staged.resolve():
+        shutil.copy2(uploaded_path, staged)
 
     master = prepare_master_video(staged, job_dir, loop_sec=loop_sec, static=static)
     run_pipeline = _import_pipeline()
@@ -219,4 +223,6 @@ def run_create_from_upload(
         "tile_count": len(data.get("tiles", [])),
         "over_soft_limit": over,
         "suggested_short_name": slug_short_name_base(original_filename),
+        "cols": cols,
+        "rows": rows,
     }

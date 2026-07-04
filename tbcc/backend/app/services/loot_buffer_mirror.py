@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 def _loot_overflow_url(eff: dict) -> str:
+    from app.services.aof_social_links import x_linkvertise_enabled, x_outbound_url
+
+    if not x_linkvertise_enabled():
+        direct = x_outbound_url()
+        if direct:
+            return direct
     env = (os.getenv("TBCC_BUFFER_X_OVERFLOW_URL") or "").strip()
     if env:
         return env

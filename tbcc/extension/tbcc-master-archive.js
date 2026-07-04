@@ -13,6 +13,38 @@
   const STORAGE_EXPORT_CHECKPOINT = "tbccMasterArchiveExportCheckpointV1";
   const AUTO_EXPORT_EVERY = 100;
 
+  function classifyUrlHost(url) {
+    try {
+      const u = new URL(url);
+      const host = (u.hostname || "").replace(/^www\./i, "").toLowerCase();
+      const low = String(url || "").toLowerCase();
+      if (host.endsWith("t.me") || host.endsWith("telegram.me")) return "telegram";
+      if (host.includes("erome.com")) return "gallery_erome";
+      if (host.includes("bunkr")) return "gallery_bunkr";
+      if (host === "video.twimg.com" || host === "pbs.twimg.com" || /\.(mp4|webm|mov|m4v)(\?|$)/i.test(low))
+        return "direct_video";
+      if (/linkvertise|link-center|link-to\.net|direct-link|loot-link|sub2unlock|boost\.ink|work\.ink|paster\.so|admaven|up-to-down/i.test(host))
+        return "obfuscated";
+      if (/rentry|pastelink|justpaste|pastebin|paste\.ee|pastefy/i.test(host)) return "paste";
+      if (/mega\.|gofile|mediafire|pixeldrain|terabox|cyberdrop|krakenfiles|workupload|epicload/i.test(host))
+        return "file_host";
+      return "other";
+    } catch (_) {
+      return "other";
+    }
+  }
+
+  const ROUTE_HINTS = {
+    direct_video: "Import queue → AOF content pool",
+    gallery_erome: "Resolve page → file host or loot modifier",
+    gallery_bunkr: "Resolve gallery → loot modifier",
+    file_host: "Mega pipeline → loot modifier",
+    paste: "Unwrap paste → re-classify",
+    obfuscated: "Bypass/LV unwrap",
+    telegram: "Telegram import (not a file URL)",
+    other: "Auto-tag or manual review",
+  };
+
   function normalizeEntry(raw) {
     const kind = raw && raw.kind === "username" ? "username" : "url";
     let value =
@@ -27,7 +59,7 @@
     if (!value) return null;
     if (kind === "username" && !/^[a-zA-Z0-9._-]{2,64}$/.test(value)) return null;
     if (kind === "url" && !/^https?:\/\//i.test(value)) return null;
-    return {
+    const entry = {
       kind,
       value,
       addedAt: Number(raw && raw.addedAt ? raw.addedAt : Date.now()) || Date.now(),
@@ -37,6 +69,11 @@
       description: raw && raw.description ? String(raw.description).slice(0, 400) : "",
       tags: raw && raw.tags ? String(raw.tags).slice(0, 500) : raw && raw.tagsCsv ? String(raw.tagsCsv).slice(0, 500) : "",
     };
+    if (kind === "url") {
+      entry.url_class = raw && raw.url_class ? String(raw.url_class) : classifyUrlHost(value);
+      entry.route_hint = (raw && raw.route_hint) || ROUTE_HINTS[entry.url_class] || ROUTE_HINTS.other;
+    }
+    return entry;
   }
 
   function entryKey(e) {
@@ -195,6 +232,7 @@
             origin: "extension",
           })),
           merge: true,
+          auto_pack_queue: true,
         }),
       }).catch(() => {});
     } catch (_) {}

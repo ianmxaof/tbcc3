@@ -6,9 +6,8 @@ import csv
 import io
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from functools import cmp_to_key
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse, Response
@@ -25,6 +24,13 @@ router = APIRouter(prefix="/archive", tags=["archive"])
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]{2,64}$")
 
 
+@dataclass
+class _UpsertResult:
+    created: bool
+    entry_id: int | None = None
+    try_pack_queue: bool = False
+
+
 def _normalize_kind(raw: str | None) -> str:
     return "username" if (raw or "").strip().lower() in ("username", "user", "handle") else "url"
 
@@ -38,6 +44,26 @@ def _normalize_value(kind: str, raw: str) -> str | None:
     if v.startswith(("http://", "https://")) and not v.startswith(("blob:", "data:")):
         return v[:4096]
     return None
+
+
+def _url_class_and_route(url: str) -> tuple[str, str]:
+    """Machine class + human routing hint for master archive curation."""
+    from app.services.mega_link_extract import classify_url_host
+
+    kind = classify_url_host(url)
+    routes = {
+        "direct_video": "Import queue → AOF content pool (milf, bj, etc.)",
+        "gallery_erome": "Resolve page → file host or loot modifier",
+        "gallery_bunkr": "Resolve gallery → loot modifier or pool import",
+        "file_host": "Mega/file pipeline → loot modifier (LV wrap)",
+        "paste": "Unwrap paste → re-classify inner links",
+        "obfuscated": "Bypass/LV unwrap → re-classify",
+        "sophon": "Sophon folder → mega pipeline",
+        "telegram": "Telegram import / channel scrape (not a direct file URL)",
+        "affiliate": "Skip or manual review",
+        "other": "Auto-tag or manual review",
+    }
+    return kind, routes.get(kind, routes["other"])
 
 
 def _heuristic_url_summary(url: str) -> str:
@@ -88,14 +114,18 @@ def _row_to_dict(row: CaptureArchiveEntry) -> dict[str, Any]:
         "addedAt": int(row.added_at.timestamp() * 1000) if row.added_at else None,
     }
     d["summary"] = _entry_summary(d)
+    if d.get("kind") == "url" and d.get("value"):
+        url_class, route_hint = _url_class_and_route(str(d["value"]))
+        d["url_class"] = url_class
+        d["route_hint"] = route_hint
     return d
 
 
-def _upsert_entry(db: Session, payload: dict[str, Any]) -> bool:
+def _upsert_entry(db: Session, payload: dict[str, Any]) -> _UpsertResult:
     kind = _normalize_kind(payload.get("kind") or payload.get("type"))
     value = _normalize_value(kind, str(payload.get("value") or payload.get("url") or payload.get("username") or ""))
     if not value:
-        return False
+        return _UpsertResult(created=False)
     existing = (
         db.query(CaptureArchiveEntry)
         .filter(CaptureArchiveEntry.kind == kind, CaptureArchiveEntry.value == value)
@@ -122,7 +152,9 @@ def _upsert_entry(db: Session, payload: dict[str, Any]) -> bool:
     status_raw = str(payload.get("status") or "approved").strip().lower()
     status = status_raw if status_raw in ("approved", "pending", "rejected") else "approved"
     submitted_by = str(payload.get("submitted_by") or "")[:32].strip() or None
+    try_pack = kind == "url" and status == "approved"
     if existing:
+        prev_status = str(getattr(existing, "status", None) or "approved").lower()
         existing.added_at = max(existing.added_at or ts, ts)
         if source:
             existing.source = source
@@ -136,22 +168,24 @@ def _upsert_entry(db: Session, payload: dict[str, Any]) -> bool:
             existing.status = status
         if submitted_by and not getattr(existing, "submitted_by", None):
             existing.submitted_by = submitted_by
-        return False
-    db.add(
-        CaptureArchiveEntry(
-            kind=kind,
-            value=value,
-            source=source,
-            ref=ref,
-            note=note,
-            tags=tags,
-            origin=origin,
-            status=status,
-            submitted_by=submitted_by,
-            added_at=ts,
-        )
+        db.flush()
+        became_approved = try_pack and prev_status != "approved" and status == "approved"
+        return _UpsertResult(created=False, entry_id=existing.id, try_pack_queue=became_approved)
+    row = CaptureArchiveEntry(
+        kind=kind,
+        value=value,
+        source=source,
+        ref=ref,
+        note=note,
+        tags=tags,
+        origin=origin,
+        status=status,
+        submitted_by=submitted_by,
+        added_at=ts,
     )
-    return True
+    db.add(row)
+    db.flush()
+    return _UpsertResult(created=True, entry_id=row.id, try_pack_queue=try_pack)
 
 
 _SORT_FIELDS = frozenset({"added_at", "value", "kind", "source", "host", "summary", "tags"})
@@ -490,20 +524,25 @@ def bulk_upsert(body: dict, db: Session = Depends(get_db)):
     entries = body.get("entries") or body.get("items") or []
     merge = body.get("merge", True)
     auto_tag = bool(body.get("auto_tag"))
+    auto_pack = body.get("auto_pack_queue") if "auto_pack_queue" in body else None
+    wire_packs = bool(body.get("wire_packs_scheduler"))
     if not merge:
         db.query(CaptureArchiveEntry).delete()
     added = 0
     added_values: list[str] = []
+    pack_queue_ids: list[int] = []
     for raw in entries:
         if isinstance(raw, str):
             raw = {"kind": "url", "value": raw}
         kind = _normalize_kind(raw.get("kind") or raw.get("type"))
         value = _normalize_value(kind, str(raw.get("value") or raw.get("url") or ""))
-        was_new = _upsert_entry(db, raw)
-        if was_new:
+        upsert = _upsert_entry(db, raw)
+        if upsert.created:
             added += 1
             if auto_tag and value and kind == "url":
                 added_values.append(value)
+        if upsert.try_pack_queue and upsert.entry_id:
+            pack_queue_ids.append(int(upsert.entry_id))
     db.commit()
     enrich_result = None
     if auto_tag and added_values:
@@ -524,10 +563,22 @@ def bulk_upsert(body: dict, db: Session = Depends(get_db)):
                 limit=min(len(added_ids), 24),
                 fast=True,
             )
+    pack_result = None
+    if pack_queue_ids:
+        from app.services.archive_pack_autopilot import bulk_auto_queue_archive_entries
+
+        pack_result = bulk_auto_queue_archive_entries(
+            db,
+            pack_queue_ids,
+            enabled=auto_pack,
+            wire_scheduler=wire_packs or None,
+        )
     total = db.query(func.count(CaptureArchiveEntry.id)).scalar() or 0
     out: dict[str, Any] = {"ok": True, "added": added, "total": total}
     if enrich_result:
         out["auto_tag"] = enrich_result
+    if pack_result:
+        out["pack_pool"] = pack_result
     return out
 
 
@@ -554,7 +605,7 @@ def sync_from_media(
                 "source": "media_library",
                 "origin": "media_library",
             },
-        ):
+        ).created:
             added += 1
     db.commit()
     return {"ok": True, "added": added, "scanned": len(rows)}
@@ -679,6 +730,8 @@ def govern_archive_entry(entry_id: int, body: dict, db: Session = Depends(get_db
         status,
         reviewed_by=str(body.get("reviewed_by") or "")[:32] or None,
         review_note=str(body.get("review_note") or "")[:400] or None,
+        queue_pack_pool=body.get("queue_pack_pool") if "queue_pack_pool" in body else None,
+        wire_packs_scheduler=body.get("wire_packs_scheduler") if "wire_packs_scheduler" in body else None,
     )
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("error") or "not_found")

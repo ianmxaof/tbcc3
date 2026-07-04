@@ -121,7 +121,11 @@ def classify_image_url(image_url: str, *, timeout: float = 45.0) -> NsfwClassify
             r.raise_for_status()
             body = r.json()
     except Exception as e:
-        logger.warning("nsfw classify url failed: %s", e)
+        err = str(e).lower()
+        if "actively refused" in err or "connection refused" in err or "10061" in err:
+            logger.debug("nsfw classify url skipped (service offline): %s", e)
+        else:
+            logger.warning("nsfw classify url failed: %s", e)
         return NsfwClassifyResult("unknown", "", 0.0, False, None)
     preds = _parse_predictions(body)
     res = _tier_from_predictions(preds)

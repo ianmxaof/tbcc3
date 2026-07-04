@@ -6,6 +6,7 @@
 #                            (+ NSFW Detect + Lustpress when .env URLs are localhost and repos exist under services/)
 #                            (Last.fm “listening relay” has no extra exe: TBCC-Beat schedules it, TBCC-Celery post queue runs it)
 #   .\start.ps1 -SkipDocker     — skip Postgres/Redis step (use when Docker DBs already running)
+#   .\start.ps1 -SkipNgrok      — skip ngrok tunnel check (companion webhooks / promo / NOWPayments IPN)
 #   .\start.ps1 -SkipEnrichment — skip NSFW Detection API / Lustpress sidecars
 #   .\start.ps1 -SkipDeps        — skip pip/npm/bun install checks (faster if you know deps are current)
 #   .\start.ps1 -SkipPriorStackStop — skip in-script stop (tbcc-cold-start.ps1 already stopped the prior stack)
@@ -47,6 +48,7 @@ function Get-TbccPythonCmd {
 $tbccPython = Get-TbccPythonCmd
 $fullStack = $args -contains "-Full"
 $skipDocker = $args -contains "-SkipDocker"
+$skipNgrok = $args -contains "-SkipNgrok"
 $skipEnrichment = $args -contains "-SkipEnrichment"
 $skipDeps = $args -contains "-SkipDeps"
 $skipMigrations = $args -contains "-SkipMigrations"
@@ -421,11 +423,24 @@ function Start-TbccCmdWindow {
     [int]$Cols = 100,
     [int]$Lines = 28
   )
-  # mode con sets buffer/size so multiple windows are easier to arrange (classic conhost)
+  $run = $Command
+  if ($useErrorHub) {
+    Import-TbccErrorHubModule
+    $null = Register-TbccServiceLauncher -TbccRoot $tbccDir -ServiceName $Title -Command $Command
+    $run = Get-TbccServiceWrapperCmd -TbccRoot $tbccDir -ServiceName $Title
+  }
+  $runner = Join-Path $tbccDir 'scripts\run-tbcc-service.ps1'
+  if ($useErrorHub -and (Test-Path -LiteralPath $runner)) {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-File', $runner, '-TbccRoot', $tbccDir, '-ServiceName', $Title
+    ) -WindowStyle Normal
+    return
+  }
   $part1 = "mode con: cols=$Cols lines=$Lines"
   $part2 = [string]::Concat('title "', $Title, '"')
-  $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Command)
-  Start-Process -FilePath $env:ComSpec -ArgumentList @("/k", $run) -WindowStyle Normal
+  $runChain = [string]::Concat($part1, ' & ', $part2, ' & ', $run)
+  Start-Process -FilePath $env:ComSpec -ArgumentList @('/c', $runChain) -WindowStyle Normal
 }
 
 function Ensure-DockerDesktopRunning {
@@ -550,6 +565,35 @@ if (-not $skipMigrations) {
   Write-Host '      (Backend startup also CREATE TABLE IF NOT EXISTS promo_affiliate_links on Postgres as a safety net.)' -ForegroundColor DarkGray
 }
 
+$dotEnv = Read-TbccDotEnv -Path (Join-Path $tbccDir ".env")
+if ($skipNgrok) {
+  Write-Host '[0.6] Skipping ngrok tunnel check (-SkipNgrok).' -ForegroundColor DarkYellow
+} else {
+  $ngrokScript = Join-Path $tbccDir "scripts\tbcc-ngrok-tunnel.ps1"
+  if (Test-Path -LiteralPath $ngrokScript) {
+    . $ngrokScript
+    Write-Host '[0.6] Public tunnel (ngrok): webhooks + promo static + NOWPayments IPN...' -ForegroundColor Yellow
+    $ngrokStartCmd = {
+      param([string]$Title, [string]$Command)
+      Start-TbccCmdWindow -Title $Title -Command $Command -Cols $consoleCols -Lines $consoleLines
+    }
+    $ngrokResult = Ensure-TbccNgrokTunnel -TbccRoot $tbccDir -EnvMap $dotEnv -FullStack:$fullStack -StartCmdWindow $ngrokStartCmd
+    foreach ($m in $ngrokResult.messages) {
+      if ($ngrokResult.ok) {
+        Write-Host ('  ' + $m) -ForegroundColor $(if ($ngrokResult.started -or $ngrokResult.updatedEnv) { 'Green' } elseif ($ngrokResult.skipped) { 'DarkGray' } else { 'Gray' })
+      } else {
+        Write-Host ('  ' + $m) -ForegroundColor Red
+      }
+    }
+    if ($ngrokResult.updatedEnv) {
+      $dotEnv = Read-TbccDotEnv -Path (Join-Path $tbccDir ".env")
+    }
+    if (-not $ngrokResult.ok -and -not $ngrokResult.skipped) {
+      Write-Host '  Companion bot / NOWPayments webhooks may fail until ngrok is up. Or run: .\setup-promo-tunnel.ps1' -ForegroundColor Yellow
+    }
+  }
+}
+
 # Clear stale uvicorn reload children before binding :8000 (hands-off; same as dashboard Fix button).
 $cleanupOrphans = Join-Path $tbccDir "scripts\tbcc-cleanup-orphans.ps1"
 if (Test-Path -LiteralPath $cleanupOrphans) {
@@ -563,15 +607,31 @@ $cmdDashboard = 'cd /d "' + $dashboardDir + '" & npm run dev'
 $cmdAofForum = if ($hasAofForum) { 'cd /d "' + $aofForumDir + '" & npm run dev' } else { '' }
 $cmdCelery = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,scrape,subscription,telegram'
 $cmdCeleryPost = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post -n post@%h'
+$cmdCeleryPostScheduler = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post_scheduler -n scheduler@%h'
 $cmdBeat = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app beat -l info'
 $cmdPay = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.payment_bot'
 $cmdSecretary = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.secretary_bot'
+$cmdCompanion = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.companion_bot'
 $cmdLoot = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.loot_bot'
 $cmdLlmChat = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.llm_chat_bot'
 $cmdAlbumComposer = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.album_composer_bot'
 $cmdMacroSearch = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.macro_search_bot'
+$cmdAdminBot = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.admin_bot'
 
-$dotEnv = Read-TbccDotEnv -Path (Join-Path $tbccDir ".env")
+$cmdOpenClaw = $null
+$openClawAutoStart = $false
+if (Get-Command Test-TbccOpenClawAutoStartEnabled -ErrorAction SilentlyContinue) {
+  $openClawAutoStart = (Test-TbccOpenClawAutoStartEnabled -DotEnv $dotEnv) -and (Test-TbccOpenClawCliInstalled)
+  if ($openClawAutoStart) {
+    $cmdOpenClaw = Get-TbccOpenClawGatewayLaunchCmd -TbccRoot $tbccDir
+  }
+}
+$stackProfile = ($dotEnv['TBCC_STACK_PROFILE'] -as [string]).Trim().ToLower()
+$leanStack = $stackProfile -eq 'lean'
+if ($leanStack) {
+  $skipEnrichment = $true
+  Write-Host '[stack] TBCC_STACK_PROFILE=lean — core stack + Album Composer; skipping forum, macro search, admin/companion, enrichment (enable in tray Services).' -ForegroundColor DarkCyan
+}
 $enrichment = @{ Titles = @(); Commands = @(); Notes = @() }
 if (-not $skipEnrichment) {
   $enrichment = Get-TbccEnrichmentSidecars -EnvMap $dotEnv -TbccRoot $tbccDir -PythonCmd $tbccPython
@@ -630,20 +690,37 @@ if ($wtTabs) {
     } else {
       Write-Host '[stop] Skipped (-SkipPriorStackStop; prior stop already done by cold-start launcher).' -ForegroundColor Gray
     }
+    if ($fullStack -and $redisOk -and (Get-Command Clear-TbccSchedulingWorkersBeforeLaunch -ErrorAction SilentlyContinue)) {
+      $cleared = Clear-TbccSchedulingWorkersBeforeLaunch
+      if ($cleared -gt 0) {
+        Write-Host ("[sched] Cleared {0} orphan Beat/Celery/Celery-Post worker(s) before launch." -f $cleared) -ForegroundColor Yellow
+      }
+    }
   }
   $titles = @('TBCC-Backend', 'TBCC-Dashboard')
   $cmds = @($cmdBackend, $cmdDashboard)
-  if ($hasAofForum) {
+  if ($fullStack -and $openClawAutoStart -and $cmdOpenClaw) {
+    $titles = @('TBCC-Backend', 'OpenClaw-Gateway', 'TBCC-Dashboard')
+    $cmds = @($cmdBackend, $cmdOpenClaw, $cmdDashboard)
+    if (-not (Test-TbccOpenClawConfigured)) {
+      Write-Host '[openclaw] CLI found — gateway tab will start (run tbcc\scripts\setup-openclaw-tbcc.ps1 for MCP + skills).' -ForegroundColor DarkCyan
+    }
+  }
+  if ($hasAofForum -and -not $leanStack) {
     $titles += 'AOF-Forum'
     $cmds += $cmdAofForum
   }
   if ($fullStack -and $redisOk) {
-    $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-MacroSearchBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
-    $cmds += $cmdCelery, $cmdCeleryPost, $cmdBeat, $cmdPay, $cmdSecretary, $cmdMacroSearch, $cmdLoot, $cmdAlbumComposer
+    $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Celery-Post-Scheduler', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
+    $cmds += $cmdCelery, $cmdCeleryPost, $cmdCeleryPostScheduler, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot, $cmdAlbumComposer
+    if (-not $leanStack) {
+      $titles += 'TBCC-MacroSearchBot', 'TBCC-CompanionBot', 'TBCC-AdminBot'
+      $cmds += $cmdMacroSearch, $cmdCompanion, $cmdAdminBot
+    }
   } elseif ($fullStack -and -not $redisOk) {
     $titles += 'TBCC-LootBot', 'TBCC-AlbumComposer'
     $cmds += $cmdLoot, $cmdAlbumComposer
-    Write-Host '  (-WtTabs) Redis unavailable — Backend + Dashboard + Loot + Album Composer (no Celery/Beat/Payment/Secretary).' -ForegroundColor DarkYellow
+    Write-Host '  (-WtTabs) Redis unavailable — Backend + Dashboard + Loot (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
   }
   if ($enrichment.Titles.Length -gt 0) {
     $titles += $enrichment.Titles
@@ -658,11 +735,31 @@ if ($wtTabs) {
     $titles = $filtered.Titles
     $cmds = $filtered.Commands
   }
+  if (Get-Command Select-TbccRestartSnapshotServicePairs -ErrorAction SilentlyContinue) {
+    $snapFiltered = Select-TbccRestartSnapshotServicePairs -Titles $titles -Commands $cmds -TbccRoot $tbccDir
+    $titles = $snapFiltered.Titles
+    $cmds = $snapFiltered.Commands
+  }
+  if (Get-Command Remove-TbccStackPairsAlreadyRunning -ErrorAction SilentlyContinue) {
+    $skipRunning = Remove-TbccStackPairsAlreadyRunning -Titles $titles -Commands $cmds -TbccRoot $tbccDir -FullStack:$fullStack
+    $titles = $skipRunning.Titles
+    $cmds = $skipRunning.Commands
+  }
+  if (Get-Command Invoke-TbccPrepareWtTabLaunch -ErrorAction SilentlyContinue) {
+    Invoke-TbccPrepareWtTabLaunch -TbccRoot $tbccDir
+  }
   if ($useErrorHub) {
     Import-TbccErrorHubModule
     $cmds = Wrap-TbccServiceCommandsForErrorHub -Titles $titles -Commands $cmds
+    $null = Register-TbccServiceLauncher -TbccRoot $tbccDir -ServiceName 'TBCC-Errors' -Command (Get-TbccErrorMonitorCmd -TbccRoot $tbccDir)
     $titles = @('TBCC-Errors') + $titles
-    $cmds = @(Get-TbccErrorMonitorCmd -TbccRoot $tbccDir) + $cmds
+    $cmds = @(Get-TbccServiceWrapperCmd -TbccRoot $tbccDir -ServiceName 'TBCC-Errors') + $cmds
+    if ($fullStack) {
+      $swCmd = Get-TbccStackWatchCmd -TbccRoot $tbccDir
+      $null = Register-TbccServiceLauncher -TbccRoot $tbccDir -ServiceName 'TBCC-StackWatch' -Command $swCmd
+      $titles += 'TBCC-StackWatch'
+      $cmds += Get-TbccServiceWrapperCmd -TbccRoot $tbccDir -ServiceName 'TBCC-StackWatch'
+    }
   }
   $wtLaunched = Start-TbccWtTabs -TbccRoot $tbccDir -Titles $titles -Commands $cmds -Cols $consoleCols -Lines $consoleLines -WtWidth $wtWindowWidth -WtHeight $wtWindowHeight -WtHostPid $wtHostPidArg
   if ($wtLaunched -and $closeAfterWtTabs) {
@@ -694,11 +791,19 @@ if (-not $wtLaunched) {
   if ($useErrorHub) {
     Write-Host '[0] Starting TBCC-Errors monitor (new window)...' -ForegroundColor Yellow
     Import-TbccErrorHubModule
-    Start-TbccCmdWindow -Title "TBCC-Errors" -Command (Get-TbccErrorMonitorCmd -TbccRoot $tbccDir) -Cols $consoleCols -Lines $consoleLines
+    Start-TbccServiceWindow -Title "TBCC-Errors" -Command (Get-TbccErrorMonitorCmd -TbccRoot $tbccDir)
   }
   $n = if ($hasAofForum) { 3 } else { 2 }
   Write-Host ('[1/' + $n + '] Starting backend (new window)...') -ForegroundColor Yellow
   Start-TbccServiceWindow -Title "TBCC-Backend" -Command $cmdBackend
+  if ($fullStack -and $openClawAutoStart -and $cmdOpenClaw) {
+    Write-Host '[openclaw] Starting OpenClaw gateway (new window)...' -ForegroundColor Yellow
+    if (-not (Test-TbccOpenClawConfigured)) {
+      Write-Host '  Run tbcc\scripts\setup-openclaw-tbcc.ps1 for MCP + skills.' -ForegroundColor DarkYellow
+    }
+    Start-TbccServiceWindow -Title "OpenClaw-Gateway" -Command $cmdOpenClaw
+    Write-Host '  OpenClaw gateway tab started (default port 18789).' -ForegroundColor Green
+  }
 } else {
   if ($hasAofForum) {
     Write-Host '[1/3+] Started backend, dashboard, AOF Forum in Windows Terminal (tabs).' -ForegroundColor Yellow
@@ -742,12 +847,14 @@ if (-not $wtLaunched) {
   Write-Host '[2/3+] Dashboard tab already running (Windows Terminal).' -ForegroundColor Gray
 }
 
-# 2b. AOF Forum — Next.js front (port 3001); sibling folder ..\aof-forum
-if ($hasAofForum -and -not $wtLaunched) {
+# 2b. AOF Forum — Next.js front (port 3001); sibling folder ..\aof-forum (full stack only)
+if ($hasAofForum -and -not $leanStack -and -not $wtLaunched) {
   Write-Host '[3/3] Starting AOF Forum — Next.js (new window)...' -ForegroundColor Yellow
   Start-TbccServiceWindow -Title "AOF-Forum" -Command $cmdAofForum
 } elseif (-not $hasAofForum) {
   Write-Host '  (No ..\aof-forum\package.json — skipping AOF Forum dev server.)' -ForegroundColor DarkGray
+} elseif ($leanStack) {
+  Write-Host '  [lean] Skipping AOF Forum (use full stack or tray Services to start manually).' -ForegroundColor DarkGray
 }
 
 if ($fullStack) {
@@ -758,25 +865,34 @@ if ($fullStack) {
     Write-Host '[4/8] Starting Celery worker (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-Celery" -Command $cmdCelery
     Start-TbccServiceWindow -Title "TBCC-Celery-Post" -Command $cmdCeleryPost
-    Write-Host "  Celery worker started." -ForegroundColor Green
+    Start-TbccServiceWindow -Title "TBCC-Celery-Post-Scheduler" -Command $cmdCeleryPostScheduler
+    Write-Host "  Celery workers started." -ForegroundColor Green
     Write-Host '[5/8] Starting Celery Beat (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-Beat" -Command $cmdBeat
     Write-Host "  Celery Beat started." -ForegroundColor Green
-    Write-Host '[6/8] Starting payment bot (new window)...' -ForegroundColor Yellow
+    Write-Host '[6/9] Starting payment bot (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-PaymentBot" -Command $cmdPay
     Write-Host "  Payment bot started." -ForegroundColor Green
-    Write-Host '[7/10] Starting secretary bot (FAQ / Business drafts) (new window)...' -ForegroundColor Yellow
+    Write-Host '[8/11] Starting secretary bot (FAQ / admin inbox) (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-SecretaryBot" -Command $cmdSecretary
     Write-Host "  Secretary bot started." -ForegroundColor Green
-    Write-Host '[8/10] Starting macro search bot (new window)...' -ForegroundColor Yellow
-    Start-TbccServiceWindow -Title "TBCC-MacroSearchBot" -Command $cmdMacroSearch
-    Write-Host "  Macro search bot started." -ForegroundColor Green
-    Write-Host '[9/10] Starting loot overseer bot (new window)...' -ForegroundColor Yellow
+    Write-Host '[9/11] Starting loot overseer bot (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-LootBot" -Command $cmdLoot
     Write-Host "  Loot overseer bot started." -ForegroundColor Green
-    Write-Host '[10/10] Starting album composer bot (new window)...' -ForegroundColor Yellow
+    Write-Host '[10/11] Starting album composer bot (remixer) (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-AlbumComposer" -Command $cmdAlbumComposer
     Write-Host "  Album composer bot started." -ForegroundColor Green
+    if (-not $leanStack) {
+      Write-Host '[11/14] Starting companion bot (new window)...' -ForegroundColor Yellow
+      Start-TbccServiceWindow -Title "TBCC-CompanionBot" -Command $cmdCompanion
+      Write-Host "  Companion bot started." -ForegroundColor Green
+      Write-Host '[12/14] Starting admin bot (Storage Hub /erome + /deposit) (new window)...' -ForegroundColor Yellow
+      Start-TbccServiceWindow -Title "TBCC-AdminBot" -Command $cmdAdminBot
+      Write-Host "  Admin bot started." -ForegroundColor Green
+      Write-Host '[13/14] Starting macro search bot (new window)...' -ForegroundColor Yellow
+      Start-TbccServiceWindow -Title "TBCC-MacroSearchBot" -Command $cmdMacroSearch
+      Write-Host "  Macro search bot started." -ForegroundColor Green
+    }
     foreach ($i in 0..($enrichment.Titles.Length - 1)) {
       $t = $enrichment.Titles[$i]
       $c = $enrichment.Commands[$i]

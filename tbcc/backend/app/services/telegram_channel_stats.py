@@ -37,56 +37,62 @@ async def fetch_channel_post_stats(
     from telethon import TelegramClient
     from telethon.tl.functions.messages import GetMessagesViewsRequest
 
+    from app.services.telethon_session_lock import poster_session_redis_lock
+    from app.utils.telethon_session import configure_telethon_sqlite_session, prepare_session_sqlite_file
+
     ident = (channel_identifier or "").strip()
     if not ident:
         return {"ok": False, "error": "empty channel identifier"}
 
     session = _poster_session_name()
-    client = TelegramClient(session, int(os.environ["API_ID"]), os.environ["API_HASH"])
-    await client.connect()
-    if not await client.is_user_authorized():
-        await client.disconnect()
-        return {"ok": False, "error": "Telethon session not authorized"}
+    prepare_session_sqlite_file(session)
+    with poster_session_redis_lock():
+        client = TelegramClient(session, int(os.environ["API_ID"]), os.environ["API_HASH"])
+        await client.connect()
+        configure_telethon_sqlite_session(client)
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return {"ok": False, "error": "Telethon session not authorized"}
 
-    try:
-        entity = await client.get_entity(ident)
-        msgs = await client.get_messages(entity, limit=min(max(limit, 1), 50))
-        ids = [m.id for m in msgs if m and m.id]
-        views_map: dict[int, int] = {}
-        if ids:
-            try:
-                res = await client(
-                    GetMessagesViewsRequest(peer=entity, id=ids, increment=False)
+        try:
+            entity = await client.get_entity(ident)
+            msgs = await client.get_messages(entity, limit=min(max(limit, 1), 50))
+            ids = [m.id for m in msgs if m and m.id]
+            views_map: dict[int, int] = {}
+            if ids:
+                try:
+                    res = await client(
+                        GetMessagesViewsRequest(peer=entity, id=ids, increment=False)
+                    )
+                    for mid, vc in zip(ids, getattr(res, "views", []) or []):
+                        views_map[int(mid)] = int(vc or 0)
+                except Exception as e:
+                    logger.info("GetMessagesViews unavailable for %s: %s", ident, e)
+
+            items: list[dict[str, Any]] = []
+            for m in msgs:
+                if not m or not m.id:
+                    continue
+                items.append(
+                    {
+                        "message_id": int(m.id),
+                        "date": m.date.isoformat() if m.date else None,
+                        "views": views_map.get(int(m.id), getattr(m, "views", None)),
+                        "forwards": getattr(m, "forwards", None),
+                        "text_preview": (m.message or "")[:200] or None,
+                    }
                 )
-                for mid, vc in zip(ids, getattr(res, "views", []) or []):
-                    views_map[int(mid)] = int(vc or 0)
-            except Exception as e:
-                logger.info("GetMessagesViews unavailable for %s: %s", ident, e)
-
-        items: list[dict[str, Any]] = []
-        for m in msgs:
-            if not m or not m.id:
-                continue
-            items.append(
-                {
-                    "message_id": int(m.id),
-                    "date": m.date.isoformat() if m.date else None,
-                    "views": views_map.get(int(m.id), getattr(m, "views", None)),
-                    "forwards": getattr(m, "forwards", None),
-                    "text_preview": (m.message or "")[:200] or None,
-                }
-            )
-        return {
-            "ok": True,
-            "channel": ident,
-            "items": items,
-            "note": "Views require channel stats; private groups may return partial data.",
-        }
-    except Exception as e:
-        logger.warning("fetch_channel_post_stats %s: %s", ident, e)
-        return {"ok": False, "error": str(e)}
-    finally:
-        await client.disconnect()
+            return {
+                "ok": True,
+                "channel": ident,
+                "items": items,
+                "note": "Views require channel stats; private groups may return partial data.",
+            }
+        except Exception as e:
+            logger.warning("fetch_channel_post_stats %s: %s", ident, e)
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.disconnect()
 
 
 def fetch_channel_post_stats_sync(channel_identifier: str, *, limit: int = 20) -> dict[str, Any]:

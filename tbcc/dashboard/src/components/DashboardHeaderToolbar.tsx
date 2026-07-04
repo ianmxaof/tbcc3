@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 
 import { useDashboardGilded } from "../context/DashboardGildedContext";
+import { WatermarkGlobalToggle } from "./WatermarkGlobalToggle";
 
 function GearIcon({ className }: { className?: string }) {
   return (
@@ -46,6 +47,8 @@ export function DashboardHeaderToolbar() {
 
   return (
     <div className="ml-auto flex items-center gap-2 pl-3 border-l border-slate-700/80">
+      <WatermarkGlobalToggle />
+
       {gildedSettings.showHeaderToggle ? (
         <label className="flex items-center gap-2 text-xs text-slate-300 mr-1">
           <input

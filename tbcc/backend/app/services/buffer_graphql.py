@@ -53,6 +53,27 @@ query GetChannels($organizationId: OrganizationId!) {
 }
 """
 
+_LIST_POSTS_QUERY = """
+query ListPosts($input: PostsInput!, $first: Int, $after: String) {
+  posts(input: $input, first: $first, after: $after) {
+    edges {
+      node {
+        id
+        text
+        status
+        dueAt
+        sentAt
+        channelId
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
 _CREATE_IDEA_MUTATION = """
 mutation CreateIdea($input: CreateIdeaInput!) {
   createIdea(input: $input) {
@@ -150,6 +171,58 @@ def get_channels(*, organization_id: str | None = None) -> list[dict[str, Any]]:
     return [c for c in chans if isinstance(c, dict)] if isinstance(chans, list) else []
 
 
+def list_posts(
+    *,
+    organization_id: str | None = None,
+    channel_ids: list[str] | None = None,
+    status: list[str] | None = None,
+    first: int = 50,
+    after: str | None = None,
+    sort_field: str = "dueAt",
+    sort_direction: str = "asc",
+) -> list[dict[str, Any]]:
+    """Return post nodes from Buffer posts query (paginates once via after)."""
+    oid = (organization_id or resolve_organization_id()).strip()
+    filt: dict[str, Any] = {}
+    if channel_ids:
+        filt["channelIds"] = [c.strip() for c in channel_ids if c.strip()]
+    if status:
+        filt["status"] = status
+    inp: dict[str, Any] = {
+        "organizationId": oid,
+        "sort": [{"field": sort_field, "direction": sort_direction}],
+    }
+    if filt:
+        inp["filter"] = filt
+    variables: dict[str, Any] = {"input": inp, "first": max(1, min(100, int(first)))}
+    if after:
+        variables["after"] = after
+    data = graphql_request(_LIST_POSTS_QUERY, variables=variables)
+    posts = (data.get("data") or {}).get("posts") if isinstance(data.get("data"), dict) else None
+    if not isinstance(posts, dict):
+        return []
+    edges = posts.get("edges")
+    out: list[dict[str, Any]] = []
+    if isinstance(edges, list):
+        for edge in edges:
+            if isinstance(edge, dict) and isinstance(edge.get("node"), dict):
+                out.append(edge["node"])
+    page = posts.get("pageInfo")
+    if isinstance(page, dict) and page.get("hasNextPage") and page.get("endCursor"):
+        out.extend(
+            list_posts(
+                organization_id=oid,
+                channel_ids=channel_ids,
+                status=status,
+                first=first,
+                after=str(page["endCursor"]),
+                sort_field=sort_field,
+                sort_direction=sort_direction,
+            )
+        )
+    return out
+
+
 def find_channel_id_by_service(service: str, *, organization_id: str | None = None) -> str | None:
     want = (service or "").strip().lower()
     for ch in get_channels(organization_id=organization_id):
@@ -219,12 +292,16 @@ def create_post(
     mode: BufferShareMode = "addToQueue",
     scheduling_type: str = "automatic",
     image_url: str | None = None,
+    image_urls: list[str] | None = None,
+    assets: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Mutation createPost.
     mode addToQueue — Buffer queue (publishes on Buffer schedule).
     mode shareNow — publish immediately when Telegram mirror runs.
-    image_url must be public https URL Buffer can fetch.
+    image_url / image_urls must be public https URLs Buffer can fetch.
+    Multiple image_urls → Instagram carousel when channel service is instagram.
     """
     cid = (channel_id or "").strip()
     if not cid:
@@ -235,9 +312,19 @@ def create_post(
         "schedulingType": scheduling_type,
         "mode": mode,
     }
-    iu = (image_url or "").strip()
-    if iu.startswith("http"):
-        inp["assets"] = [{"image": {"url": iu}}]
+    if assets:
+        inp["assets"] = assets
+    else:
+        urls: list[str] = []
+        if image_urls:
+            urls.extend(u.strip() for u in image_urls if (u or "").strip().startswith("http"))
+        iu = (image_url or "").strip()
+        if iu.startswith("http") and iu not in urls:
+            urls.insert(0, iu)
+        if urls:
+            inp["assets"] = [{"image": {"url": u}} for u in urls]
+    if metadata:
+        inp["metadata"] = metadata
     data = graphql_request(_CREATE_POST_MUTATION, variables={"input": inp})
     cp = (data.get("data") or {}).get("createPost") if isinstance(data.get("data"), dict) else None
     if isinstance(cp, dict) and cp.get("message"):
@@ -271,3 +358,46 @@ def create_posts_multi_channel(
             logger.exception("Buffer createPost failed channel=%s mode=%s: %s", cid, mode, e)
             results.append({"error": str(e), "channelId": cid})
     return results
+
+
+_GET_POST_ANALYTICS_QUERY = """
+query GetPostAnalytics($id: PostId!) {
+  post(input: { id: $id }) {
+    id
+    status
+    metrics {
+      impressions
+      engagement
+      clicks
+    }
+  }
+}
+"""
+
+
+def fetch_post_impressions(post_id: str) -> int | None:
+    """Best-effort Buffer post impressions/views for delivery ledger sync."""
+    pid = (post_id or "").strip()
+    if not pid:
+        return None
+    if not buffer_api_key():
+        return None
+    try:
+        data = graphql_request(_GET_POST_ANALYTICS_QUERY, variables={"id": pid})
+    except Exception as e:
+        logger.debug("Buffer post analytics query failed: %s", e)
+        return None
+    post = (data.get("data") or {}).get("post") if isinstance(data.get("data"), dict) else None
+    if not isinstance(post, dict):
+        return None
+    metrics = post.get("metrics")
+    if not isinstance(metrics, dict):
+        return None
+    for key in ("impressions", "engagement", "clicks"):
+        val = metrics.get(key)
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                continue
+    return None

@@ -52,7 +52,11 @@ celery.conf.include = [
     "app.workers.k2s_mirror_worker",
     "app.workers.income_poll_worker",
     "app.workers.erome_analytics_worker",
+    "app.workers.market_intel_worker",
     "app.workers.emoji_factory_worker",
+    "app.workers.export_flywheel_worker",
+    "app.workers.buffer_metrics_worker",
+    "app.workers.sent_cache_composer_worker",
 ]
 
 celery.conf.task_routes = {
@@ -72,6 +76,7 @@ celery.conf.task_routes = {
     "app.workers.listening_relay_worker.*": {"queue": "celery"},
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
+    "app.workers.sent_cache_composer_worker.*": {"queue": "telegram"},
     "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
     "app.workers.link_resolver_worker.*": {"queue": "celery"},
     "app.workers.myjd_worker.*": {"queue": "celery"},
@@ -84,6 +89,7 @@ celery.conf.task_routes = {
     "app.workers.content_performance_worker.*": {"queue": "celery"},
     "app.workers.income_poll_worker.*": {"queue": "celery"},
     "app.workers.erome_analytics_worker.*": {"queue": "celery"},
+    "app.workers.market_intel_worker.*": {"queue": "celery"},
     "app.workers.emoji_factory_worker.*": {"queue": "celery"},
 }
 
@@ -223,6 +229,17 @@ if (os.getenv("TBCC_EROME_VIEW_SYNC_ENABLED") or "1").strip().lower() not in (
     celery.conf.beat_schedule["erome-view-sync"] = {
         "task": "app.workers.erome_analytics_worker.sync_erome_views",
         "schedule": crontab(minute=10, hour=_erome_view_sync_crontab_hours()),
+    }
+
+if (os.getenv("TBCC_MARKET_INTEL_PROBE_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    celery.conf.beat_schedule["market-intel-probe"] = {
+        "task": "app.workers.market_intel_worker.run_market_intel_probe",
+        "schedule": crontab(minute=20, hour="*/6"),
     }
 
 

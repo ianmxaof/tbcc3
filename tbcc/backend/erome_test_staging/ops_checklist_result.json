@@ -1,0 +1,96 @@
+[
+  {
+    "step": "goon_deposit",
+    "ok": false,
+    "job_id": "412aaae6-467e-4559-a99d-0a5c05bf05e0",
+    "job": {
+      "job_id": "412aaae6-467e-4559-a99d-0a5c05bf05e0",
+      "job_kind": "channel",
+      "status": "failed",
+      "stage": "failed",
+      "pool_id": 22,
+      "saved_only": false,
+      "byte_size": 0,
+      "media_id": null,
+      "extension_job_id": null,
+      "error": "Channel import timed out after 900s",
+      "created_at": "2026-06-28T11:38:22.130298Z",
+      "updated_at": "2026-06-28T11:53:23.634618Z",
+      "params": {
+        "channel": "-1003812457581",
+        "limit": 5,
+        "media_types": "videos",
+        "message_thread_id": 2934,
+        "source_label": "telegram:-1003812457581#topic:2934",
+        "topic_title": "AOF GOON STORAGE",
+        "apply_watermark": false
+      }
+    },
+    "mirror": {
+      "ok": true,
+      "chained": false,
+      "deferred": true,
+      "limit_per_pair": 5,
+      "mirror_delay_s": 60,
+      "jobs": [
+        {
+          "network_key": "goon",
+          "storage_topic": "AOF GOON STORAGE",
+          "storage_thread_id": 2934,
+          "main_topic": "GOON",
+          "main_thread_id": 182,
+          "task_id": "ae9ddcd7-6401-467c-8cb8-51e298de4f31",
+          "import_task_id": "1418b3ad-a42b-4b2d-aaab-2abc8513e92f",
+          "import_job_id": "412aaae6-467e-4559-a99d-0a5c05bf05e0",
+          "status": "queued"
+        }
+      ]
+    }
+  },
+  {
+    "step": "erome_status",
+    "auth_exists": true,
+    "auth_path": "C:\\Powercore-repo-main\\telegram_bot2\\tbcc\\backend\\.erome-auth.json",
+    "selectors_ready": true,
+    "launch_mode": "session (parallel \u2014 uses .linkvertise-auth.json while Brave is open)",
+    "launch": "session"
+  },
+  {
+    "step": "erome_dry_run",
+    "folder": "C:\\Powercore-repo-main\\telegram_bot2\\tbcc\\backend\\erome_test_staging",
+    "files": [
+      "test_1.png",
+      "test_2.png"
+    ],
+    "ok": true
+  },
+  {
+    "ok": false,
+    "album_url": null,
+    "title": "Vietnamese MILF jiggly big boobs ready for sex",
+    "tags": [
+      "milf",
+      "webcam",
+      "big tits",
+      "latina",
+      "full body"
+    ],
+    "description": null,
+    "file_count": 2,
+    "staging_path": "C:\\Powercore-repo-main\\telegram_bot2\\tbcc\\backend\\erome_test_staging",
+    "error": "Timed out after 600s waiting for 2 file(s) to finish uploading on Erome (last editor count=0)",
+    "step": "erome_execute"
+  },
+  {
+    "step": "seed_ledger",
+    "ok": true,
+    "manifest": "C:\\Powercore-repo-main\\telegram_bot2\\tbcc\\.tbcc-run\\erome-analytics\\20260628T120452_Vietnamese_MILF_jiggly_big_boobs_ready_f.json",
+    "rows": 2
+  },
+  {
+    "ok": true,
+    "updated": 0,
+    "scanned": 3,
+    "step": "view_sync"
+  }
+]

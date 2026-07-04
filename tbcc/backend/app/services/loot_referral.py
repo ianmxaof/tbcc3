@@ -106,7 +106,27 @@ def record_loot_referral(db: Session, *, referred_user_id: int, referrer_user_id
         )
     )
     db.commit()
+    _notify_loot_referral_signup(referrer_user_id=ref_uid, referred_user_id=new_uid)
     return True
+
+
+def _notify_loot_referral_signup(*, referrer_user_id: int, referred_user_id: int) -> None:
+    """Inbox-only — not an instant sale; feeds analytics / /inbox review."""
+    try:
+        from app.services.admin_inbox import push_admin_inbox_event
+
+        push_admin_inbox_event(
+            category="loot",
+            severity="info",
+            title="New loot referral signup",
+            body=(
+                f"Referrer {referrer_user_id} → new user {referred_user_id}"
+            ),
+            meta={"referrer_user_id": referrer_user_id, "referred_user_id": referred_user_id},
+            instant=False,
+        )
+    except Exception:
+        pass
 
 
 def bonus_free_pulls_for(db: Session, telegram_user_id: int) -> int:
@@ -143,4 +163,28 @@ def try_credit_referrer_for_pull(db: Session, referred_user_id: int) -> dict | N
     ref_row.bonus_free_pulls = int(ref_row.bonus_free_pulls or 0) + bonus
     tr.credited = True
     db.commit()
-    return {"referrer_user_id": referrer_uid, "bonus_granted": bonus}
+    result = {"referrer_user_id": referrer_uid, "bonus_granted": bonus, "referred_user_id": int(referred_user_id)}
+    _notify_loot_referral_credit(result)
+    return result
+
+
+def _notify_loot_referral_credit(result: dict) -> None:
+    """Inbox-only — secondary loot signal, not a sale."""
+    try:
+        from app.services.admin_inbox import push_admin_inbox_event
+
+        ref_uid = int(result.get("referrer_user_id") or 0)
+        new_uid = int(result.get("referred_user_id") or 0)
+        bonus = int(result.get("bonus_granted") or 0)
+        push_admin_inbox_event(
+            category="loot",
+            severity="info",
+            title="Loot referral bonus credited",
+            body=(
+                f"Referrer {ref_uid} earned +{bonus} bonus pull(s) (referred {new_uid} used free pull)"
+            ),
+            meta=result,
+            instant=False,
+        )
+    except Exception:
+        pass

@@ -26,10 +26,7 @@ def _max_tokens() -> int:
         return 800
 
 
-def default_system_prompt() -> str:
-    custom = (os.getenv("TBCC_SECRETARY_SYSTEM_PROMPT") or "").strip()
-    if custom:
-        return custom
+def builtin_default_system_prompt() -> str:
     return (
         "You are a concise customer support assistant for an adult content brand (AOF). "
         "Answer FAQs about access, subscriptions, and how to buy. "
@@ -40,10 +37,60 @@ def default_system_prompt() -> str:
     )
 
 
-def openai_configured() -> bool:
-    from app.services.llm_completions import text_llm_configured
+def resolve_system_prompt(db=None) -> tuple[str, str]:
+    """
+    Effective secretary system prompt and source label.
+    Priority: dashboard (DB) → TBCC_SECRETARY_SYSTEM_PROMPT env → built-in default.
+    """
+    from app.database.session import SessionLocal
+    from app.models.secretary_settings import ROW_ID, SecretarySettings
 
-    return text_llm_configured()
+    own_db = db is None
+    if own_db:
+        db = SessionLocal()
+    try:
+        row = db.query(SecretarySettings).filter(SecretarySettings.id == ROW_ID).first()
+        if row and (row.system_prompt or "").strip():
+            return str(row.system_prompt).strip(), "dashboard"
+    finally:
+        if own_db and db is not None:
+            db.close()
+
+    custom = (os.getenv("TBCC_SECRETARY_SYSTEM_PROMPT") or "").strip()
+    if custom:
+        return custom, "env"
+    return builtin_default_system_prompt(), "builtin"
+
+
+def default_system_prompt() -> str:
+    prompt, _source = resolve_system_prompt()
+    return prompt
+
+
+def persist_system_prompt(text: str | None) -> dict:
+    """Save or clear dashboard system prompt override. Returns {ok, source, chars}."""
+    from app.database.session import SessionLocal
+    from app.services.secretary_settings_effective import ensure_settings_row
+
+    cleaned = (text or "").strip() or None
+    if cleaned and len(cleaned) > 12000:
+        raise ValueError("System prompt too long (max 12000 characters)")
+
+    db = SessionLocal()
+    try:
+        row = ensure_settings_row(db)
+        row.system_prompt = cleaned
+        db.commit()
+        prompt, source = resolve_system_prompt(db)
+        return {"ok": True, "source": source, "chars": len(prompt)}
+    finally:
+        db.close()
+
+
+def openai_configured() -> bool:
+    from app.services.secretary_llm_config import secretary_llm_configured
+
+    return secretary_llm_configured()
 
 
 async def fetch_subscription_catalog_snippet(api_base: str, *, max_plans: int = 12) -> str:
@@ -94,11 +141,14 @@ async def complete_secretary_chat(
     """
     messages: OpenAI-style chat messages (role + content), must include at least one user turn.
     """
-    from app.services.llm_completions import complete_chat_text_async, text_llm_configured
+    from app.services.llm_completions import complete_chat_text_async
+    from app.services.secretary_llm_config import resolve_secretary_text_llm_runtime
 
-    if not text_llm_configured():
+    runtime = resolve_secretary_text_llm_runtime()
+    if runtime is None:
         raise RuntimeError(
-            "Set TBCC_OPENROUTER_API_KEY (TBCC_LLM_PROVIDER=openrouter) or TBCC_OPENAI_API_KEY"
+            "Set secretary LLM in dashboard (System → Secretary) or "
+            "TBCC_OPENROUTER_API_KEY / TBCC_OPENAI_API_KEY in tbcc/.env"
         )
 
     if not messages:
@@ -120,4 +170,5 @@ async def complete_secretary_chat(
         max_tokens=_max_tokens(),
         temperature=0.6,
         timeout=90.0,
+        runtime=runtime,
     )

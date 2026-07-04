@@ -83,13 +83,24 @@ def rewrite_caption_llm_sync(original_html: str) -> str:
     url_block = "\n".join(f"- {u}" for u in urls) if urls else "(none — do not invent links)"
 
     system = (
-        "You rewrite social media captions for an adult content brand (AOF). "
-        "Keep the same meaning, announcements, channel names, emojis style, and ALL facts. "
-        "Rephrase sentences so the post feels fresh but is not misleading. "
+        "You rewrite social media captions for an adult NSFW brand (AOF). "
+        "Keep the same meaning, announcements, channel names, and ALL facts. "
         "Output Telegram-compatible HTML only: <b>, <i>, <a href=\"...\">, line breaks. "
         "Every URL from the required list MUST appear verbatim at least once in your output. "
         "Do not add new URLs. Do not wrap the answer in markdown code fences."
     )
+    edgy = (os.environ.get("TBCC_CAPTION_LLM_REWRITE_EDGY") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if edgy:
+        system = (
+            "You rewrite Telegram HTML captions for AOF — adult NSFW network. "
+            "Audience: edgy depraved degenerates who hate corporate tone. "
+            "ONE or TWO short dense sentences max. No bullet lists. Crude, sexual, arrogant tone. "
+            "Keep every URL and <a href> exactly. Telegram HTML only. No markdown fences."
+        )
     user = (
         f"Required URLs (include each exactly as written):\n{url_block}\n\n"
         f"Original caption:\n{src}\n\n"

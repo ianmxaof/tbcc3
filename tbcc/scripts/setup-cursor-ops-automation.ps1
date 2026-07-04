@@ -66,4 +66,4 @@ Write-Host "3. Trigger: Manual, then cron every 15 min"
 Write-Host "4. Repo: $tbccRoot"
 Write-Host "5. Instructions: tbcc\docs\CURSOR_OPS_AUTOMATION.md"
 Write-Host "6. Prefill JSON: tbcc\docs\automations\tbcc-ops-triage-prefill.json"
-Write-Host "`nOpenClaw tick (optional schedule): tbcc\scripts\run-openclaw-ops-tick.ps1" -ForegroundColor DarkGray
+Write-Host "`nFlywheel tick (internal event bus): tbcc\scripts\run-tbcc-flywheel-tick.ps1" -ForegroundColor DarkGray

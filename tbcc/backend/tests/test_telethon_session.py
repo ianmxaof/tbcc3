@@ -33,7 +33,10 @@ def test_disconnect_after_io_off_when_sessions_separate(monkeypatch):
     monkeypatch.delenv("TBCC_POSTER_TELEGRAM_SESSION", raising=False)
     assert import_sessions_share_admin_file() is False
     assert telethon_disconnect_admin_after_io() is False
-    assert telethon_disconnect_import_after_io() is False
+    if os.name == "nt":
+        assert telethon_disconnect_import_after_io() is True
+    else:
+        assert telethon_disconnect_import_after_io() is False
 
 
 def test_disconnect_after_io_env_override(monkeypatch):

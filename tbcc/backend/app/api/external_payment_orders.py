@@ -24,10 +24,12 @@ from app.services.payment_admin_notify import notify_epo_pending
 from app.services.nowpayments_client import (
     can_use_nowpayments_ipn,
     checkout_url_and_hint,
+    create_invoice,
     create_payment,
     nowpayments_configured,
     public_api_base_url,
     stars_to_usd,
+    use_invoice_checkout,
 )
 
 logger = logging.getLogger(__name__)
@@ -187,19 +189,24 @@ def create_external_order(
         if nowpayments_configured() and can_use_nowpayments_ipn():
             base = public_api_base_url()
             ipn_url = f"{base}/webhooks/nowpayments"
-            override_raw = plan.nowpayments_price_usd
-            usd = (
-                float(override_raw)
-                if override_raw is not None and float(override_raw) > 0
-                else stars_to_usd(int(plan.price_stars or 0))
+            from app.services.nowpayments_client import get_min_checkout_usd, plan_nowpayments_usd_quote
+
+            quote = plan_nowpayments_usd_quote(
+                price_stars=int(plan.price_stars or 0),
+                nowpayments_price_usd=(
+                    float(plan.nowpayments_price_usd)
+                    if plan.nowpayments_price_usd is not None and float(plan.nowpayments_price_usd) > 0
+                    else None
+                ),
             )
-            min_checkout_usd = 0.0
-            try:
-                min_checkout_usd = float((os.getenv("TBCC_NOWPAYMENTS_MIN_CHECKOUT_USD") or "0").strip() or "0")
-            except Exception:
-                min_checkout_usd = 0.0
-            min_checkout_usd = max(0.0, min_checkout_usd)
-            effective_usd = max(usd, min_checkout_usd) if min_checkout_usd > 0 else usd
+            override_raw = (
+                float(plan.nowpayments_price_usd)
+                if plan.nowpayments_price_usd is not None and float(plan.nowpayments_price_usd) > 0
+                else None
+            )
+            usd = float(quote["catalog_usd"])
+            effective_usd = float(quote["billed_usd"])
+            min_checkout_usd = get_min_checkout_usd()
             force_currency = None
             if plan.nowpayments_allow_any_currency is False:
                 # Legacy/dirty rows may have fixed-currency mode but blank plan currency.
@@ -218,22 +225,30 @@ def create_external_order(
             }
             try:
                 logger.info(
-                    "NOWPayments create_payment order=%s plan_id=%s allow_any=%s resolved_pay_currency=%s env_default_currency=%s raw_usd=%.2f effective_usd=%.2f",
+                    "NOWPayments checkout order=%s plan_id=%s invoice=%s allow_any=%s resolved_pay_currency=%s raw_usd=%.2f effective_usd=%.2f",
                     code,
                     int(plan.id),
+                    use_invoice_checkout() and not force_currency,
                     bool(plan.nowpayments_allow_any_currency),
                     force_currency,
-                    (os.getenv("TBCC_NOWPAYMENTS_PAY_CURRENCY") or "").strip().lower() or None,
                     usd,
                     effective_usd,
                 )
-                np = create_payment(
-                    order_id=code,
-                    price_usd=effective_usd,
-                    order_description=(plan.name or "TBCC")[:512],
-                    ipn_callback_url=ipn_url,
-                    pay_currency=force_currency,
-                )
+                if use_invoice_checkout() and not force_currency:
+                    np = create_invoice(
+                        order_id=code,
+                        price_usd=effective_usd,
+                        order_description=(plan.name or "TBCC")[:512],
+                        ipn_callback_url=ipn_url,
+                    )
+                else:
+                    np = create_payment(
+                        order_id=code,
+                        price_usd=effective_usd,
+                        order_description=(plan.name or "TBCC")[:512],
+                        ipn_callback_url=ipn_url,
+                        pay_currency=force_currency,
+                    )
                 url, extra = checkout_url_and_hint(np)
                 out["crypto_pay_url"] = url
                 if extra:
@@ -254,6 +269,10 @@ def create_external_order(
             telegram_user_id=int(telegram_user_id),
             plan_name=str(plan.name or "Product"),
             price_stars=int(plan.price_stars or 0),
+            order_id=int(row.id),
+            crypto_auto_checkout=bool(nowpayments_configured() and can_use_nowpayments_ipn()),
+            bot_section=str(getattr(plan, "bot_section", None) or ""),
+            product_type=str(plan.product_type or ""),
         )
         return out
 
@@ -318,3 +337,30 @@ def mark_paid(
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result.get("error"))
     return result
+
+
+@router.post("/{order_id}/cancel")
+def cancel_order(
+    order_id: int,
+    db: Session = Depends(get_db),
+    x_tbcc_internal_key: str | None = Header(None),
+):
+    """Admin rejects / clears a pending external order (no access granted)."""
+    _require_internal(x_tbcc_internal_key)
+
+    order = db.query(ExternalPaymentOrder).filter(ExternalPaymentOrder.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.status == "paid":
+        raise HTTPException(status_code=400, detail="Order is already paid")
+    if order.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Order is not pending (status={order.status})")
+
+    order.status = "cancelled"
+    db.commit()
+    return {
+        "ok": True,
+        "order_id": order.id,
+        "reference_code": order.reference_code,
+        "status": order.status,
+    }

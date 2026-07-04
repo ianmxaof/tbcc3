@@ -12,6 +12,7 @@ _SETTINGS_PATH = _TBCC_ROOT / "data" / "extension-context-menu.json"
 DEFAULT_PAGE_MENU_ITEMS: dict[str, bool] = {
     "save-archive": True,
     "save-archive-all": True,
+    "send-pack-pool": True,
     "save-pool": True,
     "save-saved": True,
     "download-url": True,
@@ -26,6 +27,7 @@ DEFAULT_PAGE_MENU_ITEMS: dict[str, bool] = {
 PAGE_MENU_LABELS: dict[str, str] = {
     "save-archive": "Save URL to master archive",
     "save-archive-all": "Save all video URLs to master archive",
+    "send-pack-pool": "Send to AOF pack / loot pool",
     "save-pool": "Save to pool",
     "save-saved": "Save to Saved Messages",
     "download-url": "Download media",

@@ -2,6 +2,7 @@
   "pageMenu": {
     "save-archive": true,
     "save-archive-all": true,
+    "send-pack-pool": true,
     "save-pool": true,
     "save-saved": true,
     "download-url": true,

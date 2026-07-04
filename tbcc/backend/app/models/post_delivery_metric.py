@@ -30,3 +30,8 @@ class PostDeliveryMetric(Base):
     views_peak = Column(Integer, nullable=True)
     forwards_latest = Column(Integer, nullable=True)
     views_updated_at = Column(DateTime, nullable=True)
+    media_ids_json = Column(Text, nullable=True)
+    network_key = Column(String(32), nullable=True)
+    export_source = Column(String(32), nullable=True)
+    surface = Column(String(32), nullable=True)
+    external_post_id = Column(String(512), nullable=True)

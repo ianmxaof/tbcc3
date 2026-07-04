@@ -8,6 +8,7 @@ import { CaptionTelegramHtmlField } from "../components/CaptionTelegramHtmlField
 import { TbccInsertMenu } from "../components/TbccInsertMenu";
 import { TbccInsertLibraryToolbar } from "../components/TbccInsertLibraryToolbar";
 import { InfoDisclosure } from "../components/InfoDisclosure";
+import { SchedulerGrowthHub } from "../components/SchedulerGrowthHub";
 import { SchedulerBufferPanel } from "../components/SchedulerBufferPanel";
 import { SchedulerComposerCard } from "../components/SchedulerComposerCard";
 import { CaptionLlmRewriteFields } from "../components/CaptionLlmRewriteFields";
@@ -28,6 +29,9 @@ const INTERVAL_OPTIONS = [15, 30, 60, 120, 180, 240, 360, 720];
 /** Fixed-height composer tiles (matches overview band density). */
 const COMPOSER_TILE_H = "h-[8.25rem]";
 const COMPOSER_BODY_H = "h-full space-y-1.5";
+/** Tall post-body column for readable captions (left pane in bottom row). */
+const POST_BODY_PANEL_H = "min-h-[22rem] xl:min-h-[26rem]";
+const POST_BODY_EDITOR_H = "min-h-[14rem] flex-1";
 type ComposerDetailTab = "caption" | "buttons" | "delivery";
 
 type AlbumVariant = { attachment_urls: string[]; media_ids: number[] };
@@ -628,8 +632,8 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
 
         <SchedulerComposerCard
           title="Post body"
-          className="h-[7.75rem]"
-          bodyClassName="h-full"
+          className={`flex flex-col ${POST_BODY_PANEL_H}`}
+          bodyClassName="flex min-h-0 flex-1 flex-col"
           headerRight={
             <button
               type="button"
@@ -676,17 +680,17 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
               <TbccInsertLibraryToolbar />
             </div>
           </div>
-          <div className="h-[4.75rem] overflow-y-auto pr-0.5 text-[11px]">
+          <div className={`${POST_BODY_EDITOR_H} overflow-y-auto pr-0.5 text-[11px]`}>
             {composerDetailTab === "caption" ? (
-              <div className="space-y-1">
+              <div className="flex h-full flex-col space-y-1">
                 {captionVariations.map((line, i) => (
                   <CaptionTelegramHtmlField
                     key={i}
-                    className="w-full min-w-0"
+                    className="w-full min-w-0 flex-1"
                     value={line}
                     onChange={(v) => setCaptionVariations((prev) => prev.map((p, j) => (j === i ? v : p)))}
                     placeholder={i === 0 ? "Caption (Telegram HTML)" : `Variation ${i + 1}`}
-                    rows={1}
+                    rows={captionVariations.length > 1 ? 4 : 10}
                     extraActions={
                       <>
                         <TbccInsertMenu
@@ -721,7 +725,13 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
             ) : null}
             {composerDetailTab === "buttons" ? (
               <div className="space-y-1">
-                {buttons.length === 0 ? (
+                {scheduleCheckoutStars ? (
+                  <p className="text-[10px] text-amber-200/90 mb-1">
+                    Stars checkout on: <strong>Pay ⭐</strong> button is added at send (invoice link) — not stored here.
+                    {scheduleCheckoutButtonLabel.trim() ? ` Label: ${scheduleCheckoutButtonLabel.trim()}` : ""}
+                  </p>
+                ) : null}
+                {buttons.length === 0 && !scheduleCheckoutStars ? (
                   <p className="text-[10px] text-slate-500">
                     <code>https://</code> or <code>tg://</code> on the album row.
                   </p>
@@ -852,38 +862,43 @@ export function Scheduler({ embedded = false }: { embedded?: boolean }) {
       ) : null}
 
       {!calendarScheduleModalOpen ? (
-        <div
-          id="scheduler-add-post"
-          className="tbcc-panel mb-3 max-w-full rounded-md border border-slate-700/80 bg-slate-800/90 p-2"
-        >
-          {renderAddScheduledPostForm()}
+        <div className="mb-4 max-w-full">
+          <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <h2 className="text-sm font-semibold tracking-tight text-slate-100">Scheduled posts</h2>
+            <span className="text-[10px] text-slate-500">
+              Overview · jobs · <strong className="text-slate-400">Post now</strong> → Celery
+            </span>
+            <InfoDisclosure>
+              Captions support Telegram HTML. Recurring jobs fire <strong>Post now</strong> once if never sent.
+            </InfoDisclosure>
+          </div>
+          <ScheduledPostsList
+            weekPosts={
+              scheduledPostsForWeek as Array<{
+                id: number;
+                name?: string | null;
+                scheduled_at?: string | null;
+                interval_minutes?: number | null;
+                channel_name?: string | null;
+                campaign_group_id?: string | null;
+              }>
+            }
+            onWeekDayClick={openScheduleForCalendarDay}
+          />
         </div>
       ) : null}
 
-      <div className="mb-4 max-w-full">
-        <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <h2 className="text-sm font-semibold tracking-tight text-slate-100">Scheduled posts</h2>
-          <span className="text-[10px] text-slate-500">
-            Overview · jobs · <strong className="text-slate-400">Post now</strong> → Celery
-          </span>
-          <InfoDisclosure>
-            Captions support Telegram HTML. Recurring jobs fire <strong>Post now</strong> once if never sent.
-          </InfoDisclosure>
+      {!calendarScheduleModalOpen ? (
+        <div className="mb-3 grid grid-cols-1 gap-3 xl:grid-cols-2 xl:items-stretch">
+          <div
+            id="scheduler-add-post"
+            className="tbcc-panel max-w-full rounded-md border border-slate-700/80 bg-slate-800/90 p-2"
+          >
+            {renderAddScheduledPostForm()}
+          </div>
+          <SchedulerGrowthHub className="mb-0 h-full min-h-[22rem] xl:min-h-[26rem]" />
         </div>
-        <ScheduledPostsList
-          weekPosts={
-            scheduledPostsForWeek as Array<{
-              id: number;
-              name?: string | null;
-              scheduled_at?: string | null;
-              interval_minutes?: number | null;
-              channel_name?: string | null;
-              campaign_group_id?: string | null;
-            }>
-          }
-          onWeekDayClick={openScheduleForCalendarDay}
-        />
-      </div>
+      ) : null}
 
       {calendarScheduleModalOpen ? (
         <div

@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "notes": "Import codegen: py scripts/import_linkvertise_codegen.py recording.py --ad-tasks 2",
+  "publisher_login_url": "https://publisher.linkvertise.com/login",
+  "post_earn_url": "https://linkvertise.com/",
+  "ad_tasks_count": 2,
+  "reuse_create_new_link_loop": true,
+  "selectors": {
+    "post_earn_nav": "",
+    "create_link_button": "",
+    "destination_input": "",
+    "title_input": "",
+    "ad_tasks_option": "",
+    "submit_button": "",
+    "created_link_anchor": "",
+    "created_link_text": "",
+    "create_new_link_button": ""
+  },
+  "locators": {},
+  "slug_url_pattern": "link-target.net/{publisher_id}/",
+  "wait_after_submit_ms": 4000,
+  "link_title_default": "AOF Pack"
+}

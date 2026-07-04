@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.23.1",
+  "version": "1.23.3",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -70,12 +70,22 @@
       "js": ["of-harvest.js"],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": ["*://x.com/*", "*://twitter.com/*"],
+      "js": ["x-profile-harvest.js", "x-profile-overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
       "resources": ["of-api-hook.js", "of-harvest.js"],
       "matches": ["*://onlyfans.com/*", "*://*.onlyfans.com/*"]
+    },
+    {
+      "resources": ["x-profile-harvest.js", "x-profile-overlay.js"],
+      "matches": ["*://x.com/*", "*://twitter.com/*"]
     }
   ]
 }

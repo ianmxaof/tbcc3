@@ -42,9 +42,11 @@ def refine_emotion_on_phase_change(
     """
     if prev_phase == new_phase or new_phase not in PHASES:
         return heuristic, None
-    from app.services.llm_completions import text_llm_configured
+    from app.services.llm_completions import post_chat_completions_sync
+    from app.services.secretary_llm_config import resolve_secretary_text_llm_runtime, secretary_llm_configured
 
-    if not llm_refine_enabled() or not text_llm_configured():
+    runtime = resolve_secretary_text_llm_runtime()
+    if not llm_refine_enabled() or not secretary_llm_configured():
         return heuristic, None
 
     system = (
@@ -79,7 +81,7 @@ def refine_emotion_on_phase_change(
     try:
         from app.services.llm_completions import post_chat_completions_sync
 
-        data = post_chat_completions_sync(payload, timeout=45.0)
+        data = post_chat_completions_sync(payload, timeout=45.0, runtime=runtime)
         text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         parsed = json.loads(text)
         if not isinstance(parsed, dict):

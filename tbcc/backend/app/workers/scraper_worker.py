@@ -46,6 +46,21 @@ def run_scrape(self, source_id: int, trigger: str = "manual", run_id: int | None
         if not source.active:
             mark_run_skipped(db, run, "source_inactive")
             return {"ok": False, "run_id": run.id, "status": "skipped"}
+        ident_raw = (source.identifier or "").strip()
+        try:
+            chat_id = int(ident_raw)
+            from app.models.scrape_channel_profile import ScrapeChannelProfile
+
+            prof = (
+                db.query(ScrapeChannelProfile)
+                .filter(ScrapeChannelProfile.chat_id == chat_id)
+                .first()
+            )
+            if prof and prof.forward_enabled is False:
+                mark_run_skipped(db, run, "forward_restricted", prof.skip_reason)
+                return {"ok": False, "run_id": run.id, "status": "skipped"}
+        except (TypeError, ValueError):
+            pass
         if (source.source_type or "").strip().lower() != "telegram_channel":
             mark_run_skipped(db, run, "source_inactive", "Only telegram_channel sources can be scraped.")
             return {"ok": False, "run_id": run.id, "status": "skipped"}

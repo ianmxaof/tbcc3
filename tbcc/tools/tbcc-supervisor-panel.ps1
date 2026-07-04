@@ -27,9 +27,16 @@ function Get-TbccErrorHubLogPath {
 
 function Open-TbccErrorHubLog {
   param(
-    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [string]$TbccRoot,
     [scriptblock]$OnNotify
   )
+  if ([string]::IsNullOrWhiteSpace($TbccRoot) -and $script:TbccSupUi -and $script:TbccSupUi.TbccRoot) {
+    $TbccRoot = $script:TbccSupUi.TbccRoot
+  }
+  if ([string]::IsNullOrWhiteSpace($TbccRoot)) {
+    if ($OnNotify) { & $OnNotify "TBCC root path is not set." }
+    return
+  }
   $runDir = Join-Path $TbccRoot ".tbcc-run"
   $hubPath = Get-TbccErrorHubLogPath -TbccRoot $TbccRoot
   try {
@@ -106,9 +113,29 @@ function New-TbccSupModule {
   return @{ Outer = $outer; Body = $body; Header = $hdr }
 }
 
+function Get-TbccCpuPercentFast {
+  # Cached perf counter (~0ms/sample) instead of a Win32_Processor WMI query every tick.
+  try {
+    if (-not $script:TbccSupCpuCounter) {
+      $script:TbccSupCpuCounter = New-Object System.Diagnostics.PerformanceCounter(
+        "Processor", "% Processor Time", "_Total", $true)
+      [void]$script:TbccSupCpuCounter.NextValue()  # first sample is always 0 — warm up
+      return $null
+    }
+    return [int][Math]::Round($script:TbccSupCpuCounter.NextValue())
+  } catch {
+    $script:TbccSupCpuCounter = $null
+    try {
+      $p = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+      if ($null -ne $p.LoadPercentage) { return [int]$p.LoadPercentage }
+    } catch {}
+    return $null
+  }
+}
+
 function Get-TbccHostMetrics {
   param($NetPrev = $null)
-  $cpu = $null
+  $cpu = Get-TbccCpuPercentFast
   $ramPct = $null
   $ramUsedGb = $null
   $ramTotalGb = $null
@@ -121,10 +148,6 @@ function Get-TbccHostMetrics {
       $ramTotalGb = [Math]::Round($total / 1GB, 1)
       $ramUsedGb = [Math]::Round(($total - $free) / 1GB, 1)
     }
-  } catch {}
-  try {
-    $p = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-    if ($null -ne $p.LoadPercentage) { $cpu = [int]$p.LoadPercentage }
   } catch {}
   $net = Get-TbccNetworkSample -Prev $NetPrev
   return @{
@@ -177,17 +200,34 @@ function Read-TbccErrorHubTail {
   if (-not (Test-Path -LiteralPath $Path)) { return @() }
   try {
     $buf = New-Object System.Collections.Generic.Queue[object]
-    $sr = New-Object System.IO.StreamReader($Path)
+    $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open,
+      [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
     try {
-      $lineNo = 0
-      while ($null -ne ($line = $sr.ReadLine())) {
-        $lineNo++
-        $obj = [PSCustomObject]@{ LineNumber = $lineNo; Text = $line }
-        $buf.Enqueue($obj)
-        while ($buf.Count -gt $MaxLines) { $null = $buf.Dequeue() }
+      # Big logs: seek to the last 256KB instead of streaming the whole file every
+      # refresh tick (whole-file reads on a multi-MB hub log starved the UI thread).
+      $seekFrom = 0L
+      $lineNumbersExact = $true
+      if ($fs.Length -gt 262144) {
+        $seekFrom = $fs.Length - 262144
+        [void]$fs.Seek($seekFrom, [System.IO.SeekOrigin]::Begin)
+        $lineNumbersExact = $false
+      }
+      $sr = New-Object System.IO.StreamReader($fs)
+      try {
+        $lineNo = 0
+        if (-not $lineNumbersExact) { [void]$sr.ReadLine() }  # drop probable partial line
+        while ($null -ne ($line = $sr.ReadLine())) {
+          $lineNo++
+          $num = if ($lineNumbersExact) { $lineNo } else { 0 }
+          $obj = [PSCustomObject]@{ LineNumber = $num; Text = $line }
+          $buf.Enqueue($obj)
+          while ($buf.Count -gt $MaxLines) { $null = $buf.Dequeue() }
+        }
+      } finally {
+        $sr.Dispose()
       }
     } finally {
-      $sr.Dispose()
+      $fs.Dispose()
     }
     return @($buf.ToArray())
   } catch {
@@ -302,33 +342,64 @@ function Get-TbccSupervisorHealthSnapshot {
   if ([string]::IsNullOrWhiteSpace($TbccRoot)) {
     throw "TbccRoot is required for health snapshot."
   }
+  $now = Get-Date
   $snap = @{
-    Cache      = $null
-    Health     = $null
-    HealthOk   = $false
-    HealthErr  = $null
-    HubLines   = @()
-    OpsAlerts  = @()
-    Host       = Get-TbccHostMetrics -NetPrev $NetPrev
-    UpdatedAt  = Get-Date
+    Cache         = $null
+    Health        = $null
+    HealthOk      = $false
+    HealthErr     = $null
+    HubLines      = @()
+    OpsAlerts     = @()
+    Ports         = $null
+    ProcessAudit  = $null
+    Host          = Get-TbccHostMetrics -NetPrev $NetPrev
+    UpdatedAt     = $now
   }
-  try {
-    $snap.Cache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack
-  } catch {}
+  # Service status cache enumerates Win32_Process (expensive) — refresh at most every 8s
+  # and reuse the cached result between ticks. Service state doesn't change faster anyway.
+  $cacheFresh = $script:TbccSupSvcCache -and $script:TbccSupSvcCacheAt -and `
+    (($now - $script:TbccSupSvcCacheAt).TotalSeconds -lt 8)
+  if (-not $cacheFresh) {
+    try {
+      $script:TbccSupSvcCache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog
+      $script:TbccSupSvcCacheAt = $now
+    } catch {}
+  }
+  $snap.Cache = $script:TbccSupSvcCache
+  # One netstat pass per snapshot, shared with the UI (the ports row previously re-ran
+  # Get-TbccListeningPortSet once per port, spawning 4 extra netstat processes per tick).
+  try { $snap.Ports = Get-TbccListeningPortSet } catch {}
   $hubPath = Join-Path $TbccRoot ".tbcc-run\error-hub.log"
   $snap.HubLines = @(Read-TbccErrorHubTail -Path $hubPath -MaxLines 56)
-  try {
-    $h = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health/system" -Method GET -TimeoutSec 4
-    $snap.Health = $h
-    $snap.HealthOk = $true
-    if ($h.ok -eq $false) { $snap.HealthOk = $false }
-  } catch {
-    $snap.HealthErr = $_.Exception.Message
+  $auditPath = Join-Path $TbccRoot ".tbcc-run\process-audit.json"
+  if (Test-Path -LiteralPath $auditPath) {
+    try {
+      $snap.ProcessAudit = Get-Content -LiteralPath $auditPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {}
   }
-  try {
-    $r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/ops/alerts/poll" -Method GET -TimeoutSec 4
-    if ($r -and $r.alerts) { $snap.OpsAlerts = @($r.alerts) }
-  } catch {}
+  # When the API is down, don't block the UI thread on HTTP timeouts every tick — back off 15s.
+  $inBackoff = $script:TbccSupHealthFailAt -and `
+    (($now - $script:TbccSupHealthFailAt).TotalSeconds -lt 15)
+  if ($inBackoff) {
+    $snap.HealthErr = "API down (retrying shortly)"
+  } else {
+    try {
+      $h = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health/system" -Method GET -TimeoutSec 2
+      $snap.Health = $h
+      $snap.HealthOk = $true
+      if ($h.ok -eq $false) { $snap.HealthOk = $false }
+      $script:TbccSupHealthFailAt = $null
+    } catch {
+      $snap.HealthErr = $_.Exception.Message
+      $script:TbccSupHealthFailAt = $now
+    }
+    if ($snap.HealthOk) {
+      try {
+        $r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/ops/alerts/poll" -Method GET -TimeoutSec 2
+        if ($r -and $r.alerts) { $snap.OpsAlerts = @($r.alerts) }
+      } catch {}
+    }
+  }
   return $snap
 }
 
@@ -503,7 +574,22 @@ function Update-TbccSupPanelUi {
     $ui.LblStackSum.Text = ("{0}/{1} up" -f $cache.EnabledUp, $cache.Enabled)
     $ui.LblStackSum.ForeColor = $fill
     Set-TbccSupMetricBarValue -Bar $ui.BarStack -Pct $pct -Theme $t -FillColor $fill
-    $ui.LblStackSub.Text = ("{0}/{1} on | {2} en | {3}" -f $cache.Up, $cache.Total, $cache.Enabled, (Get-Date -Format "HH:mm:ss"))
+    $auditBit = ""
+    if ($Snap.ProcessAudit) {
+      $pa = $Snap.ProcessAudit
+      $micro = if ($pa.summaryMicro) { [string]$pa.summaryMicro } else { "?" }
+      if ([int]$pa.issueCount -gt 0) {
+        $auditBit = " | aud " + $micro
+      } else {
+        $auditBit = " | aud ok"
+      }
+    }
+    $ui.LblStackSub.Text = ("{0}/{1} on | {2} en{3} | {4}" -f $cache.Up, $cache.Total, $cache.Enabled, $auditBit, (Get-Date -Format "HH:mm:ss"))
+    if ($Snap.ProcessAudit -and [int]$Snap.ProcessAudit.issueCount -gt 0) {
+      $ui.LblStackSub.ForeColor = $t.Warn
+    } else {
+      $ui.LblStackSub.ForeColor = $t.Muted
+    }
   }
 
   $hostSnap = $Snap.Host
@@ -560,7 +646,9 @@ function Update-TbccSupPanelUi {
       @{ L = ":5432"; P = 5432 }
     )) {
     $listening = $false
-    try { $listening = (Get-TbccListeningPortSet).Contains([int]$portPair.P) } catch {}
+    if ($Snap.Ports) {
+      try { $listening = $Snap.Ports.Contains([int]$portPair.P) } catch {}
+    }
     $rows += @{ L = $portPair.L; S = $(if ($listening) { "up" } else { "off" }); D = "" }
   }
   # Reusable Infra row pool. Grow as needed, update in place, hide the surplus — never
@@ -613,7 +701,7 @@ function Update-TbccSupPanelUi {
           $ctrl = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Control) -ne 0
           $u = $script:TbccSupUi
           try {
-            Invoke-TbccServiceMenuAction -ServiceId $tag.Id -TbccRoot $u.TbccRoot -FullStack:([bool]$u.FullStack) `
+            Invoke-TbccServiceMenuAction -ServiceId $tag.Id -TbccRoot $u.TbccRoot -FullStack:([bool]$u.FullStack) -MenuCatalog `
               -ForceRestart:$ctrl -OnNotify $u.OnNotify
             if ($u.OnRefreshCache) { & $u.OnRefreshCache }
           } catch {
@@ -758,7 +846,11 @@ function Show-TbccSupervisorMiniPanel {
   $chkPin.ForeColor = $theme.Muted
   $chkPin.Font = $theme.FontMicro
   $chkPin.BackColor = $theme.HeaderBg
-  [void]$chkPin.Add_CheckedChanged({ $form.TopMost = $chkPin.Checked })
+  [void]$chkPin.Add_CheckedChanged({
+    param($sender, $e)
+    $f = $script:TbccSupMiniForm
+    if ($f -and -not $f.IsDisposed) { $f.TopMost = $sender.Checked }
+  })
   $toolRow.Controls.Add($chkPin)
 
   $btnMin = New-Object System.Windows.Forms.Button
@@ -770,7 +862,10 @@ function Show-TbccSupervisorMiniPanel {
   $btnMin.BackColor = $theme.ModuleBg
   $btnMin.ForeColor = $theme.Text
   $btnMin.Font = $theme.FontMicro
-  [void]$btnMin.Add_Click({ $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized })
+  [void]$btnMin.Add_Click({
+    $f = $script:TbccSupMiniForm
+    if ($f -and -not $f.IsDisposed) { $f.WindowState = [System.Windows.Forms.FormWindowState]::Minimized }
+  })
   $toolRow.Controls.Add($btnMin)
   $btnMin.Add_Resize({ $btnMin.Left = $toolRow.Width - 28 }) | Out-Null
   [void]$toolRow.Add_Resize({ $btnMin.Left = [Math]::Max(4, $toolRow.Width - 28) })
@@ -829,6 +924,27 @@ function Show-TbccSupervisorMiniPanel {
   [void]$root.Controls.Add($foot, 0, 2)
 
   $ctx = New-Object System.Windows.Forms.ContextMenuStrip
+  $miStart = New-Object System.Windows.Forms.ToolStripMenuItem
+  $miStart.Text = "Start stack"
+  [void]$miStart.Add_Click({
+    $ui = $script:TbccSupMiniUi
+    if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
+    try {
+      if (Get-Command Invoke-TbccStackLaunch -ErrorAction SilentlyContinue) {
+        Invoke-TbccStackLaunch -TbccRoot $ui.TbccRoot
+        if ($ui.OnNotify) { & $ui.OnNotify "Stack launch started." }
+      } elseif (Get-Command Invoke-TbccLeanStackLaunch -ErrorAction SilentlyContinue) {
+        Invoke-TbccLeanStackLaunch -TbccRoot $ui.TbccRoot
+        if ($ui.OnNotify) { & $ui.OnNotify "Stack launch started." }
+      } elseif ($ui.OnNotify) {
+        & $ui.OnNotify "Stack launch unavailable (reload supervisor)."
+      }
+    } catch {
+      if ($ui.OnNotify) { & $ui.OnNotify ("Stack launch failed: " + $_.Exception.Message) }
+    }
+  }.GetNewClosure())
+  [void]$ctx.Items.Add($miStart)
+  [void]$ctx.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
   $miExpand = New-Object System.Windows.Forms.ToolStripMenuItem
   $miExpand.Text = "Open full panel"
   [void]$miExpand.Add_Click({
@@ -857,6 +973,7 @@ function Show-TbccSupervisorMiniPanel {
     RamSpark  = $ramSpark.Canvas
     Foot      = $foot
     Theme     = $theme
+    Tip       = $tip
     NetPrev   = $null
     TbccRoot  = $TbccRoot
     FullStack = [bool]$FullStack
@@ -864,11 +981,20 @@ function Show-TbccSupervisorMiniPanel {
     OnRefreshCache = $OnRefreshCache
   }
 
-  $miniTimer = New-Object System.Windows.Forms.Timer
-  $miniTimer.Interval = 2000
+  if ($script:TbccSupMiniRefreshTimer) {
+    try { $script:TbccSupMiniRefreshTimer.Stop(); $script:TbccSupMiniRefreshTimer.Dispose() } catch {}
+    $script:TbccSupMiniRefreshTimer = $null
+  }
+  $script:TbccSupMiniRefreshTimer = New-Object System.Windows.Forms.Timer
+  $miniTimer = $script:TbccSupMiniRefreshTimer
+  $miniTimer.Interval = 4000
+  $script:TbccSupMiniClosing = $false
   [void]$miniTimer.Add_Tick({
+    if ($script:TbccSupMiniClosing) { return }
     if (-not $script:TbccSupMiniForm -or $script:TbccSupMiniForm.IsDisposed) { return }
     if ($script:TbccSupPanelForm -and -not $script:TbccSupPanelForm.IsDisposed) { return }
+    if ($script:TbccSupMiniBusy) { return }
+    $script:TbccSupMiniBusy = $true
     try {
       $ui = $script:TbccSupMiniUi
       if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
@@ -876,35 +1002,68 @@ function Show-TbccSupervisorMiniPanel {
       if ($snap.Host.Net) { $ui.NetPrev = $snap.Host.Net }
       Update-TbccSupMiniUi -Snap $snap
       if ($ui.OnRefreshCache -and $snap.Cache) { & $ui.OnRefreshCache $snap.Cache }
-    } catch {}
+    } catch {} finally {
+      $script:TbccSupMiniBusy = $false
+    }
   })
 
+  $form.Add_FormClosing({
+    $script:TbccSupMiniClosing = $true
+    $t = $script:TbccSupMiniRefreshTimer
+    if ($t) { $t.Stop() }
+  })
   $form.Add_FormClosed({
-    $miniTimer.Stop()
-    $miniTimer.Dispose()
-    $tip.Dispose()
+    $script:TbccSupMiniClosing = $true
+    $t = $script:TbccSupMiniRefreshTimer
+    if ($t) {
+      try { $t.Stop() } catch {}
+      try { $t.Dispose() } catch {}
+      $script:TbccSupMiniRefreshTimer = $null
+    }
+    $ui = $script:TbccSupMiniUi
+    if ($ui -and $ui.Tip) {
+      try { $ui.Tip.Dispose() } catch {}
+    }
     $script:TbccSupMiniForm = $null
     $script:TbccSupMiniUi = $null
   })
 
+  # After the fast first tick, settle into the normal cadence (sender = the timer;
+  # local $miniTimer is out of scope by the time ticks fire).
+  [void]$miniTimer.Add_Tick({
+    param($s, $e)
+    if ($s.Interval -ne 4000) { $s.Interval = 4000 }
+  })
+
   $form.Add_Load({
-    try {
-      $snap = Get-TbccSupervisorHealthSnapshot -TbccRoot $TbccRoot -FullStack:$FullStack -NetPrev $null
-      Update-TbccSupMiniUi -Snap $snap
-      if ($snap.Host.Net) { $script:TbccSupMiniUi.NetPrev = $snap.Host.Net }
-    } catch {}
-    $miniTimer.Start()
+    # Don't snapshot synchronously here — it blocks the first paint. Fire the timer
+    # quickly once instead.
+    $t = $script:TbccSupMiniRefreshTimer
+    if (-not $t) { return }
+    $t.Interval = 250
+    $t.Start()
   })
 
   [void]$form.Add_MouseDoubleClick({
-    Show-TbccSupervisorPanel -TbccRoot $TbccRoot -FullStack:$FullStack -OnNotify $OnNotify -OnRefreshCache $OnRefreshCache
+    $ui = $script:TbccSupMiniUi
+    if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
+    Show-TbccSupervisorPanel -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack) `
+      -OnNotify $ui.OnNotify -OnRefreshCache $ui.OnRefreshCache
   })
 
   $tip.SetToolTip($chkPin, "Always on top")
   $tip.SetToolTip($btnMin, "Minimize to taskbar")
   $tip.SetToolTip($form, "Double-click for full panel | right-click menu")
   $script:TbccSupMiniForm = $form
-  [void]$form.Show()
+  try {
+    [void]$form.Show()
+    $form.BringToFront()
+    $form.Activate()
+  } catch {
+    if ($OnNotify) { & $OnNotify ("Mini panel open failed: " + $_.Exception.Message) }
+    $script:TbccSupMiniForm = $null
+    $script:TbccSupMiniUi = $null
+  }
 }
 
 function Update-TbccSupMiniUi {
@@ -916,7 +1075,13 @@ function Update-TbccSupMiniUi {
   if ($cache) {
     $pct = if ($cache.Enabled -gt 0) { [double]$cache.EnabledUp / [double]$cache.Enabled * 100.0 } else { 0 }
     $fill = if ($pct -ge 95) { $t.Ok } elseif ($pct -ge 70) { $t.Warn } else { $t.Crit }
-    $script:TbccSupMiniUi.LblStack.Text = ("{0}/{1} up" -f $cache.EnabledUp, $cache.Enabled)
+    $auditBit = ""
+    if ($Snap.ProcessAudit -and [int]$Snap.ProcessAudit.issueCount -gt 0) {
+      $micro = if ($Snap.ProcessAudit.summaryMicro) { [string]$Snap.ProcessAudit.summaryMicro } else { "!" }
+      $auditBit = " | " + $micro
+      if ([int]$Snap.ProcessAudit.issueCount -gt 0) { $fill = $t.Warn }
+    }
+    $script:TbccSupMiniUi.LblStack.Text = ("{0}/{1} up{2}" -f $cache.EnabledUp, $cache.Enabled, $auditBit)
     $script:TbccSupMiniUi.LblStack.ForeColor = $fill
   }
   $hostSnap = $Snap.Host
@@ -956,6 +1121,7 @@ function Show-TbccSupervisorPanel {
   }
 
   if ($script:TbccSupPanelForm -and -not $script:TbccSupPanelForm.IsDisposed) {
+    $script:TbccSupPanelClosing = $false
     if ($script:TbccSupUi) { $script:TbccSupUi.TbccRoot = $TbccRoot }
     $script:TbccSupPanelForm.Show()
     $script:TbccSupPanelForm.WindowState = [System.Windows.Forms.FormWindowState]::Normal
@@ -1000,7 +1166,11 @@ function Show-TbccSupervisorPanel {
   $chkTop.ForeColor = $theme.Muted
   $chkTop.Font = $theme.FontMicro
   $chkTop.BackColor = $theme.HeaderBg
-  [void]$chkTop.Add_CheckedChanged({ $form.TopMost = $chkTop.Checked })
+  [void]$chkTop.Add_CheckedChanged({
+    param($sender, $e)
+    $f = $script:TbccSupPanelForm
+    if ($f -and -not $f.IsDisposed) { $f.TopMost = $sender.Checked }
+  })
   $toolStrip.Controls.Add($chkTop)
 
   $btnMini = New-Object System.Windows.Forms.Button
@@ -1013,12 +1183,11 @@ function Show-TbccSupervisorPanel {
   $btnMini.BackColor = $theme.ModuleBg
   $btnMini.ForeColor = $theme.Text
   $btnMini.Font = $theme.FontMicro
-  $rootForMini = $TbccRoot
-  $fsMini = [bool]$FullStack
-  $notifyMini = $OnNotify
-  $refreshMini = $OnRefreshCache
   [void]$btnMini.Add_Click({
-    Show-TbccSupervisorMiniPanel -TbccRoot $rootForMini -FullStack:$fsMini -OnNotify $notifyMini -OnRefreshCache $refreshMini
+    $ui = $script:TbccSupUi
+    if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
+    Show-TbccSupervisorMiniPanel -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack) `
+      -OnNotify $ui.OnNotify -OnRefreshCache $ui.OnRefreshCache
   })
   $toolStrip.Controls.Add($btnMini)
 
@@ -1032,10 +1201,10 @@ function Show-TbccSupervisorPanel {
   $btnHubLog.BackColor = $theme.ModuleBg
   $btnHubLog.ForeColor = $theme.Text
   $btnHubLog.Font = $theme.FontMicro
-  $hubRoot = $TbccRoot
-  $hubNotify = $OnNotify
   [void]$btnHubLog.Add_Click({
-    Open-TbccErrorHubLog -TbccRoot $hubRoot -OnNotify $hubNotify
+    $ui = $script:TbccSupUi
+    if (-not $ui) { return }
+    Open-TbccErrorHubLog -TbccRoot $ui.TbccRoot -OnNotify $ui.OnNotify
   })
   $toolStrip.Controls.Add($btnHubLog)
 
@@ -1154,7 +1323,7 @@ function Show-TbccSupervisorPanel {
     $entry = $sender.Items[$e.Index]
     $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
     $sev = Get-TbccHubLineSeverity -Line $line
-    $t = $script:TbccSupUi.Theme
+    $t = if ($script:TbccSupUi -and $script:TbccSupUi.Theme) { $script:TbccSupUi.Theme } else { Get-TbccSupervisorTheme }
     $fg = switch ($sev) {
       "crit" { $t.Crit }
       "warn" { $t.Warn }
@@ -1173,7 +1342,7 @@ function Show-TbccSupervisorPanel {
     $clip = $line
     if ($clip.Length -gt 140) { $clip = $clip.Substring(0, 137) + "..." }
     $fgBrush = New-Object System.Drawing.SolidBrush($fg)
-    $e.Graphics.DrawString($clip, $sender.Font, $fgBrush, $e.Bounds.Location)
+    $e.Graphics.DrawString($clip, $sender.Font, $fgBrush, [System.Drawing.RectangleF]$e.Bounds)
     $fgBrush.Dispose()
     $e.DrawFocusRectangle()
   })
@@ -1206,7 +1375,7 @@ function Show-TbccSupervisorPanel {
   $statusStrip.SizingGrip = $false
   $statusStrip.Height = 18
   $statusLbl = New-Object System.Windows.Forms.ToolStripStatusLabel
-  $statusLbl.Text = "2s refresh"
+  $statusLbl.Text = "4s refresh"
   $statusLbl.Spring = $true
   $statusLbl.Font = $theme.FontMicro
   $statusLbl.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
@@ -1242,12 +1411,23 @@ function Show-TbccSupervisorPanel {
     SvcCellIdKey = $null
   }
 
-  $refreshTimer = New-Object System.Windows.Forms.Timer
-  $refreshTimer.Interval = 2000
+  if ($script:TbccSupPanelRefreshTimer) {
+    try { $script:TbccSupPanelRefreshTimer.Stop(); $script:TbccSupPanelRefreshTimer.Dispose() } catch {}
+    $script:TbccSupPanelRefreshTimer = $null
+  }
+  $script:TbccSupPanelRefreshTimer = New-Object System.Windows.Forms.Timer
+  $refreshTimer = $script:TbccSupPanelRefreshTimer
+  $refreshTimer.Interval = 4000
+  $script:TbccSupPanelClosing = $false
   [void]$refreshTimer.Add_Tick({
+    if ($script:TbccSupPanelClosing) { return }
     if (-not $script:TbccSupPanelForm -or $script:TbccSupPanelForm.IsDisposed) { return }
     $ui = $script:TbccSupUi
     if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
+    # Re-entrancy guard: a slow snapshot (WMI, netstat, HTTP) must never stack a second
+    # refresh on top of itself — that starved the message pump and pegged the CPU.
+    if ($script:TbccSupPanelBusy) { return }
+    $script:TbccSupPanelBusy = $true
     try {
       $snap = Get-TbccSupervisorHealthSnapshot -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack) -NetPrev $ui.NetPrev
       Update-TbccSupPanelUi -Snap $snap
@@ -1258,36 +1438,88 @@ function Show-TbccSupervisorPanel {
       if ($ui.StatusLbl) {
         $ui.StatusLbl.Text = ("Err: " + $_.Exception.Message)
       }
+    } finally {
+      $script:TbccSupPanelBusy = $false
     }
   })
 
+  $form.Add_FormClosing({
+    $script:TbccSupPanelClosing = $true
+    $t = $script:TbccSupPanelRefreshTimer
+    if ($t) { $t.Stop() }
+  })
   $form.Add_FormClosed({
-    $refreshTimer.Stop()
-    $refreshTimer.Dispose()
-    $tip.Dispose()
+    $script:TbccSupPanelClosing = $true
+    $t = $script:TbccSupPanelRefreshTimer
+    if ($t) {
+      try { $t.Stop() } catch {}
+      try { $t.Dispose() } catch {}
+      $script:TbccSupPanelRefreshTimer = $null
+    }
+    $ui = $script:TbccSupUi
+    if ($ui -and $ui.Tip) {
+      try { $ui.Tip.Dispose() } catch {}
+    }
     $script:TbccSupPanelForm = $null
     $script:TbccSupUi = $null
   })
 
+  [void]$refreshTimer.Add_Tick({
+    param($s, $e)
+    if ($s.Interval -ne 4000) { $s.Interval = 4000 }
+  })
+
   $form.Add_Load({
-    try {
-      $snap = Get-TbccSupervisorHealthSnapshot -TbccRoot $TbccRoot -FullStack:$FullStack -NetPrev $null
-      Update-TbccSupPanelUi -Snap $snap
-    } catch {
-      $statusLbl.Text = ("Err: " + $_.Exception.Message)
-    }
-    $refreshTimer.Start()
+    # Don't snapshot synchronously here — with the API down this blocked the first
+    # paint for seconds and the panel appeared as a glitched, unpainted window.
+    # The fast first tick populates the UI right after the form is visible.
+    $t = $script:TbccSupPanelRefreshTimer
+    if (-not $t) { return }
+    $t.Interval = 250
+    $t.Start()
   })
 
   $tip.SetToolTip($chkTop, "Always on top")
   $tip.SetToolTip($btnMini, "Open compact always-on-top monitor")
   $tip.SetToolTip($btnHubLog, "Open error-hub.log in Notepad")
   $tip.SetToolTip($barStackObj.Row, "Enabled services that are up")
+  $tip.SetToolTip($lblStackSub, "StackWatch process audit (from .tbcc-run\process-audit.json, ~60s refresh)")
   $tip.SetToolTip($modHost.Outer, "CPU/RAM bars and sparkline history")
   $tip.SetToolTip($modSvc.Outer, "Click toggle | Ctrl+restart")
   $tip.SetToolTip($modAlert.Outer, "Conflicts and ops alerts")
   $tip.SetToolTip($hubList, "Double-click line to jump in Notepad")
 
+  $panelCtx = New-Object System.Windows.Forms.ContextMenuStrip
+  $miPanelStart = New-Object System.Windows.Forms.ToolStripMenuItem
+  $miPanelStart.Text = "Start stack"
+  [void]$miPanelStart.Add_Click({
+    $ui = $script:TbccSupUi
+    if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
+    try {
+      if (Get-Command Invoke-TbccStackLaunch -ErrorAction SilentlyContinue) {
+        Invoke-TbccStackLaunch -TbccRoot $ui.TbccRoot
+        if ($ui.OnNotify) { & $ui.OnNotify "Stack launch started." }
+      } elseif (Get-Command Invoke-TbccLeanStackLaunch -ErrorAction SilentlyContinue) {
+        Invoke-TbccLeanStackLaunch -TbccRoot $ui.TbccRoot
+        if ($ui.OnNotify) { & $ui.OnNotify "Stack launch started." }
+      } elseif ($ui.OnNotify) {
+        & $ui.OnNotify "Stack launch unavailable (reload supervisor)."
+      }
+    } catch {
+      if ($ui.OnNotify) { & $ui.OnNotify ("Stack launch failed: " + $_.Exception.Message) }
+    }
+  }.GetNewClosure())
+  [void]$panelCtx.Items.Add($miPanelStart)
+  $form.ContextMenuStrip = $panelCtx
+
   $script:TbccSupPanelForm = $form
-  [void]$form.Show()
+  try {
+    [void]$form.Show()
+    $form.BringToFront()
+    $form.Activate()
+  } catch {
+    if ($OnNotify) { & $OnNotify ("Panel open failed: " + $_.Exception.Message) }
+    $script:TbccSupPanelForm = $null
+    $script:TbccSupUi = $null
+  }
 }

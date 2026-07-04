@@ -102,7 +102,8 @@ def approval_required() -> bool:
     )
 
 
-def openclaw_auto_tick() -> bool:
+def flywheel_auto_tick() -> bool:
+    """In-backend automatic flywheel tick (off by default). Not the OpenClaw gateway."""
     raw = (os.getenv("TBCC_FLYWHEEL_AUTO_TICK") or os.getenv("TBCC_OPENCLAW_AUTO_TICK") or "0").strip()
     return raw.lower() in (
         "1",
@@ -112,8 +113,9 @@ def openclaw_auto_tick() -> bool:
     )
 
 
-def flywheel_auto_tick() -> bool:
-    return openclaw_auto_tick()
+def openclaw_auto_tick() -> bool:
+    """Deprecated alias — internal flywheel auto-tick, not github.com/openclaw/openclaw."""
+    return flywheel_auto_tick()
 
 
 def _redis_client():
@@ -412,7 +414,7 @@ def _remove_pending(action_id: str) -> None:
 
 
 def tick_flywheel(*, limit: int = 1) -> dict[str, Any]:
-    """OpenClaw / cron entry: route newest unhandled critical ops events."""
+    """Flywheel / cron entry: route newest unhandled critical ops events."""
     if not flywheel_enabled():
         return {"ok": True, "enabled": False, "processed": []}
 
@@ -439,7 +441,7 @@ def tick_flywheel(*, limit: int = 1) -> dict[str, Any]:
 
 
 def build_approval_bundle(*, max_items: int = 10) -> dict[str, Any]:
-    """Structured pending queue for external operators (OpenClaw MCP, scripts)."""
+    """Structured pending queue for external operators (OpenClaw MCP agent, scripts)."""
     pending = list_pending()[: max(1, max_items)]
     lines: list[str] = []
     for i, action in enumerate(pending, 1):
@@ -468,7 +470,8 @@ def flywheel_status() -> dict[str, Any]:
     return {
         "enabled": flywheel_enabled(),
         "approval": approval_required(),
-        "openclaw_auto_tick": openclaw_auto_tick(),
+        "flywheel_auto_tick": flywheel_auto_tick(),
+        "openclaw_auto_tick": flywheel_auto_tick(),  # deprecated alias
         "registry_codes": sorted(SKILL_REGISTRY.keys()),
         "pending_count": len(list_pending()),
         "pending": list_pending()[:10],

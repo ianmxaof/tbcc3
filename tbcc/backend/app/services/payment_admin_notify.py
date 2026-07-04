@@ -1,14 +1,22 @@
-"""Instant admin alerts for checkout intent (pending EPO) and completed sales (any payment path)."""
+"""
+Instant admin alerts for checkout intent (pending EPO) and completed sales (any payment path).
+
+Notification policy (see also admin_inbox.py):
+- **Instant Telegram DM (important):** completed sales (Stars, crypto IPN, manual mark-paid), pending
+  manual wallet checkout, ops critical/important (errors, bottlenecks, conflicts).
+- **Inbox only (analytics / secondary):** loot referral signups, growth attribution, non-urgent loot info.
+
+Instant DMs use TBCC_SECRETARY_BOT_TOKEN + ADMIN_TELEGRAM_ID via HTTP — the secretary_bot *process*
+does not need to be running for sale/error pings (only for /inbox digests and inline callbacks).
+"""
 
 from __future__ import annotations
 
-import html
 import logging
 import os
 from typing import Any
 
-import httpx
-
+from app.services.admin_inbox import push_admin_inbox_event
 from app.services.outbound_webhook import notify_outbound_webhook
 
 logger = logging.getLogger(__name__)
@@ -19,46 +27,14 @@ def _notify_disabled() -> bool:
     return v in ("0", "false", "no", "off")
 
 
-def _admin_telegram_id() -> int | None:
-    raw = (os.getenv("ADMIN_TELEGRAM_ID") or "").strip()
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
-
-
-def _bot_token() -> str:
-    return (
-        (os.getenv("TBCC_SALES_NOTIFY_BOT_TOKEN") or "").strip()
-        or (os.getenv("BOT_TOKEN") or "").strip()
+def sales_instant_enabled() -> bool:
+    """Completed sales ping Telegram instantly (default on)."""
+    return (os.getenv("TBCC_INBOX_INSTANT_SALES") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
     )
-
-
-def _telegram_send_html(text: str) -> None:
-    if _notify_disabled():
-        return
-    chat_id = _admin_telegram_id()
-    token = _bot_token()
-    if not chat_id or not token:
-        return
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            r = client.post(
-                url,
-                json={
-                    "chat_id": chat_id,
-                    "text": text[:4096],
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                },
-            )
-            if r.status_code >= 400:
-                logger.warning("payment notify Telegram HTTP %s: %s", r.status_code, (r.text or "")[:300])
-    except Exception as e:
-        logger.warning("payment notify Telegram failed: %s", e)
 
 
 def _webhook(event: str, payload: dict[str, Any]) -> None:
@@ -68,35 +44,105 @@ def _webhook(event: str, payload: dict[str, Any]) -> None:
     notify_outbound_webhook(hook, {"event": event, **payload})
 
 
+def classify_sale_kind(
+    *,
+    product_type: str | None,
+    bot_section: str | None = None,
+    plan_name: str | None = None,
+) -> str:
+    """loot_key | pack | subscription"""
+    ptype = (product_type or "").strip().lower()
+    section = (bot_section or "").strip().lower()
+    name = (plan_name or "").lower()
+    if ptype == "bundle":
+        return "pack"
+    if section == "loot" or "loot room" in name or "24h" in name:
+        return "loot_key"
+    if section == "packs" or "pack" in name:
+        return "pack"
+    return "subscription"
+
+
+def _payment_method_label(payment_method: str | None) -> str:
+    pm = (payment_method or "").strip().lower()
+    if pm in ("stars", "telegram_stars"):
+        return "Telegram Stars"
+    if pm in ("nowpayments", "crypto", "webhook"):
+        return "Crypto (NOWPayments)"
+    if pm == "manual":
+        return "Manual wallet"
+    if pm:
+        return pm
+    return "unknown"
+
+
+def _sale_title(*, sale_kind: str, payment_method: str | None) -> str:
+    pm = (payment_method or "").strip().lower()
+    if pm in ("stars", "telegram_stars"):
+        pay_tag = "Stars"
+    elif pm in ("nowpayments", "crypto", "webhook"):
+        pay_tag = "Crypto"
+    elif pm == "manual":
+        pay_tag = "Manual"
+    else:
+        pay_tag = _payment_method_label(payment_method)
+
+    kind_titles = {
+        "loot_key": f"Loot key sold ({pay_tag})",
+        "pack": f"Pack sold ({pay_tag})",
+        "subscription": f"Subscription sold ({pay_tag})",
+    }
+    return kind_titles.get(sale_kind, f"Sale completed ({pay_tag})")
+
+
 def notify_epo_pending(
     *,
     reference_code: str,
     telegram_user_id: int,
     plan_name: str,
     price_stars: int,
+    order_id: int | None = None,
+    crypto_auto_checkout: bool = False,
+    bot_section: str | None = None,
+    product_type: str | None = None,
 ) -> None:
     """Someone tapped crypto / external checkout — payment may not have cleared yet."""
+    if _notify_disabled():
+        return
     try:
+        sale_kind = classify_sale_kind(
+            product_type=product_type,
+            bot_section=bot_section,
+            plan_name=plan_name,
+        )
         payload = {
             "reference_code": reference_code,
             "telegram_user_id": telegram_user_id,
             "plan_name": plan_name,
             "price_stars": price_stars,
+            "order_id": order_id,
+            "crypto_auto_checkout": crypto_auto_checkout,
+            "sale_kind": sale_kind,
+            "event_type": "checkout_pending",
         }
         _webhook("epo_pending", payload)
-        pn = html.escape(plan_name or "Product")
-        ref = html.escape(reference_code)
-        body = (
-            "<b>Pending wallet / crypto checkout</b>\n"
-            "Buyer started external pay — confirm funds or wait for NOWPayments IPN.\n\n"
-            f"Ref: <code>{ref}</code>\n"
-            f"Buyer TG: <code>{telegram_user_id}</code>\n"
-            f"Product: {pn}\n"
-            f"Catalog: {int(price_stars)} ⭐\n\n"
-            "<i>Fulfillment is automatic when IPN hits <code>/webhooks/nowpayments</code>, "
-            "or use dashboard <b>Mark paid</b> after you verify payment.</i>"
+        push_admin_inbox_event(
+            category="invoice",
+            severity="important",
+            title=f"Pending checkout · {plan_name}",
+            body=(
+                f"Buyer TG {telegram_user_id} started checkout for {plan_name} ({int(price_stars)} stars).\n"
+                f"Ref: {reference_code}\n\n"
+                "What to do:\n"
+                + (
+                    "Wait for crypto IPN to auto-fulfill — no action unless it stalls."
+                    if crypto_auto_checkout
+                    else "Verify payment in wallet, then tap Approve below (or Deny if spam)."
+                )
+            ),
+            meta=payload,
+            instant=not crypto_auto_checkout,
         )
-        _telegram_send_html(body)
     except Exception as e:
         logger.warning("notify_epo_pending failed: %s", e)
 
@@ -107,25 +153,53 @@ def notify_sale_fulfilled(
     plan_name: str,
     product_type: str | None,
     payment_method: str | None,
+    amount_stars: int | None = None,
+    bot_section: str | None = None,
+    plan_id: int | None = None,
+    external_order_id: int | None = None,
+    reference_code: str | None = None,
 ) -> None:
     """Access was granted (Stars, crypto IPN, webhook, or manual mark-paid)."""
+    if _notify_disabled():
+        return
     try:
         pm = (payment_method or "?").strip() or "?"
         ptype = (product_type or "").strip() or "subscription"
-        payload = {
+        sale_kind = classify_sale_kind(
+            product_type=ptype,
+            bot_section=bot_section,
+            plan_name=plan_name,
+        )
+        stars = int(amount_stars or 0)
+        payload: dict[str, Any] = {
             "telegram_user_id": telegram_user_id,
             "plan_name": plan_name,
             "product_type": ptype,
             "payment_method": pm,
+            "payment_method_label": _payment_method_label(pm),
+            "amount_stars": stars,
+            "bot_section": (bot_section or "").strip() or None,
+            "sale_kind": sale_kind,
+            "event_type": "sale_fulfilled",
         }
+        if plan_id is not None:
+            payload["plan_id"] = int(plan_id)
+        if external_order_id is not None:
+            payload["external_order_id"] = int(external_order_id)
+        if reference_code:
+            payload["reference_code"] = reference_code
+
         _webhook("sale_fulfilled", payload)
-        pn = html.escape(plan_name or "Product")
-        body = (
-            "<b>Sale / access granted</b>\n"
-            f"Product: {pn} ({html.escape(ptype)})\n"
-            f"Buyer TG: <code>{telegram_user_id}</code>\n"
-            f"Payment: <code>{html.escape(pm)}</code>"
+        push_admin_inbox_event(
+            category="payment",
+            severity="important",
+            title=_sale_title(sale_kind=sale_kind, payment_method=pm),
+            body=(
+                f"{plan_name} · buyer TG {telegram_user_id} · {stars} stars · {_payment_method_label(pm)}\n\n"
+                "What to do:\nNo action needed — access was granted automatically."
+            ),
+            meta=payload,
+            instant=sales_instant_enabled(),
         )
-        _telegram_send_html(body)
     except Exception as e:
         logger.warning("notify_sale_fulfilled failed: %s", e)

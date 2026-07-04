@@ -1,14 +1,28 @@
 import asyncio
 import logging
 import os
+import re
 
 from telethon import TelegramClient
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto, MessageMediaWebPage
 
 from app.database.session import SessionLocal
 from app.models.source import Source
+from app.models.scrape_channel_profile import ScrapeChannelProfile
+from app.services.scrape_channel_intel import (
+    auto_skip_forward_disabled,
+    chat_id_from_entity,
+    compute_posting_cadence,
+    entity_forward_flag_disabled,
+    extract_hashtags_from_texts,
+    is_forward_restricted_error,
+    pool_key_for_pool_id,
+    probe_channel_forwardable,
+    scraper_forward_only,
+    upsert_channel_profile,
+)
 from app.services.scrape_run_service import ERROR_CATALOG, normalize_media_types, utcnow
-from app.services.telegram_storage import TelegramStorage
+from app.services.telegram_storage import ForwardRestrictedStorageError, TelegramStorage
 from app.utils.telegram_peer import normalize_telegram_username, resolve_telethon_entity
 
 logger = logging.getLogger(__name__)
@@ -65,6 +79,7 @@ def _empty_stats() -> dict:
         "skipped_duplicate": 0,
         "skipped_media_type": 0,
         "skipped_no_media": 0,
+        "skipped_forward_restricted": 0,
         "errors_count": 0,
         "errors": [],
         "fatal": False,
@@ -79,6 +94,7 @@ def _merge_stats(into: dict, part: dict) -> None:
         "skipped_duplicate",
         "skipped_media_type",
         "skipped_no_media",
+        "skipped_forward_restricted",
         "errors_count",
     ):
         into[k] = int(into.get(k) or 0) + int(part.get(k) or 0)
@@ -87,6 +103,49 @@ def _merge_stats(into: dict, part: dict) -> None:
         into["fatal"] = True
     if part.get("error_summary") and not into.get("error_summary"):
         into["error_summary"] = part["error_summary"]
+
+
+def _folder_label_from_source(source: Source) -> str | None:
+    name = (source.name or "").strip()
+    m = re.match(r"SCRP \[([^\]]+)\]:", name)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+async def _mark_forward_disabled_channel(
+    db,
+    *,
+    source: Source,
+    chat_id: int,
+    entity,
+    ident: str,
+    skip_reason: str,
+    pool_key: str | None,
+    pool_name: str | None,
+) -> None:
+    upsert_channel_profile(
+        db,
+        chat_id=chat_id,
+        source_id=source.id,
+        title=getattr(entity, "title", None) or source.name,
+        username=getattr(entity, "username", None),
+        identifier=ident,
+        forward_enabled=False,
+        skip_reason=skip_reason,
+        pool_key=pool_key,
+        pool_name=pool_name,
+        category=pool_key,
+        folder_label=_folder_label_from_source(source),
+    )
+    source.active = False
+    db.commit()
+    logger.warning(
+        "Auto-skipped forward-disabled channel source id=%s chat_id=%s reason=%s",
+        source.id,
+        chat_id,
+        skip_reason,
+    )
 
 
 async def _scrape_one_source(source: Source, client, storage: TelegramStorage, db) -> dict:
@@ -107,6 +166,9 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
     media_types = normalize_media_types(getattr(source, "media_types", None))
     limit = int(getattr(source, "max_messages_per_run", None) or 50)
     limit = max(1, min(limit, 500))
+    forward_only = scraper_forward_only()
+    skip_noforward = auto_skip_forward_disabled()
+    pool_key, pool_name = pool_key_for_pool_id(db, source.pool_id)
 
     try:
         entity = await resolve_telethon_entity(client, source.identifier)
@@ -129,9 +191,87 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
         stats["fatal"] = True
         return stats
 
+    chat_id = chat_id_from_entity(entity)
+    profile = (
+        db.query(ScrapeChannelProfile).filter(ScrapeChannelProfile.chat_id == chat_id).first()
+    )
+
+    if skip_noforward and profile and profile.forward_enabled is False:
+        stats["skipped_forward_restricted"] = 1
+        stats["fatal"] = True
+        stats["error_summary"] = profile.skip_reason or "forward_disabled_cached"
+        stats["errors"].append(
+            {
+                "code": "forward_restricted_cached",
+                "message": "Channel is forward-disabled — auto-skipped (see channel intel backlog).",
+                "fix": "Re-enable source only if forwarding policy changed.",
+            }
+        )
+        stats["errors_count"] = 1
+        return stats
+
+    if skip_noforward and entity_forward_flag_disabled(entity):
+        await _mark_forward_disabled_channel(
+            db,
+            source=source,
+            chat_id=chat_id,
+            entity=entity,
+            ident=ident,
+            skip_reason="channel_noforwards_flag",
+            pool_key=pool_key,
+            pool_name=pool_name,
+        )
+        stats["skipped_forward_restricted"] = 1
+        stats["fatal"] = True
+        stats["error_summary"] = "channel_noforwards_flag"
+        return stats
+
+    if skip_noforward and (not profile or profile.forward_enabled is None):
+        fwd_ok, skip_reason = await probe_channel_forwardable(client, entity)
+        if fwd_ok is False:
+            await _mark_forward_disabled_channel(
+                db,
+                source=source,
+                chat_id=chat_id,
+                entity=entity,
+                ident=ident,
+                skip_reason=skip_reason or "forward_restricted",
+                pool_key=pool_key,
+                pool_name=pool_name,
+            )
+            stats["skipped_forward_restricted"] = 1
+            stats["fatal"] = True
+            stats["error_summary"] = skip_reason or "forward_restricted"
+            return stats
+        if fwd_ok is True:
+            upsert_channel_profile(
+                db,
+                chat_id=chat_id,
+                source_id=source.id,
+                title=getattr(entity, "title", None) or source.name,
+                username=getattr(entity, "username", None),
+                identifier=ident,
+                forward_enabled=True,
+                pool_key=pool_key,
+                pool_name=pool_name,
+                category=pool_key,
+                folder_label=_folder_label_from_source(source),
+            )
+            db.commit()
+
     scanned_with_media = 0
+    message_dates: list = []
+    message_texts: list[str] = []
+    channel_forward_blocked = False
+
     try:
         async for message in client.iter_messages(entity, limit=limit):
+            if getattr(message, "date", None):
+                message_dates.append(message.date)
+            txt = getattr(message, "message", None) or getattr(message, "text", None)
+            if txt:
+                message_texts.append(str(txt))
+
             kind = _message_media_kind(message)
             if not kind:
                 stats["skipped_no_media"] += 1
@@ -151,12 +291,27 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
                     source=source.identifier or ident,
                     pool_id=source.pool_id or 0,
                     db=db,
+                    forward_only=forward_only,
                 )
                 if rec is not None:
                     stats["stored"] += 1
                 else:
                     stats["skipped_duplicate"] += 1
+            except ForwardRestrictedStorageError as inner:
+                channel_forward_blocked = True
+                stats["skipped_forward_restricted"] += 1
+                logger.warning(
+                    "Forward restricted mid-scrape source id=%s msg id=%s: %s",
+                    source.id,
+                    message.id,
+                    inner,
+                )
+                break
             except Exception as inner:
+                if is_forward_restricted_error(inner):
+                    channel_forward_blocked = True
+                    stats["skipped_forward_restricted"] += 1
+                    break
                 stats["errors_count"] += 1
                 stats["errors"].append(
                     {
@@ -168,13 +323,39 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
                 )
                 logger.warning("store_from_message failed for msg id=%s: %s", message.id, inner)
             await asyncio.sleep(0.5)
+
+        cadence = compute_posting_cadence(message_dates)
+        tags = extract_hashtags_from_texts(message_texts)
+        upsert_channel_profile(
+            db,
+            chat_id=chat_id,
+            source_id=source.id,
+            title=getattr(entity, "title", None) or source.name,
+            username=getattr(entity, "username", None),
+            identifier=ident,
+            forward_enabled=False if channel_forward_blocked else True,
+            skip_reason="forward_restricted" if channel_forward_blocked else None,
+            pool_key=pool_key,
+            pool_name=pool_name,
+            category=pool_key,
+            folder_label=_folder_label_from_source(source),
+            tags_sample=tags or None,
+            cadence=cadence,
+        )
+        if channel_forward_blocked and skip_noforward:
+            source.active = False
+            stats["fatal"] = True
+            stats["error_summary"] = "forward_restricted"
+        db.commit()
+
         logger.info(
-            "Scrape done source id=%s: scanned=%s stored=%s dup=%s type_skip=%s pool_id=%s",
+            "Scrape done source id=%s: scanned=%s stored=%s dup=%s type_skip=%s fwd_skip=%s pool_id=%s",
             source.id,
             stats["messages_scanned"],
             stats["stored"],
             stats["skipped_duplicate"],
             stats["skipped_media_type"],
+            stats["skipped_forward_restricted"],
             source.pool_id,
         )
     except Exception as e:
@@ -196,19 +377,29 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
 async def run_scraper(
     api_id: str,
     api_hash: str,
-    session_name: str = "scraper",
+    session_name: str | None = None,
     source_id: int | None = None,
 ) -> dict:
     """
     Pull media from Telegram channel(s) into a content pool.
     Returns aggregate stats dict (see _empty_stats).
     """
+    from app.services.scraper_telethon_auth import scraper_session_stem
+    from app.utils.telethon_session import (
+        configure_telethon_sqlite_session,
+        graceful_telethon_disconnect,
+        prepare_session_sqlite_file,
+    )
+
     total = _empty_stats()
-    client = TelegramClient(session_name, int(api_id), api_hash)
+    stem = session_name or scraper_session_stem()
+    prepare_session_sqlite_file(stem)
+    client = TelegramClient(stem, int(api_id), api_hash)
     storage = TelegramStorage(client)
 
     try:
         await client.start()
+        configure_telethon_sqlite_session(client)
     except Exception as e:
         cat = ERROR_CATALOG["scraper_session"]
         total["errors"].append(
@@ -248,7 +439,7 @@ async def run_scraper(
                 db.commit()
     finally:
         db.close()
-        await client.disconnect()
+        await graceful_telethon_disconnect(client)
     return total
 
 

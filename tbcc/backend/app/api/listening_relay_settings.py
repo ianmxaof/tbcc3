@@ -60,6 +60,7 @@ class ListeningRelayPatch(BaseModel):
     buffer_relay_enabled: bool | None = None
     buffer_relay_min_interval_minutes: int | None = Field(None, ge=30, le=1440)
     buffer_relay_max_per_day_utc: int | None = Field(None, ge=1, le=50)
+    buffer_x_queue: list[dict] | None = None
     clear_lastfm_dedupe: bool | None = None
     clear_webhook_dedupe: bool | None = None
     regenerate_webhook_secret: bool | None = None
@@ -121,6 +122,8 @@ def _row_public(row: ListeningRelaySettings) -> dict[str, Any]:
         "buffer_relay_last_post_at": (
             row.buffer_relay_last_post_at.isoformat() + "Z" if getattr(row, "buffer_relay_last_post_at", None) else None
         ),
+        "buffer_x_queue": row.get_buffer_x_queue(),
+        "buffer_x_queue_depth": len(row.get_buffer_x_queue()),
         "last_poll_at": row.last_poll_at.isoformat() + "Z" if row.last_poll_at else None,
         "has_lastfm_dedupe": row.last_lastfm_signature is not None,
         "has_webhook_dedupe": row.last_webhook_signature is not None,
@@ -284,6 +287,10 @@ def patch_listening_relay_settings(body: ListeningRelayPatch, db: Session = Depe
         row.buffer_relay_min_interval_minutes = int(data["buffer_relay_min_interval_minutes"])
     if "buffer_relay_max_per_day_utc" in data and data["buffer_relay_max_per_day_utc"] is not None:
         row.buffer_relay_max_per_day_utc = int(data["buffer_relay_max_per_day_utc"])
+    if "buffer_x_queue" in data:
+        from app.api.scheduled_posts import _normalize_buffer_x_queue
+
+        row.set_buffer_x_queue(_normalize_buffer_x_queue(data.get("buffer_x_queue")))
 
     db.commit()
     db.refresh(row)

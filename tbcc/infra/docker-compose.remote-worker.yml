@@ -1,0 +1,56 @@
+# TBCC remote worker — consumes Celery `scrape` queue only.
+# Home keeps API, Beat, bots, Postgres, Redis; this VM runs heavy Telethon scrapes.
+#
+# Quick start (on Linux VM after Tailscale + session sync):
+#   cd tbcc/infra
+#   cp env.remote-worker.example .env.remote-worker
+#   # edit DATABASE_URL, REDIS_URL, API_ID, API_HASH
+#   mkdir -p data/sessions
+#   # copy scraper.session* into data/sessions/
+#   docker compose -f docker-compose.remote-worker.yml up -d --build
+#
+# See tbcc/docs/REMOTE_WORKER.md
+
+services:
+  worker_scrape:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env.remote-worker
+    environment:
+      PYTHONPATH: /app
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -Q scrape
+      -P solo
+      -n scrape@remote
+      --without-gossip
+      --without-mingle
+    volumes:
+      - ./data/sessions:/data/sessions
+    working_dir: /app
+
+  worker_post:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    profiles: ["post"]
+    env_file:
+      - .env.remote-worker
+    environment:
+      PYTHONPATH: /app
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -Q post
+      -P solo
+      -n post@remote
+      --without-gossip
+      --without-mingle
+    volumes:
+      - ./data/sessions:/data/sessions
+    working_dir: /app

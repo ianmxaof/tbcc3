@@ -30,6 +30,7 @@ _DOLLAR_RE = re.compile(
     re.IGNORECASE,
 )
 _ANY_DOLLAR_RE = re.compile(r"\$\s*([\d,]+(?:\.\d{1,2})?)")
+_ANY_EURO_RE = re.compile(r"€\s*([\d,]+(?:\.\d{1,2})?)")
 
 _BMC_API = "https://developers.buymeacoffee.com/api/v1"
 
@@ -45,31 +46,85 @@ def _cookie_header(env_key: str, file_key: str) -> str | None:
 
 
 def _parse_dollar_candidates(text: str) -> list[float]:
-    vals: list[float] = []
+    dollars, _ = _parse_amount_candidates(text)
+    return dollars
+
+
+def _parse_amount_candidates(text: str) -> tuple[list[float], list[float]]:
+    dollars: list[float] = []
+    euros: list[float] = []
     for m in _DOLLAR_RE.finditer(text or ""):
         g = m.group(1) or m.group(2)
         if not g:
             continue
         try:
-            vals.append(float(g.replace(",", "")))
+            dollars.append(float(g.replace(",", "")))
         except ValueError:
             continue
-    if not vals:
+    if not dollars:
         for m in _ANY_DOLLAR_RE.finditer(text or ""):
             try:
-                vals.append(float(m.group(1).replace(",", "")))
+                dollars.append(float(m.group(1).replace(",", "")))
             except ValueError:
                 continue
-    return vals
+    for m in _ANY_EURO_RE.finditer(text or ""):
+        try:
+            euros.append(float(m.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return dollars, euros
+
+
+def _euro_to_usd(amount_eur: float) -> float:
+    rate_raw = (os.getenv("TBCC_EUR_USD_RATE") or "1.08").strip()
+    try:
+        rate = float(rate_raw)
+    except ValueError:
+        rate = 1.08
+    return round(float(amount_eur) * rate, 2)
 
 
 def _pick_likely_total(amounts: list[float]) -> float | None:
     if not amounts:
         return None
-    # Prefer the largest plausible dashboard total (exclude tiny ad CPM noise).
-    big = [a for a in amounts if a >= 0.5]
+    big = [a for a in amounts if a >= 0.01]
     pool = big if big else amounts
     return max(pool)
+
+
+def _scrape_with_playwright(url: str, *, headed: bool = False, wait_ms: int = 5000) -> dict[str, Any]:
+    if not url:
+        return {"ok": False, "error": "missing_url"}
+    try:
+        from app.services.playwright_browser import open_playwright_session
+
+        handle = open_playwright_session(headed=headed, slow_mo=30)
+        try:
+            page = handle.get_page()
+            page.set_default_timeout(90000)
+            page.goto(url, wait_until="domcontentloaded", timeout=120000)
+            page.wait_for_timeout(wait_ms)
+            text = page.inner_text("body")
+            dollars, euros = _parse_amount_candidates(text)
+            if dollars:
+                total = _pick_likely_total(dollars)
+                if total is not None:
+                    return {"ok": True, "total_usd": round(total, 2), "currency": "USD", "candidates": dollars[:12]}
+            if euros:
+                total_eur = _pick_likely_total(euros)
+                if total_eur is not None:
+                    return {
+                        "ok": True,
+                        "total_usd": _euro_to_usd(total_eur),
+                        "total_eur": round(total_eur, 2),
+                        "currency": "EUR",
+                        "candidates": euros[:12],
+                    }
+            return {"ok": False, "error": "no_amount_found", "candidates": (dollars + euros)[:12]}
+        finally:
+            handle.close()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _fetch_page_text(url: str, *, cookie: str | None = None, timeout: float = 45.0) -> str:
@@ -87,25 +142,43 @@ def _fetch_page_text(url: str, *, cookie: str | None = None, timeout: float = 45
         return r.text
 
 
-def _scrape_url_total(url: str, *, cookie: str | None = None) -> dict[str, Any]:
-    if not url:
-        return {"ok": False, "error": "missing_url"}
-    try:
-        html = _fetch_page_text(url, cookie=cookie)
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-    # Strip tags loosely for regex scan.
-    text = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html, flags=re.I)
-    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    amounts = _parse_dollar_candidates(text)
-    total = _pick_likely_total(amounts)
-    if total is None:
-        return {"ok": False, "error": "no_dollar_amount_found", "candidates": amounts[:12]}
-    return {"ok": True, "total_usd": round(total, 2), "candidates": amounts[:12]}
+def _scrape_url_total(
+    url: str,
+    *,
+    cookie: str | None = None,
+    headed: bool = False,
+    allow_playwright: bool = True,
+) -> dict[str, Any]:
+    if cookie:
+        try:
+            html = _fetch_page_text(url, cookie=cookie)
+            text = re.sub(r"<script[^>]*>[\s\S]*?</script>", " ", html, flags=re.I)
+            text = re.sub(r"<style[^>]*>[\s\S]*?</style>", " ", text, flags=re.I)
+            text = re.sub(r"<[^>]+>", " ", text)
+            dollars, euros = _parse_amount_candidates(text)
+            if dollars:
+                total = _pick_likely_total(dollars)
+                if total is not None:
+                    return {"ok": True, "total_usd": round(total, 2), "currency": "USD", "candidates": dollars[:12]}
+            if euros:
+                total_eur = _pick_likely_total(euros)
+                if total_eur is not None:
+                    return {
+                        "ok": True,
+                        "total_usd": _euro_to_usd(total_eur),
+                        "total_eur": round(total_eur, 2),
+                        "currency": "EUR",
+                        "candidates": euros[:12],
+                    }
+        except Exception as e:
+            if not allow_playwright and not headed:
+                return {"ok": False, "error": str(e)}
+    if not allow_playwright:
+        return {"ok": False, "error": "no_cookie_or_playwright_disabled", "skipped": True}
+    return _scrape_with_playwright(url, headed=headed)
 
 
-def sync_linkvertise_income(db: Session, *, headed: bool = False) -> dict[str, Any]:
+def sync_linkvertise_income(db: Session, *, headed: bool = False, light: bool = False) -> dict[str, Any]:
     """Scrape Linkvertise publisher dashboard cumulative earnings (Playwright)."""
     from app.services.linkvertise_dashboard_provision import (
         auth_state_path,
@@ -120,6 +193,13 @@ def sync_linkvertise_income(db: Session, *, headed: bool = False) -> dict[str, A
         or "https://publisher.linkvertise.com/dashboard"
     )
     auth_path = auth_state_path()
+    if light and not auth_path.is_file():
+        return {
+            "ok": True,
+            "source": SOURCE_LINKVERTISE,
+            "skipped": True,
+            "reason": "no_saved_session",
+        }
     if not auth_path.is_file() and not headed:
         return {
             "ok": False,
@@ -179,21 +259,20 @@ def sync_linkvertise_income(db: Session, *, headed: bool = False) -> dict[str, A
         return {"ok": False, "source": SOURCE_LINKVERTISE, "error": str(e)}
 
 
-def sync_admaven_income(db: Session) -> dict[str, Any]:
+def sync_admaven_income(db: Session, *, headed: bool = False, light: bool = False) -> dict[str, Any]:
     url = (
         (os.getenv("TBCC_ADMAVEN_EARNINGS_URL") or "").strip()
         or "https://publishers.ad-maven.com/"
     )
     cookie = _cookie_header("TBCC_ADMAVEN_COOKIE", "TBCC_ADMAVEN_COOKIE_FILE")
-    token = (os.getenv("TBCC_ADMAVEN_API_TOKEN") or "").strip()
-    if not cookie and not token:
+    if light and not cookie:
         return {
-            "ok": False,
+            "ok": True,
             "source": SOURCE_ADMAVEN,
-            "error": "admaven_not_configured",
-            "hint": "Export browser cookies from publishers.ad-maven.com → TBCC_ADMAVEN_COOKIE_FILE, or manual entry weekly",
+            "skipped": True,
+            "reason": "no_cookie_configured",
         }
-    scraped = _scrape_url_total(url, cookie=cookie)
+    scraped = _scrape_url_total(url, cookie=cookie, headed=headed, allow_playwright=not light)
     if not scraped.get("ok"):
         return {
             "ok": False,
@@ -213,21 +292,20 @@ def sync_admaven_income(db: Session) -> dict[str, Any]:
     return result
 
 
-def sync_workink_income(db: Session) -> dict[str, Any]:
+def sync_workink_income(db: Session, *, headed: bool = False, light: bool = False) -> dict[str, Any]:
     url = (
         (os.getenv("TBCC_WORKINK_EARNINGS_URL") or "").strip()
         or "https://dashboard.work.ink/"
     )
     cookie = _cookie_header("TBCC_WORKINK_COOKIE", "TBCC_WORKINK_COOKIE_FILE")
-    api_key = (os.getenv("TBCC_WORKINK_API_KEY") or "").strip()
-    if not cookie and not api_key:
+    if light and not cookie:
         return {
-            "ok": False,
+            "ok": True,
             "source": SOURCE_WORKINK,
-            "error": "workink_not_configured",
-            "hint": "Log into dashboard.work.ink → export cookie to TBCC_WORKINK_COOKIE_FILE, or manual entry",
+            "skipped": True,
+            "reason": "no_cookie_configured",
         }
-    scraped = _scrape_url_total(url, cookie=cookie)
+    scraped = _scrape_url_total(url, cookie=cookie, headed=headed, allow_playwright=not light)
     if not scraped.get("ok"):
         return {
             "ok": False,
@@ -362,13 +440,15 @@ def sync_external_income(
     *,
     sources: list[str] | None = None,
     headed: bool = False,
+    light: bool = False,
+    include_registry: bool = True,
 ) -> dict[str, Any]:
     """Run configured external sync adapters."""
     want = set(sources or [])
     runners: list[tuple[str, Any]] = [
-        (SOURCE_LINKVERTISE, lambda: sync_linkvertise_income(db, headed=headed)),
-        (SOURCE_ADMAVEN, lambda: sync_admaven_income(db)),
-        (SOURCE_WORKINK, lambda: sync_workink_income(db)),
+        (SOURCE_LINKVERTISE, lambda: sync_linkvertise_income(db, headed=headed, light=light)),
+        (SOURCE_ADMAVEN, lambda: sync_admaven_income(db, headed=headed, light=light)),
+        (SOURCE_WORKINK, lambda: sync_workink_income(db, headed=headed, light=light)),
         (SOURCE_BMC, lambda: sync_bmc_income(db)),
     ]
     results: list[dict[str, Any]] = []
@@ -380,10 +460,105 @@ def sync_external_income(
         except Exception as e:
             results.append({"ok": False, "source": key, "error": str(e)})
 
-    registry = affiliate_registry_status(db)
-    return {
+    registry = affiliate_registry_status(db) if include_registry else None
+    out: dict[str, Any] = {
         "ok": True,
         "results": results,
-        "affiliate_registry": registry,
         "synced_at": datetime.utcnow().isoformat() + "Z",
+        "light": light,
     }
+    if registry is not None:
+        out["affiliate_registry"] = registry
+    return out
+
+
+REDIS_INCOME_LAST_POLL = "tbcc:income:last_poll"
+
+
+def income_poll_enabled() -> bool:
+    return (os.getenv("TBCC_INCOME_POLL_ENABLED") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def income_poll_interval_hours() -> int:
+    raw = (os.getenv("TBCC_INCOME_POLL_HOURS") or "6").strip()
+    try:
+        return max(1, min(168, int(raw)))
+    except ValueError:
+        return 6
+
+
+def _redis_client():
+    import redis
+
+    url = (os.getenv("REDIS_URL") or "redis://localhost:6379/0").strip()
+    return redis.from_url(url, decode_responses=True, socket_connect_timeout=2)
+
+
+def save_income_poll_status(payload: dict[str, Any]) -> None:
+    try:
+        r = _redis_client()
+        r.set(REDIS_INCOME_LAST_POLL, json.dumps(payload, ensure_ascii=False))
+    except Exception as e:
+        logger.debug("income poll redis save: %s", e)
+
+
+def get_income_poll_status() -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "enabled": income_poll_enabled(),
+        "interval_hours": income_poll_interval_hours(),
+        "last_poll_at": None,
+        "last_poll_ok": None,
+        "last_results": [],
+        "beat_task": "app.workers.income_poll_worker.poll_income_sources",
+    }
+    try:
+        r = _redis_client()
+        raw = r.get(REDIS_INCOME_LAST_POLL)
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                out.update(data)
+    except Exception as e:
+        out["redis_error"] = str(e)
+    return out
+
+
+def run_income_poll(db: Session, *, light: bool = True) -> dict[str, Any]:
+    """
+    Background-safe income refresh: idempotent subscription backfill + external delta sync.
+    Light mode skips headed Playwright and Brave profile launch (cookie/API only).
+    """
+    from app.services.income_ledger import backfill_subscription_income, income_summary
+
+    backfill: dict[str, Any]
+    try:
+        backfill = backfill_subscription_income(db)
+    except Exception as e:
+        logger.warning("income poll backfill skipped: %s", e)
+        backfill = {"ok": False, "error": str(e)}
+    external = sync_external_income(db, light=light, include_registry=False)
+    try:
+        summary = income_summary(db, backfill=False)
+    except Exception as e:
+        logger.warning("income poll summary skipped: %s", e)
+        summary = {"ok": False, "error": str(e)}
+
+    payload = {
+        "ok": True,
+        "polled_at": datetime.utcnow().isoformat() + "Z",
+        "light": light,
+        "backfill": backfill,
+        "external": external,
+        "totals": summary.get("totals"),
+        "last_poll_at": datetime.utcnow().isoformat() + "Z",
+        "last_poll_ok": True,
+        "last_results": external.get("results") or [],
+        "interval_hours": income_poll_interval_hours(),
+    }
+    save_income_poll_status(payload)
+    return payload

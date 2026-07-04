@@ -52,6 +52,11 @@ def refresh_post_views(limit: int = 200):
     if not view_refresh_offpeak_allowed():
         return {"ok": True, "skipped": True, "reason": "outside_offpeak_hours_et"}
 
+    from app.services.post_scheduler import posting_stalled_for_admission
+
+    if posting_stalled_for_admission():
+        return {"ok": True, "skipped": True, "reason": "schedulers_stalled"}
+
     db = SessionLocal()
     try:
         from app.services.content_signals import assess_growth_tick_eligibility

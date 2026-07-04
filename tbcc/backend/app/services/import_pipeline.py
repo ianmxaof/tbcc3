@@ -194,8 +194,14 @@ def create_channel_import_job(
     message_thread_id: int | None = None,
     source_label: str,
     topic_title: str | None = None,
+    apply_watermark: bool = False,
+    index_only: bool = False,
+    network_key: str | None = None,
+    sent_cache: bool = False,
+    message_ids: list[int] | None = None,
 ) -> ImportJob:
     job_id = new_import_job_id()
+    ids = [int(x) for x in (message_ids or []) if int(x) > 0][:200]
     params = {
         "channel": channel,
         "limit": int(limit),
@@ -203,7 +209,13 @@ def create_channel_import_job(
         "message_thread_id": message_thread_id,
         "source_label": source_label,
         "topic_title": (topic_title or "").strip() or None,
+        "apply_watermark": bool(apply_watermark),
+        "index_only": bool(index_only),
+        "network_key": (network_key or "").strip() or None,
+        "sent_cache": bool(sent_cache),
     }
+    if ids:
+        params["message_ids"] = ids
     job = ImportJob(
         id=job_id,
         job_kind="channel",
@@ -224,17 +236,92 @@ def create_channel_import_job(
     return job
 
 
-def enqueue_channel_import_job(job_id: str) -> str | None:
+def enqueue_channel_import_job(job_id: str, *, countdown: int = 0) -> str | None:
     from app.workers.import_telegram_worker import process_import_job
 
-    async_result = process_import_job.apply_async(args=[job_id], queue="telegram")
+    async_result = process_import_job.apply_async(
+        args=[job_id],
+        queue="telegram",
+        countdown=max(0, int(countdown)),
+    )
     return async_result.id if async_result else None
 
 
-def enqueue_import_job_processing(job_id: str) -> str | None:
+def enqueue_deposit_mirror_after_import(
+    job_id: str,
+    storage_thread_id: int,
+    main_thread_id: int,
+    *,
+    mirror_limit: int,
+    media_types: str,
+    delay_s: int,
+) -> str | None:
+    """
+    Queue mirror as a separate telegram-queue task (not chained).
+    Waits delay_s, polls until import job is done, then mirrors with retries.
+    """
+    from app.workers.topic_mirror_worker import mirror_after_deposit_job
+
+    async_result = mirror_after_deposit_job.apply_async(
+        args=[job_id, int(storage_thread_id), int(main_thread_id)],
+        kwargs={"limit": int(mirror_limit), "media_types": media_types},
+        queue="telegram",
+        countdown=max(15, int(delay_s)),
+    )
+    return async_result.id if async_result else None
+
+
+def enqueue_deposit_import_with_mirror(
+    job_id: str,
+    *,
+    storage_thread_id: int,
+    main_thread_id: int,
+    mirror_limit: int,
+    media_types: str,
+    countdown: int = 0,
+) -> tuple[str | None, str | None]:
+    """
+    Chain pool import → main-group mirror on the telegram queue (serialized Telethon).
+    Returns (import_celery_task_id, mirror_tail_task_id).
+    """
+    from celery import chain
+
+    from app.workers.import_telegram_worker import process_import_job
+    from app.workers.topic_mirror_worker import mirror_after_channel_import
+
+    workflow = chain(
+        process_import_job.s(job_id),
+        mirror_after_channel_import.s(
+            int(storage_thread_id),
+            int(main_thread_id),
+            limit=int(mirror_limit),
+            media_types=media_types,
+        ),
+    )
+    async_result = workflow.apply_async(
+        queue="telegram",
+        countdown=max(0, int(countdown)),
+    )
+    if not async_result:
+        return None, None
+    import_task_id = None
+    try:
+        parent = async_result.parent
+        if parent is not None:
+            import_task_id = parent.id
+    except Exception:
+        pass
+    return import_task_id, async_result.id
+
+
+def enqueue_import_job_processing(job_id: str, *, countdown: int = 0) -> str | None:
     from app.workers.import_telegram_worker import process_import_job
 
-    async_result = process_import_job.apply_async(args=[job_id], queue="telegram")
+    async_result = process_import_job.apply_async(
+        args=[job_id],
+        queue="telegram",
+        countdown=max(0, int(countdown)),
+    )
     return async_result.id if async_result else None
 
 

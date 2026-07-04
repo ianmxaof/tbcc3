@@ -12,9 +12,12 @@ Env:
   TBCC_API_URL — default http://127.0.0.1:8000
   TBCC_ALBUM_COMPOSER_POOL_ID — content pool for imports (default 1)
 
-Groups: with BotFather Group Privacy disabled, the bot sees all topic media. Only
-ADMIN_TELEGRAM_ID is served; other senders are ignored silently (no denial replies).
-Post as yourself — anonymous / channel-as-sender posts are not recognized as admin.
+Groups: with BotFather Group Privacy disabled (or the bot as group admin), the bot sees
+all topic media. ADMIN_TELEGRAM_ID plus any TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS are
+served; other senders are ignored silently (no denial replies). Sessions are chat-scoped:
+all admin accounts in a group share one draft. Post as yourself — anonymous /
+channel-as-sender posts are not recognized as admin, and media posted by OTHER BOTS is
+invisible to this bot (Telegram platform rule).
 """
 from __future__ import annotations
 
@@ -23,8 +26,10 @@ import html
 import logging
 import os
 import random
+import re
 import sys
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 
 _backend_root = Path(__file__).resolve().parent.parent
@@ -56,6 +61,11 @@ from telegram.ext import (
     filters,
 )
 
+try:
+    from telegram import BotCommandScopeChat
+except ImportError:
+    from telegram.constants import BotCommandScopeChat
+
 from app.services.image_crop_pipeline import ImageCropSettings, crop_status_label, parse_crop_phrase
 from bots.error_reporter import make_error_handler, report_bot_error
 
@@ -71,12 +81,24 @@ MAX_ALBUMS = 100  # max albums per "Make album(s)" batch
 MAX_STAGED = ALBUM_CHUNK * MAX_ALBUMS
 MEDIA_GROUP_DELAY = 1.2
 _HTTP_TIMEOUT = httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)
+_EMOJI_PACK_POLL_TIMEOUT = httpx.Timeout(connect=15.0, read=45.0, write=120.0, pool=10.0)
+_EMOJI_PACK_JOB_TIMEOUT_S = 900.0
 
 SESSION_KEY = "album_composer"
 AWAIT_KEY = "ac_await"
 MEDIA_GROUP_KEY = "ac_media_groups"
 SOLO_BATCH_KEY = "ac_solo_batch"
 SOLO_BATCH_DELAY = 1.2
+INTAKE_LOCK_KEY = "ac_intake_lock"
+
+
+def _intake_lock(context) -> "asyncio.Lock":
+    """Serialize concurrent media-batch flushes so exactly one panel ever exists."""
+    lock = context.chat_data.get(INTAKE_LOCK_KEY)
+    if not isinstance(lock, asyncio.Lock):
+        lock = asyncio.Lock()
+        context.chat_data[INTAKE_LOCK_KEY] = lock
+    return lock
 
 
 @dataclass
@@ -140,6 +162,9 @@ class ComposerSession:
     watermark_strip_previous: bool | None = None
     albums: list[AlbumEntry] = field(default_factory=list)
     active_album_idx: int | None = None
+    erome_title: str = ""
+    erome_tags: str = ""
+    erome_network_key: str = ""
 
 
 # Remixable state mirrored between the session and the active AlbumEntry.
@@ -250,6 +275,81 @@ def _files_api_payload(sess: ComposerSession) -> list[dict]:
     return [{"file_id": it.file_id, "kind": it.kind} for it in sess.items if it.file_id]
 
 
+def _capture_forum_topic(sess: ComposerSession, message) -> None:
+    tid = getattr(message, "message_thread_id", None)
+    if tid:
+        sess.thread_id = int(tid)
+
+
+def _is_erome_lane(sess: ComposerSession) -> bool:
+    try:
+        from app.services.erome_telegram_ingest import erome_storage_topic_id
+
+        tid = erome_storage_topic_id()
+        return bool(tid and sess.thread_id and int(sess.thread_id) == int(tid))
+    except Exception:
+        return False
+
+
+def _erome_tags_list(sess: ComposerSession) -> list[str]:
+    raw = (sess.erome_tags or "").strip()
+    if not raw:
+        return []
+    return [t.strip() for t in raw.replace(";", ",").split(",") if t.strip()]
+
+
+def _erome_title_for_upload(sess: ComposerSession) -> str | None:
+    title = (sess.erome_title or "").strip()
+    if title:
+        return title[:120]
+    cap = (sess.caption or "").strip()
+    if cap:
+        return cap.split("\n", 1)[0].strip()[:120] or None
+    return None
+
+
+def _erome_meta_summary(sess: ComposerSession) -> str:
+    title = _erome_title_for_upload(sess) or "(not set)"
+    tags = ", ".join(_erome_tags_list(sess)) or "(none)"
+    return f"Title: {html.escape(title[:80])}\nTags: {html.escape(tags[:120])}"
+
+
+def _erome_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📝 Title", callback_data="ac:erome:title"),
+                InlineKeyboardButton("🏷 Tags", callback_data="ac:erome:tags"),
+            ],
+            [
+                InlineKeyboardButton("✨ Suggest from winners", callback_data="ac:erome:suggest"),
+            ],
+            [
+                InlineKeyboardButton("✂️ Crop & blur", callback_data="ac:cropmenu"),
+                InlineKeyboardButton("🏷 Watermark", callback_data="ac:wmmenu"),
+            ],
+            [InlineKeyboardButton("👁 Preview", callback_data="ac:preview")],
+            [InlineKeyboardButton("📤 Upload to Erome", callback_data="ac:erome:upload")],
+            [InlineKeyboardButton("« Workshop menu", callback_data="ac:panel")],
+        ]
+    )
+
+
+def _erome_workshop_row(sess: ComposerSession) -> list[InlineKeyboardButton] | None:
+    if not sess.items:
+        return None
+    if _is_erome_lane(sess):
+        return [InlineKeyboardButton("📤 Erome upload menu", callback_data="ac:eromemenu")]
+    try:
+        from app.services.erome_telegram_ingest import erome_storage_topic_id
+
+        if erome_storage_topic_id():
+            return [InlineKeyboardButton("🔗 Use Erome lane", callback_data="ac:erome:lane")]
+    except Exception:
+        pass
+    return None
+
+
 def _admin_id() -> int | None:
     raw = (os.getenv("ADMIN_TELEGRAM_ID") or "").strip()
     if not raw:
@@ -258,6 +358,23 @@ def _admin_id() -> int | None:
         return int(raw)
     except ValueError:
         return None
+
+
+def _admin_ids() -> set[int]:
+    """ADMIN_TELEGRAM_ID plus TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS (comma-separated)."""
+    ids: set[int] = set()
+    main = _admin_id()
+    if main is not None:
+        ids.add(main)
+    raw = (os.getenv("TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS") or "").strip()
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if part:
+            try:
+                ids.add(int(part))
+            except ValueError:
+                pass
+    return ids
 
 
 def _pool_id() -> int:
@@ -273,11 +390,12 @@ def _token() -> str:
 
 
 def _session(context: ContextTypes.DEFAULT_TYPE) -> ComposerSession:
-    raw = context.user_data.get(SESSION_KEY)
+    """Session is chat-scoped: one shared draft per group (all admin accounts), one per DM."""
+    raw = context.chat_data.get(SESSION_KEY)
     if isinstance(raw, ComposerSession):
         return raw
     sess = ComposerSession()
-    context.user_data[SESSION_KEY] = sess
+    context.chat_data[SESSION_KEY] = sess
     return sess
 
 
@@ -300,10 +418,8 @@ def _is_group_chat(update: Update) -> bool:
 
 
 def _authorized(user_id: int | None) -> bool:
-    admin = _admin_id()
-    if admin is None:
-        return False
-    return user_id == admin
+    ids = _admin_ids()
+    return bool(ids) and user_id in ids
 
 
 async def _deny_unauthorized(update: Update) -> bool:
@@ -347,6 +463,9 @@ def _status_text(sess: ComposerSession, items: list[StagedItem] | None = None) -
             ch_line += f" · topic {sess.thread_id}"
     if sess.active_draft_name:
         ch_line += f"\nSaved draft: <i>{html.escape(sess.active_draft_name[:60])}</i>"
+    erome_line = ""
+    if _is_erome_lane(sess):
+        erome_line = "\n<b>Erome lane</b> — crop/watermark, then 📤 Erome upload menu"
     crop_line = f"Crop: {crop_status_label(sess.crop)}" if _crop_applies(sess) else "Crop: off"
     wm_line = f"Promo watermark: {_watermark_status_label(sess)}"
     if sess.promo_enabled:
@@ -360,7 +479,7 @@ def _status_text(sess: ComposerSession, items: list[StagedItem] | None = None) -
         f"{crop_line}\n"
         f"{wm_line}\n"
         f"Promo tail: {promo}{silent}\n"
-        f"Buttons: {btn_n}{ch_line}"
+        f"Buttons: {btn_n}{ch_line}{erome_line}"
     )
 
 
@@ -390,8 +509,10 @@ def _selection_panel_text(sess: ComposerSession) -> str:
         return _status_text(sess)
     idx, total = sess.active_album_idx, len(sess.albums)
     flag = "✅ posted · " if sess.albums[idx].posted else ""
+    n = len(sess.items)
     return (
-        f"🎛 <b>Current selection — Album {idx + 1}/{total}</b> ({flag}{len(sess.items)} items)\n"
+        f"🎛 <b>Current selection — Album {idx + 1}/{total}</b> "
+        f"({flag}{n}/{ALBUM_CHUNK} items)\n"
         "This menu controls the album above it. Tap “Open main menu” under any other album to switch."
     )
 
@@ -543,7 +664,7 @@ async def _refresh_workshop(
         return
     if sess.items:
         await _preview_post(context, chat_id, sess, track_workshop=True)
-    await _sync_panel(context, chat_id, sess, force_new=force_new_panel or not sess.panel_message_id)
+    await _sync_panel(context, chat_id, sess, force_new=force_new_panel, pin_bottom=force_new_panel)
 
 
 def _session_draft_payload(sess: ComposerSession, name: str | None = None) -> dict:
@@ -758,6 +879,36 @@ async def _present_confirm_step(
     )
 
 
+def _storage_hub_deposit_rows(sess: ComposerSession) -> list[list[InlineKeyboardButton]]:
+    try:
+        from app.services.storage_topic_deposit import resolve_storage_topic_row, storage_hub_chat_id_int
+        from bots.storage_hub_deposit_bot import album_composer_storage_deposit_enabled
+
+        if not album_composer_storage_deposit_enabled():
+            return []
+        if not sess.thread_id or not sess.panel_chat_id:
+            return []
+        if int(sess.panel_chat_id) != storage_hub_chat_id_int():
+            return []
+        if not resolve_storage_topic_row(int(sess.thread_id)):
+            return []
+    except Exception:
+        return []
+    rows: list[list[InlineKeyboardButton]] = []
+    if sess.items:
+        n = len(sess.items)
+        rows.append(
+            [InlineKeyboardButton(f"📥 Deposit staged ({n})", callback_data="ac:depositstaged")]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton("📥 Deposit 5", callback_data="ac:deposit:5"),
+            InlineKeyboardButton("📥 Deposit 15", callback_data="ac:deposit:15"),
+        ]
+    )
+    return rows
+
+
 def _main_keyboard(sess: ComposerSession) -> InlineKeyboardMarkup:
     promo_label = "🎁 Promo ✓" if sess.promo_enabled else "🎁 Promo ✗"
     silent_label = "🔕 Silent ✓" if sess.send_silent else "🔕 Silent ✗"
@@ -765,6 +916,7 @@ def _main_keyboard(sess: ComposerSession) -> InlineKeyboardMarkup:
     wm_on = not sess.watermark_skip and sess.watermark_enabled is not False
     wm_label = "🏷 Watermark ✓" if wm_on else "🏷 Watermark ✗"
     rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton("🛠 Workshop menu", callback_data="ac:panel")],
         [
             InlineKeyboardButton("📝 Caption", callback_data="ac:caption"),
             InlineKeyboardButton("📎 Insert", callback_data="ac:insert"),
@@ -789,6 +941,10 @@ def _main_keyboard(sess: ComposerSession) -> InlineKeyboardMarkup:
         rows.append(
             [InlineKeyboardButton(f"📦 Make album(s) — {n_albums}×≤{size}{promo_tag}", callback_data="ac:mkalb")]
         )
+    erome_row = _erome_workshop_row(sess)
+    if erome_row:
+        rows.append(erome_row)
+    rows.extend(_storage_hub_deposit_rows(sess))
     rows.append([InlineKeyboardButton("📤 Post to channel…", callback_data="ac:post")])
     rows.append(
         [
@@ -797,6 +953,7 @@ def _main_keyboard(sess: ComposerSession) -> InlineKeyboardMarkup:
         ]
     )
     rows.append([InlineKeyboardButton("🗑 Clear media", callback_data="ac:clear")])
+    rows.append([InlineKeyboardButton("🧩 Split to emojis", callback_data="ac:emojipack")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -828,23 +985,27 @@ async def _sync_panel(
     reply_to_message_id: int | None = None,
     extra_items: list[StagedItem] | None = None,
     force_new: bool = False,
+    pin_bottom: bool = False,
 ) -> None:
-    """Update the draft options panel (edit in place, or post a new one at the bottom)."""
+    """
+    Update the draft options panel.
+    pin_bottom: delete the old panel and post a fresh one at the chat bottom (Telegram has no sticky footer).
+    """
     in_batch = _in_album_batch(sess)
-    if in_batch:
-        # The panel IS the active album's menu message — never recreate it at the bottom.
-        force_new = False
+    repost = pin_bottom or force_new
+
+    if in_batch and not repost:
         await _refresh_album_header(context, sess)
 
-    if force_new:
-        await _drop_panel_message(context, sess)
+    if repost:
+        await _drop_panel_message(context, sess, allow_album_menu=pin_bottom)
 
     display_items = sess.items + (extra_items or [])
     text = _selection_panel_text(sess) if in_batch else _status_text(sess, display_items)
     markup = _main_keyboard(sess)
     bot = context.bot
 
-    if not force_new and sess.panel_chat_id and sess.panel_message_id:
+    if not repost and sess.panel_chat_id and sess.panel_message_id:
         try:
             await bot.edit_message_text(
                 text,
@@ -874,9 +1035,9 @@ async def _sync_panel(
     sess.panel_chat_id = sent.chat_id
     sess.panel_message_id = sent.message_id
     if in_batch:
-        # Keep the active album pointing at its (recreated) menu message.
-        sess.albums[sess.active_album_idx].menu_message_id = sent.message_id
-        sess.albums[sess.active_album_idx].chat_id = sent.chat_id
+        entry = sess.albums[sess.active_album_idx]
+        entry.menu_message_id = sent.message_id
+        entry.chat_id = sent.chat_id
 
 
 async def _refresh_album_header(context: ContextTypes.DEFAULT_TYPE, sess: ComposerSession) -> None:
@@ -939,9 +1100,14 @@ async def _reorder_album_display(context: ContextTypes.DEFAULT_TYPE, sess: Compo
     return ok
 
 
-async def _drop_panel_message(context: ContextTypes.DEFAULT_TYPE, sess: ComposerSession) -> None:
-    if _panel_is_album_menu(sess):
-        # Album menu messages stay attached to their album; never delete them.
+async def _drop_panel_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    sess: ComposerSession,
+    *,
+    allow_album_menu: bool = False,
+) -> None:
+    if _panel_is_album_menu(sess) and not allow_album_menu:
+        # Album menu messages stay attached to their album unless we are re-pinning to the bottom.
         return
     if not sess.panel_chat_id or not sess.panel_message_id:
         sess.panel_chat_id = None
@@ -951,6 +1117,10 @@ async def _drop_panel_message(context: ContextTypes.DEFAULT_TYPE, sess: Composer
         await context.bot.delete_message(sess.panel_chat_id, sess.panel_message_id)
     except Exception:
         pass
+    if _in_album_batch(sess) and allow_album_menu:
+        entry = sess.albums[sess.active_album_idx]
+        if entry.menu_message_id == sess.panel_message_id:
+            entry.menu_message_id = None
     sess.panel_chat_id = None
     sess.panel_message_id = None
 
@@ -959,32 +1129,14 @@ async def _finalize_media_batch(
     context: ContextTypes.DEFAULT_TYPE,
     chat_id: int,
     sess: ComposerSession,
-    *,
-    batch_count: int,
 ) -> None:
-    """After the last item in a batch: Done! + counts, then ONE panel kept up to date in place."""
+    """After the last item in a batch: update the single draft panel in place (no status spam)."""
     if sess.items:
         ids = [it.message_id for it in sess.items if it.message_id]
         if ids:
             sess.batch_anchor_max = max(ids)
-    n = len(sess.items)
-    photos, videos = _kind_counts(sess.items)
-    if _in_album_batch(sess):
-        await context.bot.send_message(
-            chat_id, f"✅ +{batch_count} added to the selected album ({n}/{ALBUM_CHUNK})."
-        )
-        await _sync_panel(context, chat_id, sess)
-        return
-    size = _batch_chunk_size(sess)
-    n_albums = (n + size - 1) // size
-    album_calc = f" → 📦 {n_albums} album(s) of ≤{size}"
-    if batch_count <= 1:
-        done_text = f"✅ Done! ({n}/{MAX_STAGED} · {photos}📷 {videos}🎬){album_calc}"
-    else:
-        done_text = f"✅ Done! +{batch_count} added ({n}/{MAX_STAGED} · {photos}📷 {videos}🎬){album_calc}"
-    await context.bot.send_message(chat_id, done_text)
-    # No media re-copy, no panel respawn: edit the existing panel (create only the first time).
-    await _sync_panel(context, chat_id, sess)
+    # Re-post the editor menu at the bottom so it stays visible after large uploads.
+    await _sync_panel(context, chat_id, sess, pin_bottom=True)
 
 
 async def _display_album_media(context: ContextTypes.DEFAULT_TYPE, chat_id: int, entry: AlbumEntry) -> None:
@@ -1001,6 +1153,8 @@ async def _display_album_media(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         sender = bot.send_video if it.kind == "video" else bot.send_photo
         msg = await sender(chat_id, it.file_id, **kw)
         entry.media_message_ids = [msg.message_id]
+        if entry.items:
+            entry.items[0].message_id = msg.message_id
         return
     media = []
     for j, it in enumerate(items):
@@ -1009,6 +1163,8 @@ async def _display_album_media(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         media.append(cls(media=it.file_id, caption=c, parse_mode=ParseMode.HTML if c else None))
     msgs = await bot.send_media_group(chat_id, media)
     entry.media_message_ids = [m.message_id for m in msgs]
+    for it, mid in zip(entry.items, entry.media_message_ids):
+        it.message_id = mid
 
 
 async def _make_albums(context: ContextTypes.DEFAULT_TYPE, query, sess: ComposerSession) -> None:
@@ -1067,7 +1223,7 @@ async def _make_albums(context: ContextTypes.DEFAULT_TYPE, query, sess: Composer
         await asyncio.sleep(0.5)  # stay under Telegram flood limits across large batches
 
     sess.items = []
-    await _activate_album(context, chat_id, sess, total - 1)
+    await _activate_album(context, chat_id, sess, total - 1, pin_bottom=True)
     done = f"📦 {total} album(s) ready — staged media split into albums of ≤{size}{promo_note}."
     if failures:
         done += f"\n⚠️ {failures} album(s) failed to display (reported to error hub; still in batch)."
@@ -1079,7 +1235,12 @@ async def _make_albums(context: ContextTypes.DEFAULT_TYPE, query, sess: Composer
 
 
 async def _activate_album(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int, sess: ComposerSession, idx: int
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    sess: ComposerSession,
+    idx: int,
+    *,
+    pin_bottom: bool = False,
 ) -> None:
     """Move the 'current selection' — full menu to album idx, minimal button elsewhere."""
     total = len(sess.albums)
@@ -1115,6 +1276,9 @@ async def _activate_album(
     entry = sess.albums[idx]
     sess.active_album_idx = idx
     _load_entry_into_session(sess, entry)
+    ids = [it.message_id for it in sess.items if it.message_id]
+    if ids:
+        sess.batch_anchor_max = max(ids)
     sess.panel_chat_id = entry.chat_id
     sess.panel_message_id = entry.menu_message_id
     try:
@@ -1128,6 +1292,9 @@ async def _activate_album(
     except Exception as e:
         if "not modified" not in str(e).lower():
             logger.debug("promote header edit failed: %s", e)
+    if pin_bottom:
+        await _sync_panel(context, chat_id, sess, pin_bottom=True)
+        return
     try:
         await bot.edit_message_text(
             _selection_panel_text(sess),
@@ -1141,7 +1308,7 @@ async def _activate_album(
         if "not modified" not in str(e).lower():
             logger.debug("promote menu edit failed, recreating: %s", e)
             sess.panel_message_id = None
-            await _sync_panel(context, chat_id, sess)
+            await _sync_panel(context, chat_id, sess, pin_bottom=True)
 
 
 async def _after_album_posted(
@@ -1189,9 +1356,16 @@ async def _sync_panel_from_message(
     message,
     context: ContextTypes.DEFAULT_TYPE,
     sess: ComposerSession,
+    *,
+    pin_bottom: bool = False,
 ) -> None:
-    """Refresh the options panel below the chat (edit existing or post new)."""
-    await _sync_panel(context, message.chat_id, sess, force_new=not sess.panel_message_id)
+    """Refresh the options panel (optionally re-post at the bottom of the chat)."""
+    await _sync_panel(
+        context,
+        message.chat_id,
+        sess,
+        pin_bottom=pin_bottom or not sess.panel_message_id,
+    )
 
 
 def _remember_panel(sess: ComposerSession, message) -> None:
@@ -1203,7 +1377,7 @@ def _remember_panel(sess: ComposerSession, message) -> None:
 async def _reset_session_keep_panel(context: ContextTypes.DEFAULT_TYPE) -> ComposerSession:
     old = _session(context)
     chat_id, msg_id = old.panel_chat_id, old.panel_message_id
-    context.user_data[SESSION_KEY] = ComposerSession()
+    context.chat_data[SESSION_KEY] = ComposerSession()
     sess = _session(context)
     if chat_id and msg_id:
         sess.panel_chat_id = chat_id
@@ -1213,7 +1387,7 @@ async def _reset_session_keep_panel(context: ContextTypes.DEFAULT_TYPE) -> Compo
 
 
 def _cancel_solo_batch(context: ContextTypes.DEFAULT_TYPE) -> None:
-    task = context.user_data.get(SOLO_BATCH_KEY, {}).get("task")
+    task = context.chat_data.get(SOLO_BATCH_KEY, {}).get("task")
     if task:
         task.cancel()
 
@@ -1226,6 +1400,7 @@ async def _add_staged(
     name: str,
 ) -> None:
     sess = _session(context)
+    _capture_forum_topic(sess, message)
     if _in_album_batch(sess):
         if len(sess.items) >= ALBUM_CHUNK:
             await message.reply_text(
@@ -1237,7 +1412,7 @@ async def _add_staged(
         return
     sess.items.append(StagedItem(file_id=file_id, kind=kind, name=name, message_id=message.message_id))
 
-    bucket = context.user_data.setdefault(SOLO_BATCH_KEY, {"count": 0, "chat_id": message.chat_id, "task": None})
+    bucket = context.chat_data.setdefault(SOLO_BATCH_KEY, {"count": 0, "chat_id": message.chat_id, "task": None})
     bucket["count"] += 1
     bucket["chat_id"] = message.chat_id
     if bucket["task"]:
@@ -1245,18 +1420,19 @@ async def _add_staged(
 
     async def flush_solo() -> None:
         await asyncio.sleep(SOLO_BATCH_DELAY)
-        entry = context.user_data.pop(SOLO_BATCH_KEY, None)
+        entry = context.chat_data.pop(SOLO_BATCH_KEY, None)
         if not entry:
             return
         try:
-            await _finalize_media_batch(
-                context,
-                entry["chat_id"],
-                _session(context),
-                batch_count=entry["count"],
-            )
+            async with _intake_lock(context):
+                await _finalize_media_batch(
+                    context,
+                    entry["chat_id"],
+                    _session(context),
+                )
         except Exception as e:
             logger.warning("solo batch finalize: %s", e)
+            report_bot_error("album-composer-bot", "solo batch finalize", e)
 
     bucket["task"] = asyncio.create_task(flush_solo())
 
@@ -1282,32 +1458,23 @@ def _detect_kind(message) -> tuple[str, str] | None:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
+    sess = _session(context)
     await update.message.reply_text(
         "<b>TBCC Album Composer</b>\n\n"
         "Send photos and videos here to build an album (lite extension).\n\n"
         "<b>Flow</b>\n"
         "1. Send media (single or album)\n"
-        "2. Set caption · Insert promos/snippets · Add buttons\n"
-        "3. Toggle promo tail · Shuffle · <b>Crop/watermarks</b> if needed\n"
-        "4. Post to channel or send to Saved Messages\n\n"
-        "<b>Workshop</b> — media stays visible while you edit. <b>Preview post</b> shows caption + buttons.\n"
-        "<b>📦 Make album(s)</b> — split staged media into albums of ≤10 (up to 100). Each album gets an "
-        "<b>Album draft</b> header above it and a menu below; the full menu follows your current "
-        "selection — tap <b>Open main menu</b> under any album to remix that one.\n"
-        "<b>Save draft</b> / <b>My drafts</b> keep posts for reuse.\n\n"
-        "<b>Commands</b>\n"
-        "/caption … — set caption\n"
-        "/crop … — trim edges / blur watermarks (photos only)\n"
-        "  e.g. <code>/crop 8% bottom</code> · <code>/crop blur bottom 12%</code> · <code>/crop off</code>\n"
-        "/button Label|URL — add inline button\n"
-        "/preview — preview current post\n"
-        "/shuffle — randomize order\n"
-        "/clear — remove staged media (keeps caption & buttons)\n"
-        "/savecaption — save caption to TBCC library\n"
-        "/savepromo Label|URL — save promo link to library\n"
-        "/status — show draft",
+        "2. Use the <b>workshop menu</b> below — caption, buttons, crop, post\n"
+        "3. <b>Split to emojis</b> on the menu for emoji-pack grids\n"
+        "4. <b>Preview post</b> before you send · <b>Make album(s)</b> to split large batches\n\n"
+        "<b>Commands</b> /menu · /preview · /caption · /crop · /clear · /emoji_pack\n"
+        "The menu stays pinned at the bottom while you work.",
         parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🛠 Open workshop menu", callback_data="ac:panel")]]
+        ),
     )
+    await _sync_panel(context, update.effective_chat.id, sess, pin_bottom=True)
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1326,19 +1493,27 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     sess = _session(context)
     n = _clear_staged_media(sess)
-    context.user_data.pop(AWAIT_KEY, None)
+    context.chat_data.pop(AWAIT_KEY, None)
     await update.message.reply_text(
         f"Cleared {n} staged item(s). Caption and buttons kept.",
         reply_markup=_back_keyboard(sess),
     )
     await _clear_workshop_preview(context, update.effective_chat.id, sess)
-    await _sync_panel(context, update.effective_chat.id, sess)
+    await _sync_panel(context, update.effective_chat.id, sess, pin_bottom=True)
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-post the full editor menu at the bottom of the chat."""
+    if await _deny_unauthorized(update):
+        return
+    sess = _session(context)
+    await _sync_panel(context, update.effective_chat.id, sess, pin_bottom=True)
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
-    await _sync_panel_from_message(update.message, context, _session(context))
+    await cmd_menu(update, context)
 
 
 async def cmd_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1464,7 +1639,7 @@ async def cmd_caption(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = " ".join(context.args or []).strip()
     sess = _session(context)
     if not text:
-        context.user_data[AWAIT_KEY] = "caption"
+        context.chat_data[AWAIT_KEY] = "caption"
         await update.message.reply_text("Send the caption text (HTML supported).")
         return
     sess.caption = text
@@ -1478,7 +1653,7 @@ async def cmd_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     raw = " ".join(context.args or []).strip()
     sess = _session(context)
     if "|" not in raw:
-        context.user_data[AWAIT_KEY] = "button"
+        context.chat_data[AWAIT_KEY] = "button"
         await update.message.reply_text(
             f"Send button as: <code>Label|https://…</code>{_album_buttons_limit_note(sess)}",
             parse_mode=ParseMode.HTML,
@@ -1689,7 +1864,7 @@ async def _saved_batch_fast(
 ) -> dict:
     try:
         use_slow = bool(crop or watermark)
-        timeout = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=10.0) if use_slow else _HTTP_INTERACTIVE
+        timeout = httpx.Timeout(connect=5.0, read=300.0, write=60.0, pool=10.0) if use_slow else _HTTP_INTERACTIVE
         async with httpx.AsyncClient(timeout=timeout) as client:
             payload = {
                 "media_count": media_count,
@@ -1818,7 +1993,7 @@ async def _post_channel_fast(
         body["watermark"] = wm
     try:
         use_slow = _bytes_pipeline(sess)
-        timeout = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=10.0) if use_slow else _HTTP_INTERACTIVE
+        timeout = httpx.Timeout(connect=5.0, read=300.0, write=60.0, pool=10.0) if use_slow else _HTTP_INTERACTIVE
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(f"{API_BASE}/forum/post-album-from-bot", json=body)
     except httpx.TimeoutException:
@@ -1836,6 +2011,114 @@ async def _post_channel_fast(
     if r.status_code >= 400 and not data.get("error"):
         data = {"ok": False, "error": f"HTTP {r.status_code}"}
     return data
+
+
+async def _erome_upload_fast(
+    media_count: int,
+    message_ids: list[int],
+    anchor_max: int | None,
+    sess: ComposerSession,
+    bot_username: str,
+) -> dict:
+    body: dict = {
+        "media_count": media_count,
+        "message_ids": message_ids,
+        "anchor_max_message_id": anchor_max,
+        "bot_username": bot_username,
+        "caption": sess.caption,
+    }
+    title = _erome_title_for_upload(sess)
+    tags = _erome_tags_list(sess)
+    if title:
+        body["title"] = title
+    if tags:
+        body["tags"] = tags
+    files = _files_api_payload(sess)
+    if files:
+        body["files"] = files
+    crop = _crop_api_payload(sess)
+    if crop:
+        body["crop"] = crop
+    wm = _watermark_api_payload(sess)
+    if wm:
+        body["watermark"] = wm
+    elif not sess.watermark_skip:
+        body["watermark"] = {"enabled": True}
+    try:
+        timeout = httpx.Timeout(connect=5.0, read=600.0, write=120.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(f"{API_BASE}/forum/erome-upload-from-bot", json=body)
+    except httpx.TimeoutException:
+        return {"ok": False, "error": "TBCC timed out during Erome upload (Playwright may still be running)."}
+    except httpx.ConnectError:
+        return {"ok": False, "error": f"Cannot reach TBCC API at {API_BASE}. Is TBCC-Backend running?"}
+    except httpx.HTTPError as e:
+        return {"ok": False, "error": f"API error: {e}"}
+    if r.status_code == 404:
+        return {"ok": False, "error": "Backend missing erome-upload-from-bot route — restart TBCC-Backend."}
+    try:
+        data = r.json()
+    except Exception:
+        return {"ok": False, "error": r.text[:300] or f"HTTP {r.status_code}"}
+    if r.status_code >= 400 and not data.get("error"):
+        data = {"ok": False, "error": f"HTTP {r.status_code}"}
+    return data
+
+
+async def _execute_erome_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    msg = query.message if query else update.effective_message
+    sess = _session(context)
+    if not sess.items:
+        text = "No media staged. Send photos/videos first."
+        if query:
+            await query.answer(text, show_alert=True)
+        else:
+            await msg.reply_text(text)
+        return
+    if not _is_erome_lane(sess):
+        text = "Post media in the **Remote Upload Links** subtopic, or tap 🔗 Use Erome lane."
+        if query:
+            await query.answer("Not in Erome lane", show_alert=True)
+        else:
+            await msg.reply_text(text, parse_mode=ParseMode.HTML)
+        return
+
+    pipe_note = ""
+    if _crop_applies(sess) and (_bytes_pipeline(sess) or not sess.watermark_skip):
+        pipe_note = " (crop + watermark…)"
+    elif _crop_applies(sess):
+        pipe_note = " (cropping photos…)"
+    elif not sess.watermark_skip:
+        pipe_note = " (watermark…)"
+    status_msg = await msg.reply_text("Uploading to Erome…" + pipe_note)
+    await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+
+    try:
+        bot_user = await _bot_username(context)
+    except RuntimeError as e:
+        await status_msg.edit_text(str(e))
+        return
+
+    message_ids = [it.message_id for it in sess.items if it.message_id]
+    media_count = len(sess.items)
+    anchor_max = sess.batch_anchor_max or (max(message_ids) if message_ids else None)
+    result = await _erome_upload_fast(media_count, message_ids, anchor_max, sess, bot_user)
+    if not result.get("ok"):
+        err = result.get("error") or "Erome upload failed"
+        if result.get("policy_blocked"):
+            err = f"Policy blocked: {err}"
+        report_bot_error("album-composer-bot", "erome upload", err)
+        await status_msg.edit_text(f"Erome upload failed: {err}")
+        return
+
+    reply = result.get("reply_text") or (
+        f"✅ Erome album published\n\n{result.get('title') or 'Album'} — "
+        f"{result.get('file_count') or media_count} file(s)\n{result.get('album_url') or ''}"
+    )
+    await status_msg.edit_text(reply)
+    if not _in_album_batch(sess):
+        await _reset_session_keep_panel(context)
 
 
 async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -1953,6 +2236,31 @@ async def _execute_send(
     )
 
 
+async def _safe_edit_callback_panel(
+    context: ContextTypes.DEFAULT_TYPE,
+    query,
+    sess: ComposerSession,
+) -> None:
+    text = _selection_panel_text(sess)
+    markup = _main_keyboard(sess)
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        err = str(e).lower()
+        if "message is not modified" in err:
+            return
+        logger.debug("callback panel edit failed, recreating: %s", e)
+        if query.message:
+            sess.panel_chat_id = None
+            sess.panel_message_id = None
+            await _sync_panel(context, query.message.chat_id, sess, pin_bottom=True)
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
@@ -1976,33 +2284,104 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _make_albums(context, query, sess)
         return
 
+    if data == "ac:emojipack":
+        await _safe_callback_answer(query)
+        await query.message.reply_text(
+            _emoji_pack_help_text(),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_emoji_pack_menu_keyboard(),
+        )
+        return
+
+    if data.startswith("ac:emojipack:"):
+        await _safe_callback_answer(query)
+        opts = _emoji_pack_options_from_callback(data)
+        if opts is None:
+            await query.answer("Unknown emoji grid", show_alert=True)
+            return
+        await _execute_emoji_pack(update, context, opts)
+        return
+
     if data.startswith("ac:alb:"):
         await query.answer()
         try:
             idx = int(data.split(":")[-1])
         except ValueError:
             return
-        await _activate_album(context, query.message.chat_id, sess, idx)
+        await _activate_album(context, query.message.chat_id, sess, idx, pin_bottom=True)
         return
 
-    await query.answer()
+    await _safe_callback_answer(query)
+
+    if data == "ac:depositstaged":
+        from app.services.tbcc_telegram_admin import can_operate_storage_hub_bot_api
+        from bots.storage_hub_deposit_bot import _run_deposit_job, album_composer_storage_deposit_enabled
+
+        if not album_composer_storage_deposit_enabled():
+            await query.answer("Deposit disabled in .env", show_alert=True)
+            return
+        if not can_operate_storage_hub_bot_api(update):
+            await query.answer("Admin only", show_alert=True)
+            return
+        if not sess.thread_id:
+            await query.answer("Open a mapped Storage Hub topic first", show_alert=True)
+            return
+        ids = [int(i.message_id) for i in sess.items if int(i.message_id or 0) > 0]
+        if not ids:
+            await query.answer("Stage media first", show_alert=True)
+            return
+        await query.answer("Queuing staged deposit…")
+        await _run_deposit_job(
+            update,
+            context,
+            message_thread_id=int(sess.thread_id),
+            limit=len(ids),
+            media_types=(os.getenv("TBCC_STORAGE_DEPOSIT_MEDIA_TYPES") or "videos").strip().lower(),
+            staged_message_ids=ids,
+            reply_msg=query.message,
+        )
+        return
+
+    if data.startswith("ac:deposit:"):
+        from app.services.tbcc_telegram_admin import can_operate_storage_hub_bot_api
+        from app.services.storage_topic_deposit import default_deposit_media_types, resolve_deposit_limit
+        from bots.storage_hub_deposit_bot import _run_deposit_job, album_composer_storage_deposit_enabled
+
+        if not album_composer_storage_deposit_enabled():
+            await query.answer("Deposit disabled in .env", show_alert=True)
+            return
+        if not can_operate_storage_hub_bot_api(update):
+            await query.answer("Admin only", show_alert=True)
+            return
+        if not sess.thread_id:
+            await query.answer("Open a mapped Storage Hub topic first", show_alert=True)
+            return
+        try:
+            lim = resolve_deposit_limit(int(data.split(":", 2)[-1]))
+        except (TypeError, ValueError):
+            lim = 5
+        await query.answer(f"Queuing deposit {lim}…")
+        await _run_deposit_job(
+            update,
+            context,
+            message_thread_id=int(sess.thread_id),
+            limit=lim,
+            media_types=default_deposit_media_types(),
+            reply_msg=query.message,
+        )
+        return
 
     if data == "ac:panel":
         if _in_album_batch(sess) and query.message.message_id != sess.panel_message_id:
-            # Keep the one-main-menu invariant: drop the sub-menu, refresh the album menu.
+            # Keep the one-main-menu invariant: drop the sub-menu, refresh the album menu at the bottom.
             try:
                 await query.message.delete()
             except Exception:
                 pass
-            await _sync_panel(context, query.message.chat_id, sess)
+            await _sync_panel(context, query.message.chat_id, sess, pin_bottom=True)
             return
         _remember_panel(sess, query.message)
-        await query.edit_message_text(
-            _selection_panel_text(sess),
-            parse_mode=ParseMode.HTML,
-            reply_markup=_main_keyboard(sess),
-            disable_web_page_preview=True,
-        )
+        await _sync_panel(context, query.message.chat_id, sess, pin_bottom=True)
         return
 
     if data == "ac:save":
@@ -2017,7 +2396,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if data == "ac:savenamed":
-        context.user_data[AWAIT_KEY] = "save_draft"
+        context.chat_data[AWAIT_KEY] = "save_draft"
         await query.message.reply_text("Send a name for this draft (or /cancel).")
         return
 
@@ -2105,7 +2484,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pct, side = parts[3], parts[4] if len(parts) > 4 else "bottom"
             note = _apply_crop_phrase(sess, f"blur {side} {pct}%")
         elif len(parts) >= 4 and parts[2] == "custom":
-            context.user_data[AWAIT_KEY] = "crop"
+            context.chat_data[AWAIT_KEY] = "crop"
             await query.message.reply_text(
                 "Send crop instruction, e.g. <code>8% bottom</code> or <code>blur bottom 12%</code>",
                 parse_mode=ParseMode.HTML,
@@ -2121,8 +2500,84 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _refresh_workshop(context, query.message.chat_id, sess)
         return
 
+    if data == "ac:eromemenu":
+        if not _is_erome_lane(sess):
+            await _safe_callback_answer(query, "Tap 🔗 Use Erome lane first", show_alert=True)
+            return
+        await query.message.reply_text(
+            "<b>Erome upload</b> — crop/blur and watermark apply before Playwright publishes one album.\n"
+            f"Staged: <b>{len(sess.items)}</b> file(s)\n"
+            f"Watermark: <code>{html.escape(_watermark_status_label(sess))}</code>\n\n"
+            f"{_erome_meta_summary(sess)}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_erome_menu_keyboard(),
+        )
+        return
+
+    if data == "ac:erome:title":
+        await query.answer()
+        context.chat_data[AWAIT_KEY] = "erome_title"
+        await query.message.reply_text(
+            "Send the Erome album title (scenario-style, no @handles).\n"
+            "Example: Vietnamese MILF jiggly big boobs ready for sex"
+        )
+        return
+
+    if data == "ac:erome:tags":
+        await query.answer()
+        context.chat_data[AWAIT_KEY] = "erome_tags"
+        await query.message.reply_text(
+            "Send comma-separated Erome tags.\n"
+            "Example: milf, webcam, big tits, latina, full body"
+        )
+        return
+
+    if data == "ac:erome:suggest":
+        await query.answer()
+        from app.services.erome_title_suggest import suggest_erome_post
+
+        nk = (sess.erome_network_key or "").strip() or None
+        suggestion = suggest_erome_post(network_key=nk, format_hint="single_video")
+        if suggestion.get("title"):
+            sess.erome_title = str(suggestion["title"])[:120]
+        tag_list = suggestion.get("tags") or []
+        if tag_list:
+            sess.erome_tags = ", ".join(str(t) for t in tag_list[:12])
+        note = suggestion.get("content_notes") or suggestion.get("notes") or ""
+        views = suggestion.get("based_on_views")
+        extra = f"\nBased on {views} views." if views else ""
+        await query.message.reply_text(
+            f"<b>Suggested Erome post</b>{extra}\n\n{_erome_meta_summary(sess)}\n"
+            f"<i>{html.escape(str(note))}</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_erome_menu_keyboard(),
+        )
+        return
+
+    if data == "ac:erome:lane":
+        from app.services.erome_telegram_ingest import erome_storage_topic_id
+
+        tid = erome_storage_topic_id()
+        if not tid:
+            await query.answer("TBCC_EROME_STORAGE_TOPIC_ID not set", show_alert=True)
+            return
+        sess.thread_id = int(tid)
+        await query.answer("Erome lane active")
+        await query.message.reply_text(
+            f"Erome lane set (topic <code>{tid}</code>). Use 📤 Erome upload menu when ready.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_back_keyboard(sess),
+        )
+        await _refresh_workshop(context, query.message.chat_id, sess)
+        return
+
+    if data == "ac:erome:upload":
+        await query.answer()
+        await _execute_erome_upload(update, context)
+        return
+
     if data == "ac:caption":
-        context.user_data[AWAIT_KEY] = "caption"
+        context.chat_data[AWAIT_KEY] = "caption"
         await query.message.reply_text("Send the caption text (HTML supported).")
         return
 
@@ -2147,35 +2602,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "ac:promo":
         sess.promo_enabled = not sess.promo_enabled
         _remember_panel(sess, query.message)
-        await query.edit_message_text(
-            _selection_panel_text(sess),
-            parse_mode=ParseMode.HTML,
-            reply_markup=_main_keyboard(sess),
-            disable_web_page_preview=True,
-        )
+        await _safe_edit_callback_panel(context, query, sess)
         return
 
     if data == "ac:silent":
         sess.send_silent = not sess.send_silent
         _remember_panel(sess, query.message)
-        await query.edit_message_text(
-            _selection_panel_text(sess),
-            parse_mode=ParseMode.HTML,
-            reply_markup=_main_keyboard(sess),
-            disable_web_page_preview=True,
-        )
+        await _safe_edit_callback_panel(context, query, sess)
         return
 
     if data == "ac:shuffle":
         if len(sess.items) >= 2:
             random.shuffle(sess.items)
         _remember_panel(sess, query.message)
-        await query.edit_message_text(
-            _selection_panel_text(sess),
-            parse_mode=ParseMode.HTML,
-            reply_markup=_main_keyboard(sess),
-            disable_web_page_preview=True,
-        )
+        await _safe_edit_callback_panel(context, query, sess)
         if _in_album_batch(sess):
             repainted = await _reorder_album_display(context, sess)
             await _refresh_album_header(context, sess)
@@ -2303,7 +2743,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
-    await_mode = context.user_data.pop(AWAIT_KEY, None)
+    await_mode = context.chat_data.pop(AWAIT_KEY, None)
     if not await_mode:
         return
     text = (update.message.text or "").strip()
@@ -2324,7 +2764,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif await_mode == "button":
         if "|" not in text:
             await update.message.reply_text("Use format: Label|https://…")
-            context.user_data[AWAIT_KEY] = "button"
+            context.chat_data[AWAIT_KEY] = "button"
             return
         label, url = text.split("|", 1)
         label, url = label.strip(), url.strip()
@@ -2334,71 +2774,539 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _refresh_workshop(context, update.effective_chat.id, sess)
         else:
             await update.message.reply_text("Invalid button. Try again: Label|URL")
-            context.user_data[AWAIT_KEY] = "button"
+            context.chat_data[AWAIT_KEY] = "button"
+    elif await_mode == "erome_title":
+        sess.erome_title = text[:120]
+        await update.message.reply_text(
+            f"Erome title set.\n\n{_erome_meta_summary(sess)}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_erome_menu_keyboard(),
+        )
+    elif await_mode == "erome_tags":
+        sess.erome_tags = text[:500]
+        await update.message.reply_text(
+            f"Erome tags set.\n\n{_erome_meta_summary(sess)}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_erome_menu_keyboard(),
+        )
 
 
 async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
     message = update.message
-    detected = _detect_kind(message)
-    if not detected:
-        await message.reply_text("Send photos or videos only.")
+    caption = (message.caption or "").strip()
+    if caption.startswith("/emoji_pack"):
+        await cmd_emoji_pack(update, context)
         return
-    kind, name = detected
-    file_id = None
-    if message.photo:
-        file_id = message.photo[-1].file_id
-    elif message.video:
-        file_id = message.video.file_id
-    elif message.animation:
-        file_id = message.animation.file_id
-    elif message.document:
-        file_id = message.document.file_id
-    if not file_id:
-        return
-
-    mg_id = message.media_group_id
-    if not mg_id:
-        await _add_staged(message, context, kind, file_id, name)
-        return
-
-    groups: dict = context.application.bot_data.setdefault(MEDIA_GROUP_KEY, {})
-    bucket = groups.setdefault(mg_id, {"items": [], "task": None, "chat_id": message.chat_id, "msg_id": message.message_id})
-    bucket["items"].append((kind, file_id, name, message.message_id))
-    bucket["chat_id"] = message.chat_id
-    bucket["msg_id"] = message.message_id
-
-    if bucket["task"]:
-        bucket["task"].cancel()
-    _cancel_solo_batch(context)
-
-    async def flush_group(gid: str) -> None:
-        await asyncio.sleep(MEDIA_GROUP_DELAY)
-        entry = groups.pop(gid, None)
-        if not entry:
+    try:
+        detected = _detect_kind(message)
+        if not detected:
+            await message.reply_text("Send photos or videos only.")
             return
-        sess = _session(context)
-        batch: list[StagedItem] = []
-        for k, fid, nm, mid in entry["items"]:
-            if len(sess.items) >= MAX_STAGED:
-                break
-            item = StagedItem(file_id=fid, kind=k, name=nm, message_id=mid)
-            sess.items.append(item)
-            batch.append(item)
-        if not batch:
+        kind, name = detected
+        file_id = None
+        if message.photo:
+            file_id = message.photo[-1].file_id
+        elif message.video:
+            file_id = message.video.file_id
+        elif message.animation:
+            file_id = message.animation.file_id
+        elif message.document:
+            file_id = message.document.file_id
+        if not file_id:
             return
+
+        mg_id = message.media_group_id
+        if not mg_id:
+            await _add_staged(message, context, kind, file_id, name)
+            return
+
+        groups: dict = context.application.bot_data.setdefault(MEDIA_GROUP_KEY, {})
+        bucket = groups.setdefault(mg_id, {"items": [], "task": None, "chat_id": message.chat_id, "msg_id": message.message_id})
+        bucket["items"].append((kind, file_id, name, message.message_id))
+        bucket["chat_id"] = message.chat_id
+        bucket["msg_id"] = message.message_id
+
+        if bucket["task"]:
+            bucket["task"].cancel()
+        _cancel_solo_batch(context)
+
+        async def flush_group(gid: str) -> None:
+            await asyncio.sleep(MEDIA_GROUP_DELAY)
+            entry = groups.pop(gid, None)
+            if not entry:
+                return
+            async with _intake_lock(context):
+                sess = _session(context)
+                batch: list[StagedItem] = []
+                item_limit = ALBUM_CHUNK if _in_album_batch(sess) else MAX_STAGED
+                for k, fid, nm, mid in entry["items"]:
+                    if len(sess.items) >= item_limit:
+                        break
+                    item = StagedItem(file_id=fid, kind=k, name=nm, message_id=mid)
+                    sess.items.append(item)
+                    batch.append(item)
+                if not batch:
+                    return
+                try:
+                    await _finalize_media_batch(
+                        context,
+                        entry["chat_id"],
+                        sess,
+                    )
+                except Exception as e:
+                    logger.warning("media group finalize: %s", e)
+                    report_bot_error("album-composer-bot", "media group finalize", e)
+
+        bucket["task"] = asyncio.create_task(flush_group(mg_id))
+    except Exception as e:
+        logger.exception("on_media failed")
+        report_bot_error("album-composer-bot", "on_media", e)
         try:
-            await _finalize_media_batch(
-                context,
-                entry["chat_id"],
-                sess,
-                batch_count=len(batch),
-            )
-        except Exception as e:
-            logger.warning("media group finalize: %s", e)
+            await message.reply_text(f"Could not stage media: {str(e)[:180]}")
+        except Exception:
+            pass
 
-    bucket["task"] = asyncio.create_task(flush_group(mg_id))
+
+# Grid presets (cols, rows). Max 10×10 per emoji-factory API; Telegram packs cap ~200 tiles.
+EMOJI_GRID_PRESETS: tuple[tuple[str, int, int], ...] = (
+    ("2×2", 2, 2),
+    ("3×3", 3, 3),
+    ("4×4", 4, 4),
+    ("5×5", 5, 5),
+    ("6×6", 6, 6),
+    ("8×8", 8, 8),
+    ("8×4", 8, 4),  # 32 tiles — common itosbot-style layout
+    ("4×8", 4, 8),
+)
+
+
+def _emoji_pack_menu_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(EMOJI_GRID_PRESETS), 3):
+        chunk = EMOJI_GRID_PRESETS[i : i + 3]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"{label} ({c * r})",
+                    callback_data=f"ac:emojipack:{c}x{r}",
+                )
+                for label, c, r in chunk
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton("Static 4×4", callback_data="ac:emojipack:4x4:static"),
+            InlineKeyboardButton("Upload 4×4", callback_data="ac:emojipack:4x4:upload"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton("Full 4×4", callback_data="ac:emojipack:4x4:full"),
+            InlineKeyboardButton("« Workshop", callback_data="ac:panel"),
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def _emoji_pack_help_text() -> str:
+    preset_hint = " ".join(f"<code>{c}x{r}</code>" for _, c, r in EMOJI_GRID_PRESETS[:6])
+    return (
+        "<b>Emoji pack</b> — split an image into Telegram custom emoji tiles (like "
+        "<a href=\"https://t.me/itosbot\">@itosbot</a>).\n\n"
+        "<b>How to use</b>\n"
+        "• Stage <b>one photo</b> (crop white margins first if your art has gutters)\n"
+        "• Tap a grid preset below, or reply with <code>/emoji_pack 8x8</code>\n"
+        "• Caption flag: <code>/emoji_pack 8x4 upload</code>\n\n"
+        "<b>Grids</b> (up to 10×10, ~200 tiles max): "
+        f"{preset_hint} …\n\n"
+        "<b>Flags</b>: <code>static</code> <code>upload</code> <code>dividers</code> "
+        "<code>preset</code> <code>full</code>\n\n"
+        "<i>Requires TBCC backend + ffmpeg + Celery. Upload needs admin Telethon.</i>"
+    )
+
+
+def _guess_upload_mime(filename: str) -> str:
+    low = (filename or "").lower()
+    if low.endswith(".png"):
+        return "image/png"
+    if low.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if low.endswith(".webp"):
+        return "image/webp"
+    if low.endswith(".gif"):
+        return "image/gif"
+    if low.endswith(".mp4"):
+        return "video/mp4"
+    if low.endswith(".webm"):
+        return "video/webm"
+    if low.endswith(".mov"):
+        return "video/quicktime"
+    return "application/octet-stream"
+
+
+async def _safe_callback_answer(query, text: str | None = None, *, show_alert: bool = False) -> None:
+    try:
+        await query.answer(text, show_alert=show_alert)
+    except Exception:
+        pass
+
+
+@dataclass
+class EmojiPackOptions:
+    cols: int = 4
+    rows: int = 4
+    static: bool = False
+    upload: bool = False
+    dry_run: bool = False
+    dividers: bool = False
+    preset: bool = False
+    title: str = "TBCC emoji pack"
+    short_name: str = ""
+
+
+def _apply_emoji_pack_mode(opts: EmojiPackOptions, mode: str) -> None:
+    token = (mode or "").strip().lower()
+    if token in ("static", "still"):
+        opts.static = True
+    elif token in ("upload", "telegram", "publish"):
+        opts.upload = True
+    elif token in ("full", "all"):
+        opts.upload = True
+        opts.dividers = True
+        opts.preset = True
+    elif token in ("dividers", "divider"):
+        opts.dividers = True
+    elif token in ("preset", "sketch"):
+        opts.preset = True
+        opts.upload = True
+
+
+def _emoji_pack_options_from_callback(data: str) -> EmojiPackOptions | None:
+    """Parse ac:emojipack:4x4, ac:emojipack:8x8:upload, ac:emojipack:split (legacy 4×4)."""
+    parts = data.split(":")
+    if len(parts) < 3 or parts[0] != "ac" or parts[1] != "emojipack":
+        return None
+    opts = EmojiPackOptions()
+    tail = parts[2:]
+    if not tail:
+        return opts
+    head = tail[0].strip().lower()
+    if head == "split":
+        return opts
+    m = re.match(r"^(\d+)x(\d+)$", head)
+    if m:
+        opts.cols = max(1, min(10, int(m.group(1))))
+        opts.rows = max(1, min(10, int(m.group(2))))
+        for extra in tail[1:]:
+            _apply_emoji_pack_mode(opts, extra)
+        return opts
+    _apply_emoji_pack_mode(opts, head)
+    for extra in tail[1:]:
+        _apply_emoji_pack_mode(opts, extra)
+    return opts
+
+
+def _parse_emoji_pack_args(text: str) -> EmojiPackOptions:
+    opts = EmojiPackOptions()
+    parts = (text or "").strip().split()
+    if parts and parts[0].startswith("/emoji_pack"):
+        parts = parts[1:]
+    for raw in parts:
+        token = raw.strip().lower()
+        if not token:
+            continue
+        m = re.match(r"^(\d+)x(\d+)$", token)
+        if m:
+            opts.cols = max(1, min(10, int(m.group(1))))
+            opts.rows = max(1, min(10, int(m.group(2))))
+            continue
+        if token in ("static", "still"):
+            opts.static = True
+            continue
+        if token in ("upload", "telegram", "publish"):
+            opts.upload = True
+            continue
+        if token in ("dry", "dry-run", "dryrun"):
+            opts.dry_run = True
+            opts.upload = True
+            continue
+        if token in ("dividers", "divider", "rows"):
+            opts.dividers = True
+            continue
+        if token in ("preset", "sketch", "sketchbook"):
+            opts.preset = True
+            continue
+        if token in ("full", "all"):
+            opts.upload = True
+            opts.dividers = True
+            opts.preset = True
+            continue
+        if token.startswith("title:"):
+            opts.title = raw.split(":", 1)[1].strip()[:64] or opts.title
+            continue
+        if token.startswith("name:"):
+            opts.short_name = raw.split(":", 1)[1].strip()[:64]
+            continue
+    if opts.preset and not opts.upload:
+        opts.upload = True
+    return opts
+
+
+def _emoji_pack_media_from_message(msg) -> tuple[str, str] | None:
+    if not msg:
+        return None
+    if msg.photo:
+        return msg.photo[-1].file_id, "photo.jpg"
+    if msg.video:
+        name = (msg.video.file_name or "video.mp4").strip() or "video.mp4"
+        return msg.video.file_id, name
+    if msg.animation:
+        name = (msg.animation.file_name or "clip.gif").strip() or "clip.gif"
+        return msg.animation.file_id, name
+    doc = msg.document
+    if doc:
+        mime = (doc.mime_type or "").lower()
+        name = (doc.file_name or "upload.bin").strip() or "upload.bin"
+        if mime.startswith("image/") or mime.startswith("video/"):
+            return doc.file_id, name
+        if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".mov", ".webm", ".mkv")):
+            return doc.file_id, name
+    return None
+
+
+async def _download_telegram_file(context: ContextTypes.DEFAULT_TYPE, file_id: str, filename: str) -> tuple[bytes, str]:
+    tg_file = await context.bot.get_file(file_id)
+    buf = BytesIO()
+    await tg_file.download_to_memory(out=buf)
+    return buf.getvalue(), filename
+
+
+async def _post_emoji_pack_async(file_bytes: bytes, filename: str, opts: EmojiPackOptions) -> dict:
+    mime = _guess_upload_mime(filename)
+    files = {"file": (filename, file_bytes, mime)}
+    data = {
+        "cols": str(opts.cols),
+        "rows": str(opts.rows),
+        "tile_px": "100",
+        "static": "true" if opts.static else "false",
+        "upload_telegram": "true" if opts.upload else "false",
+        "dry_run": "true" if opts.dry_run else "false",
+        "import_dividers": "true" if opts.dividers else "false",
+        "save_sketchbook_preset": "true" if opts.preset else "false",
+        "title": opts.title,
+        "short_name": opts.short_name,
+        "source": "album_composer_bot",
+    }
+    async with httpx.AsyncClient(timeout=_EMOJI_PACK_POLL_TIMEOUT) as client:
+        r = await client.post(f"{API_BASE}/emoji-factory/jobs/create-async", files=files, data=data)
+    if r.status_code >= 400:
+        detail = r.text[:400]
+        try:
+            body = r.json()
+            detail = str(body.get("detail") or detail)
+        except Exception:
+            pass
+        return {"ok": False, "error": detail}
+    body = r.json()
+    body["ok"] = True
+    return body
+
+
+async def _poll_emoji_pack_job(job_id: str, *, on_stage) -> dict:
+    deadline = asyncio.get_running_loop().time() + _EMOJI_PACK_JOB_TIMEOUT_S
+    last: dict = {"status": "queued", "stage": "queued"}
+    queued_since: float | None = None
+    async with httpx.AsyncClient(timeout=_EMOJI_PACK_POLL_TIMEOUT) as client:
+        while asyncio.get_running_loop().time() < deadline:
+            r = await client.get(f"{API_BASE}/emoji-factory/jobs/{job_id}/status")
+            if r.status_code >= 400:
+                return {"ok": False, "error": r.text[:300]}
+            last = r.json()
+            stage = str(last.get("stage") or last.get("status") or "…")
+            try:
+                await on_stage(stage, last)
+            except Exception:
+                pass
+            if last.get("terminal"):
+                last["ok"] = last.get("status") == "done"
+                return last
+            if last.get("status") == "queued":
+                if queued_since is None:
+                    queued_since = asyncio.get_running_loop().time()
+                elif asyncio.get_running_loop().time() - queued_since >= 15.0:
+                    kr = await client.post(f"{API_BASE}/emoji-factory/jobs/{job_id}/kick")
+                    if kr.status_code < 400:
+                        last = kr.json()
+                        if last.get("terminal"):
+                            last["ok"] = last.get("status") == "done"
+                            return last
+                    queued_since = None
+            else:
+                queued_since = None
+            await asyncio.sleep(2.0)
+    return {"ok": False, "error": f"Timed out waiting for job {job_id}", **last}
+
+
+def _format_emoji_pack_result(body: dict, opts: EmojiPackOptions) -> str:
+    if not body.get("ok"):
+        err = body.get("error") or "unknown error"
+        return f"❌ Emoji pack failed\n\n<code>{html.escape(str(err)[:500])}</code>"
+    split = body.get("split") if isinstance(body.get("split"), dict) else {}
+    upload = body.get("upload") if isinstance(body.get("upload"), dict) else {}
+    followup = body.get("followup") if isinstance(body.get("followup"), dict) else {}
+    tiles = split.get("tile_count", "?")
+    over = int(split.get("over_soft_limit") or 0)
+    lines = [
+        "✅ <b>Emoji pack ready</b>",
+        f"Grid: {opts.cols}×{opts.rows} · tiles: <b>{tiles}</b>",
+        f"Job: <code>{html.escape(str(body.get('job_id') or split.get('job_id') or '?'))}</code>",
+    ]
+    if over > 0:
+        lines.append(f"⚠️ {over} tile(s) over 256 KB soft limit — try <code>static</code> or smaller grid.")
+    if upload:
+        if upload.get("dry_run"):
+            lines.append(f"Dry-run pack: <code>{html.escape(str(upload.get('short_name') or '?'))}</code>")
+        else:
+            sn = upload.get("short_name") or "?"
+            lines.append(f"Pack: <code>{html.escape(str(sn))}</code>")
+            hint = upload.get("install_hint")
+            if hint:
+                lines.append(html.escape(str(hint))[:280])
+    if followup:
+        imported = followup.get("imported_dividers")
+        if isinstance(imported, list) and imported:
+            ok_rows = sum(1 for row in imported if isinstance(row, dict) and row.get("ok", True) and row.get("imported"))
+            lines.append(f"Row dividers imported: {ok_rows}/{len(imported)}")
+        preset = followup.get("sketchbook_preset")
+        if isinstance(preset, dict):
+            if preset.get("ok"):
+                lines.append(f"Sketchbook preset saved (#{preset.get('id')}).")
+            elif preset.get("error"):
+                lines.append(f"Sketchbook preset skipped: {html.escape(str(preset['error'])[:120])}")
+    lines.append(
+        "\n<i>Usage: reply to media with</i> <code>/emoji_pack 4x4 upload dividers preset</code>"
+    )
+    return "\n".join(lines)
+
+
+def _resolve_emoji_pack_media(update: Update, sess: ComposerSession) -> tuple[str, str] | None:
+    msg = update.effective_message
+    if not msg:
+        return None
+    target = msg.reply_to_message if msg.reply_to_message else msg
+    media = _emoji_pack_media_from_message(target)
+    if media:
+        return media
+    if len(sess.items) == 1 and sess.items[0].kind == "photo":
+        it = sess.items[0]
+        return it.file_id, it.name
+    return None
+
+
+async def _execute_emoji_pack(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    opts: EmojiPackOptions,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    sess = _session(context)
+    media = _resolve_emoji_pack_media(update, sess)
+    if not media:
+        await msg.reply_text(
+            _emoji_pack_help_text(),
+            parse_mode=ParseMode.HTML,
+            reply_markup=_emoji_pack_menu_keyboard(),
+        )
+        return
+
+    file_id, filename = media
+    status = await msg.reply_text(
+        f"🧩 Queuing emoji split ({opts.cols}×{opts.rows})…",
+        parse_mode=ParseMode.HTML,
+    )
+    try:
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        file_bytes, filename = await _download_telegram_file(context, file_id, filename)
+        queued = await _post_emoji_pack_async(file_bytes, filename, opts)
+        if not queued.get("ok"):
+            await status.edit_text(_format_emoji_pack_result(queued, opts), parse_mode=ParseMode.HTML)
+            return
+        job_id = str(queued.get("job_id") or "")
+        if not job_id:
+            await status.edit_text("❌ API did not return a job_id.", parse_mode=ParseMode.HTML)
+            return
+
+        async def _on_stage(stage: str, _payload: dict) -> None:
+            label = {
+                "queued": "Queued…",
+                "splitting": "Splitting grid (ffmpeg)…",
+                "uploading": "Uploading pack to Telegram…",
+                "followup": "Importing dividers / sketchbook preset…",
+                "done": "Done.",
+                "failed": "Failed.",
+            }.get(stage, stage)
+            try:
+                await status.edit_text(
+                    f"🧩 <b>{html.escape(label)}</b>\nJob <code>{html.escape(job_id)}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+
+        result = await _poll_emoji_pack_job(job_id, on_stage=_on_stage)
+        await status.edit_text(_format_emoji_pack_result(result, opts), parse_mode=ParseMode.HTML)
+    except httpx.ConnectError:
+        await status.edit_text(
+            f"Cannot reach TBCC API at <code>{html.escape(API_BASE)}</code>. "
+            "Start TBCC-Backend, then retry.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.exception("emoji_pack failed")
+        report_bot_error("album-composer-bot", "emoji_pack", e)
+        await status.edit_text(
+            f"❌ Emoji pack error\n\n<code>{html.escape(str(e)[:400])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def cmd_emoji_pack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _deny_unauthorized(update):
+        return
+    msg = update.effective_message
+    if not msg:
+        return
+    opts = _parse_emoji_pack_args(msg.text or msg.caption or "")
+    await _execute_emoji_pack(update, context, opts)
+
+
+async def cmd_deposit_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_hub_deposit_bot import cmd_deposit
+
+    await cmd_deposit(update, context, bot_label="album-composer")
+
+
+async def cmd_deposit_staged_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_hub_deposit_bot import cmd_deposit_staged
+
+    sess = _session(context)
+    if not sess.thread_id:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text("Stage media in a Storage Hub topic, then run /depositstaged.")
+        return
+    ids = [int(i.message_id) for i in sess.items if int(i.message_id or 0) > 0]
+    await cmd_deposit_staged(
+        update,
+        context,
+        message_ids=ids,
+        message_thread_id=int(sess.thread_id),
+        bot_label="album-composer",
+    )
 
 
 async def post_init(application: Application) -> None:
@@ -2408,7 +3316,8 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Album composer help"),
-            BotCommand("status", "Show draft"),
+            BotCommand("menu", "Open editor menu (bottom of chat)"),
+            BotCommand("status", "Open editor menu (alias)"),
             BotCommand("shuffle", "Shuffle media order"),
             BotCommand("crop", "Crop edges / blur watermarks"),
             BotCommand("watermark", "Promo text burn-in settings"),
@@ -2417,8 +3326,26 @@ async def post_init(application: Application) -> None:
             BotCommand("preview", "Preview post with buttons"),
             BotCommand("drafts", "List saved drafts"),
             BotCommand("clear", "Clear staged media only"),
+            BotCommand("emoji_pack", "Split media into Telegram emoji pack"),
+            BotCommand("deposit", "Queue N items into this topic's pool"),
+            BotCommand("depositstaged", "Deposit staged workshop media"),
         ]
     )
+    try:
+        from bots.storage_hub_deposit_bot import album_composer_storage_deposit_enabled
+        from app.services.storage_topic_deposit import storage_hub_chat_id_int
+
+        if album_composer_storage_deposit_enabled():
+            await application.bot.set_my_commands(
+                [
+                    BotCommand("deposit", "Queue N deduped items into this topic's pool"),
+                    BotCommand("depositstaged", "Deposit staged items to pool + SENT CACHE"),
+                    BotCommand("menu", "Workshop menu"),
+                ],
+                scope=BotCommandScopeChat(chat_id=storage_hub_chat_id_int()),
+            )
+    except Exception as e:
+        logger.debug("album composer storage hub command scope: %s", e)
 
 
 def main() -> None:
@@ -2443,6 +3370,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("clear", cmd_clear))
+    app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("shuffle", cmd_shuffle))
     app.add_handler(CommandHandler("crop", cmd_crop))
@@ -2453,6 +3381,9 @@ def main() -> None:
     app.add_handler(CommandHandler("drafts", cmd_drafts))
     app.add_handler(CommandHandler("savecaption", cmd_savecaption))
     app.add_handler(CommandHandler("savepromo", cmd_savepromo))
+    app.add_handler(CommandHandler("emoji_pack", cmd_emoji_pack))
+    app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
+    app.add_handler(CommandHandler("depositstaged", cmd_deposit_staged_composer))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ac:"))
     app.add_error_handler(make_error_handler("album-composer-bot"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

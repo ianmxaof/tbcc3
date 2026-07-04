@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "sites": [
     {
       "id": "coomer",
@@ -47,7 +47,7 @@
       "id": "cumcams",
       "name": "CumCams",
       "category": "macro",
-      "url": "https://cumcams.cc/?s={username}"
+      "url": "https://cumcams.cc/performer/{username}"
     },
     {
       "id": "cloudbate",
@@ -77,7 +77,7 @@
       "id": "bestcam_macro",
       "name": "BestCam",
       "category": "macro",
-      "url": "https://bestcam.tv/search/{username}"
+      "url": "https://bestcam.tv/model/{username}"
     },
     {
       "id": "camshowrecordings_net",
@@ -89,7 +89,7 @@
       "id": "onscreens",
       "name": "OnScreens",
       "category": "macro",
-      "url": "https://www.onscreens.me/search?q={username}"
+      "url": "https://www.onscreens.me/m/{username}"
     },
     {
       "id": "girlsinprivates",
@@ -125,7 +125,7 @@
       "id": "camshowrecordings_com",
       "name": "Cam Show Recordings (.com)",
       "category": "macro",
-      "url": "https://www.camshowrecordings.com/search/{username}"
+      "url": "https://www.camshowrecordings.com/model/{username}"
     },
     {
       "id": "webcamrecs",
@@ -342,6 +342,90 @@
       "name": "Fapello",
       "category": "macro",
       "url": "https://fapello.com/search/{username}"
+    },
+    {
+      "id": "archivebate",
+      "name": "Archivebate",
+      "category": "macro",
+      "url": "https://archivebate.com/profile/{username}"
+    },
+    {
+      "id": "showcamrips",
+      "name": "Showcamrips",
+      "category": "macro",
+      "url": "https://showcamrips.com/model/en/{username}"
+    },
+    {
+      "id": "topcamvideos",
+      "name": "TopCamVideos",
+      "category": "macro",
+      "url": "https://www.topcamvideos.com/showall/?search={username}"
+    },
+    {
+      "id": "lovecamporn",
+      "name": "LoveCamPorn",
+      "category": "macro",
+      "url": "https://lovecamporn.com/showall/?search={username}"
+    },
+    {
+      "id": "stream_leak",
+      "name": "StreamLeak",
+      "category": "macro",
+      "url": "https://stream-leak.com/models/{username}/"
+    },
+    {
+      "id": "mfcamhub",
+      "name": "MFCamHub",
+      "category": "macro",
+      "url": "https://mfcamhub.com/models/{username}/"
+    },
+    {
+      "id": "camshowrecord_net",
+      "name": "CamShowRecord.net",
+      "category": "macro",
+      "url": "https://camshowrecord.net/video/list?page=1&model={username}"
+    },
+    {
+      "id": "camwhoresbay",
+      "name": "CamWhoresBay",
+      "category": "macro",
+      "url": "https://www.camwhoresbay.com/search/{username}/"
+    },
+    {
+      "id": "camsave1",
+      "name": "CamSave",
+      "category": "macro",
+      "url": "https://www.camsave1.com/?search={username}&women=true"
+    },
+    {
+      "id": "livecamrips_to",
+      "name": "LiveCamRips",
+      "category": "macro",
+      "url": "https://livecamrips.to/search/{username}/1"
+    },
+    {
+      "id": "allmy_cam",
+      "name": "AllMyCam",
+      "category": "macro",
+      "url": "https://allmy.cam/search/{username}/"
+    },
+    {
+      "id": "livecamsrip_com",
+      "name": "LiveCamsRip",
+      "category": "macro",
+      "url": "https://www.livecamsrip.com/{username}/profile"
+    },
+    {
+      "id": "camsrip_com",
+      "name": "CamsRip",
+      "category": "macro",
+      "url": "https://camsrip.com/{username}/profile"
+    },
+    {
+      "id": "camwhores_macro",
+      "name": "CamWhores.tv",
+      "category": "macro",
+      "url": "https://www.camwhores.tv/search/{username}/"
     }
   ]
 }

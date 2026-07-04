@@ -26,7 +26,20 @@ REDIS_DISMISSED_SET = "tbcc:growth_signals:proposals_dismissed"
 
 # Signal type -> (action_kind, param builder). Only the actionable core signals
 # become proposals; observational ones (hub_web, industry_benchmark) do not.
-_ACTIONABLE = {"peak_post_hour", "caption_slot_winner", "channel_view_leader", "conversion_hour"}
+_ACTIONABLE = {
+    "peak_post_hour",
+    "caption_slot_winner",
+    "channel_view_leader",
+    "conversion_hour",
+    "boost_lane_export",
+    "increase_pool_cadence",
+    "export_to_surface",
+    "lane_view_leader",
+    "lane_conversion_leader",
+    "pool_backlog_pressure",
+    "cache_stale_risk",
+    "surface_roi",
+}
 
 
 def _identity(signal: dict[str, Any]) -> str:
@@ -44,7 +57,13 @@ def _identity(signal: dict[str, Any]) -> str:
         return f"channel_view_leader:{signal.get('channel_id')}"
     if st == "conversion_hour":
         return f"conversion_hour:{signal.get('hour_local')}"
-    return f"{st}:{signal.get('hour_local') or signal.get('channel_id') or ''}"
+    if st in ("boost_lane_export", "lane_view_leader", "increase_pool_cadence", "pool_backlog_pressure", "cache_stale_risk"):
+        return f"{st}:{signal.get('network_key')}"
+    if st in ("export_to_surface", "surface_roi"):
+        return f"{st}:{signal.get('network_key')}:{','.join(signal.get('surfaces') or [])}"
+    if st == "lane_conversion_leader":
+        return f"lane_conversion_leader:{signal.get('network_key')}"
+    return f"{st}:{signal.get('hour_local') or signal.get('channel_id') or signal.get('network_key') or ''}"
 
 
 def _proposal_id(signal: dict[str, Any]) -> str:
@@ -88,6 +107,43 @@ def _build_action(signal: dict[str, Any]) -> tuple[str, dict[str, Any]]:
                 f"Align high-intent CTAs (VIP/loot) to hour {signal.get('hour_local')} local."
             ),
             "mcp_followup": "list_scheduled_posts (time promo posts to this window)",
+        }
+    if st in ("boost_lane_export", "lane_view_leader"):
+        return "boost_lane_export", {
+            "network_key": signal.get("network_key"),
+            "pool_id": signal.get("pool_id"),
+            "surfaces": signal.get("surfaces") or ["telegram", "erome"],
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "GET /analytics/export-flywheel/proposals",
+        }
+    if st in ("increase_pool_cadence", "pool_backlog_pressure"):
+        return "increase_pool_cadence", {
+            "network_key": signal.get("network_key"),
+            "pool_id": signal.get("pool_id"),
+            "approved_depth": signal.get("approved_depth"),
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "post_pool or lower ContentPool.interval_minutes",
+        }
+    if st in ("export_to_surface", "surface_roi"):
+        return "export_to_surface", {
+            "network_key": signal.get("network_key"),
+            "surfaces": signal.get("surfaces") or ["telegram"],
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "campaign deploy with selected surfaces",
+        }
+    if st == "cache_stale_risk":
+        return "export_oldest_first", {
+            "network_key": signal.get("network_key"),
+            "pool_id": signal.get("pool_id"),
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "TBCC_EXPORT_FLYWHEEL_RANK_PICKS=1 (rank pool picks)",
+        }
+    if st == "lane_conversion_leader":
+        return "boost_lane_export", {
+            "network_key": signal.get("network_key"),
+            "surfaces": ["telegram"],
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "VIP/loot CTAs on hot lane",
         }
     return "review", {"suggested_note": signal.get("recommendation")}
 

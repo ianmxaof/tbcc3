@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models.channel import Channel
 from app.models.growth_attribution_event import GrowthAttributionEvent
+from app.models.media import Media
 from app.models.post_delivery_metric import PostDeliveryMetric
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.services.content_performance import (
@@ -480,6 +481,314 @@ def _network_avg_views(db: Session, *, days: int) -> float:
     return sum(vals) / len(vals)
 
 
+def _attribution_network_key(row: GrowthAttributionEvent) -> str | None:
+    raw = getattr(row, "context_json", None)
+    if not raw:
+        return None
+    try:
+        ctx = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    nk = (ctx.get("network_key") or ctx.get("lane") or "").strip().lower()
+    return nk or None
+
+
+def _channel_id_to_network_key(db: Session) -> dict[int, str]:
+    from app.data.aof_network import AOF_NETWORK_CHANNELS
+
+    ch_ids: dict[int, str] = {}
+    for nc in AOF_NETWORK_CHANNELS:
+        ch = db.query(Channel).filter(Channel.identifier == nc.identifier).first()
+        if ch:
+            ch_ids[int(ch.id)] = nc.key
+    return ch_ids
+
+
+def _signals_lane_view_leaders(db: Session, *, days: int, network_avg: float) -> list[dict[str, Any]]:
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = (
+        db.query(PostDeliveryMetric)
+        .filter(
+            PostDeliveryMetric.created_at >= since,
+            PostDeliveryMetric.views_latest.isnot(None),
+            PostDeliveryMetric.network_key.isnot(None),
+            PostDeliveryMetric.surface.in_(("telegram", None)),
+        )
+        .all()
+    )
+    by_lane: dict[str, list[int]] = defaultdict(list)
+    for r in rows:
+        nk = (r.network_key or "").strip().lower()
+        if nk:
+            by_lane[nk].append(int(r.views_latest or 0))
+
+    out: list[dict[str, Any]] = []
+    for nk, vals in by_lane.items():
+        if len(vals) < min_posts_per_hour():
+            continue
+        avg = sum(vals) / len(vals)
+        if avg < min_views_for_ranking():
+            continue
+        ratio = avg / network_avg if network_avg > 0 else 1.0
+        if ratio < 1.15:
+            continue
+        out.append(
+            {
+                "signal_type": "lane_view_leader",
+                "strength": _strength_score(avg, len(vals), network_avg=network_avg),
+                "confidence": _confidence(len(vals), min_posts_per_hour(), ratio=ratio),
+                "network_key": nk,
+                "avg_views": round(avg, 1),
+                "post_count": len(vals),
+                "vs_network_avg": round(ratio, 2),
+                "recommendation": (
+                    f"Lane «{nk}» leads at {avg:.0f} avg Telegram views ({ratio:.1f}× network) — "
+                    "boost exports for this category."
+                ),
+            }
+        )
+    out.sort(key=lambda x: (-float(x["strength"]), -int(x["post_count"])))
+    return out
+
+
+def _signals_lane_conversion_leaders(db: Session, *, days: int) -> list[dict[str, Any]]:
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = (
+        db.query(GrowthAttributionEvent)
+        .filter(
+            GrowthAttributionEvent.created_at >= since,
+            GrowthAttributionEvent.event_type.in_(
+                (EVENT_SUBSCRIPTION_CREATED, EVENT_LOOT_ROLL, EVENT_LOOT_FREE_PULL)
+            ),
+        )
+        .all()
+    )
+    ch_map = _channel_id_to_network_key(db)
+    by_lane: dict[str, int] = defaultdict(int)
+    subs_by_lane: dict[str, int] = defaultdict(int)
+    for r in rows:
+        nk = _attribution_network_key(r)
+        if not nk and r.channel_id:
+            nk = ch_map.get(int(r.channel_id))
+        if not nk:
+            continue
+        by_lane[nk] += 1
+        if r.event_type == EVENT_SUBSCRIPTION_CREATED:
+            subs_by_lane[nk] += 1
+
+    out: list[dict[str, Any]] = []
+    for nk, total in by_lane.items():
+        if total < min_conversions_per_hour():
+            continue
+        subs = subs_by_lane.get(nk, 0)
+        strength = min(1.0, round((subs * 2 + total) / 15, 3))
+        out.append(
+            {
+                "signal_type": "lane_conversion_leader",
+                "strength": strength,
+                "confidence": "high" if subs >= 2 else "medium",
+                "network_key": nk,
+                "subscription_count": subs,
+                "total_events": total,
+                "recommendation": (
+                    f"Lane «{nk}» drives {subs} subs / {total} loot events — prioritize VIP/loot exports here."
+                ),
+            }
+        )
+    out.sort(key=lambda x: (-float(x["strength"]), -int(x.get("subscription_count") or 0)))
+    return out
+
+
+def _signals_pool_backlog_pressure(db: Session) -> list[dict[str, Any]]:
+    from app.data.export_lane_policy import all_lane_policies
+    from app.services.export_flywheel_service import approved_pool_depth, pool_id_for_network_key
+
+    out: list[dict[str, Any]] = []
+    for nk, policy in all_lane_policies().items():
+        pid = pool_id_for_network_key(db, nk)
+        if not pid:
+            continue
+        depth = approved_pool_depth(db, pid)
+        min_depth = policy.min_pool_depth_before_export
+        if depth < min_depth * 2:
+            continue
+        ratio = depth / max(1, min_depth)
+        out.append(
+            {
+                "signal_type": "pool_backlog_pressure",
+                "strength": min(1.0, round(ratio / 4, 3)),
+                "confidence": "high" if depth >= min_depth * 3 else "medium",
+                "network_key": nk,
+                "pool_id": pid,
+                "approved_depth": depth,
+                "min_depth_policy": min_depth,
+                "recommendation": (
+                    f"Pool «{nk}» backlog {depth} approved (policy min {min_depth}) — increase export cadence."
+                ),
+            }
+        )
+    out.sort(key=lambda x: (-float(x["strength"]), -int(x.get("approved_depth") or 0)))
+    return out
+
+
+def _signals_cache_stale_risk(db: Session) -> list[dict[str, Any]]:
+    from app.services.export_flywheel_service import pool_id_for_network_key
+
+    from app.data.export_lane_policy import all_lane_policies
+
+    out: list[dict[str, Any]] = []
+    for nk in all_lane_policies().keys():
+        pid = pool_id_for_network_key(db, nk)
+        if not pid:
+            continue
+        oldest = (
+            db.query(Media)
+            .filter(Media.pool_id == pid, Media.status == "approved")
+            .order_by(Media.id.asc())
+            .first()
+        )
+        if not oldest:
+            continue
+        created = getattr(oldest, "created_at", None)
+        if not created:
+            continue
+        age_h = (datetime.utcnow() - created).total_seconds() / 3600.0
+        if age_h < 24:
+            continue
+        strength = min(1.0, round(age_h / 168, 3))
+        out.append(
+            {
+                "signal_type": "cache_stale_risk",
+                "strength": strength,
+                "confidence": "medium" if age_h >= 72 else "low",
+                "network_key": nk,
+                "pool_id": pid,
+                "oldest_age_hours": round(age_h, 1),
+                "recommendation": (
+                    f"Lane «{nk}» has approved items aging {age_h:.0f}h — export oldest-first to keep flow fresh."
+                ),
+            }
+        )
+    out.sort(key=lambda x: (-float(x["strength"]), -float(x.get("oldest_age_hours") or 0)))
+    return out
+
+
+def _signals_surface_roi(db: Session, *, days: int) -> list[dict[str, Any]]:
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = (
+        db.query(PostDeliveryMetric)
+        .filter(
+            PostDeliveryMetric.created_at >= since,
+            PostDeliveryMetric.views_latest.isnot(None),
+            PostDeliveryMetric.network_key.isnot(None),
+        )
+        .all()
+    )
+    by_lane_surf: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for r in rows:
+        nk = (r.network_key or "").strip().lower()
+        surf = (r.surface or "telegram").strip() or "telegram"
+        if nk:
+            by_lane_surf[(nk, surf)].append(int(r.views_latest or 0))
+
+    out: list[dict[str, Any]] = []
+    lanes = {nk for nk, _ in by_lane_surf.keys()}
+    for nk in lanes:
+        tg_vals = by_lane_surf.get((nk, "telegram"), [])
+        er_vals = by_lane_surf.get((nk, "erome"), [])
+        buf_vals = by_lane_surf.get((nk, "buffer_x"), [])
+        if not tg_vals:
+            continue
+        tg_avg = sum(tg_vals) / len(tg_vals)
+        surfaces: list[str] = ["telegram"]
+        rec_parts = [f"Telegram baseline {tg_avg:.0f} views"]
+        strength = 0.4
+        if er_vals:
+            er_avg = sum(er_vals) / len(er_vals)
+            if er_avg > tg_avg * 1.1:
+                surfaces.append("erome")
+                strength = max(strength, min(1.0, er_avg / max(tg_avg, 1)))
+                rec_parts.append(f"Erome {er_avg:.0f}")
+        if buf_vals:
+            buf_avg = sum(buf_vals) / len(buf_vals)
+            if buf_avg > tg_avg * 1.05:
+                surfaces.append("buffer_x")
+                strength = max(strength, min(1.0, buf_avg / max(tg_avg, 1)))
+                rec_parts.append(f"Buffer/X {buf_avg:.0f}")
+        if len(surfaces) <= 1:
+            continue
+        out.append(
+            {
+                "signal_type": "surface_roi",
+                "strength": round(strength, 3),
+                "confidence": "medium",
+                "network_key": nk,
+                "surfaces": surfaces,
+                "recommendation": (
+                    f"Lane «{nk}» ROI favors {', '.join(surfaces)} ({'; '.join(rec_parts)})."
+                ),
+            }
+        )
+    out.sort(key=lambda x: (-float(x["strength"]), x.get("network_key") or ""))
+    return out
+
+
+def _signals_market_intel(*, days: int = 14) -> list[dict[str, Any]]:
+    """Erome browse-intel anomalies — tag velocity vs historical median."""
+    try:
+        from app.services.erome_browse_intel import aggregate_tag_scores, load_recent_rows
+    except Exception:
+        return []
+
+    rows = [r for r in load_recent_rows(days=days) if str(r.get("platform") or "erome") == "erome"]
+    if len(rows) < 20:
+        return []
+    tag_scores = aggregate_tag_scores(rows, platform="erome")
+    if not tag_scores:
+        return []
+
+    out: list[dict[str, Any]] = []
+    buckets: dict[str, list[float]] = {}
+    for row in rows:
+        vpd = row.get("views_per_day_proxy")
+        if vpd is None:
+            continue
+        for tag in row.get("tags") or []:
+            buckets.setdefault(tag, []).append(float(vpd))
+
+    medians = {t: sorted(v)[len(v) // 2] for t, v in buckets.items() if len(v) >= 5}
+    if not medians:
+        return []
+    global_median = sorted(medians.values())[len(medians) // 2]
+
+    for tag, recent_score in sorted(tag_scores.items(), key=lambda x: -x[1])[:12]:
+        hist = medians.get(tag, global_median)
+        if hist <= 0:
+            continue
+        ratio = recent_score / hist
+        if ratio < 1.35:
+            continue
+        strength = min(1.0, (ratio - 1.0) / 2.0)
+        out.append(
+            {
+                "signal_type": "erome_market_anomaly",
+                "strength": round(strength, 3),
+                "confidence": "high" if ratio >= 2.0 else "medium",
+                "tag": tag,
+                "trigger_metric": "tag_score_vs_median_vpd",
+                "current_value": round(recent_score, 1),
+                "historical_median": round(hist, 1),
+                "ratio": round(ratio, 2),
+                "recommended_action": "BOOST_LANE_EXPORT" if ratio >= 2.0 else "INCREASE_POOL_CADENCE",
+                "recommendation": (
+                    f"Erome tag «{tag}» scoring {recent_score:.0f} vs median {hist:.0f} "
+                    f"({ratio:.1f}×) — bias pool picks + upload tags."
+                ),
+            }
+        )
+    return out[:5]
+
+
 def compute_strong_signals(db: Session, *, days: int | None = None) -> dict[str, Any]:
     """Ranked strongest content/growth signals (no side effects)."""
     days = days or signal_lookback_days()
@@ -491,6 +800,24 @@ def compute_strong_signals(db: Session, *, days: int | None = None) -> dict[str,
     captions = _signals_caption_winners(db, days=days, network_avg=net_avg)
     channels = _signals_channel_leaders(db, days=days, network_avg=net_avg)
     conversions = _signals_conversion_hours(db, days=days)
+    lane_views = _signals_lane_view_leaders(db, days=days, network_avg=net_avg)
+    lane_conversions = _signals_lane_conversion_leaders(db, days=days)
+    backlog = _signals_pool_backlog_pressure(db)
+    stale = _signals_cache_stale_risk(db)
+    surface_roi = _signals_surface_roi(db, days=days)
+    export_lane = []
+    for s in lane_views[:3]:
+        export_lane.append(
+            {
+                **s,
+                "signal_type": "boost_lane_export",
+                "recommendation": s.get("recommendation") or f"Boost exports for lane «{s.get('network_key')}».",
+            }
+        )
+    for s in backlog[:3]:
+        export_lane.append({**s, "signal_type": "increase_pool_cadence"})
+    for s in surface_roi[:3]:
+        export_lane.append({**s, "signal_type": "export_to_surface"})
 
     hub_web: list[dict[str, Any]] = []
     ga4_meta: dict[str, Any] = {"configured": False}
@@ -518,8 +845,24 @@ def compute_strong_signals(db: Session, *, days: int | None = None) -> dict[str,
     except Exception as e:
         logger.debug("industry benchmark signals: %s", e)
 
+    market_intel = _signals_market_intel(days=min(days, 14))
+
     merged: list[dict[str, Any]] = []
-    for bucket in (peaks, captions, channels, conversions, hub_web, industry):
+    for bucket in (
+        peaks,
+        captions,
+        channels,
+        conversions,
+        lane_views,
+        lane_conversions,
+        backlog,
+        stale,
+        surface_roi,
+        export_lane,
+        hub_web,
+        industry,
+        market_intel,
+    ):
         merged.extend(bucket)
 
     filtered = [

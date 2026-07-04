@@ -311,7 +311,53 @@ def _admin_ops_submenu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📋 Ops feed", callback_data="sec:menu:run:ops"),
                 InlineKeyboardButton("📋 Copy hub tail", callback_data="sec:menu:hubcopy"),
             ],
+            [
+                InlineKeyboardButton("🔔 Toast budget", callback_data="sec:menu:cat:toasts"),
+                InlineKeyboardButton("🔕 Skip backlog", callback_data="sec:menu:run:skipbacklog"),
+            ],
             [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
+        ]
+    )
+
+
+def _format_toast_budget_text(settings: dict) -> str:
+    cap = int(settings.get("max_toasts_per_2min") or 0)
+    window = int(settings.get("window_seconds") or 120)
+    if cap <= 0:
+        budget = "<b>Off</b> — no non-payment desktop toasts"
+    elif cap == 1:
+        budget = f"<b>Quiet</b> — max <b>1</b> toast per {window}s"
+    else:
+        budget = f"<b>{cap}</b> toasts max per {window}s (~every {max(30, window // cap)}s)"
+    hub = "on" if settings.get("hub_toast") else "off"
+    ops = "on" if settings.get("ops_toast") else "off"
+    return (
+        "🔔 <b>Desktop toast budget</b>\n\n"
+        f"{budget}\n"
+        "<i>Payment / checkout toasts are always instant.</i>\n\n"
+        f"Error-hub toasts: <code>{hub}</code> · Ops toasts: <code>{ops}</code>\n"
+        "Use <b>− / +</b> or presets below. <b>Skip backlog</b> clears pending catch-up pings."
+    )
+
+
+def _admin_toast_submenu_keyboard(cap: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("−", callback_data="sec:menu:toast:down"),
+                InlineKeyboardButton(f"Now: {cap}/2min", callback_data="sec:menu:toast:show"),
+                InlineKeyboardButton("+", callback_data="sec:menu:toast:up"),
+            ],
+            [
+                InlineKeyboardButton("Off (0)", callback_data="sec:menu:toast:set:0"),
+                InlineKeyboardButton("Quiet (1)", callback_data="sec:menu:toast:set:1"),
+            ],
+            [
+                InlineKeyboardButton("Normal (3)", callback_data="sec:menu:toast:set:3"),
+                InlineKeyboardButton("Busy (5)", callback_data="sec:menu:toast:set:5"),
+            ],
+            [InlineKeyboardButton("🔕 Skip backlog", callback_data="sec:menu:run:skipbacklog")],
+            [InlineKeyboardButton("◀ Ops menu", callback_data="sec:menu:cat:ops")],
         ]
     )
 
@@ -996,6 +1042,8 @@ def _admin_commands_reference() -> str:
         "/cancel — cancel pending prompt edit\n\n"
         "<b>Ops</b>\n"
         "/relief — telegram_relief focus profile\n"
+        "/toasts — desktop toast budget (non-payment)\n"
+        "/skipbacklog — clear pending alert catch-up\n"
         "/focus — current focus profile state\n"
         "/triage — Cursor bundle (optional <code>event_id</code>)\n"
         "/flywheel — ops flywheel status\n"
@@ -1431,16 +1479,13 @@ def _format_hub_digest(hub: str, *, max_lines: int = 12) -> str:
         m = hub_line.match(line)
         if m:
             svc = m.group("svc")
-            lvl = m.group("lvl")
             body = m.group("body")
-            short = body[:140] + ("..." if len(body) > 140 else "")
-            out.append(f"{lvl} {svc}: {short}")
             fix = suggest_fix_for_hub_line(body, svc)
             if fix and fix not in seen_fix:
-                out.append(f"  -> {fix}")
+                out.append(f"• {fix}")
                 seen_fix.add(fix)
-        else:
-            out.append(line[:160])
+        elif line not in seen_fix:
+            out.append(line[:200])
     return "\n".join(out) if out else "(error hub empty)"
 
 
@@ -1719,6 +1764,52 @@ async def on_ops_inbox_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
 
+async def cmd_skip_backlog(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    def _run() -> dict:
+        from app.services.ops_alerts import skip_hub_alert_backlog
+
+        return skip_hub_alert_backlog()
+
+    result = await asyncio.to_thread(_run)
+    await _reply(
+        msg,
+        "🔕 <b>Alert backlog skipped</b>\n"
+        f"Hub offset: <code>{result.get('hub_offset')}</code>\n"
+        "Catch-up desktop toasts for old error-hub lines are cleared.",
+        context,
+        parse_mode="HTML",
+    )
+
+
+async def cmd_toasts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    def _load() -> dict:
+        from app.services.ops_alerts import get_alert_toast_settings
+
+        return get_alert_toast_settings()
+
+    settings = await asyncio.to_thread(_load)
+    cap = int(settings.get("max_toasts_per_2min") or 0)
+    await _reply(
+        msg,
+        _format_toast_budget_text(settings),
+        context,
+        parse_mode="HTML",
+        reply_markup=_admin_toast_submenu_keyboard(cap),
+    )
+
+
 async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg or not _can_manage_drafts(update):
@@ -1764,7 +1855,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     kind = parts[2]
     arg = parts[3] if len(parts) > 3 else ""
 
-    admin_only_kinds = {"hubcopy", "cat", "run"}
+    admin_only_kinds = {"hubcopy", "cat", "run", "toast"}
     if kind in admin_only_kinds and not _can_manage_drafts(update):
         await query.answer("Admin only.", show_alert=True)
         return
@@ -1832,10 +1923,22 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     "🔧 <b>Ops and triage</b>\n\n"
                     "<b>Relief</b> — pauses optional bots to reduce Telethon session contention.\n"
                     "<b>Triage</b> — bundles the latest alert plus error-hub tail for Cursor.\n"
+                    "<b>Toast budget</b> — cap non-payment desktop notifications (/toasts).\n"
                     "<b>Agent</b> — Cursor run (needs <code>CURSOR_API_KEY</code> in tbcc/.env).\n"
                     "API status: <code>/config</code>",
                     parse_mode="HTML",
                     reply_markup=_admin_ops_submenu_keyboard(),
+                )
+        elif arg == "toasts":
+            from app.services.ops_alerts import get_alert_toast_settings
+
+            settings = await asyncio.to_thread(get_alert_toast_settings)
+            cap = int(settings.get("max_toasts_per_2min") or 0)
+            if query.message:
+                await query.message.reply_text(
+                    _format_toast_budget_text(settings),
+                    parse_mode="HTML",
+                    reply_markup=_admin_toast_submenu_keyboard(cap),
                 )
         elif arg == "faq":
             if query.message:
@@ -1863,6 +1966,46 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.answer("Unknown submenu.", show_alert=True)
         return
 
+    if kind == "toast":
+        from app.services.ops_alerts import (
+            adjust_max_client_toasts_per_2min,
+            get_alert_toast_settings,
+            set_max_client_toasts_per_2min,
+        )
+
+        if arg == "up":
+            cap = await asyncio.to_thread(adjust_max_client_toasts_per_2min, 1)
+        elif arg == "down":
+            cap = await asyncio.to_thread(adjust_max_client_toasts_per_2min, -1)
+        elif arg == "set" and len(parts) > 4:
+            cap = await asyncio.to_thread(set_max_client_toasts_per_2min, int(parts[4]))
+        else:
+            settings = await asyncio.to_thread(get_alert_toast_settings)
+            cap = int(settings.get("max_toasts_per_2min") or 0)
+            if query.message:
+                await query.message.reply_text(
+                    _format_toast_budget_text(settings),
+                    parse_mode="HTML",
+                    reply_markup=_admin_toast_submenu_keyboard(cap),
+                )
+            return
+        settings = await asyncio.to_thread(get_alert_toast_settings)
+        text = _format_toast_budget_text(settings)
+        if query.message:
+            try:
+                await query.message.edit_text(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=_admin_toast_submenu_keyboard(cap),
+                )
+            except TelegramError:
+                await query.message.reply_text(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=_admin_toast_submenu_keyboard(cap),
+                )
+        return
+
     if kind == "run":
         runners = {
             "inbox": cmd_inbox,
@@ -1879,6 +2022,8 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "flywheel": cmd_flywheel,
             "config": cmd_config,
             "commands": cmd_commands,
+            "skipbacklog": cmd_skip_backlog,
+            "toasts": cmd_toasts,
         }
         fn = runners.get(arg)
         if fn:
@@ -2325,7 +2470,7 @@ async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     """Avoid huge tracebacks for transient DNS / TLS blips; python-telegram-bot retries polling."""
     err = context.error
     try:
-        from telegram.error import Conflict, Forbidden, NetworkError
+        from telegram.error import Conflict, Forbidden, NetworkError, RetryAfter
 
         if isinstance(err, Conflict):
             from bots.error_reporter import log_telegram_conflict_once
@@ -2334,6 +2479,11 @@ async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             return
         if isinstance(err, Forbidden):
             logger.info("Secretary Forbidden (blocked chat): %s", err)
+            return
+        if isinstance(err, RetryAfter):
+            from bots.error_reporter import log_retry_after_once
+
+            log_retry_after_once("secretary-bot", err)
             return
         if isinstance(err, NetworkError):
             logger.warning("Telegram NetworkError (usually transient DNS/connectivity): %s", err)
@@ -2345,6 +2495,8 @@ async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def post_init(app: Application) -> None:
+    from bots.secretary_storage_deposit import secretary_storage_deposit_enabled
+
     me = await app.bot.get_me()
     logger.info("Secretary bot online @%s id=%s", me.username, me.id)
     user_commands = [
@@ -2379,22 +2531,24 @@ async def post_init(app: Application) -> None:
         BotCommand("focus", "Focus profile status"),
         BotCommand("triage", "Ops triage bundle for Cursor"),
         BotCommand("flywheel", "Ops flywheel status"),
-        BotCommand("deposit", "Storage Hub topic → pool"),
     ]
+    if secretary_storage_deposit_enabled():
+        admin_commands.append(BotCommand("deposit", "Storage Hub topic → pool"))
     try:
         await app.bot.set_my_commands(user_commands)
         admin_chat = _admin_notify_chat_id()
         if admin_chat is not None:
             await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_chat))
-        try:
-            from app.services.storage_topic_deposit import storage_hub_chat_id_int
+        if secretary_storage_deposit_enabled():
+            try:
+                from app.services.storage_topic_deposit import storage_hub_chat_id_int
 
-            await app.bot.set_my_commands(
-                [BotCommand("deposit", "Queue N deduped items into this topic's pool")],
-                scope=BotCommandScopeChat(chat_id=storage_hub_chat_id_int()),
-            )
-        except Exception as e:
-            logger.debug("storage hub deposit commands scope: %s", e)
+                await app.bot.set_my_commands(
+                    [BotCommand("deposit", "Queue N deduped items into this topic's pool")],
+                    scope=BotCommandScopeChat(chat_id=storage_hub_chat_id_int()),
+                )
+            except Exception as e:
+                logger.debug("storage hub deposit commands scope: %s", e)
         await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     except Exception as e:
         logger.warning("set_my_commands / menu: %s", e)
@@ -2490,6 +2644,8 @@ def main() -> None:
     app.add_handler(CommandHandler("focus", cmd_focus))
     app.add_handler(CommandHandler("triage", cmd_triage))
     app.add_handler(CommandHandler("flywheel", cmd_flywheel))
+    app.add_handler(CommandHandler("toasts", cmd_toasts))
+    app.add_handler(CommandHandler("skipbacklog", cmd_skip_backlog))
 
     async def _cmd_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from bots.secretary_storage_deposit import cmd_deposit as _storage_deposit
@@ -2514,7 +2670,7 @@ def main() -> None:
 
     print(
         "Secretary bot running. FAQ: /start /help /subscribe /shop /reset | "
-        "Admin inbox: /inbox /now /payment /loot /ops /critical /read /status /relief /focus /triage /flywheel /deposit | "
+        "Admin inbox: /inbox /now /payment /loot /ops /critical /read /status /relief /focus /triage /flywheel /toasts /skipbacklog /deposit | "
         "Drafts: /approve /reject /drafts"
     )
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)

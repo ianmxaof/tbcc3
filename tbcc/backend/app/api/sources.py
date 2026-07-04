@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.database.session import get_db
 from app.schemas.common import orm_to_dict
 from app.models.source import Source
+from app.models.scrape_channel_profile import ScrapeChannelProfile
 from app.services.scrape_run_service import (
     list_scrape_runs,
     normalize_media_types,
@@ -122,6 +123,25 @@ async def scraper_auth_password(body: ScraperAuthPasswordBody):
 @router.post("/scraper-auth/cancel")
 async def scraper_auth_cancel():
     return await scraper_telethon_auth.scraper_cancel_login()
+
+
+@router.get("/channel-intel")
+def list_channel_intel(
+    forward_enabled: bool | None = Query(None),
+    pool_key: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """Backlog of inbound Telegram channel metadata (forward policy, AOF lane, posting cadence)."""
+    from app.services.scrape_channel_intel import profile_to_dict
+
+    q = db.query(ScrapeChannelProfile).order_by(ScrapeChannelProfile.updated_at.desc())
+    if forward_enabled is not None:
+        q = q.filter(ScrapeChannelProfile.forward_enabled == forward_enabled)
+    if pool_key:
+        q = q.filter(ScrapeChannelProfile.pool_key == pool_key.strip().lower())
+    rows = q.limit(limit).all()
+    return [profile_to_dict(r) for r in rows]
 
 
 @router.get("/")

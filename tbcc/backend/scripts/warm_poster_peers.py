@@ -70,8 +70,9 @@ async def main() -> int:
         print("No channels in database.")
         return 0
 
-    from app.workers.poster_worker import _get_poster_client
+    from app.workers.poster_worker import _acquire_poster_session_lock, _get_poster_client, _release_poster_session_lock
 
+    lock_token = await _acquire_poster_session_lock()
     client = await _get_poster_client()
     ok = 0
     fail = 0
@@ -86,6 +87,7 @@ async def main() -> int:
                 fail += 1
     finally:
         await client.disconnect()
+        await _release_poster_session_lock(lock_token)
 
     print(f"Done: {ok} ok, {fail} failed")
     return 0 if fail == 0 else 1

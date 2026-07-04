@@ -21,3 +21,13 @@ def buffer_create_post_error_message(res: dict[str, Any]) -> str | None:
     if isinstance(cp, dict) and cp.get("message"):
         return str(cp["message"])
     return None
+
+
+def buffer_create_post_id(res: dict[str, Any]) -> str | None:
+    if res.get("error"):
+        return None
+    cp = (res.get("data") or {}).get("createPost") if isinstance(res.get("data"), dict) else None
+    if isinstance(cp, dict) and isinstance(cp.get("post"), dict):
+        pid = cp["post"].get("id")
+        return str(pid).strip() if pid else None
+    return None

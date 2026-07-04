@@ -1,0 +1,103 @@
+{
+  "items": [
+    {
+      "label": "Nakedly (nudify.now)",
+      "url": "https://nudify.now/?code=U214D",
+      "payout_kind": "revshare",
+      "priority_tier": 5,
+      "placements": ["x_buffer", "telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🧠 {link} — AI tools hub"
+    },
+    {
+      "label": "Playbun",
+      "url": "https://www.playbun.com/?ref=freeusegod",
+      "payout_kind": "revshare",
+      "priority_tier": 13,
+      "placements": ["x_buffer", "telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🎬 {link} — NSFW AI video"
+    },
+    {
+      "label": "Vixal — image to video",
+      "url": "https://vixal.to/i2v/7787282561",
+      "payout_kind": "revshare",
+      "priority_tier": 14,
+      "placements": ["x_buffer", "telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🎬 {link} — still → motion"
+    },
+    {
+      "label": "Hot Dreams Bot",
+      "url": "https://hotdreamsai.com/?start=7787282561",
+      "payout_kind": "revshare",
+      "priority_tier": 15,
+      "placements": ["x_buffer", "telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "✨ {link} — photo/video dream engine"
+    },
+    {
+      "label": "Video Generator bot",
+      "url": "https://t.me/image2videos6919bot?start=7787282561",
+      "payout_kind": "revshare",
+      "priority_tier": 16,
+      "placements": ["telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🎬 {link} — image2video TG bot"
+    },
+    {
+      "label": "DeleteMyPanties Bot",
+      "url": "https://braundress.me/entry?start=eNCA01Du",
+      "payout_kind": "revshare",
+      "priority_tier": 17,
+      "placements": ["telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🧠 {link} — undress TG bot"
+    },
+    {
+      "label": "Fapify",
+      "url": "https://www.fapify.com/?ref=freeusegod",
+      "payout_kind": "revshare",
+      "priority_tier": 18,
+      "placements": ["x_buffer", "telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🎨 {link} — AI generator suite"
+    },
+    {
+      "label": "AI Bot Gateway",
+      "url": "https://botsgates-html.vercel.app/?b=img2vid&r=7787282561",
+      "payout_kind": "revshare",
+      "priority_tier": 19,
+      "placements": ["telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🤖 {link} — img2vid / img2img gateway"
+    },
+    {
+      "label": "Satisfactory (Randi123)",
+      "url": "https://satisfactory.studio/r/ref_7787282561",
+      "payout_kind": "revshare",
+      "priority_tier": 20,
+      "placements": ["telegram_footer"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🤖 {link} — TG bot"
+    },
+    {
+      "label": "Sweet Sdx (Veners)",
+      "url": "https://venersbot.com/7787282561",
+      "payout_kind": "revshare",
+      "priority_tier": 21,
+      "placements": ["telegram_footer"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "💋 {link} — TG bot"
+    },
+    {
+      "label": "HeatMe",
+      "url": "https://heatme.ai/r/wrzw79feke",
+      "payout_kind": "revshare",
+      "priority_tier": 22,
+      "placements": ["telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🔥 {link} — invite credits"
+    }
+  ]
+}

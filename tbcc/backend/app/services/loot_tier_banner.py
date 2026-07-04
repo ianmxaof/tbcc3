@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.custom_emoji_preset import CustomEmojiPreset
+from app.services.loot_roll_presentation import tier_celebration_line, wrap_tier_card_body
 from app.services.loot_tier_catalog import tier_display_name, tier_meta
 from app.services.telegram_custom_emoji import telethon_message_kwargs
 
@@ -33,7 +34,10 @@ def build_tier_opening_html(db: Session, preview: dict[str, Any]) -> str:
     title = html.escape(tier_display_name(tier))
     tag = html.escape(meta["tagline"])
     if preset:
-        return f"{preset}\n\n<b>{title}</b>\n<i>{tag}</i>"
+        celebration = tier_celebration_line(tier)
+        celeb = f"{celebration}\n\n" if celebration else ""
+        inner = f"{preset}\n\n<b>{title}</b>\n<i>{tag}</i>"
+        return f"{celeb}{wrap_tier_card_body(tier, inner)}"
     # Tier 1 dull, tier 10 loud — until presets are wired per tier
     if tier <= 2:
         lead = "▫️"
@@ -42,8 +46,15 @@ def build_tier_opening_html(db: Session, preview: dict[str, Any]) -> str:
     elif tier <= 8:
         lead = "💎"
     else:
-        lead = "🎆🔥🎆"
-    return f"{lead} <b>{title}</b>\n<i>{tag}</i>"
+        lead = "🎆"
+    world = html.escape((meta.get("world") or "").strip())
+    world_line = f"<code>{world}</code>\n" if world else ""
+    celebration = tier_celebration_line(tier)
+    celeb_line = f"{celebration}\n" if celebration else ""
+    inner = f"{lead} {world_line}<b>{title}</b>\n<i>{tag}</i>"
+    if (preview.get("roll_kind") or "").strip().lower() == "free":
+        inner += "\n<i>Training table · tiers 1–5 only</i>"
+    return f"{celeb_line}{wrap_tier_card_body(tier, inner)}"
 
 
 def build_tier_flavor_html(preview: dict[str, Any]) -> str:

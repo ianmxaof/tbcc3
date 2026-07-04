@@ -6,6 +6,7 @@ import {
   formatCountdownHms,
   formatPacificClock24FromMs,
   schedulingStackHealthy,
+  schedulingWorkersHealthy,
   type SchedulingStackHealth,
 } from "../utils/schedulerIntervalCountdown";
 import { formatPtForDashboard, formatUtcForDashboard } from "../utils/formatUtc";
@@ -66,10 +67,11 @@ export function SchedulerIntervalCountdown({
   const phase = effectiveCountdownPhase(snapshot, scheduling);
   const timerClass = countdownTimerClass(phase);
   const stackOk = schedulingStackHealthy(scheduling);
+  const workersOk = schedulingWorkersHealthy(scheduling);
   const displayMs = (() => {
     if (phase === "idle") return snapshot.intervalMs;
     if (phase === "sent") return 0;
-    if (phase === "stalled" || phase === "paused") return 0;
+    if (phase === "stalled" || phase === "paused" || phase === "focus_paused") return 0;
     return snapshot.remainingMs;
   })();
 
@@ -90,7 +92,8 @@ export function SchedulerIntervalCountdown({
     if (phase === "idle") return "Post now to start";
     if (phase === "sent") return "Completed";
     if (phase === "paused") return "Auto-paused";
-    if (phase === "stalled" && !stackOk && snapshot.mode === "recurring") {
+    if (phase === "focus_paused") return "Focus paused (imports)";
+    if (phase === "stalled" && !workersOk && snapshot.mode === "recurring") {
       return "Beat / Celery-Post offline";
     }
     if (phase === "stalled") {
@@ -107,7 +110,7 @@ export function SchedulerIntervalCountdown({
     snapshot.nextRunMs != null
       ? `Next UTC ${formatUtcForDashboard(new Date(snapshot.nextRunMs).toISOString())}`
       : null,
-    !stackOk ? "TBCC-Beat or TBCC-Celery-Post not running" : null,
+    !workersOk ? "TBCC-Beat or TBCC-Celery-Post not running" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -121,7 +124,13 @@ export function SchedulerIntervalCountdown({
       {subLine ? (
         <div
           className={`text-[9px] mt-0.5 truncate max-w-[7.5rem] ${
-            phase === "running" ? "text-cyan-300/80" : phase === "stalled" ? "text-yellow-400/85" : "text-slate-500"
+            phase === "running"
+              ? "text-cyan-300/80"
+              : phase === "stalled"
+                ? "text-yellow-400/85"
+                : phase === "focus_paused"
+                  ? "text-cyan-300/85"
+                  : "text-slate-500"
           }`}
         >
           {subLine}

@@ -20,15 +20,41 @@ from app.services.telegram_admin import (
 logger = logging.getLogger(__name__)
 
 
-def channel_import_timeout_s(limit: int) -> int:
-    """Per-job timeout: enough for large batches (150+ items with Telegram pacing)."""
+def channel_import_timeout_s(
+    limit: int,
+    *,
+    media_types: str | None = None,
+    index_only: bool = False,
+    sent_cache: bool = False,
+) -> int:
+    """Per-job timeout: enough for video downloads (limit × per-item budget + lock wait)."""
+    lim = max(1, int(limit))
+    lock_budget = int(os.getenv("TBCC_CHANNEL_IMPORT_LOCK_BUDGET_S") or "360")
+    if index_only:
+        per_item = int(os.getenv("TBCC_CHANNEL_IMPORT_SEC_PER_INDEX") or "3")
+        if sent_cache:
+            per_item += int(os.getenv("TBCC_STORAGE_SENT_CACHE_SEC_PER_ITEM") or "2")
+        base = max(120, min(1800, lim * per_item + 60))
+        return base + max(0, lock_budget)
+    mt = (media_types or "videos").strip().lower()
     raw = (os.getenv("TBCC_CHANNEL_IMPORT_TIMEOUT_S") or "").strip()
     if raw:
         try:
-            return max(120, int(raw))
+            base = max(120, int(raw))
         except ValueError:
-            pass
-    return max(900, min(7200, int(limit) * 20))
+            base = max(900, min(10800, lim * 90))
+    else:
+        per_photo = int(os.getenv("TBCC_CHANNEL_IMPORT_SEC_PER_PHOTO") or "45")
+        per_video = int(os.getenv("TBCC_CHANNEL_IMPORT_SEC_PER_VIDEO") or "120")
+        if mt == "photos":
+            per_item = per_photo
+        elif mt == "videos":
+            per_item = per_video
+        else:
+            per_item = max(per_photo, per_video)
+        base = max(900, min(10800, lim * per_item))
+    lock_budget = int(os.getenv("TBCC_CHANNEL_IMPORT_LOCK_BUDGET_S") or "360")
+    return base + max(0, lock_budget)
 
 
 def run_channel_import_job_sync(job_id: str) -> dict:
@@ -66,11 +92,19 @@ def run_channel_import_job_sync(job_id: str) -> dict:
         else:
             message_thread_id = None
         source_label = str(params.get("source_label") or job.source or f"telegram:{channel}").strip()
+        apply_watermark = bool(params.get("apply_watermark"))
+        index_only = bool(params.get("index_only"))
+        network_key = str(params.get("network_key") or "").strip() or None
+        sent_cache = bool(params.get("sent_cache"))
+        raw_ids = params.get("message_ids")
+        message_ids: list[int] | None = None
+        if isinstance(raw_ids, list) and raw_ids:
+            message_ids = [int(x) for x in raw_ids if int(x) > 0]
 
         update_job(db, job, status="processing", stage="telegram")
 
         async def _import(storage):
-            return await storage.import_from_telegram_channel(
+            result = await storage.import_from_telegram_channel(
                 channel,
                 job.pool_id,
                 source_label,
@@ -78,9 +112,61 @@ def run_channel_import_job_sync(job_id: str) -> dict:
                 limit=limit,
                 media_types=media_types,
                 message_thread_id=message_thread_id,
+                apply_watermark=apply_watermark,
+                index_only=index_only,
+                message_ids=message_ids,
             )
+            if sent_cache and int(result.get("stored") or 0) > 0:
+                from app.services.storage_sent_cache import move_deposit_batch_to_sent_cache
 
-        timeout = channel_import_timeout_s(limit)
+                update_job(db, job, status="processing", stage="sent_cache")
+                cache_body = await move_deposit_batch_to_sent_cache(
+                    storage,
+                    db,
+                    stored_messages=list(result.get("stored_messages") or []),
+                    network_key=network_key,
+                    hub_ident=channel,
+                )
+                result["sent_cache"] = cache_body
+                if int(cache_body.get("moved") or 0) > 0:
+                    media_ids = [
+                        int(r.get("media_id"))
+                        for r in (result.get("stored_messages") or [])
+                        if isinstance(r, dict) and r.get("media_id")
+                    ]
+                    try:
+                        from app.services.export_flywheel_service import emit_export_intent
+
+                        emit_export_intent(
+                            db,
+                            pool_id=int(job.pool_id) if job.pool_id else None,
+                            network_key=network_key,
+                            media_ids=media_ids,
+                            export_source="cache_deposit",
+                        )
+                    except Exception:
+                        logger.debug("export flywheel deposit trigger skipped", exc_info=True)
+                    try:
+                        from app.services.sent_cache_composer import enqueue_cache_composer_after_deposit
+
+                        enqueue_cache_composer_after_deposit(
+                            job_id=str(job.id),
+                            network_key=network_key or "",
+                            media_ids=media_ids,
+                            pool_id=int(job.pool_id) if job.pool_id else None,
+                            storage_thread_id=message_thread_id,
+                            moved_items=list(cache_body.get("moved_items") or []),
+                        )
+                    except Exception:
+                        logger.debug("sent cache composer enqueue skipped", exc_info=True)
+            return result
+
+        timeout = channel_import_timeout_s(
+            limit,
+            media_types=media_types,
+            index_only=index_only,
+            sent_cache=sent_cache,
+        )
         try:
             result = _run_on_worker_loop(asyncio.wait_for(run_telegram_import_io(_import), timeout=timeout))
         except Exception:
@@ -91,9 +177,27 @@ def run_channel_import_job_sync(job_id: str) -> dict:
             raise
 
         update_job(db, job, status="done", stage="done", result=result)
+        try:
+            from app.services.telegram_admin import reset_admin_client, reset_import_client
+
+            async def _release_both():
+                await reset_import_client()
+                await reset_admin_client()
+                await asyncio.sleep(0.5)
+
+            _run_on_worker_loop(_release_both())
+        except Exception:
+            logger.debug("post-import session release before mirror handoff", exc_info=True)
         return {"ok": True, "job_id": job_id, "status": "done", **result}
     except asyncio.TimeoutError:
-        msg = f"Channel import timed out after {channel_import_timeout_s(int((params or {}).get('limit') or 50))}s"
+        mt = str((params or {}).get("media_types") or "videos")
+        budget = channel_import_timeout_s(int((params or {}).get("limit") or 50), media_types=mt)
+        msg = (
+            f"Channel import timed out after {budget}s "
+            f"(limit={int((params or {}).get('limit') or 50)}, media={mt}). "
+            "Large videos need more time — retry with a smaller /deposit count, "
+            "or raise TBCC_CHANNEL_IMPORT_SEC_PER_VIDEO in tbcc/.env."
+        )
         if job:
             update_job(db, job, status="failed", stage="failed", error_message=msg)
         return {"ok": False, "error": msg, "job_id": job_id}

@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.services.buffer_graphql import (
     buffer_target_channel_ids,
-    create_posts_multi_channel,
     scheduled_buffer_share_mode,
 )
 from app.services.buffer_post_result import buffer_create_post_succeeded
@@ -109,68 +108,140 @@ def _plain_from_queue_item(item: dict, post: ScheduledTextPost, db: Session) -> 
 
 
 def mirror_scheduled_post_to_buffer_sync(post_id: int) -> None:
+    """Legacy entry — delegates to surface-aware mirror."""
+    mirror_scheduled_post_to_buffer_with_surfaces(post_id)
+
+
+def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirror_enabled: bool = True) -> dict:
     """
-    Celery task body: after Telegram send, post to Buffer (shareNow or addToQueue per job).
-    Uses the next TBCC-stored X caption if any; otherwise mirrors the Telegram caption.
+    After Telegram send: post to Buffer with per-surface copy (X vs IG/Threads).
+    Returns {ok, channels, x_chars, long_chars, error?, source?}.
     """
     from app.database.session import SessionLocal
+    from app.services.buffer_graphql import (
+        buffer_target_channel_ids,
+        create_post,
+        scheduled_buffer_share_mode,
+    )
+    from app.services.campaign_surface_copy import buffer_primary_channel_id, buffer_secondary_channel_ids, resolve_surface_texts
 
     db = SessionLocal()
     try:
         post = db.query(ScheduledTextPost).filter(ScheduledTextPost.id == int(post_id)).first()
-        if not post or not getattr(post, "buffer_mirror_enabled", False):
-            return
+        if not post:
+            return {"ok": False, "error": "post missing", "channels": 0}
+        if require_mirror_enabled and not getattr(post, "buffer_mirror_enabled", False):
+            return {"ok": False, "error": "buffer_mirror disabled or post missing", "channels": 0}
+
         if not buffer_target_channel_ids():
             logger.warning("buffer mirror: no TBCC_BUFFER_CHANNEL_ID_PRIMARY / TBCC_BUFFER_CHANNEL_IDS set")
-            return
+            return {"ok": False, "error": "no buffer channel ids", "channels": 0}
 
         queue = post.get_buffer_x_queue()
         used_queue = False
+        img: str | None = None
+        texts = resolve_surface_texts(post, db)
+
         if queue:
             item = queue[0]
-            plain = _plain_from_queue_item(item, post, db)
+            plain_x = _plain_from_queue_item(item, post, db)
             iu = str(item.get("image_url") or "").strip()
             img = iu if _public_https_image_url(iu) else None
             used_queue = True
+            plain_long = plain_x
         else:
-            raw_full = build_buffer_plaintext_from_post(post, db)
-            plain = build_buffer_x_mirror_text(post, db)
+            plain_x = texts.get("x") or build_buffer_x_mirror_text(post, db)
+            plain_long = texts.get("ig_threads") or texts.get("long") or build_buffer_plaintext_from_post(post, db)
             img = first_public_promo_image_url(post, db)
 
-        if not plain:
-            logger.warning("buffer mirror: empty body for scheduled post %s", post_id)
-            return
+        if not plain_x and not plain_long:
+            return {"ok": False, "error": "empty buffer body", "channels": 0}
 
-        if not used_queue and len(raw_full) > len(plain):
-            logger.info(
-                "buffer mirror: X caption post_id=%s %s→%s chars (overflow link)",
-                post_id,
-                len(raw_full),
-                len(plain),
-            )
-
-        capped = int(os.environ.get("TBCC_BUFFER_MIRROR_MAX_CHANNELS", "6") or 6)
-        chans = buffer_target_channel_ids()[: max(1, capped)]
         share_mode = scheduled_buffer_share_mode(
             buffer_publish_now=bool(getattr(post, "buffer_publish_now", False))
         )
-        results = create_posts_multi_channel(
-            plain, image_url=img, channel_ids=chans, mode=share_mode
-        )
+        capped = int(os.environ.get("TBCC_BUFFER_MIRROR_MAX_CHANNELS", "6") or 6)
+
+        primary = buffer_primary_channel_id()
+        secondary = buffer_secondary_channel_ids()[: max(0, capped - (1 if primary else 0))]
+        results: list[dict] = []
+
+        if primary and plain_x:
+            try:
+                results.append(create_post(primary, plain_x, mode=share_mode, image_url=img))
+            except Exception as e:
+                results.append({"error": str(e), "channelId": primary})
+
+        for cid in secondary:
+            body = plain_long or plain_x
+            if not body:
+                continue
+            try:
+                from app.services.buffer_ig_carousel import ig_create_post_kwargs, ig_story_enabled, post_instagram_story
+                from app.services.buffer_surface_caption import build_instagram_caption
+
+                ig_body = texts.get("ig_threads") or build_instagram_caption(
+                    teaser=plain_long or plain_x,
+                    utm_campaign="scheduled_mirror",
+                )
+                results.append(create_post(cid, ig_body, mode=share_mode, **ig_create_post_kwargs()))
+                if ig_story_enabled():
+                    results.append(
+                        post_instagram_story(
+                            cid,
+                            build_instagram_caption(teaser="Story → tap link sticker.", utm_campaign="scheduled_story"),
+                            mode=share_mode,
+                        )
+                    )
+            except Exception as e:
+                results.append({"error": str(e), "channelId": cid})
+
         ok = any(buffer_create_post_succeeded(r) for r in results)
         if ok and used_queue:
             post.set_buffer_x_queue(queue[1:])
             db.commit()
+
+        try:
+            from app.services.buffer_post_result import buffer_create_post_id, buffer_create_post_succeeded as buf_ok
+            from app.services.content_performance import latest_telegram_delivery_for_scheduled_post, record_surface_delivery_metric
+
+            parent = latest_telegram_delivery_for_scheduled_post(db, int(post_id))
+            for r in results:
+                if not buf_ok(r):
+                    continue
+                pid = buffer_create_post_id(r)
+                if pid and parent:
+                    record_surface_delivery_metric(
+                        db,
+                        parent=parent,
+                        surface="buffer_x",
+                        external_post_id=pid,
+                        export_source="scheduler",
+                    )
+            if parent:
+                db.commit()
+        except Exception:
+            logger.debug("buffer surface ledger skipped", exc_info=True)
+
         logger.info(
-            "buffer mirror: scheduled_post_id=%s mode=%s source=%s ok=%s channels=%s remaining_queue=%s",
+            "buffer mirror: scheduled_post_id=%s mode=%s source=%s ok=%s channels=%s",
             post_id,
             share_mode,
-            "tbcc_queue" if used_queue else "telegram_mirror",
+            "tbcc_queue" if used_queue else "surface_copy",
             ok,
-            len(chans),
-            len(post.get_buffer_x_queue()),
+            len(results),
         )
-    except Exception:
+        return {
+            "ok": ok,
+            "channels": len(results),
+            "x_chars": len(plain_x or ""),
+            "long_chars": len(plain_long or ""),
+            "source": "tbcc_queue" if used_queue else "surface_copy",
+        }
+    except Exception as e:
         logger.exception("buffer mirror failed for scheduled_post_id=%s", post_id)
+        return {"ok": False, "error": str(e), "channels": 0}
     finally:
         db.close()
+
+

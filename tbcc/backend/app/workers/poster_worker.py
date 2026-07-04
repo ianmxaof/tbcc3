@@ -83,6 +83,11 @@ def _record_scheduled_send_metrics(
             event_type="scheduled_post_sent",
             channel=channel,
             outcome=outcome,
+            media_ids=outcome.media_ids,
+            network_key=outcome.network_key,
+            export_source=outcome.export_source or "scheduler",
+            surface=outcome.surface or "telegram",
+            external_post_id=outcome.external_post_id,
         )
         try:
             from app.services.feed_rhythm import record_delivery_shape
@@ -291,10 +296,18 @@ async def _reset_poster_client() -> None:
         await graceful_telethon_disconnect(c)
 
 
-async def _acquire_poster_session_lock() -> str:
+async def _acquire_poster_session_lock(timeout_s: float | None = None) -> str:
     from app.services.telethon_session_lock import acquire_poster_session_lock_async
 
-    return await acquire_poster_session_lock_async()
+    return await acquire_poster_session_lock_async(timeout_s)
+
+
+def _poster_drain_lock_timeout_s() -> float:
+    raw = (os.getenv("TBCC_POSTER_DRAIN_LOCK_TIMEOUT_S") or "45").strip()
+    try:
+        return max(10.0, min(300.0, float(raw)))
+    except ValueError:
+        return 45.0
 
 
 async def _release_poster_session_lock(token: str) -> None:
@@ -374,6 +387,14 @@ def _after_telegram_erome_mirror(post_id: int) -> None:
         logger.debug("erome mirror enqueue skipped", exc_info=True)
 
 
+def _release_scheduled_enqueue_lock(post_id: int, *, manual_trigger: bool) -> None:
+    if manual_trigger:
+        return
+    from app.services.post_scheduler import release_post_enqueue_lock
+
+    release_post_enqueue_lock(int(post_id))
+
+
 async def _execute_post_scheduled_text(
     post_id: int,
     *,
@@ -392,11 +413,13 @@ async def _execute_post_scheduled_text(
         post = db.query(ScheduledTextPost).filter(ScheduledTextPost.id == post_id).first()
         if not post:
             logger.warning("Scheduled text post %s not found", post_id)
+            _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
             return
         post_label = (post.name or "").strip() or post_label
         is_recurring = post.interval_minutes is not None
         if not is_recurring and post.sent_at and not reshuffle_album:
             logger.info("Scheduled text post %s already sent (one-time)", post_id)
+            _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
             return
 
         campaign_group_id = getattr(post, "campaign_group_id", None)
@@ -409,19 +432,23 @@ async def _execute_post_scheduled_text(
                 .all()
             )
             if not siblings:
+                _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
                 return
             for p in siblings:
                 ch = db.query(Channel).filter(Channel.id == p.channel_id).first()
                 if not ch:
                     logger.warning("Channel %s for scheduled post %s not found", p.channel_id, p.id)
+                    _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
                     return
         else:
             channel = db.query(Channel).filter(Channel.id == post.channel_id).first()
             if not channel:
                 logger.warning("Channel %s for scheduled post %s not found", post.channel_id, post_id)
+                _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
                 return
             if _is_scheduled_post_auto_paused(post) and not reshuffle_album:
                 logger.info("Scheduled post %s skipped (auto-paused)", post_id)
+                _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
                 return
             if (
                 not manual_trigger
@@ -432,6 +459,7 @@ async def _execute_post_scheduled_text(
                     "Scheduled post %s skipped (not due yet; stale queue task)",
                     post_id,
                 )
+                _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
                 return
 
         max_attempts = max(1, int(os.getenv("TBCC_POSTER_MAX_ATTEMPTS", "3")))
@@ -464,6 +492,7 @@ async def _execute_post_scheduled_text(
                             "Campaign %s: nothing due to send (interval or auto-pause); skipping",
                             campaign_group_id,
                         )
+                        _release_scheduled_enqueue_lock(post_id, manual_trigger=manual_trigger)
                         return
                     random_channel = _campaign_random_channel_enabled(leader)
                     if random_channel:
@@ -717,6 +746,15 @@ def post_scheduled_text(post_id: int, reshuffle_album: bool = False, manual_trig
     asyncio.run(run())
 
 
+def _chain_scheduled_drain_if_needed() -> None:
+    try:
+        from app.services.post_scheduler import ensure_scheduled_drain_running
+
+        ensure_scheduled_drain_running()
+    except Exception:
+        logger.debug("chain scheduled drain skipped", exc_info=True)
+
+
 @celery.task(name="app.workers.poster_worker.drain_scheduled_post_queue")
 def drain_scheduled_post_queue():
     """
@@ -728,6 +766,7 @@ def drain_scheduled_post_queue():
     ids = pop_scheduled_post_due_queue()
     if not ids:
         release_post_drain_tick_lock()
+        _chain_scheduled_drain_if_needed()
         return {"ok": True, "count": 0}
 
     seen: set[int] = set()
@@ -745,7 +784,7 @@ def drain_scheduled_post_queue():
         failed = 0
         try:
             await _reset_poster_client()
-            lock_token = await _acquire_poster_session_lock()
+            lock_token = await _acquire_poster_session_lock(timeout_s=_poster_drain_lock_timeout_s())
             for post_id in ordered:
                 try:
                     await _execute_post_scheduled_text(int(post_id))
@@ -759,7 +798,15 @@ def drain_scheduled_post_queue():
             release_post_drain_tick_lock()
         return {"ok": True, "count": len(ordered), "sent": sent, "failed": failed}
 
-    return asyncio.run(run())
+    try:
+        result = asyncio.run(run())
+    except TimeoutError as e:
+        release_post_drain_tick_lock()
+        logger.warning("drain_scheduled_post_queue: poster lock timeout — %s", e)
+        _chain_scheduled_drain_if_needed()
+        return {"ok": False, "error": "poster_lock_timeout", "count": len(ordered)}
+    _chain_scheduled_drain_if_needed()
+    return result
 
 
 @celery.task(name="app.workers.poster_worker.post_listening_relay_message")
@@ -930,6 +977,22 @@ def post_pool(pool_id: int, channel_identifier: str, *, phase: str | None = None
         finally:
             plan_db.close()
 
+        from app.services.post_scheduler import schedulers_stall_summary
+
+        if int(schedulers_stall_summary().get("count") or 0) > 0:
+            defer_s = max(30, int(os.getenv("TBCC_POOL_DEFER_WHEN_SCHEDULERS_OVERDUE_S", "90")))
+            post_pool.apply_async(
+                args=(pool_id, channel_identifier),
+                kwargs={"phase": phase},
+                countdown=defer_s,
+            )
+            logger.info(
+                "post_pool deferred %ss — schedulers overdue (pool=%s)",
+                defer_s,
+                pool_id,
+            )
+            return
+
         try:
             await _reset_poster_client()
             lock_token = await _acquire_poster_session_lock()
@@ -937,6 +1000,7 @@ def post_pool(pool_id: int, channel_identifier: str, *, phase: str | None = None
             try:
                 max_attempts = max(1, int(os.getenv("TBCC_POSTER_MAX_ATTEMPTS", "3")))
                 attempt = 0
+                send_result: dict = {"ok": False, "media_ids": [], "telegram_message_ids": []}
                 while True:
                     attempt += 1
                     try:
@@ -944,7 +1008,7 @@ def post_pool(pool_id: int, channel_identifier: str, *, phase: str | None = None
                         peer = await resolve_poster_peer(
                             client, target_peer, invite_fallback=invite_fb
                         )
-                        await post_pool_albums(
+                        send_result = await post_pool_albums(
                             client,
                             peer,
                             pool_id,
@@ -983,23 +1047,45 @@ def post_pool(pool_id: int, channel_identifier: str, *, phase: str | None = None
                     pool.last_posted = datetime.utcnow()
                 from app.services.post_analytics import record_post_outbound_event
                 from app.services.content_performance import record_post_delivery_metric
+                from app.services.export_flywheel_service import network_key_for_pool
 
+                media_ids = (send_result or {}).get("media_ids") or []
+                tg_msg_ids = (send_result or {}).get("telegram_message_ids") or []
+                nk = network_key_for_pool(db, pool_id)
                 ev = record_post_outbound_event(
                     db,
                     event_type="pool_album_posted",
                     channel_id=pool.channel_id if pool else None,
                     pool_id=pool_id,
-                    ok=True,
+                    ok=bool((send_result or {}).get("ok")),
                 )
-                record_post_delivery_metric(
+                metric = record_post_delivery_metric(
                     db,
                     outbound_event=ev,
                     event_type="pool_album_posted",
                     channel=ch,
                     pool_id=pool_id,
                     scheduler_name=(pool.name if pool else None),
+                    telegram_message_id=tg_msg_ids[0] if tg_msg_ids else None,
+                    telegram_message_ids=tg_msg_ids,
+                    media_ids=media_ids,
+                    network_key=nk,
+                    export_source="pool_interval",
+                    surface="telegram",
                 )
                 db.commit()
+                if metric and media_ids and phase in (None, "public"):
+                    try:
+                        from app.services.export_flywheel_executor import after_pool_telegram_mirrors
+
+                        after_pool_telegram_mirrors(
+                            db,
+                            pool_id=pool_id,
+                            media_ids=media_ids,
+                            delivery_metric_id=int(metric.id),
+                        )
+                    except Exception:
+                        logger.debug("pool surface mirrors skipped", exc_info=True)
                 try:
                     from app.services.aof_feed_rhythm_v2 import maybe_queue_post_refill
 

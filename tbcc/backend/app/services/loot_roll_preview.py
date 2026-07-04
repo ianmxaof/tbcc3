@@ -14,7 +14,10 @@ from app.models.loot import (
     LootPoolEligibility,
 )
 from app.models.media import Media
+from app.services.loot_composite_tier import compute_composite_tier, composite_tier_fields
+from app.services.loot_player_modifiers import seen_modifier_ids
 from app.services.loot_player_stats import get_lifetime_roll_index
+from app.services.loot_roll_presentation import pick_tier_flavor
 from app.services.loot_tier_catalog import (
     modifier_slot_probs_for_roll,
     modifier_weight,
@@ -84,37 +87,40 @@ def build_roll_preview(
         raise ValueError("loot_interval_tiers is empty; run alembic upgrade head")
 
     lifetime_idx = get_lifetime_roll_index(db, telegram_user_id)
-    rarity = roll_rarity_tier(
+    base_rarity = roll_rarity_tier(
         rng,
         interval_rarity_shift=int(tier_row.rarity_shift or 0),
         lifetime_roll_index=lifetime_idx,
     )
-    album_size = rarity
+    album_size = base_rarity
 
     eligible_rows = (
         db.query(LootPoolEligibility)
         .filter(LootPoolEligibility.loot_enabled.is_(True))
         .all()
     )
-    tier_pools = _pools_for_tier(eligible_rows, rarity)
+    tier_pools = _pools_for_tier(eligible_rows, base_rarity)
     eligible_pool_ids = [int(r.content_pool_id) for r in tier_pools]
+    pool_elig_map = {int(r.content_pool_id): r for r in eligible_rows}
     if not eligible_pool_ids:
         if not eligible_rows:
             reason = (
                 "No pools in loot_pool_eligibility with loot_enabled=true. "
-                "Dashboard → Loot overseer: seed loot room pools (POST /loot/seed-loot-room-eligibility) "
+                "Dashboard → Loot overseer: seed content pools (POST /loot/seed-content-pool-eligibility) "
+                "or loot room pools (POST /loot/seed-loot-room-eligibility) "
                 "or POST /loot/pool-eligibility per content pool."
             )
         else:
             reason = (
-                f"No loot-eligible pools for rarity tier {rarity} "
+                f"No loot-eligible pools for rarity tier {base_rarity} "
                 f"(check min_rarity_tier / max_rarity_tier on loot_pool_eligibility rows)"
             )
         return {
             "ok": False,
             "reason": reason,
             "interval_code": tier_row.code,
-            "rarity_tier": rarity,
+            "rarity_tier": base_rarity,
+            "base_roll_tier": base_rarity,
         }
 
     q = db.query(Media).filter(
@@ -137,7 +143,8 @@ def build_roll_preview(
             "ok": False,
             "reason": "No approved media candidates (after eligibility + dedupe filter)",
             "interval_code": tier_row.code,
-            "rarity_tier": rarity,
+            "rarity_tier": base_rarity,
+            "base_roll_tier": base_rarity,
         }
 
     pool_w = {int(r.content_pool_id): float(r.base_weight or 1.0) for r in tier_pools}
@@ -151,6 +158,8 @@ def build_roll_preview(
         picked_media.append(m)
         remaining = [x for x in remaining if x.id != m.id]
 
+    rarity = compute_composite_tier(base_rarity, picked_media, pool_elig_map)
+
     slot_probs = modifier_slot_probs_for_roll(
         slot_probs_base,
         rarity_tier=rarity,
@@ -160,6 +169,10 @@ def build_roll_preview(
     slot_count = int(slot_count or 0)
 
     mods = db.query(LootModifier).filter(LootModifier.active.is_(True)).all()
+    if telegram_user_id:
+        already = seen_modifier_ids(db, int(telegram_user_id))
+        if already:
+            mods = [m for m in mods if int(m.id) not in already]
     picked_mods: list[LootModifier] = []
     rem_mods = list(mods)
     for slot_i in range(slot_count):
@@ -182,15 +195,17 @@ def build_roll_preview(
         rem_mods = [x for x in rem_mods if x.id != m.id]
 
     summary = preview_summary_fields(rarity)
+    summary["tier_flavor"] = pick_tier_flavor(rarity, rng)
+    composite_meta = composite_tier_fields(base_rarity, rarity, picked_media, pool_elig_map)
     return {
         "ok": True,
         "seed": seed,
         "interval_code": tier_row.code,
         "interval_seconds": int(tier_row.drop_interval_seconds or 0),
         "bonus_album_draws": int(tier_row.bonus_album_draws or 0),
-        "rarity_tier": rarity,
         "lifetime_roll_index": lifetime_idx,
         **summary,
+        **composite_meta,
         "album_size": len(picked_media),
         "modifier_slot_count": slot_count,
         "eligible_pool_ids": eligible_pool_ids,

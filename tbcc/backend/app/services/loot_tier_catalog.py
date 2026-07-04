@@ -8,51 +8,61 @@ from typing import Any
 TIER_META: dict[int, dict[str, str]] = {
     1: {
         "name": "Dust",
+        "world": "World 1-1",
         "tagline": "A faint shimmer — barely worth opening.",
         "flavor": "The vault coughs up crumbs. Squint harder.",
     },
     2: {
         "name": "Glimpse",
+        "world": "World 1-2",
         "tagline": "Something moved in the dark.",
         "flavor": "Not quite nothing. Not quite a drop.",
     },
     3: {
         "name": "Spark",
+        "world": "World 1-3",
         "tagline": "A single spark in the loot room.",
         "flavor": "Warm enough to keep scrolling.",
     },
     4: {
         "name": "Pulse",
+        "world": "World 2-1",
         "tagline": "The room notices you.",
         "flavor": "Rhythm picks up — spoilers earned.",
     },
     5: {
         "name": "Surge",
+        "world": "World 2-2",
         "tagline": "Mid-tier heat — the floor leans in.",
         "flavor": "More on the reel than you expected.",
     },
     6: {
         "name": "Blaze",
+        "world": "World 3-1",
         "tagline": "Spotlight energy — mixed media flex.",
         "flavor": "Photos stack, video hits — feel the pull.",
     },
     7: {
         "name": "Vault",
+        "world": "World 4-1",
         "tagline": "Vault-tier pull — packs may whisper.",
         "flavor": "Rare enough that a bundle might follow.",
     },
     8: {
         "name": "Crown",
+        "world": "World 5-1",
         "tagline": "Heavy crown — album density spikes.",
         "flavor": "This is why you paid attention.",
     },
     9: {
         "name": "Oracle",
+        "world": "World 6-1",
         "tagline": "Near-mythic — modifiers stack.",
         "flavor": "The overseer grins. Open everything.",
     },
     10: {
         "name": "Ascension",
+        "world": "World ★",
         "tagline": "MAX TIER — full celebration drop.",
         "flavor": "🔥 Peak dopamine. Screenshot the receipts. 🔥",
     },
@@ -66,6 +76,9 @@ def tier_meta(tier: int) -> dict[str, str]:
 
 def tier_display_name(tier: int) -> str:
     m = tier_meta(tier)
+    world = (m.get("world") or "").strip()
+    if world:
+        return f"{world} · Tier {tier} · {m['name']}"
     return f"Tier {tier} · {m['name']}"
 
 

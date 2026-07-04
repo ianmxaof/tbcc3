@@ -134,18 +134,77 @@ def _enqueue_scheduled_post(post_id: int, *, interval_minutes: int | None = None
     return True
 
 
-def _enqueue_scheduled_post_batch(post_id: int) -> None:
-    """Append to Redis due queue; spawn one drain worker per tick if not already running."""
+def scheduled_drain_snapshot() -> dict[str, Any]:
+    """Redis due-queue + scheduler-lane depth for watchdog and health."""
+    out: dict[str, Any] = {
+        "due_len": 0,
+        "drain_tick": False,
+        "scheduler_queue": 0,
+        "enqueue_locks": 0,
+    }
+    try:
+        import redis
+
+        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.from_url(url, socket_connect_timeout=1.5)
+        out["due_len"] = int(r.llen(_POST_DUE_QUEUE_KEY) or 0)
+        out["drain_tick"] = bool(r.get(_POST_DRAIN_TICK_KEY))
+        out["scheduler_queue"] = scheduler_queue_length()
+        out["enqueue_locks"] = sum(
+            1 for _ in r.scan_iter(match="tbcc:post:enqueued:*", count=200)
+        )
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out
+
+
+def ensure_scheduled_drain_running() -> dict[str, Any]:
+    """
+    Guarantee a drain_scheduled_post_queue consumer when Redis due_queue has work.
+
+    Fixes stale drain_tick (tick set but no Celery task) and orphaned due_queue rows
+    after a long drain or resume/purge race.
+    """
     from app.workers.poster_worker import drain_scheduled_post_queue
+
+    snap = scheduled_drain_snapshot()
+    due_len = int(snap.get("due_len") or 0)
+    sched_len = int(snap.get("scheduler_queue") or 0)
+    tick_set = bool(snap.get("drain_tick"))
+    if due_len <= 0:
+        return {"ok": True, "action": "none", **snap}
+
+    if tick_set and sched_len == 0:
+        release_post_drain_tick_lock()
+        tick_set = False
 
     try:
         import redis
 
         url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         r = redis.from_url(url, socket_connect_timeout=1.5)
-        r.rpush(_POST_DUE_QUEUE_KEY, str(int(post_id)))
-        if r.set(_POST_DRAIN_TICK_KEY, "1", nx=True, ex=_post_drain_tick_ttl_s()):
+        if not tick_set and r.set(_POST_DRAIN_TICK_KEY, "1", nx=True, ex=_post_drain_tick_ttl_s()):
             drain_scheduled_post_queue.delay()
+            return {"ok": True, "action": "spawn_drain", **snap}
+    except Exception as e:
+        try:
+            drain_scheduled_post_queue.delay()
+            return {"ok": True, "action": "spawn_drain_fallback", "error": str(e)[:120], **snap}
+        except Exception as e2:
+            return {"ok": False, "action": "spawn_failed", "error": str(e2)[:200], **snap}
+
+    return {"ok": True, "action": "drain_pending", **snap}
+
+
+def _enqueue_scheduled_post_batch(post_id: int) -> None:
+    """Append to Redis due queue; ensure a drain worker is scheduled."""
+    try:
+        import redis
+
+        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.from_url(url, socket_connect_timeout=1.5)
+        r.rpush(_POST_DUE_QUEUE_KEY, str(int(post_id)))
+        ensure_scheduled_drain_running()
     except Exception:
         post_scheduled_text.delay(int(post_id))
 
@@ -357,6 +416,7 @@ def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
         out["scheduled"] = True
     finally:
         db.close()
+    out["drain"] = ensure_scheduled_drain_running()
     out["post_queue_length"] = _post_queue_length()
     return out
 
@@ -476,6 +536,7 @@ def check_and_schedule(db: Session):
     _schedule_pool_interval_posts(db, now, blocked_pool_ids=blocked_pools)
 
     db.commit()
+    ensure_scheduled_drain_running()
     if priority.get("overdue_count", 0) > 0:
         logger.debug(
             "check_and_schedule: %s overdue scheduler(s); priority=%s",

@@ -1,3 +1,32 @@
 {
-  "drafts": []
+  "drafts": [
+    {
+      "id": "c7f2c308ddee",
+      "name": "Album 1 items",
+      "created_at": "2026-06-11T05:10:08+00:00",
+      "updated_at": "2026-06-11T05:10:08+00:00",
+      "items": [
+        {
+          "file_id": "BAACAgQAAxkBAAIDHmoqQmrSt8_mtqNuBCnxjbcEKGoiAALUIQACaAFZUW7UpfNti7dwOwQ",
+          "kind": "video",
+          "name": "video.mp4"
+        }
+      ],
+      "caption": "",
+      "buttons": [],
+      "promo_enabled": true,
+      "send_silent": false,
+      "channel_id": null,
+      "thread_id": null,
+      "crop": null,
+      "watermark_skip": false,
+      "watermark_enabled": null,
+      "watermark_text": "",
+      "watermark_text_secondary": "",
+      "watermark_text_tertiary": "",
+      "watermark_opacity": null,
+      "watermark_color": null,
+      "watermark_strip_previous": null
+    }
+  ]
 }

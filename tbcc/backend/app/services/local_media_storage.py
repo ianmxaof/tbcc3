@@ -61,8 +61,12 @@ def local_file_id(digest: str, ext: str) -> str:
 
 
 def is_local_pool_media(media: Media) -> bool:
+    """telegram_message_id=0 marks on-disk pool imports (not Saved Messages)."""
     try:
-        return int(getattr(media, "telegram_message_id", -1) or -1) == LOCAL_TELEGRAM_MESSAGE_ID
+        raw = getattr(media, "telegram_message_id", None)
+        if raw is None:
+            return False
+        return int(raw) == LOCAL_TELEGRAM_MESSAGE_ID
     except (TypeError, ValueError):
         return False
 
@@ -93,13 +97,28 @@ def telethon_file_from_media(media: Media):
 
 def read_local_media_bytes(media: Media) -> bytes | None:
     p = local_media_path(media)
-    if not p:
-        return None
+    if p:
+        try:
+            return p.read_bytes()
+        except OSError:
+            logger.debug("read local media failed id=%s path=%s", getattr(media, "id", "?"), p, exc_info=True)
+    # Fallback: dashboard thumb cache (full file missing or moved).
     try:
-        return p.read_bytes()
-    except OSError:
-        logger.debug("read local media failed id=%s path=%s", getattr(media, "id", "?"), p, exc_info=True)
-        return None
+        from app.services.media_cache_storage import cached_thumb_path
+
+        mid = int(getattr(media, "id", 0) or 0)
+        if mid > 0:
+            tp = cached_thumb_path(mid)
+            if tp:
+                logger.warning(
+                    "Using thumb cache for media id=%s (full file missing at %s)",
+                    mid,
+                    p,
+                )
+                return tp.read_bytes()
+    except Exception:
+        logger.debug("thumb fallback failed media_id=%s", getattr(media, "id", "?"), exc_info=True)
+    return None
 
 
 def _ext_for_bytes(data: bytes, media_type_hint: str) -> tuple[str, str]:

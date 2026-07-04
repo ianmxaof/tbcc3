@@ -47,6 +47,14 @@ extension/icons/_*-test.png
 
 # Telethon / Celery local state (secrets — do not publish)
 *.session
+.linkvertise-auth.json
+.erome-auth.json
+linkvertise_dashboard_flow.local.json
+erome_upload_flow.local.json
+erome_recording.py
+lv_recording.py
+lv_page_snapshot.json
+lv_dashboard_probe.json
 *.session-journal
 *.session-shm
 *.session-wal

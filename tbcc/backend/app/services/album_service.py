@@ -31,15 +31,17 @@ async def post_album(
     reply_to: int | None = None,
     send_silent: bool = False,
     reply_markup=None,
-):
+) -> list[int]:
     """
     Posts a Telegram album using media from Saved Messages (by telegram_message_id).
     Fetches messages from "me" and sends their media — no re-upload.
     Telegram requires all items in an album to be the same type (photos with photos, etc).
     reply_to: forum topic id (same as Bot API message_thread_id) for supergroups with topics.
+    Returns Telegram message ids for the send (empty list on skip/failure).
     """
     if not media_items:
-        return
+        return []
+    from app.services.content_performance import message_ids_from_send
     from app.services.local_media_storage import is_local_pool_media, telethon_file_from_media
 
     saved_ids = [m.telegram_message_id for m in media_items if not is_local_pool_media(m)]
@@ -59,7 +61,7 @@ async def post_album(
             medias.append(msg.media)
     if len(medias) != len(media_items):
         logger.warning("Could not fetch all media; skipping album to avoid partial send")
-        return
+        return []
     cap = caption.strip() if caption else None
     silent_kw = {"silent": True} if send_silent else {}
     from app.services.scheduled_post_service import _apply_telethon_html_to_kwargs
@@ -69,7 +71,8 @@ async def post_album(
         file_kw["buttons"] = reply_markup
     _apply_telethon_html_to_kwargs(file_kw, cap or "", field="caption")
     try:
-        await client.send_file(channel, medias, **file_kw)
+        result = await client.send_file(channel, medias, **file_kw)
+        return message_ids_from_send(result)
     except Exception as e:
         # Telegram sometimes rejects SendMultiMediaRequest (invalid mix, API quirks, forum edge cases).
         # Fall back to one message per item so valid items still post.
@@ -78,13 +81,16 @@ async def post_album(
             type(e).__name__,
             e,
         )
+        msg_ids: list[int] = []
         for idx, single in enumerate(medias):
             kw: dict = {"reply_to": reply_to, **silent_kw}
             if idx == 0:
                 if reply_markup is not None:
                     kw["buttons"] = reply_markup
                 _apply_telethon_html_to_kwargs(kw, cap or "", field="caption")
-            await client.send_file(channel, single, **kw)
+            single_result = await client.send_file(channel, single, **kw)
+            msg_ids.extend(message_ids_from_send(single_result))
+        return msg_ids
 
 
 async def post_pool_albums(
@@ -94,7 +100,9 @@ async def post_pool_albums(
     db: Session,
     album_size: int = 5,
     randomize: bool = False,
-):
+    *,
+    mark_posted: bool = True,
+) -> dict:
     approved = (
         db.query(Media)
         .filter(Media.pool_id == pool_id, Media.status == "approved")
@@ -102,6 +110,15 @@ async def post_pool_albums(
         .limit(500)
         .all()
     )
+    try:
+        from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
+
+        if rank_picks_enabled():
+            ranked = rank_pool_media(db, pool_id, album_size, randomize=randomize)
+            if ranked:
+                approved = ranked + [m for m in approved if m.id not in {x.id for x in ranked}]
+    except Exception:
+        logger.debug("export flywheel rank skipped", exc_info=True)
     # Group by media_type so each album has same type (Telegram requirement)
     by_type = defaultdict(list)
     for m in approved:
@@ -129,12 +146,18 @@ async def post_pool_albums(
             album_size,
             len(approved),
         )
-        return
+        return {"ok": False, "reason": "no_full_album", "media_ids": [], "telegram_message_ids": []}
 
-    await post_album(client, channel_identifier, selected_album)
-    for m in selected_album:
-        m.status = "posted"
-    db.commit()
+    msg_ids = await post_album(client, channel_identifier, selected_album)
+    if mark_posted:
+        for m in selected_album:
+            m.status = "posted"
+        db.commit()
+    return {
+        "ok": bool(msg_ids),
+        "media_ids": [int(m.id) for m in selected_album],
+        "telegram_message_ids": msg_ids,
+    }
 
 
 def _media_type_bucket(m: Media) -> str:

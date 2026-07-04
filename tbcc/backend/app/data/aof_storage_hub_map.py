@@ -101,3 +101,34 @@ CONTENT_LANE_NETWORK_KEYS: frozenset[str] = frozenset(
 
 def content_lane_storage_topics() -> tuple[StorageTopicMap, ...]:
     return tuple(m for m in AOF_STORAGE_TOPIC_MAP if m.network_key in CONTENT_LANE_NETWORK_KEYS)
+
+
+# SENT CACHE — archived media after /deposit (forum subtopic in Storage & Bot Hangar).
+SENT_CACHE_TOPIC = StorageTopicMap(
+    12345,
+    "SENT CACHE",
+    "",
+    notes="TBCC_STORAGE_SENT_CACHE_TOPIC_ID=12345; t.me/c/3812457581/12345",
+)
+
+# Category emoji stamps (paired with ✅ when moved to SENT CACHE).
+STORAGE_CATEGORY_EMOJI: dict[str, str] = {
+    "ass": "🍑",
+    "big_tits": "🍒",
+    "blowjob": "💋",
+    "bop": "🤠",
+    "goon": "🤡",
+    "ai": "🤖",
+    "milf": "🧜‍♀️",
+    "packs": "📦",
+    "voyeur": "👀",
+    "taboo": "🔞",
+    "abg": "🥡",
+    "full_length": "🎬",
+    "erome": "💗",
+}
+
+
+def category_emoji_for_network_key(network_key: str | None) -> str:
+    key = (network_key or "").strip().lower()
+    return STORAGE_CATEGORY_EMOJI.get(key, "📁")

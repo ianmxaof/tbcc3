@@ -24,10 +24,44 @@ type SystemHealth = {
 };
 
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const DISMISS_KEY = "tbcc:dismissedHealthFingerprint";
+
+function conflictFingerprint(conflicts: Conflict[]): string {
+  return conflicts
+    .map((c) => c.code)
+    .sort()
+    .join("|");
+}
+
+function readDismissedFingerprint(): string | null {
+  try {
+    return sessionStorage.getItem(DISMISS_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeDismissedFingerprint(fp: string) {
+  try {
+    sessionStorage.setItem(DISMISS_KEY, fp);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearDismissedFingerprint() {
+  try {
+    sessionStorage.removeItem(DISMISS_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 export function SystemHealthBanner() {
   const [health, setHealth] = useState<SystemHealth | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(() =>
+    readDismissedFingerprint()
+  );
   const [fixing, setFixing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -35,6 +69,13 @@ export function SystemHealthBanner() {
       const r = await fetch(`${API}/health/system`, { cache: "no-store" });
       const data = (await r.json()) as SystemHealth;
       setHealth(data);
+      const fp = conflictFingerprint(data.conflicts || []);
+      if (data.ok && (data.conflicts || []).length === 0) {
+        clearDismissedFingerprint();
+        setDismissedFingerprint(null);
+      } else if (fp && fp === readDismissedFingerprint()) {
+        setDismissedFingerprint(fp);
+      }
     } catch {
       setHealth({
         ok: false,
@@ -81,8 +122,16 @@ export function SystemHealthBanner() {
       });
       if (r.ok) {
         const data = (await r.json()) as { health?: SystemHealth };
-        if (data.health) setHealth(data.health);
-        else await load();
+        if (data.health) {
+          setHealth(data.health);
+          const fp = conflictFingerprint(data.health.conflicts || []);
+          if (data.health.ok && (data.health.conflicts || []).length === 0) {
+            clearDismissedFingerprint();
+            setDismissedFingerprint(null);
+          } else if (fp && fp === readDismissedFingerprint()) {
+            setDismissedFingerprint(fp);
+          }
+        } else await load();
       }
     } catch {
       /* API may be down */
@@ -91,11 +140,16 @@ export function SystemHealthBanner() {
     }
   };
 
-  if (dismissed || !health) return null;
+  if (!health) return null;
   const conflicts = health.conflicts || [];
+  const fingerprint = conflictFingerprint(conflicts);
+  const dismissed =
+    dismissedFingerprint !== null &&
+    fingerprint.length > 0 &&
+    dismissedFingerprint === fingerprint;
   const focusProfile = health.focus?.state?.profile || "off";
   const focusActive = focusProfile !== "off";
-  if (health.ok && conflicts.length === 0 && !focusActive) return null;
+  if (dismissed || (health.ok && conflicts.length === 0 && !focusActive)) return null;
 
   const critical = conflicts.filter((c) => c.severity === "critical");
   const fixable = conflicts.filter((c) => c.action);
@@ -139,6 +193,10 @@ export function SystemHealthBanner() {
               {(health.recommendations || []).join(" · ")}
             </p>
           )}
+          <p className="mt-1 text-[10px] opacity-60">
+            TBCC auto-remediate runs every ~25s when the API is up (queue backlog, down workers, focus when imports
+            are not processing). Import burst stays on while imports actively run.
+          </p>
           {typeof health.import_pipeline?.active_jobs === "number" &&
             health.import_pipeline.active_jobs > 0 && (
               <p className="mt-1 text-xs">
@@ -197,7 +255,10 @@ export function SystemHealthBanner() {
           <button
             type="button"
             className="text-xs underline opacity-80 hover:opacity-100"
-            onClick={() => setDismissed(true)}
+            onClick={() => {
+              writeDismissedFingerprint(fingerprint);
+              setDismissedFingerprint(fingerprint);
+            }}
           >
             Dismiss
           </button>

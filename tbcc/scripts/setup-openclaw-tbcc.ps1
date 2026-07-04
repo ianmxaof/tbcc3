@@ -11,7 +11,7 @@ if (-not $TbccRoot) {
 $repoRoot = Split-Path $TbccRoot -Parent
 $mcpScript = Join-Path $TbccRoot "mcp-server\server.py"
 $skillSrc = Join-Path $TbccRoot "docs\openclaw-skill"
-$skillNames = @("tbcc-aof-network", "tbcc-failure-modes")
+$skillNames = @("tbcc-aof-network", "tbcc-failure-modes", "tbcc-growth-signals")
 
 Write-Host "=== OpenClaw + TBCC setup ===" -ForegroundColor Cyan
 Write-Host "Repo: $repoRoot" -ForegroundColor Gray
@@ -94,5 +94,12 @@ Write-Host "2. openclaw config set channels.telegram.botToken YOUR_NEW_TOKEN"
 Write-Host "3. openclaw gateway restart  (or restart daemon from tray)"
 Write-Host "4. DM the new bot, then: openclaw pairing approve telegram CODE"
 Write-Host "5. Add OpenClaw cron - see tbcc/docs/OPENCLAW_TBCC_INTEGRATION.md"
+Write-Host "   Or run: tbcc\scripts\setup-openclaw-growth-cron.ps1"
 Write-Host "6. Test: mcporter call tbcc.tbcc_health"
 Write-Host "7. Test agent: openclaw agent --message 'Run tbcc_health via mcporter'"
+
+$growthCron = Join-Path $TbccRoot "scripts\setup-openclaw-growth-cron.ps1"
+if (Test-Path -LiteralPath $growthCron) {
+  Write-Host "`nInstalling ops + growth cron jobs..." -ForegroundColor Yellow
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $growthCron -TbccRoot $TbccRoot -SkipSkillSync
+}

@@ -12,6 +12,11 @@ from app.database.session import get_db
 from app.schemas.common import orm_to_dict
 from app.services.payment_bot_settings_effective import get_effective_payment_bot_settings
 from app.services.loot_bot_settings_effective import get_effective_loot_bot_settings
+from app.services.tbcc_stack_control import (
+    default_runtime_adapter,
+    resolve_bot_runtime_commands,
+    runtime_status_from_stack,
+)
 
 router = APIRouter()
 _LOCAL_PROCS: dict[str, subprocess.Popen] = {}
@@ -27,19 +32,67 @@ def _proc_alive(name: str) -> bool:
     return bool(p and p.poll() is None)
 
 
+def _find_external_bot_pid(module: str) -> int | None:
+    """Tray/supervisor bots are separate from _LOCAL_PROCS — avoid duplicate Telegram polling."""
+    if sys.platform != "win32":
+        return None
+    needle = f"bots.{module}"
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" "
+                    f"| Where-Object {{ $_.CommandLine -like '*{needle}*' }} "
+                    "| Select-Object -ExpandProperty ProcessId -First 1"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        s = (r.stdout or "").strip()
+        if s.isdigit():
+            return int(s)
+    except Exception:
+        pass
+    return None
+
+
+def _start_blocked_if_external(module: str, bot_key: str) -> dict | None:
+    ext = _find_external_bot_pid(module)
+    if ext:
+        return {
+            "ok": False,
+            "status": "running",
+            "pid": ext,
+            "message": (
+                f"{bot_key} already running outside the API (pid {ext}). "
+                "Stop TBCC service tabs first or use tray controls — do not start a second copy."
+            ),
+        }
+    return None
+
+
 def _runtime_cfg(db: Session) -> dict:
     try:
         eff = get_effective_payment_bot_settings(db)
     except Exception:
         eff = {}
-    return {
-        "adapter": (eff.get("runtime_adapter") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or "local").strip().lower(),
+    base = {
+        "adapter": (eff.get("runtime_adapter") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or default_runtime_adapter()).strip().lower(),
         "start": (eff.get("runtime_cmd_start") or os.getenv("TBCC_PAYMENT_BOT_CMD_START") or "").strip(),
         "stop": (eff.get("runtime_cmd_stop") or os.getenv("TBCC_PAYMENT_BOT_CMD_STOP") or "").strip(),
         "restart": (eff.get("runtime_cmd_restart") or os.getenv("TBCC_PAYMENT_BOT_CMD_RESTART") or "").strip(),
         "reload": (eff.get("runtime_cmd_reload") or os.getenv("TBCC_PAYMENT_BOT_CMD_RELOAD") or "").strip(),
         "status": (eff.get("runtime_cmd_status") or os.getenv("TBCC_PAYMENT_BOT_CMD_STATUS") or "").strip(),
     }
+    if base["adapter"] == "command":
+        cmds = resolve_bot_runtime_commands("payment_bot", base)
+        base.update(cmds)
+    return base
 
 
 def _runtime_adapter(db: Session) -> str:
@@ -52,14 +105,18 @@ def _loot_runtime_cfg(db: Session) -> dict:
         eff = get_effective_loot_bot_settings(db)
     except Exception:
         eff = {}
-    return {
-        "adapter": (eff.get("runtime_adapter") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or "local").strip().lower(),
+    base = {
+        "adapter": (eff.get("runtime_adapter") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or default_runtime_adapter()).strip().lower(),
         "start": (eff.get("runtime_cmd_start") or os.getenv("TBCC_LOOT_BOT_CMD_START") or "").strip(),
         "stop": (eff.get("runtime_cmd_stop") or os.getenv("TBCC_LOOT_BOT_CMD_STOP") or "").strip(),
         "restart": (eff.get("runtime_cmd_restart") or os.getenv("TBCC_LOOT_BOT_CMD_RESTART") or "").strip(),
         "reload": (eff.get("runtime_cmd_reload") or os.getenv("TBCC_LOOT_BOT_CMD_RELOAD") or "").strip(),
         "status": (eff.get("runtime_cmd_status") or os.getenv("TBCC_LOOT_BOT_CMD_STATUS") or "").strip(),
     }
+    if base["adapter"] == "command":
+        cmds = resolve_bot_runtime_commands("loot_bot", base)
+        base.update(cmds)
+    return base
 
 
 def _loot_runtime_adapter(db: Session) -> str:
@@ -67,8 +124,11 @@ def _loot_runtime_adapter(db: Session) -> str:
     return v if v in ("local", "command") else "local"
 
 
-def _run_command(action: str, db: Session, cfg: dict | None = None) -> dict:
-    cfg = cfg if cfg is not None else _runtime_cfg(db)
+def _run_command(action: str, db: Session | None, cfg: dict | None = None) -> dict:
+    if cfg is None:
+        if db is None:
+            raise HTTPException(status_code=500, detail="runtime config missing")
+        cfg = _runtime_cfg(db)
     cmd = str(cfg.get(action) or "").strip()
     if not cmd:
         raise HTTPException(status_code=400, detail=f"No command configured for action '{action}'.")
@@ -99,6 +159,9 @@ def _bot_runtime_status(name: str, db: Session) -> dict:
     adapter = _loot_runtime_adapter(db) if name == "loot_bot" else _runtime_adapter(db)
     if adapter == "local":
         return _bot_runtime_status_local(name)
+    stack_rt = runtime_status_from_stack(name)
+    if stack_rt:
+        return stack_rt
     cfg = _loot_runtime_cfg(db) if name == "loot_bot" else _runtime_cfg(db)
     status_cmd = cfg.get("status") or ""
     if status_cmd:
@@ -114,6 +177,9 @@ def _bot_runtime_status(name: str, db: Session) -> dict:
 def _start_payment_bot(db: Session) -> dict:
     if _runtime_adapter(db) == "command":
         return _run_command("start", db)
+    blocked = _start_blocked_if_external("payment_bot", "payment_bot")
+    if blocked:
+        return blocked
     if _proc_alive("payment_bot"):
         p = _LOCAL_PROCS["payment_bot"]
         return {"ok": True, "status": "running", "pid": p.pid, "message": "already running"}
@@ -141,6 +207,9 @@ def _stop_payment_bot(db: Session) -> dict:
 def _start_loot_bot(db: Session) -> dict:
     if _loot_runtime_adapter(db) == "command":
         return _run_command("start", db, _loot_runtime_cfg(db))
+    blocked = _start_blocked_if_external("loot_bot", "loot_bot")
+    if blocked:
+        return blocked
     if _proc_alive("loot_bot"):
         p = _LOCAL_PROCS["loot_bot"]
         return {"ok": True, "status": "running", "pid": p.pid, "message": "already running"}
@@ -166,14 +235,22 @@ def _stop_loot_bot(db: Session) -> dict:
 
 
 def _secretary_runtime_cfg() -> dict:
-    return {
-        "adapter": (os.getenv("TBCC_SECRETARY_RUNTIME_ADAPTER") or os.getenv("TBCC_BOT_RUNTIME_ADAPTER") or "local").strip().lower(),
+    base = {
+        "adapter": (
+            os.getenv("TBCC_SECRETARY_RUNTIME_ADAPTER")
+            or os.getenv("TBCC_BOT_RUNTIME_ADAPTER")
+            or default_runtime_adapter()
+        ).strip().lower(),
         "start": (os.getenv("TBCC_SECRETARY_BOT_CMD_START") or "").strip(),
         "stop": (os.getenv("TBCC_SECRETARY_BOT_CMD_STOP") or "").strip(),
         "restart": (os.getenv("TBCC_SECRETARY_BOT_CMD_RESTART") or "").strip(),
         "reload": (os.getenv("TBCC_SECRETARY_BOT_CMD_RELOAD") or "").strip(),
         "status": (os.getenv("TBCC_SECRETARY_BOT_CMD_STATUS") or "").strip(),
     }
+    if base["adapter"] == "command":
+        cmds = resolve_bot_runtime_commands("secretary_bot", base)
+        base.update(cmds)
+    return base
 
 
 def _secretary_runtime_adapter() -> str:
@@ -182,15 +259,12 @@ def _secretary_runtime_adapter() -> str:
 
 
 def _start_secretary_bot() -> dict:
-    cfg = _secretary_runtime_cfg()
     if _secretary_runtime_adapter() == "command":
-        if not cfg.get("start"):
-            raise HTTPException(status_code=400, detail="Set TBCC_SECRETARY_BOT_CMD_START for command adapter.")
-        p = subprocess.run(cfg["start"], shell=True, capture_output=True, text=True)
-        out = (p.stdout or "").strip()
-        if p.returncode != 0:
-            raise HTTPException(status_code=502, detail=(p.stderr or out or "start failed")[:500])
-        return {"ok": True, "status": "unknown", "pid": None, "message": out or "start command executed"}
+        cfg = _secretary_runtime_cfg()
+        return _run_command("start", None, cfg)  # type: ignore[arg-type]
+    blocked = _start_blocked_if_external("secretary_bot", "secretary_bot")
+    if blocked:
+        return blocked
     if _proc_alive("secretary_bot"):
         p = _LOCAL_PROCS["secretary_bot"]
         return {"ok": True, "status": "running", "pid": p.pid, "message": "already running"}
@@ -202,15 +276,8 @@ def _start_secretary_bot() -> dict:
 
 
 def _stop_secretary_bot() -> dict:
-    cfg = _secretary_runtime_cfg()
     if _secretary_runtime_adapter() == "command":
-        if not cfg.get("stop"):
-            raise HTTPException(status_code=400, detail="Set TBCC_SECRETARY_BOT_CMD_STOP for command adapter.")
-        p = subprocess.run(cfg["stop"], shell=True, capture_output=True, text=True)
-        out = (p.stdout or "").strip()
-        if p.returncode != 0:
-            raise HTTPException(status_code=502, detail=(p.stderr or out or "stop failed")[:500])
-        return {"ok": True, "status": "stopped", "pid": None, "message": out or "stop command executed"}
+        return _run_command("stop", None, _secretary_runtime_cfg())
     p = _LOCAL_PROCS.get("secretary_bot")
     if not p or p.poll() is not None:
         return {"ok": True, "status": "stopped", "pid": None, "message": "already stopped"}
@@ -226,6 +293,9 @@ def _bot_runtime_status_secretary() -> dict:
     adapter = _secretary_runtime_adapter()
     if adapter == "local":
         return _bot_runtime_status_local("secretary_bot")
+    stack_rt = runtime_status_from_stack("secretary_bot")
+    if stack_rt:
+        return stack_rt
     cfg = _secretary_runtime_cfg()
     status_cmd = cfg.get("status") or ""
     if status_cmd:
@@ -322,16 +392,18 @@ def control_bot_runtime(bot_key: str, action: str, db: Session = Depends(get_db)
             return _stop_secretary_bot()
         if act == "restart":
             if _secretary_runtime_adapter() == "command":
-                cmd = (_secretary_runtime_cfg().get("restart") or "").strip()
-                if cmd:
-                    p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                    if p.returncode != 0:
-                        raise HTTPException(status_code=502, detail=(p.stderr or p.stdout or "restart failed")[:500])
-                    return {"ok": True, "status": "unknown", "pid": None, "message": (p.stdout or "").strip()}
+                return _run_command("restart", None, _secretary_runtime_cfg())
             _stop_secretary_bot()
             return _start_secretary_bot()
         if act == "reload":
-            return {"ok": True, "status": "running" if _proc_alive("secretary_bot") else "stopped", "pid": None, "message": "restart secretary bot to reload .env"}
+            if _secretary_runtime_adapter() == "command":
+                return _run_command("reload", None, _secretary_runtime_cfg())
+            return {
+                "ok": True,
+                "status": "running" if _proc_alive("secretary_bot") else "stopped",
+                "pid": None,
+                "message": "restart secretary bot to reload .env",
+            }
         raise HTTPException(status_code=400, detail="Action must be one of: start, stop, restart, reload")
 
     if key == "payment_bot":

@@ -145,6 +145,10 @@ def run_import_job_sync(job_id: str) -> dict:
         data, media_type = _prepare_bytes(job, raw)
         cap = (job.caption or "").strip() or None
         source = sanitize_import_source_url(job.source or "import:fast-job")
+        if job.saved_only:
+            from app.services.media_sniff import reject_html_or_tiny_payload
+
+            reject_html_or_tiny_payload(data, url=source)
         poster_path = _maybe_write_poster(job, data, media_type)
         if poster_path:
             update_job(db, job, poster_path=poster_path)
@@ -154,8 +158,8 @@ def run_import_job_sync(job_id: str) -> dict:
                 if job.saved_only:
 
                     async def _saved_only(storage):
-                        await storage.save_to_saved_only(data, media_type, caption=cap)
-                        return {"status": "saved_only"}
+                        msg_id = await storage.save_to_saved_only(data, media_type, caption=cap)
+                        return {"status": "saved_only", "telegram_message_id": msg_id}
 
                     result = _run_on_worker_loop(
                         asyncio.wait_for(

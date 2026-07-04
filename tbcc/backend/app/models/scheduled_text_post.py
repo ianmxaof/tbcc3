@@ -9,6 +9,8 @@ class ScheduledTextPost(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=True)
+    # Dashboard lean-group bucket: main_lane | bot_commands | liveness | promo_bulletin | manual
+    scheduler_category = Column(String(32), nullable=True)
     # When set, this row is part of a multi-channel campaign; scheduler fires the lowest-id row only.
     campaign_group_id = Column(String(36), nullable=True)
     # Multi-channel only: each interval picks one random sibling channel instead of posting to all.
@@ -58,6 +60,12 @@ class ScheduledTextPost(Base):
     buffer_mirror_enabled = Column(Boolean, nullable=False, default=False)
     # True = Buffer createPost mode shareNow (publish ASAP); False = addToQueue
     buffer_publish_now = Column(Boolean, nullable=False, default=False)
+    # Optional Discord webhook fan-out after Telegram send (TBCC_DISCORD_LISTENING_RELAY_WEBHOOK_URL).
+    discord_mirror_enabled = Column(Boolean, nullable=False, default=False)
+    reddit_mirror_enabled = Column(Boolean, nullable=False, default=False)
+    erome_mirror_enabled = Column(Boolean, nullable=False, default=False)
+    # Optional per-surface copy: {"x","ig_threads","discord"} or {"variations":[{...},...]} aligned with captions.
+    surface_copy_json = Column(Text, nullable=True)
     # JSON list of {"text": "...", "image_url": "https://..."?} — up to 10; consumed FIFO on each Telegram send
     buffer_x_queue_json = Column(Text, nullable=True)
     # LLM caption rewrite (requires TBCC_CAPTION_LLM_REWRITE_ENABLED=1)
@@ -87,7 +95,7 @@ class ScheduledTextPost(Base):
                 if iu.startswith("https://"):
                     entry["image_url"] = iu
                 out.append(entry)
-                if len(out) >= 10:
+                if len(out) >= 16:
                     break
             return out
         except (json.JSONDecodeError, TypeError):
@@ -95,7 +103,7 @@ class ScheduledTextPost(Base):
 
     def set_buffer_x_queue(self, items: list[dict]) -> None:
         norm: list[dict] = []
-        for x in items[:10]:
+        for x in items[:16]:
             if not isinstance(x, dict):
                 continue
             t = str(x.get("text") or "").strip()

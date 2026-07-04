@@ -163,14 +163,61 @@ async def _complete_openai(messages: list[dict[str, str]]) -> str:
 
 async def _complete_openrouter(messages: list[dict[str, str]]) -> str:
     from app.services.llm_completions import complete_chat_text_async, openrouter_api_key
+    import asyncio
+    import re
 
     if not openrouter_api_key():
         raise RuntimeError("Set TBCC_OPENROUTER_API_KEY for OpenRouter provider")
 
-    return await complete_chat_text_async(
-        messages,
-        model=_openrouter_model(),
-        max_tokens=_max_tokens(),
-        temperature=_temperature(),
-        timeout=120.0,
-    )
+    primary = _openrouter_model()
+    fallbacks = _openrouter_fallback_models(primary)
+    models = [primary] + [m for m in fallbacks if m != primary]
+    last_err: Exception | None = None
+    for model in models:
+        for attempt in range(2):
+            try:
+                return await complete_chat_text_async(
+                    messages,
+                    model=model,
+                    max_tokens=_max_tokens(),
+                    temperature=_temperature(),
+                    timeout=120.0,
+                )
+            except Exception as e:
+                last_err = e
+                err = str(e)
+                low = err.lower()
+                retryable = "429" in err or "rate-limit" in low or "rate limited" in low
+                if retryable and attempt == 0 and model == primary:
+                    wait_s = 6
+                    m = re.search(r"retry_after_seconds(?:_raw)?[\"']?\s*:\s*([0-9.]+)", err)
+                    if m:
+                        try:
+                            wait_s = max(2, min(30, int(float(m.group(1)) + 1)))
+                        except ValueError:
+                            pass
+                    logger.warning("openrouter %s throttled; retry in %ss", model, wait_s)
+                    await asyncio.sleep(wait_s)
+                    continue
+                if retryable and model != models[-1]:
+                    logger.warning("openrouter model %s rate-limited; trying fallback", model)
+                    break
+                if model != models[-1]:
+                    logger.warning("openrouter model %s failed: %s; trying fallback", model, e)
+                    break
+                raise
+    if last_err:
+        raise last_err
+    raise RuntimeError("OpenRouter completion failed")
+
+
+def _openrouter_fallback_models(primary: str) -> list[str]:
+    raw = (os.getenv("TBCC_LLM_CHAT_FALLBACK_MODELS") or "").strip()
+    if raw:
+        return [m.strip() for m in raw.split(",") if m.strip()]
+    # Paid uncensored-ish fallbacks when Venice :free is throttled (uses OpenRouter credits).
+    defaults = [
+        "gryphe/mythomax-l2-13b",
+        "nousresearch/hermes-3-llama-3.1-70b",
+    ]
+    return [m for m in defaults if m != primary]

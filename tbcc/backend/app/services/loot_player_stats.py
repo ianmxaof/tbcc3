@@ -52,6 +52,17 @@ def record_roll(db: Session, telegram_user_id: int | None) -> int:
     idx = int(row.roll_count or 0)
     row.roll_count = idx + 1
     row.last_roll_at = datetime.utcnow()
+    try:
+        from app.services.growth_attribution import EVENT_LOOT_ROLL, record_growth_attribution
+
+        record_growth_attribution(
+            db,
+            event_type=EVENT_LOOT_ROLL,
+            telegram_user_id=int(telegram_user_id),
+            extra={"roll_index_before": idx},
+        )
+    except Exception:
+        pass
     db.commit()
     return idx
 

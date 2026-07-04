@@ -255,6 +255,9 @@ def _upsert_recurring_scheduler(
             apply_main_group_tease_media(sched)
             entry["checkout_stars"] = True
             entry["tease_album"] = sched.album_size
+        from app.services.scheduler_category import apply_scheduler_category
+
+        apply_scheduler_category(sched)
     return entry
 
 
@@ -376,6 +379,7 @@ def _tune_command_schedulers(db: Session, interval_min: int, execute: bool) -> l
         if execute:
             sched.interval_minutes = interval_min
             sched.send_silent = True
+            sched.scheduler_category = "bot_commands"
             entry["status"] = "updated"
         else:
             entry["status"] = "would_update"
@@ -499,6 +503,7 @@ def queue_first_subscription_celebration(db: Session, *, force: bool = False) ->
             send_silent=False,
             pin_after_send=False,
             created_at=datetime.now(timezone.utc),
+            scheduler_category="promo_bulletin",
         )
         db.add(sched)
         db.flush()
@@ -660,6 +665,7 @@ def post_milestone_fomo_to_main(db: Session) -> dict[str, Any]:
             pool_collective_random=True,
             pool_randomize=True,
             created_at=datetime.now(timezone.utc),
+            scheduler_category="liveness",
         )
         from app.services.aof_feed_rhythm_v2 import apply_main_group_tease_media
 

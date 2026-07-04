@@ -4,6 +4,7 @@ import { api } from "../api";
 import { useEmojiFactoryProgress } from "../hooks/useEmojiFactoryProgress";
 import { shortNameLooksValidBase, slugShortNameBase } from "../lib/telegramShortName";
 import { QueryErrorBanner } from "./QueryErrorBanner";
+import { EmojiFactoryRowDividers } from "./EmojiFactoryRowDividers";
 
 const GRID_PRESETS = [
   { label: "2×2", cols: 2, rows: 2 },
@@ -24,6 +25,7 @@ export function EmojiFactoryMaker({ variant = "express" }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [staticPack, setStaticPack] = useState(false);
   const [status, setStatus] = useState("");
+  const [lastJobId, setLastJobId] = useState<string | null>(null);
 
   const prereqQ = useQuery({
     queryKey: ["emojiFactoryPrerequisites"],
@@ -86,12 +88,14 @@ export function EmojiFactoryMaker({ variant = "express" }: Props) {
     },
     onSuccess: (data, vars) => {
       const split = data.split as {
+        job_id?: string;
         manifest_path?: string;
         out_dir?: string;
         tile_count?: number;
         over_soft_limit?: number;
         suggested_short_name?: string;
       };
+      if (split.job_id) setLastJobId(split.job_id);
       if (split.manifest_path) {
         setProject({ manifestPath: split.manifest_path });
       }
@@ -326,6 +330,10 @@ export function EmojiFactoryMaker({ variant = "express" }: Props) {
       ) : null}
 
       {status ? <p className="text-sm text-emerald-300/90">{status}</p> : null}
+
+      {lastJobId ? (
+        <EmojiFactoryRowDividers jobId={lastJobId} rows={project.rows} compact />
+      ) : null}
 
       {createMut.isSuccess && createMut.data ? (
         <details className="text-xs">

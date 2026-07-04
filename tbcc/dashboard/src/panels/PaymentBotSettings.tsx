@@ -84,10 +84,7 @@ export function PaymentBotSettingsPanel() {
       return (e as Error).message;
     }
   }, [menuJson]);
-  const runtimeConfigError =
-    runtimeAdapter === "command" && (!cmdStart.trim() || !cmdStop.trim())
-      ? "Command adapter requires both Start and Stop commands."
-      : null;
+  const runtimeConfigError = null;
   const videoFinderSourcesError = useMemo(() => {
     if (!videoFinderSourcesJson.trim()) return null;
     try {
@@ -253,7 +250,8 @@ export function PaymentBotSettingsPanel() {
         <div className="border border-slate-700 rounded-lg p-3 bg-slate-900/30">
           <h3 className="text-sm font-semibold text-slate-200 mb-2">Runtime adapter</h3>
           <p className="text-xs text-slate-400 mb-3">
-            Configure Process monitor runtime controls from dashboard (DB-backed). Use command mode for Docker or service manager.
+            On Windows, leave commands empty to delegate to TBCC Supervisor tray (<code className="text-slate-300">tbcc-stack-cli.ps1</code>).
+            Override only for Docker or custom service managers.
           </p>
           <label className="block mb-3">
             <span className="text-slate-400 text-xs">Adapter</span>
@@ -266,32 +264,32 @@ export function PaymentBotSettingsPanel() {
               className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200"
             >
               <option value="local">local (API starts python process)</option>
-              <option value="command">command (run custom commands)</option>
+              <option value="command">command (tray / custom scripts)</option>
             </select>
           </label>
           {runtimeAdapter === "command" ? (
             <div className="grid gap-3">
               <label className="block">
-                <span className="text-slate-400 text-xs">Start command (required)</span>
+                <span className="text-slate-400 text-xs">Start command (optional on Windows — tray default)</span>
                 <input
                   value={cmdStart}
                   onChange={(e) => {
                     setCmdStart(e.target.value);
                     setEdited(true);
                   }}
-                  placeholder='docker compose -f infra/docker-compose.yml --profile bot up -d payment_bot'
+                  placeholder="(empty = tray Start-TbccStackService payment)"
                   className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
                 />
               </label>
               <label className="block">
-                <span className="text-slate-400 text-xs">Stop command (required)</span>
+                <span className="text-slate-400 text-xs">Stop command (optional on Windows — tray default)</span>
                 <input
                   value={cmdStop}
                   onChange={(e) => {
                     setCmdStop(e.target.value);
                     setEdited(true);
                   }}
-                  placeholder='docker compose -f infra/docker-compose.yml stop payment_bot'
+                  placeholder="(empty = tray Stop-TbccStackService payment)"
                   className="mt-1 w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm"
                 />
               </label>

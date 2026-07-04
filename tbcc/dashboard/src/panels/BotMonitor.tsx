@@ -39,50 +39,71 @@ export function BotMonitor() {
     },
   });
 
+  const payAdapter = runtimeQ.data?.adapter ?? "command";
+  const lootAdapter = lootRuntimeQ.data?.adapter ?? "command";
+  const payCommand = payAdapter === "command";
+  const lootCommand = lootAdapter === "command";
+
   return (
     <div>
       <h1 className="text-2xl font-semibold mb-4">Bot Monitor</h1>
       <p className="text-slate-400 mb-6">
-        Bot status and last seen. Restart controls can be wired to your process manager (e.g. systemd, Docker).
+        Bot status from tray supervisor on Windows (<code className="text-slate-300">command</code> adapter). Use the
+        TBCC Supervisor tray for start/stop — dashboard restart delegates to the same scripts.
       </p>
       <div className="mb-5 border border-slate-700 rounded-lg p-4 bg-slate-900/30">
         <h2 className="text-sm font-semibold text-slate-200 mb-2">Payment bot runtime control</h2>
         <p className="text-xs text-slate-400 mb-3">
-          Step 2 control plane: local API-managed runtime for `payment_bot` (start/stop/restart, plus config reload hint).
+          {payCommand
+            ? "Managed by TBCC Supervisor tray. Restart below calls tbcc-stack-cli.ps1."
+            : "Local API subprocess mode — do not use while tray tabs are running."}
         </p>
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <button
-            type="button"
-            onClick={() => control.mutate("start")}
-            disabled={control.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-emerald-700/80 text-emerald-50 hover:bg-emerald-600 disabled:opacity-50"
-          >
-            Start
-          </button>
-          <button
-            type="button"
-            onClick={() => control.mutate("stop")}
-            disabled={control.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-red-800/70 text-red-50 hover:bg-red-700 disabled:opacity-50"
-          >
-            Stop
-          </button>
-          <button
-            type="button"
-            onClick={() => control.mutate("restart")}
-            disabled={control.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
-          >
-            Restart
-          </button>
-          <button
-            type="button"
-            onClick={() => control.mutate("reload")}
-            disabled={control.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-slate-700 text-slate-100 hover:bg-slate-600 disabled:opacity-50"
-          >
-            Reload config
-          </button>
+          {payCommand ? (
+            <button
+              type="button"
+              onClick={() => control.mutate("restart")}
+              disabled={control.isPending}
+              className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
+            >
+              Restart via tray
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => control.mutate("start")}
+                disabled={control.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-emerald-700/80 text-emerald-50 hover:bg-emerald-600 disabled:opacity-50"
+              >
+                Start
+              </button>
+              <button
+                type="button"
+                onClick={() => control.mutate("stop")}
+                disabled={control.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-red-800/70 text-red-50 hover:bg-red-700 disabled:opacity-50"
+              >
+                Stop
+              </button>
+              <button
+                type="button"
+                onClick={() => control.mutate("restart")}
+                disabled={control.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                onClick={() => control.mutate("reload")}
+                disabled={control.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-slate-700 text-slate-100 hover:bg-slate-600 disabled:opacity-50"
+              >
+                Reload config
+              </button>
+            </>
+          )}
         </div>
         <p className="text-xs text-slate-400">
           Runtime:{" "}
@@ -110,38 +131,51 @@ export function BotMonitor() {
           invite link, and Docker commands under Bots → <strong>Loot overseer</strong>.
         </p>
         <div className="flex flex-wrap items-center gap-2 mb-2">
-          <button
-            type="button"
-            onClick={() => lootControl.mutate("start")}
-            disabled={lootControl.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-emerald-700/80 text-emerald-50 hover:bg-emerald-600 disabled:opacity-50"
-          >
-            Start
-          </button>
-          <button
-            type="button"
-            onClick={() => lootControl.mutate("stop")}
-            disabled={lootControl.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-red-800/70 text-red-50 hover:bg-red-700 disabled:opacity-50"
-          >
-            Stop
-          </button>
-          <button
-            type="button"
-            onClick={() => lootControl.mutate("restart")}
-            disabled={lootControl.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
-          >
-            Restart
-          </button>
-          <button
-            type="button"
-            onClick={() => lootControl.mutate("reload")}
-            disabled={lootControl.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-slate-700 text-slate-100 hover:bg-slate-600 disabled:opacity-50"
-          >
-            Reload config
-          </button>
+          {lootCommand ? (
+            <button
+              type="button"
+              onClick={() => lootControl.mutate("restart")}
+              disabled={lootControl.isPending}
+              className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
+            >
+              Restart via tray
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => lootControl.mutate("start")}
+                disabled={lootControl.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-emerald-700/80 text-emerald-50 hover:bg-emerald-600 disabled:opacity-50"
+              >
+                Start
+              </button>
+              <button
+                type="button"
+                onClick={() => lootControl.mutate("stop")}
+                disabled={lootControl.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-red-800/70 text-red-50 hover:bg-red-700 disabled:opacity-50"
+              >
+                Stop
+              </button>
+              <button
+                type="button"
+                onClick={() => lootControl.mutate("restart")}
+                disabled={lootControl.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-cyan-700/80 text-cyan-50 hover:bg-cyan-600 disabled:opacity-50"
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                onClick={() => lootControl.mutate("reload")}
+                disabled={lootControl.isPending}
+                className="px-3 py-1.5 text-sm rounded bg-slate-700 text-slate-100 hover:bg-slate-600 disabled:opacity-50"
+              >
+                Reload config
+              </button>
+            </>
+          )}
         </div>
         <p className="text-xs text-slate-400">
           Runtime:{" "}

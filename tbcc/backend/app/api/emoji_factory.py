@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,6 +17,8 @@ from app.models.custom_emoji_preset import CustomEmojiPreset
 from app.models.emoji_factory_sketch import EmojiFactorySketchPage
 from app.schemas.common import orm_to_dict
 from app.services.emoji_factory_jobs import run_create_from_upload
+from app.services.emoji_factory_async import enqueue_emoji_factory_job, run_emoji_factory_followup
+from app.services.emoji_factory_job_status import public_job_status, TERMINAL_STATUSES
 from app.services.emoji_pack_telethon import (
     load_manifest,
     normalize_short_name,
@@ -211,6 +214,140 @@ async def create_pack_from_upload(
     return out
 
 
+class FollowUpBody(BaseModel):
+    import_dividers: bool = False
+    save_sketchbook_preset: bool = False
+    title: str = Field("TBCC emoji pack", max_length=64)
+    short_name: str = Field("", max_length=64)
+    preset_title: str = Field("", max_length=256)
+
+
+@router.post("/jobs/create-async")
+async def create_pack_async(
+    file: UploadFile = File(..., description="Image or video for emoji grid split"),
+    cols: int = Form(4, ge=1, le=10),
+    rows: int = Form(4, ge=1, le=10),
+    tile_px: int = Form(100, ge=64, le=512),
+    margin_pct: float = Form(8.0, ge=0, le=30),
+    loop_sec: float = Form(3.0, ge=0.5, le=3.0),
+    crf: int = Form(44, ge=20, le=52),
+    static: bool = Form(False),
+    title: str = Form("TBCC emoji pack"),
+    short_name: str = Form(""),
+    upload_telegram: bool = Form(False),
+    dry_run: bool = Form(False),
+    import_dividers: bool = Form(False),
+    save_sketchbook_preset: bool = Form(False),
+    source: str = Form("api"),
+):
+    """
+    Queue emoji-factory split on Celery (non-blocking). Poll GET /emoji-factory/jobs/{job_id}/status.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename")
+    import tempfile
+
+    suffix = Path(file.filename).suffix.lower() or ".bin"
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            content = await file.read()
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        body = enqueue_emoji_factory_job(
+            uploaded_path=tmp_path,
+            original_filename=file.filename,
+            cols=cols,
+            rows=rows,
+            tile_px=tile_px,
+            margin_pct=margin_pct,
+            loop_sec=loop_sec,
+            crf=crf,
+            static=static,
+            title=title.strip() or "TBCC emoji pack",
+            short_name=short_name.strip(),
+            upload_telegram=upload_telegram,
+            dry_run=dry_run,
+            import_dividers=import_dividers,
+            save_sketchbook_preset=save_sketchbook_preset,
+            source=(source or "api").strip()[:32],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return body
+
+
+@router.get("/jobs/{job_id}/status")
+def get_emoji_factory_job_status(job_id: str):
+    """Poll async emoji-factory job (queued → splitting → uploading → done)."""
+    body = public_job_status(job_id.strip())
+    if not body.get("ok"):
+        code = 404 if body.get("error") == "not_found" else 400
+        raise HTTPException(status_code=code, detail=body.get("error") or "unknown")
+    body["terminal"] = body.get("status") in TERMINAL_STATUSES
+    return body
+
+
+@router.post("/jobs/{job_id}/kick")
+def kick_emoji_factory_job(job_id: str):
+    """Run a queued job inline when Celery worker is offline (dev / recovery)."""
+    from app.services.emoji_factory_async import execute_emoji_factory_job
+    from app.services.emoji_factory_job_status import read_job_status, job_dir_for
+
+    jid = job_id.strip()
+    try:
+        job_dir_for(jid)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    status = read_job_status(job_dir_for(jid)) or {}
+    if status.get("status") not in (None, "queued", "unknown"):
+        if status.get("status") in TERMINAL_STATUSES:
+            body = public_job_status(jid)
+            body["terminal"] = True
+            return body
+        raise HTTPException(status_code=409, detail=f"job already {status.get('status')}")
+    try:
+        result = execute_emoji_factory_job(jid)
+        result["terminal"] = result.get("status") in TERMINAL_STATUSES
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/jobs/{job_id}/follow-up")
+def post_emoji_factory_follow_up(job_id: str, body: FollowUpBody, db: Session = Depends(get_db)):
+    """After split/upload: import row dividers and/or save sketchbook custom-emoji preset."""
+    status = public_job_status(job_id.strip())
+    if not status.get("ok"):
+        raise HTTPException(status_code=404, detail=status.get("error") or "not_found")
+    if status.get("status") != "done":
+        raise HTTPException(status_code=409, detail=f"job not done (status={status.get('status')})")
+    split = status.get("split") if isinstance(status.get("split"), dict) else {}
+    upload = status.get("upload") if isinstance(status.get("upload"), dict) else {}
+    sn = (body.short_name or upload.get("short_name") or "").strip()
+    try:
+        result = run_emoji_factory_followup(
+            db,
+            job_id=job_id.strip(),
+            import_dividers=body.import_dividers,
+            save_sketchbook_preset=body.save_sketchbook_preset,
+            title=(body.title or "TBCC emoji pack").strip(),
+            short_name=sn,
+            preset_title=(body.preset_title or "").strip(),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "job_id": job_id.strip(), "followup": result, "split": split, "upload": upload or None}
+
+
 @router.get("/prerequisites")
 async def emoji_factory_prerequisites():
     """ffmpeg + Telethon admin session readiness for factory upload."""
@@ -394,3 +531,60 @@ def sketch_page_save_preset(page_id: int, body: SketchSavePresetBody, db: Sessio
     d = orm_to_dict(preset)
     d["validation"] = v
     return d
+
+
+@router.get("/jobs")
+def list_emoji_factory_jobs():
+    from app.services.emoji_factory_divider_sources import list_emoji_factory_divider_sources
+
+    return {"jobs": list_emoji_factory_divider_sources()}
+
+
+@router.get("/jobs/{job_id}/rows/{row}/divider-png")
+def export_emoji_factory_row_divider(job_id: str, row: int):
+    from app.services.emoji_factory_divider_sources import export_emoji_factory_row_divider_png
+
+    try:
+        png = export_emoji_factory_row_divider_png(job_id, row)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="row_{int(row):02d}_divider.png"'},
+    )
+
+
+@router.post("/jobs/{job_id}/rows/{row}/divider-png")
+def save_emoji_factory_row_divider(job_id: str, row: int):
+    from app.services.emoji_factory_divider_sources import save_emoji_factory_row_divider_export
+
+    try:
+        path = save_emoji_factory_row_divider_export(job_id, row)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": True, "path": str(path), "filename": path.name}
+
+
+@router.post("/jobs/{job_id}/rows/{row}/import-divider")
+def import_emoji_factory_row_divider(job_id: str, row: int, db: Session = Depends(get_db)):
+    from app.services.emoji_factory_divider_sources import import_emoji_factory_row_as_divider
+    from app.services.main_channel_post_divider import get_main_channel_divider_public
+
+    try:
+        result = import_emoji_factory_row_as_divider(db, job_id=job_id.strip(), row=int(row))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {**result, "settings": get_main_channel_divider_public(db)}

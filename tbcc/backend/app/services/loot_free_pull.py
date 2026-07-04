@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.loot import LootPoolEligibility, LootPlayerMediaSeen
 from app.models.media import Media
 from app.services.loot_free_tease import pick_tease_lines
+from app.services.loot_roll_presentation import pick_tier_flavor
 from app.services.loot_player_stats import free_pull_allowance, free_pulls_remaining, record_free_pull
 from app.services.loot_referral import try_credit_referrer_for_pull
 from app.services.loot_tier_catalog import FREE_PULL_LIMIT
@@ -84,6 +85,7 @@ def build_free_pull_preview(
             "rarity_tier": rarity,
         }
 
+    allowance = free_pull_allowance(db, telegram_user_id)
     pool_w = {int(r.content_pool_id): float(r.base_weight or 1.0) for r in tier_pools}
     weights = [pool_w.get(int(m.pool_id or 0), 1.0) for m in candidates]
     picked = _weighted_choice(candidates, weights, rng)
@@ -91,7 +93,9 @@ def build_free_pull_preview(
         return {"ok": False, "reason": "Failed to pick media", "roll_kind": "free"}
 
     summary = preview_summary_fields(rarity)
-    tease = pick_tease_lines(rng, 3)
+    summary["tier_flavor"] = pick_tier_flavor(rarity, rng)
+    pull_number = max(1, min(FREE_PULL_LIMIT, allowance - remaining_before + 1))
+    tease = pick_tease_lines(rng, 3, step=pull_number)
     return {
         "ok": True,
         "roll_kind": "free",
@@ -101,8 +105,9 @@ def build_free_pull_preview(
         "album_size": 1,
         "modifier_slot_count": 0,
         "eligible_pool_ids": eligible_pool_ids,
-        "free_pull_limit": free_pull_allowance(db, telegram_user_id),
+        "free_pull_limit": allowance,
         "free_pulls_remaining_before": remaining_before,
+        "free_pull_number": pull_number,
         "media": [
             {
                 "id": int(picked.id),
@@ -138,6 +143,18 @@ def commit_free_pull(db: Session, telegram_user_id: int, preview: dict[str, Any]
     if not preview.get("ok"):
         return preview
     used_before = record_free_pull(db, int(telegram_user_id))
+    try:
+        from app.services.growth_attribution import EVENT_LOOT_FREE_PULL, record_growth_attribution
+
+        record_growth_attribution(
+            db,
+            event_type=EVENT_LOOT_FREE_PULL,
+            telegram_user_id=int(telegram_user_id),
+            extra={"free_pull_index_before": used_before},
+        )
+        db.commit()
+    except Exception:
+        pass
     media_ids = [int(m["id"]) for m in (preview.get("media") or []) if m.get("id") is not None]
     if media_ids:
         mark_free_pull_media_seen(db, int(telegram_user_id), media_ids)

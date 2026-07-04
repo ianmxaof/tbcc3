@@ -66,13 +66,346 @@ function Initialize-TbccServiceConsole {
 
 function Test-TbccWtPowershellHubCommand {
   param([Parameter(Mandatory = $true)][string]$Command)
-  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|run-tbcc-orchestrator\.ps1')
+  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|run-tbcc-orchestrator\.ps1|run-tbcc-stackwatch\.ps1|run-openclaw-gateway\.ps1')
+}
+
+function Register-TbccSelfClosingServiceTab {
+  <# Register launcher + return run-tbcc-service wrapper so every WT tab exits when its worker stops. #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName,
+    [Parameter(Mandatory = $true)][string]$Command
+  )
+  $null = Register-TbccServiceLauncher -TbccRoot $TbccRoot -ServiceName $ServiceName -Command $Command
+  return (Get-TbccServiceWrapperCmd -TbccRoot $TbccRoot -ServiceName $ServiceName)
+}
+
+function Get-TbccServiceTabDir {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  return Join-Path $TbccRoot ".tbcc-run\tabs"
+}
+
+function Get-TbccServiceTabSafeName {
+  param([Parameter(Mandatory = $true)][string]$ServiceName)
+  return ($ServiceName -replace '[^\w\-]', '_')
+}
+
+function Get-TbccServiceTabSessionPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  $tabDir = Get-TbccServiceTabDir -TbccRoot $TbccRoot
+  return Join-Path $tabDir ((Get-TbccServiceTabSafeName -ServiceName $ServiceName) + ".wt-session")
+}
+
+function Get-TbccServiceTabShellPidPath {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  $tabDir = Get-TbccServiceTabDir -TbccRoot $TbccRoot
+  return Join-Path $tabDir ((Get-TbccServiceTabSafeName -ServiceName $ServiceName) + ".shell.pid")
+}
+
+function Register-TbccServiceTabSession {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  $tabDir = Get-TbccServiceTabDir -TbccRoot $TbccRoot
+  New-Item -ItemType Directory -Force -Path $tabDir | Out-Null
+  if ($env:WT_SESSION) {
+    Set-Content -LiteralPath (Get-TbccServiceTabSessionPath -TbccRoot $TbccRoot -ServiceName $ServiceName) -Value $env:WT_SESSION.Trim() -Encoding ASCII -NoNewline
+  }
+}
+
+function Register-TbccServiceTabShell {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName,
+    [Parameter(Mandatory = $true)][int]$ShellPid
+  )
+  if ($ShellPid -le 4) { return }
+  $tabDir = Get-TbccServiceTabDir -TbccRoot $TbccRoot
+  New-Item -ItemType Directory -Force -Path $tabDir | Out-Null
+  Set-Content -LiteralPath (Get-TbccServiceTabShellPidPath -TbccRoot $TbccRoot -ServiceName $ServiceName) -Value $ShellPid -Encoding ASCII -NoNewline
+}
+
+function Clear-TbccServiceTabSession {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  $path = Get-TbccServiceTabSessionPath -TbccRoot $TbccRoot -ServiceName $ServiceName
+  if (Test-Path -LiteralPath $path) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Clear-TbccServiceTabShell {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  $path = Get-TbccServiceTabShellPidPath -TbccRoot $TbccRoot -ServiceName $ServiceName
+  if (Test-Path -LiteralPath $path) {
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-TbccWtExePath {
+  <# Resolve wt.exe for opening tabs. Falls back to WindowsApps alias when no direct binary exists. #>
+  $candidates = @(
+    (Join-Path ${env:ProgramFiles} "Windows Terminal\wt.exe"),
+    (Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\wt.exe")
+  )
+  try {
+    $pkg = Get-AppxPackage -Name Microsoft.WindowsTerminal -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pkg -and $pkg.InstallLocation) {
+      $candidates += (Join-Path $pkg.InstallLocation "wt.exe")
+    }
+  } catch {}
+  foreach ($p in $candidates) {
+    if ($p -and (Test-Path -LiteralPath $p)) { return $p }
+  }
+  try {
+    $c = Get-Command "wt.exe" -ErrorAction Stop
+    if ($c.Source -and (Test-Path -LiteralPath $c.Source)) { return $c.Source }
+  } catch {}
+  return $null
+}
+
+function Test-TbccWtExeSupportsCloseTab {
+  <# App Execution Alias wt.exe can spawn bogus "close-tab" error tabs — only use real binaries for close-tab. #>
+  param([string]$WtExe)
+  if (-not $WtExe) { return $false }
+  if ($WtExe -match '\\WindowsApps\\') { return $false }
+  return (Test-Path -LiteralPath $WtExe)
+}
+
+function Test-TbccClosingOwnServiceTab {
+  param([Parameter(Mandatory = $true)][string]$ServiceName)
+  try {
+    $me = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
+    if (-not $me -or -not $me.CommandLine) { return $false }
+    $cmd = [string]$me.CommandLine
+    if ($ServiceName -eq 'TBCC-Orchestrator' -and $cmd -match 'run-tbcc-orchestrator\.ps1') { return $true }
+    if ($ServiceName -eq 'TBCC-Errors' -and $cmd -match 'show-tbcc-error-hub') { return $true }
+    if ($ServiceName -eq 'TBCC-StackWatch' -and $cmd -match 'run-tbcc-stackwatch\.ps1') { return $true }
+    $pat = 'run-tbcc-service\.ps1.*-ServiceName\s+("?' + [regex]::Escape($ServiceName) + '"?)'
+    return ($cmd -match $pat)
+  } catch {
+    return $false
+  }
+}
+
+function Test-TbccLiveWindowsTerminalPid {
+  param([int]$ProcessId)
+  if ($ProcessId -le 4) { return $false }
+  try {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    return ($proc -and ([string]$proc.Name -ieq 'WindowsTerminal.exe'))
+  } catch {
+    return $false
+  }
+}
+
+function Get-TbccShellHostWindowsTerminalPid {
+  try {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    if ($all.Count -eq 0) { return $null }
+    $byId = @{}
+    foreach ($p in $all) { $byId[[int]$p.ProcessId] = $p }
+    $cur = [int]$PID
+    $seen = @{}
+    while ($cur -gt 4 -and -not $seen.ContainsKey($cur)) {
+      $seen[$cur] = $true
+      if (-not $byId.ContainsKey($cur)) { break }
+      $proc = $byId[$cur]
+      if ([string]$proc.Name -ieq 'WindowsTerminal.exe') { return $cur }
+      $cur = [int]$proc.ParentProcessId
+    }
+  } catch {}
+  return $null
+}
+
+function Resolve-TbccWtHostPidForCloseTab {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $runDir = Join-Path $TbccRoot ".tbcc-run"
+  $hostFile = Join-Path $runDir "windows-terminal-host.pid"
+  if (Test-Path -LiteralPath $hostFile) {
+    try {
+      $pidVal = [int]((Get-Content -LiteralPath $hostFile -Raw -ErrorAction Stop).Trim())
+      if (Test-TbccLiveWindowsTerminalPid -ProcessId $pidVal) { return $pidVal }
+    } catch {}
+  }
+  $fromShell = Get-TbccShellHostWindowsTerminalPid
+  if ($fromShell) { return $fromShell }
+  if ($env:WT_WINDOW -and $env:WT_WINDOW -match '^\d+$') {
+    $wp = [int]$env:WT_WINDOW
+    if (Test-TbccLiveWindowsTerminalPid -ProcessId $wp) { return $wp }
+  }
+  return $null
+}
+
+function Get-TbccWtHostPidFromRunDir {
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  return Resolve-TbccWtHostPidForCloseTab -TbccRoot $TbccRoot
+}
+
+function Invoke-TbccWtCommandSilent {
+  param(
+    [Parameter(Mandatory = $true)][string]$WtExe,
+    [Parameter(Mandatory = $true)][string[]]$WtArgs,
+    [int]$TimeoutMs = 5000
+  )
+  try {
+    # Single argument string — array form can make wt treat "close-tab" as a shell command (error tabs).
+    $argLine = ($WtArgs | ForEach-Object { [string]$_ }) -join ' '
+    $p = Start-Process -FilePath $WtExe -ArgumentList $argLine -PassThru -WindowStyle Hidden
+    if (-not $p.WaitForExit($TimeoutMs)) {
+      try { $p.Kill() } catch {}
+      return -1
+    }
+    return $p.ExitCode
+  } catch {
+    return -1
+  }
+}
+
+function Get-TbccServiceTabWrapperProcesses {
+  param(
+    [Parameter(Mandatory = $true)][string]$ServiceName,
+    $AllProcesses = $null
+  )
+  if (-not $AllProcesses) {
+    $AllProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  }
+  $pat = 'run-tbcc-service\.ps1.*-ServiceName\s+("?' + [regex]::Escape($ServiceName) + '"?)'
+  return @($AllProcesses | Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) })
+}
+
+function Stop-TbccServiceTabShell {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  $killed = @()
+  $shellPid = 0
+  $shellPath = Get-TbccServiceTabShellPidPath -TbccRoot $TbccRoot -ServiceName $ServiceName
+  if (Test-Path -LiteralPath $shellPath) {
+    try { $shellPid = [int]((Get-Content -LiteralPath $shellPath -Raw -ErrorAction Stop).Trim()) } catch {}
+  }
+  if ($shellPid -gt 4) {
+    try {
+      $proc = Get-Process -Id $shellPid -ErrorAction Stop
+      if ($proc) {
+        Stop-Process -Id $shellPid -Force -ErrorAction Stop
+        $killed += $shellPid
+      }
+    } catch {}
+  }
+  foreach ($pr in (Get-TbccServiceTabWrapperProcesses -ServiceName $ServiceName)) {
+    if ($killed -contains $pr.ProcessId) { continue }
+    try {
+      Stop-Process -Id $pr.ProcessId -Force -ErrorAction Stop
+      $killed += [int]$pr.ProcessId
+    } catch {}
+  }
+  return @($killed | Select-Object -Unique)
+}
+
+function Test-TbccWtCloseTabEnabled {
+  param([string]$TbccRoot = "")
+  $raw = ($env:TBCC_WT_CLOSE_TAB -as [string])
+  if (-not $raw -and $TbccRoot) {
+    $envPath = Join-Path $TbccRoot ".env"
+    if (Test-Path -LiteralPath $envPath) {
+      foreach ($line in Get-Content -LiteralPath $envPath -ErrorAction SilentlyContinue) {
+        $t = $line.Trim()
+        if (-not $t -or $t.StartsWith("#")) { continue }
+        if ($t -match '^\s*TBCC_WT_CLOSE_TAB\s*=\s*(.+)$') {
+          $raw = $Matches[1].Trim().Trim('"')
+          break
+        }
+      }
+    }
+  }
+  # Default OFF — wt close-tab via WindowsApps alias spawns "close-tab" error tabs (0x80070002).
+  if (-not $raw) { return $false }
+  return $raw.Trim().ToLower() -in @('1', 'true', 'yes', 'on')
+}
+
+function Invoke-TbccCloseServiceTab {
+  <#
+  Close the Windows Terminal tab for a TBCC service (after worker exit or orchestrated stop).
+  Skips persistent hub/orchestrator tabs.
+  Default: shell exit / kill tab shell PID — never spawns wt "close-tab" error tabs unless TBCC_WT_CLOSE_TAB=1.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [Parameter(Mandatory = $true)][string]$ServiceName
+  )
+  if ($ServiceName -in @('TBCC-Orchestrator')) {
+    if (-not (Test-TbccClosingOwnServiceTab -ServiceName $ServiceName)) { return $false }
+  }
+
+  $closingSelf = Test-TbccClosingOwnServiceTab -ServiceName $ServiceName
+  if ($closingSelf) {
+    # run-tbcc-service.ps1 ending: clear registry only; PowerShell exit closes the WT tab.
+    Clear-TbccServiceTabSession -TbccRoot $TbccRoot -ServiceName $ServiceName
+    Clear-TbccServiceTabShell -TbccRoot $TbccRoot -ServiceName $ServiceName
+    return $true
+  }
+
+  $closed = $false
+  $wrappers = @(Get-TbccServiceTabWrapperProcesses -ServiceName $ServiceName)
+  $hasShellRecord = Test-Path -LiteralPath (Get-TbccServiceTabShellPidPath -TbccRoot $TbccRoot -ServiceName $ServiceName)
+  if ($wrappers.Count -gt 0 -or $hasShellRecord) {
+    $killed = @(Stop-TbccServiceTabShell -TbccRoot $TbccRoot -ServiceName $ServiceName)
+    $closed = ($killed.Count -gt 0)
+  }
+
+  if (-not $closed -and (Test-TbccWtCloseTabEnabled -TbccRoot $TbccRoot)) {
+    $sessionPath = Get-TbccServiceTabSessionPath -TbccRoot $TbccRoot -ServiceName $ServiceName
+    $target = $null
+    if (Test-Path -LiteralPath $sessionPath) {
+      try { $target = (Get-Content -LiteralPath $sessionPath -Raw -ErrorAction Stop).Trim() } catch {}
+    }
+    $wtExe = Get-TbccWtExePath
+    if ((Test-TbccWtExeSupportsCloseTab -WtExe $wtExe) -and $target -and ($target -match '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')) {
+      $hostPid = Resolve-TbccWtHostPidForCloseTab -TbccRoot $TbccRoot
+      if ($hostPid -gt 0) {
+        $exitCode = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @('-w', "$hostPid", ';', 'close-tab', '--target', $target)
+        $closed = ($exitCode -eq 0)
+      }
+    }
+  }
+
+  Clear-TbccServiceTabSession -TbccRoot $TbccRoot -ServiceName $ServiceName
+  Clear-TbccServiceTabShell -TbccRoot $TbccRoot -ServiceName $ServiceName
+  return $closed
+}
+
+function Invoke-TbccSweepStaleServiceTabShells {
+  <# After orchestrated stop, kill any tab shells still recorded under .tbcc-run\tabs. #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $persist = @('TBCC-Errors', 'TBCC-Orchestrator', 'TBCC-StackWatch')
+  $tabDir = Get-TbccServiceTabDir -TbccRoot $TbccRoot
+  if (-not (Test-Path -LiteralPath $tabDir)) { return }
+  foreach ($shellFile in @(Get-ChildItem -LiteralPath $tabDir -Filter '*.shell.pid' -ErrorAction SilentlyContinue)) {
+    $svc = $shellFile.BaseName
+    if ($svc -in $persist) { continue }
+    $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $svc
+  }
 }
 
 function Add-TbccWtTabShellInvocation {
-  <# Launch hub-wrapped services as powershell.exe tabs (not cmd /k) so WT tab titles stay short. #>
+  <# Launch self-closing PowerShell tabs (never cmd /k — dead tabs on exit). #>
   param(
     [Parameter(Mandatory = $true)][System.Collections.ArrayList]$ArgumentList,
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
     [Parameter(Mandatory = $true)][string]$Title,
     [Parameter(Mandatory = $true)][string]$Command,
     [int]$Cols = 84,
@@ -81,43 +414,52 @@ function Add-TbccWtTabShellInvocation {
   [void]$ArgumentList.Add('new-tab')
   [void]$ArgumentList.Add('--title')
   [void]$ArgumentList.Add($Title)
-  if (Test-TbccWtPowershellHubCommand -Command $Command) {
+
+  $launchCmd = $Command
+  if (-not (Test-TbccWtPowershellHubCommand -Command $launchCmd)) {
+    $launchCmd = Register-TbccSelfClosingServiceTab -TbccRoot $TbccRoot -ServiceName $Title -Command $Command
+  }
+
+  if (Test-TbccWtPowershellHubCommand -Command $launchCmd) {
     $file = $null
     $root = $null
-    if ($Command -match '-File\s+"([^"]+)"') { $file = $Matches[1] }
-    if ($Command -match '-TbccRoot\s+"([^"]+)"') { $root = $Matches[1] }
+    if ($launchCmd -match '-File\s+"([^"]+)"') { $file = $Matches[1] }
+    if ($launchCmd -match '-TbccRoot\s+"([^"]+)"') { $root = $Matches[1] }
     if (-not $file -or -not $root) {
       throw "Add-TbccWtTabShellInvocation: could not parse hub wrapper command."
     }
     [void]$ArgumentList.Add('powershell')
     [void]$ArgumentList.Add('-NoProfile')
+    [void]$ArgumentList.Add('-NonInteractive')
     [void]$ArgumentList.Add('-ExecutionPolicy')
     [void]$ArgumentList.Add('Bypass')
     [void]$ArgumentList.Add('-File')
     [void]$ArgumentList.Add($file)
     [void]$ArgumentList.Add('-TbccRoot')
     [void]$ArgumentList.Add($root)
-    if ($Command -match 'run-tbcc-service\.ps1') {
+    if ($launchCmd -match 'run-tbcc-service\.ps1') {
       [void]$ArgumentList.Add('-ServiceName')
       [void]$ArgumentList.Add($Title)
     }
-    if ($Command -match 'run-tbcc-orchestrator\.ps1') {
-      if ($Command -match '-Action\s+(\w+)') {
+    if ($launchCmd -match 'run-tbcc-orchestrator\.ps1') {
+      if ($launchCmd -match '-Action\s+(\w+)') {
         [void]$ArgumentList.Add('-Action')
         [void]$ArgumentList.Add($Matches[1])
       }
-      if ($Command -match '-NoOpen') {
+      if ($launchCmd -match '-NoOpen') {
         [void]$ArgumentList.Add('-NoOpen')
+      }
+    }
+    if ($launchCmd -match 'run-tbcc-stackwatch\.ps1') {
+      if ($launchCmd -match '-IntervalSec\s+(\d+)') {
+        [void]$ArgumentList.Add('-IntervalSec')
+        [void]$ArgumentList.Add($Matches[1])
       }
     }
     return
   }
-  $part1 = "mode con: cols=$Cols lines=$Lines"
-  $part2 = [string]::Concat('title "', $Title, '"')
-  $run = [string]::Concat($part1, ' & ', $part2, ' & ', $Command)
-  [void]$ArgumentList.Add('cmd')
-  [void]$ArgumentList.Add('/k')
-  [void]$ArgumentList.Add($run)
+
+  throw "Add-TbccWtTabShellInvocation: could not build self-closing tab for $Title"
 }
 
 function Initialize-TbccErrorHub {
@@ -168,6 +510,17 @@ function Get-TbccErrorMonitorCmd {
   $tbccQ = '"' + $TbccRoot + '"'
   $monQ = '"' + $monitor + '"'
   return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $monQ + ' -TbccRoot ' + $tbccQ)
+}
+
+function Get-TbccStackWatchCmd {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int]$IntervalSec = 60
+  )
+  $watch = Join-Path $TbccRoot "scripts\run-tbcc-stackwatch.ps1"
+  $tbccQ = '"' + $TbccRoot + '"'
+  $watchQ = '"' + $watch + '"'
+  return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $watchQ + ' -TbccRoot ' + $tbccQ + ' -IntervalSec ' + $IntervalSec)
 }
 
 function Format-TbccHubLine {
@@ -240,11 +593,20 @@ function Write-TbccErrorHubEntry {
   }
 }
 
+function Test-TbccAlreadyHubLine {
+  param([string]$Line)
+  if (-not $Line) { return $false }
+  $t = $Line.Trim()
+  if (-not $t) { return $false }
+  return ($t -match '^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\] \[[^\]]+\] \[(ERROR|WARN|INFO|CRITICAL|FATAL)\]')
+}
+
 function Test-TbccBenignHubLine {
   param([string]$Line)
   if (-not $Line) { return $true }
   $t = $Line.Trim()
   if (-not $t) { return $true }
+  if (Test-TbccAlreadyHubLine -Line $t) { return $true }
 
   $benign = @(
     '^\[notice\]',
@@ -265,7 +627,9 @@ function Test-TbccBenignHubLine {
     'unauthenticated requests to the HF Hub',
     '^\s*I\d{4}\s',  # TensorFlow / absl INFO written to stderr (e.g. I0000 ...)
     'actively refused it\),\s*retry\s+\d+/\d+',  # API not up yet; bots retry on startup
-    'failed \(.*\),\s*retry\s+\d+/\d+\s+in\s+\d+s'
+    'failed \(.*\),\s*retry\s+\d+/\d+\s+in\s+\d+s',
+    'httpx - INFO - HTTP Request:.*api\.telegram\.org.*HTTP/1\.1"\s+(502|503|504)',
+    'networkloop\.py.*network_retry_loop'
   )
   foreach ($p in $benign) {
     if ($t -imatch $p) { return $true }
@@ -278,6 +642,7 @@ function Test-TbccErrorLine {
   if (-not $Line -or $Line.Length -lt 4) { return $false }
   $t = $Line.Trim()
   if ($t.Length -lt 4) { return $false }
+  if (Test-TbccAlreadyHubLine -Line $t) { return $false }
   if (Test-TbccBenignHubLine -Line $t) { return $false }
 
   # Benign noise (uvicorn uses "INFO:" with a colon)
@@ -286,8 +651,8 @@ function Test-TbccErrorLine {
   if ($t -match '0 errors?\b') { return $false }
   if ($t -match 'no errors?\b') { return $false }
   if ($t -imatch 'is not recognized as the name of a cmdlet') { return $false }
-  # Python logging " - WARNING - " (not ERROR); real failures use ERROR level or exceptions below
-  if ($t -imatch '\s-\sWARNING\s-') { return $false }
+  # Python logging " - WARNING - " / " - INFO - " (not ERROR); real failures use ERROR level or exceptions below
+  if ($t -imatch '\s-\s(WARNING|INFO)\s-') { return $false }
 
   $patterns = @(
     'Traceback \(most recent call last\)',

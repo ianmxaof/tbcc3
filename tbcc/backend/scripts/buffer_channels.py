@@ -23,8 +23,20 @@ def main() -> None:
     chans = get_channels(organization_id=oid)
     print("\nchannels:", json.dumps(chans, indent=2))
     twitter = find_channel_id_by_service("twitter", organization_id=oid)
+    instagram = find_channel_id_by_service("instagram", organization_id=oid)
+    threads = find_channel_id_by_service("threads", organization_id=oid)
     if twitter:
         print(f"\nSuggested TBCC_BUFFER_CHANNEL_ID_PRIMARY (twitter): {twitter}", file=sys.stderr)
+    if instagram and threads:
+        print(
+            f"Suggested TBCC_BUFFER_CHANNEL_IDS (instagram,threads): {instagram},{threads}",
+            file=sys.stderr,
+        )
+    elif instagram:
+        print(f"Suggested TBCC_BUFFER_CHANNEL_IDS (instagram only): {instagram}", file=sys.stderr)
+    elif threads:
+        print(f"Suggested TBCC_BUFFER_CHANNEL_IDS (threads only): {threads}", file=sys.stderr)
+    print("\nMatch displayName/name to your target @handle before copying ids into .env.", file=sys.stderr)
 
 
 if __name__ == "__main__":

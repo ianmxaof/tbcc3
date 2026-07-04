@@ -76,6 +76,11 @@ class ScheduledSendOutcome:
     telegram_message_ids: list[int]
     scheduler_name: str | None = None
     pack_modifier_id: int | None = None
+    media_ids: list[int] | None = None
+    network_key: str | None = None
+    export_source: str | None = None
+    surface: str | None = None
+    external_post_id: str | None = None
 
 
 def _utc_now() -> datetime:
@@ -107,6 +112,9 @@ def build_scheduled_send_outcome(
     *,
     slot_index: int,
     pack_modifier_id: int | None = None,
+    media_ids: list[int] | None = None,
+    network_key: str | None = None,
+    export_source: str | None = "scheduler",
 ) -> ScheduledSendOutcome:
     variations = post.get_content_variations()
     var_count = max(1, len(variations)) if variations else 1
@@ -123,6 +131,10 @@ def build_scheduled_send_outcome(
         telegram_message_ids=msg_ids,
         scheduler_name=(post.name or "").strip() or None,
         pack_modifier_id=pack_modifier_id,
+        media_ids=media_ids,
+        network_key=(network_key or "").strip() or None,
+        export_source=export_source,
+        surface="telegram",
     )
 
 
@@ -141,6 +153,11 @@ def record_post_delivery_metric(
     caption_slot_index: int | None = None,
     caption_variation_count: int | None = None,
     created_at: datetime | None = None,
+    media_ids: list[int] | None = None,
+    network_key: str | None = None,
+    export_source: str | None = None,
+    surface: str | None = None,
+    external_post_id: str | None = None,
 ) -> PostDeliveryMetric | None:
     if not performance_enabled():
         return None
@@ -156,6 +173,11 @@ def record_post_delivery_metric(
         telegram_message_id = outcome.telegram_message_id
         telegram_message_ids = outcome.telegram_message_ids
         channel_id = outcome.channel_id
+        media_ids = outcome.media_ids or media_ids
+        network_key = outcome.network_key or network_key
+        export_source = outcome.export_source or export_source
+        surface = outcome.surface or surface
+        external_post_id = outcome.external_post_id or external_post_id
     else:
         channel_id = channel.id if channel else None
 
@@ -164,6 +186,7 @@ def record_post_delivery_metric(
         ident = (channel.identifier or channel.name or "").strip() or None
 
     msg_ids = telegram_message_ids or []
+    mids = [int(x) for x in (media_ids or []) if x is not None]
     row = PostDeliveryMetric(
         created_at=when,
         post_outbound_event_id=outbound_event.id if outbound_event else None,
@@ -180,6 +203,11 @@ def record_post_delivery_metric(
         posted_hour_utc=hour_utc,
         posted_hour_local=hour_local,
         timezone_label=tz_label,
+        media_ids_json=json.dumps(mids) if mids else None,
+        network_key=(network_key or "").strip() or None,
+        export_source=(export_source or "").strip() or None,
+        surface=(surface or "telegram").strip() or "telegram",
+        external_post_id=(external_post_id or "").strip() or None,
     )
     db.add(row)
     db.flush()
@@ -485,3 +513,153 @@ def latest_delivery_for_attribution(db: Session, *, lookback_hours: int = 6) -> 
         .order_by(PostDeliveryMetric.id.desc())
         .first()
     )
+
+
+def latest_telegram_delivery_for_scheduled_post(
+    db: Session,
+    scheduled_post_id: int,
+) -> PostDeliveryMetric | None:
+    return (
+        db.query(PostDeliveryMetric)
+        .filter(
+            PostDeliveryMetric.scheduled_post_id == int(scheduled_post_id),
+            PostDeliveryMetric.surface.in_(("telegram", None)),
+        )
+        .order_by(PostDeliveryMetric.id.desc())
+        .first()
+    )
+
+
+def latest_telegram_delivery_for_pool(db: Session, pool_id: int) -> PostDeliveryMetric | None:
+    return (
+        db.query(PostDeliveryMetric)
+        .filter(
+            PostDeliveryMetric.pool_id == int(pool_id),
+            PostDeliveryMetric.surface.in_(("telegram", None)),
+        )
+        .order_by(PostDeliveryMetric.id.desc())
+        .first()
+    )
+
+
+def record_surface_delivery_metric(
+    db: Session,
+    *,
+    parent: PostDeliveryMetric | None,
+    surface: str,
+    external_post_id: str | None = None,
+    views_latest: int | None = None,
+    export_source: str | None = None,
+) -> PostDeliveryMetric | None:
+    """Child row for Erome/Buffer/etc. linked to a Telegram export."""
+    if not performance_enabled():
+        return None
+    surf = (surface or "").strip()
+    if not surf:
+        return None
+    ext = (external_post_id or "").strip() or None
+    if ext:
+        existing = (
+            db.query(PostDeliveryMetric)
+            .filter(
+                PostDeliveryMetric.surface == surf,
+                PostDeliveryMetric.external_post_id == ext,
+            )
+            .order_by(PostDeliveryMetric.id.desc())
+            .first()
+        )
+        if existing:
+            if views_latest is not None:
+                _apply_view_update(existing, views_latest, None)
+            db.flush()
+            return existing
+
+    when = _utc_now()
+    hour_utc, hour_local, tz_label = _hour_buckets(when.replace(tzinfo=timezone.utc))
+    mids: list[int] = []
+    if parent and parent.media_ids_json:
+        try:
+            mids = [int(x) for x in json.loads(parent.media_ids_json) if x is not None]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            mids = []
+
+    row = PostDeliveryMetric(
+        created_at=when,
+        post_outbound_event_id=parent.post_outbound_event_id if parent else None,
+        event_type=f"surface_{surf}",
+        channel_id=parent.channel_id if parent else None,
+        scheduled_post_id=parent.scheduled_post_id if parent else None,
+        pool_id=parent.pool_id if parent else None,
+        scheduler_name=parent.scheduler_name if parent else None,
+        channel_identifier=parent.channel_identifier if parent else None,
+        telegram_message_id=parent.telegram_message_id if parent else None,
+        telegram_message_ids_json=parent.telegram_message_ids_json if parent else None,
+        caption_slot_index=parent.caption_slot_index if parent else None,
+        caption_variation_count=parent.caption_variation_count if parent else None,
+        posted_hour_utc=hour_utc,
+        posted_hour_local=hour_local,
+        timezone_label=tz_label,
+        media_ids_json=json.dumps(mids) if mids else None,
+        network_key=parent.network_key if parent else None,
+        export_source=(export_source or parent.export_source if parent else None),
+        surface=surf,
+        external_post_id=ext,
+        views_latest=int(views_latest) if views_latest is not None else None,
+        views_peak=int(views_latest) if views_latest is not None else None,
+        views_updated_at=_utc_now() if views_latest is not None else None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def sync_erome_views_to_delivery_ledger(db: Session, *, max_rows: int = 80) -> dict[str, Any]:
+    """Bridge erome JSONL ledger view counts into post_delivery_metrics (surface=erome)."""
+    from app.services.erome_view_sync import _read_ledger_rows
+
+    rows = _read_ledger_rows()
+    if not rows:
+        return {"ok": True, "updated": 0, "scanned": 0}
+
+    updated = 0
+    scanned = 0
+    for row in rows[-max_rows:]:
+        url = str(row.get("album_url") or "").strip()
+        views = row.get("views_latest")
+        if not url or views is None:
+            continue
+        scanned += 1
+        dm = (
+            db.query(PostDeliveryMetric)
+            .filter(
+                PostDeliveryMetric.surface == "erome",
+                PostDeliveryMetric.external_post_id == url,
+            )
+            .order_by(PostDeliveryMetric.id.desc())
+            .first()
+        )
+        if not dm:
+            nk = str(row.get("network_key") or "").strip() or None
+            dm = record_surface_delivery_metric(
+                db,
+                parent=None,
+                surface="erome",
+                external_post_id=url,
+                views_latest=int(views),
+                export_source="scheduler",
+            )
+            if dm and nk:
+                dm.network_key = nk
+            updated += 1
+        elif _apply_view_update(dm, int(views), None):
+            updated += 1
+    if updated or scanned:
+        db.commit()
+    return {"ok": True, "updated": updated, "scanned": scanned}
+
+
+def sync_buffer_metrics_to_delivery_ledger(db: Session, *, limit: int = 40) -> dict[str, Any]:
+    """Poll Buffer post metrics for recent buffer_x delivery rows."""
+    from app.services.buffer_metrics_sync import sync_buffer_post_metrics
+
+    return sync_buffer_post_metrics(db, limit=limit)

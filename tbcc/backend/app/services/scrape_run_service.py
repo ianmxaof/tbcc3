@@ -42,6 +42,10 @@ ERROR_CATALOG = {
         "message": "Celery worker not processing scrape queue.",
         "fix": "Start TBCC-Celery (scrape queue) and Redis. Retry Scrape now.",
     },
+    "forward_restricted": {
+        "message": "Channel forbids forwarding — auto-skipped.",
+        "fix": "Channel intel marks forward-disabled sources inactive. Re-enable only if the channel policy changed.",
+    },
 }
 
 
@@ -180,8 +184,20 @@ def finish_run_from_stats(db: Session, run: ScrapeRun, stats: dict) -> None:
         run.error_summary = stats.get("error_summary") or "No media found in scanned messages."
     else:
         run.error_summary = None
-    run.status = "failed" if stats.get("fatal") else "done"
-    if not stats.get("fatal") and run.errors_count and run.stored == 0 and run.messages_scanned == 0:
+    if int(stats.get("skipped_forward_restricted") or 0) > 0 and run.stored == 0:
+        run.status = "skipped"
+        if not run.error_summary:
+            run.error_summary = stats.get("error_summary") or "forward_restricted"
+    elif stats.get("fatal"):
+        run.status = "failed"
+    else:
+        run.status = "done"
+    if (
+        run.status == "done"
+        and run.errors_count
+        and run.stored == 0
+        and run.messages_scanned == 0
+    ):
         run.status = "failed"
     run.finished_at = utcnow()
     db.commit()
@@ -195,6 +211,7 @@ def list_scrape_runs(db: Session, *, source_id: int | None = None, limit: int = 
 
 
 def scrape_run_to_dict(run: ScrapeRun) -> dict:
+    is_link = int(run.source_id or 0) == 0 and (run.source_name or "").startswith("LINK:")
     errors = []
     if run.errors_json:
         try:
@@ -206,6 +223,7 @@ def scrape_run_to_dict(run: ScrapeRun) -> dict:
         fix_hint = errors[0].get("fix")
     return {
         "id": run.id,
+        "run_kind": "link" if is_link else "media",
         "source_id": run.source_id,
         "source_name": run.source_name,
         "pool_id": run.pool_id,
@@ -220,7 +238,7 @@ def scrape_run_to_dict(run: ScrapeRun) -> dict:
         "error_summary": run.error_summary,
         "errors": errors,
         "fix_hint": fix_hint,
-        "media_library_url": f"/?status=pending&pool_id={run.pool_id or 1}",
+        "media_library_url": "/scheduler/bots" if is_link else f"/?status=pending&pool_id={run.pool_id or 1}",
         "celery_task_id": run.celery_task_id,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,

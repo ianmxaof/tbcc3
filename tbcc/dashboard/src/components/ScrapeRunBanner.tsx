@@ -5,6 +5,7 @@ import { api } from "../api";
 
 export type ScrapeRunRow = {
   id: number;
+  run_kind?: string;
   source_id?: number;
   source_name?: string;
   pool_id?: number;
@@ -25,10 +26,11 @@ export type ScrapeRunRow = {
 };
 
 const DISMISS_KEY = "tbcc:dismissedScrapeRuns";
+const FINISHED_TTL_MS = 20 * 60 * 1000;
 
 function readDismissed(): Set<number> {
   try {
-    const raw = sessionStorage.getItem(DISMISS_KEY);
+    const raw = localStorage.getItem(DISMISS_KEY);
     if (!raw) return new Set();
     const arr = JSON.parse(raw) as unknown;
     if (!Array.isArray(arr)) return new Set();
@@ -40,7 +42,7 @@ function readDismissed(): Set<number> {
 
 function writeDismissed(ids: Set<number>) {
   try {
-    sessionStorage.setItem(DISMISS_KEY, JSON.stringify([...ids].slice(-40)));
+    localStorage.setItem(DISMISS_KEY, JSON.stringify([...ids].slice(-80)));
   } catch {
     /* ignore */
   }
@@ -49,6 +51,7 @@ function writeDismissed(ids: Set<number>) {
 function parseRun(raw: Record<string, unknown>): ScrapeRunRow {
   return {
     id: Number(raw.id),
+    run_kind: raw.run_kind != null ? String(raw.run_kind) : undefined,
     source_id: raw.source_id != null ? Number(raw.source_id) : undefined,
     source_name: raw.source_name != null ? String(raw.source_name) : undefined,
     pool_id: raw.pool_id != null ? Number(raw.pool_id) : undefined,
@@ -77,6 +80,19 @@ function isFinished(status: string | undefined) {
   return status === "done" || status === "failed" || status === "skipped";
 }
 
+function runEndedAt(run: ScrapeRunRow): number {
+  const raw = run.finished_at || run.created_at;
+  if (!raw) return 0;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function isRecentFinished(run: ScrapeRunRow): boolean {
+  const ended = runEndedAt(run);
+  if (!ended) return true;
+  return Date.now() - ended < FINISHED_TTL_MS;
+}
+
 function mediaLink(run: ScrapeRunRow): string {
   if (run.media_library_url) return run.media_library_url;
   const pool = run.pool_id && run.pool_id > 0 ? run.pool_id : 1;
@@ -84,11 +100,17 @@ function mediaLink(run: ScrapeRunRow): string {
 }
 
 function runSummary(run: ScrapeRunRow): string {
+  const isLink = run.run_kind === "link" || (run.source_name || "").startsWith("LINK:");
   const parts: string[] = [];
-  if (run.messages_scanned != null) parts.push(`${run.messages_scanned} scanned`);
-  if (run.stored != null && run.stored > 0) parts.push(`${run.stored} new`);
-  if (run.skipped_duplicate != null && run.skipped_duplicate > 0) parts.push(`${run.skipped_duplicate} dupes`);
-  if (run.skipped_media_type != null && run.skipped_media_type > 0) parts.push(`${run.skipped_media_type} type skip`);
+  if (run.messages_scanned != null) parts.push(`${run.messages_scanned} msgs`);
+  if (isLink) {
+    if (run.stored != null && run.stored > 0) parts.push(`${run.stored} modifiers`);
+    if (run.skipped_no_media != null && run.skipped_no_media > 0) parts.push(`${run.skipped_no_media} failed`);
+  } else {
+    if (run.stored != null && run.stored > 0) parts.push(`${run.stored} new`);
+    if (run.skipped_duplicate != null && run.skipped_duplicate > 0) parts.push(`${run.skipped_duplicate} dupes`);
+    if (run.skipped_media_type != null && run.skipped_media_type > 0) parts.push(`${run.skipped_media_type} type skip`);
+  }
   return parts.join(" · ") || "No stats yet";
 }
 
@@ -101,7 +123,7 @@ export function ScrapeRunBanner() {
     refetchInterval: (query) => {
       const rows = (query.state.data as Array<Record<string, unknown>> | undefined) ?? [];
       const active = rows.some((r) => isActive(String(r.status ?? "")));
-      return active ? 2500 : 8000;
+      return active ? 2500 : 12000;
     },
     refetchIntervalInBackground: true,
   });
@@ -117,14 +139,21 @@ export function ScrapeRunBanner() {
     });
   }, []);
 
-  const activeRun = runs.find((r) => isActive(r.status) && !dismissed.has(r.id));
-  const finishedRun = runs.find((r) => isFinished(r.status) && !dismissed.has(r.id));
-
   useEffect(() => {
     writeDismissed(dismissed);
   }, [dismissed]);
 
+  const activeRun = runs.find((r) => isActive(r.status) && !dismissed.has(r.id));
+  const finishedRun = runs.find(
+    (r) => isFinished(r.status) && !dismissed.has(r.id) && isRecentFinished(r)
+  );
+
   if (!activeRun && !finishedRun) return null;
+
+  const isLinkRun =
+    activeRun?.run_kind === "link" ||
+    finishedRun?.run_kind === "link" ||
+    (finishedRun?.source_name || activeRun?.source_name || "").startsWith("LINK:");
 
   if (activeRun) {
     const label = activeRun.source_name || `Source ${activeRun.source_id ?? "?"}`;
@@ -132,7 +161,8 @@ export function ScrapeRunBanner() {
       <div className="bg-cyan-950/80 border-b border-cyan-700 px-4 py-2 text-sm text-cyan-100" role="status">
         <div className="flex flex-wrap items-center gap-3">
           <span>
-            <strong className="font-medium">Scrape in progress</strong> — {label}
+            <strong className="font-medium">{isLinkRun ? "Link scrape in progress" : "Scrape in progress"}</strong> —{" "}
+            {label}
             {activeRun.trigger ? ` (${activeRun.trigger})` : ""}
           </span>
           <button
@@ -168,7 +198,14 @@ export function ScrapeRunBanner() {
       <div className="flex flex-wrap items-start gap-3">
         <div className="flex-1 min-w-[200px]">
           <strong className="font-medium">
-            {success ? "Scrape finished" : skipped ? "Scrape skipped" : "Scrape failed"} — {label}
+            {success
+              ? isLinkRun
+                ? "Link scrape finished"
+                : "Scrape finished"
+              : skipped
+                ? "Scrape skipped"
+                : "Scrape failed"}{" "}
+            — {label}
           </strong>
           <p className="mt-1 opacity-95">{runSummary(finishedRun)}</p>
           {failed && finishedRun.error_summary ? (
@@ -182,12 +219,18 @@ export function ScrapeRunBanner() {
           {success && (finishedRun.stored ?? 0) > 0 ? (
             <p className="mt-2">
               <Link to={mediaLink(finishedRun)} className="underline font-medium hover:opacity-90">
-                Open Media → pending (pool {finishedRun.pool_id ?? 1})
+                {isLinkRun
+                  ? "Open Loot modifiers"
+                  : `Open Media → pending (pool ${finishedRun.pool_id ?? 1})`}
               </Link>
             </p>
           ) : null}
           {success && (finishedRun.stored ?? 0) === 0 ? (
-            <p className="mt-1 text-xs opacity-85">No new media — duplicates or nothing matching your media filter.</p>
+            <p className="mt-1 text-xs opacity-85">
+              {isLinkRun
+                ? "No new modifiers — dead links, duplicates, or nothing matching direct/paste filter."
+                : "No new media — duplicates or nothing matching your media filter."}
+            </p>
           ) : null}
         </div>
         <button

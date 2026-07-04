@@ -57,6 +57,16 @@ async def automation_overview(db: Session = Depends(get_db)):
     loot_rt = _bot_runtime_status("loot_bot", db)
     sec_rt = _bot_runtime_status_secretary()
 
+    stack: dict = {"available": False}
+    try:
+        from app.services.tbcc_stack_control import get_stack_status, stack_control_available
+
+        if stack_control_available():
+            stack = get_stack_status()
+            stack["available"] = True
+    except Exception:
+        pass
+
     return {
         "scraper": {
             "authorized": bool(scraper.get("authorized")),
@@ -103,4 +113,5 @@ async def automation_overview(db: Session = Depends(get_db)):
             "dashboard_path": "/bots",
             "dashboard_tab": "secretary",
         },
+        "stack": stack,
     }

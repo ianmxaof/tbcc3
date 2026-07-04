@@ -119,12 +119,22 @@ def submit_archive_url(
                     db.refresh(existing)
                 except Exception:
                     logger.exception("archive auto-tag on approve existing failed id=%s", existing.id)
-            return {
+            pack_result = None
+            try:
+                from app.services.archive_pack_autopilot import try_auto_queue_archive_entry_to_pack_pool
+
+                pack_result = try_auto_queue_archive_entry_to_pack_pool(db, existing)
+            except Exception:
+                logger.exception("archive pack autopilot on approve existing failed id=%s", existing.id)
+            out = {
                 "ok": True,
                 "approved": True,
                 "entry": _entry_dict(existing),
                 "status": ARCHIVE_STATUS_APPROVED,
             }
+            if pack_result is not None:
+                out["pack_pool"] = pack_result
+            return out
         return {"ok": True, "duplicate": True, "entry": _entry_dict(existing), "status": cur}
 
     row = CaptureArchiveEntry(
@@ -151,6 +161,17 @@ def submit_archive_url(
             db.refresh(row)
         except Exception:
             logger.exception("archive auto-tag on submit failed id=%s", row.id)
+        try:
+            from app.services.archive_pack_autopilot import try_auto_queue_archive_entry_to_pack_pool
+
+            pack_result = try_auto_queue_archive_entry_to_pack_pool(db, row)
+        except Exception:
+            logger.exception("archive pack autopilot on submit failed id=%s", row.id)
+            pack_result = None
+        out = {"ok": True, "created": True, "entry": _entry_dict(row), "status": status}
+        if pack_result is not None:
+            out["pack_pool"] = pack_result
+        return out
     return {"ok": True, "created": True, "entry": _entry_dict(row), "status": status}
 
 
@@ -161,6 +182,8 @@ def set_archive_entry_status(
     *,
     reviewed_by: str | None = None,
     review_note: str | None = None,
+    queue_pack_pool: bool | None = None,
+    wire_packs_scheduler: bool | None = None,
 ) -> dict[str, Any]:
     row = db.query(CaptureArchiveEntry).filter(CaptureArchiveEntry.id == entry_id).first()
     if not row:
@@ -180,8 +203,26 @@ def set_archive_entry_status(
             db.commit()
         except Exception:
             logger.exception("archive auto-tag on approve failed id=%s", row.id)
+    pack_result: dict[str, Any] | None = None
+    if st == ARCHIVE_STATUS_APPROVED and row.kind == "url":
+        should_queue = queue_pack_pool if queue_pack_pool is not None else True
+        if should_queue:
+            try:
+                from app.services.archive_pack_autopilot import try_auto_queue_archive_entry_to_pack_pool
+
+                pack_result = try_auto_queue_archive_entry_to_pack_pool(
+                    db,
+                    row,
+                    enabled=True,
+                    wire_scheduler=wire_packs_scheduler,
+                )
+            except Exception:
+                logger.exception("archive pack pool queue failed id=%s", row.id)
     db.refresh(row)
-    return {"ok": True, "entry": _entry_dict(row), "status": st}
+    out: dict[str, Any] = {"ok": True, "entry": _entry_dict(row), "status": st}
+    if pack_result is not None:
+        out["pack_pool"] = pack_result
+    return out
 
 
 def list_pending_archive_entries(db: Session, *, limit: int = 100) -> list[dict[str, Any]]:

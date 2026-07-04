@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.caption_snippet import CaptionSnippet
+from app.services import aof_copy_swipe as swipe_svc
 
 router = APIRouter()
 
@@ -114,3 +115,71 @@ def migrate_local_captions(data: dict = Body(default={}), db: Session = Depends(
         n += 1
     db.commit()
     return {"imported": n}
+
+
+class SwipeIngestIn(BaseModel):
+    body: str = Field(..., min_length=1)
+    source: str = Field(default="dashboard_paste", max_length=128)
+    format: str = Field(default="telegram_promo", max_length=64)
+    tags: list[str] = Field(default_factory=list)
+    tactics: list[str] = Field(default_factory=list)
+    notes: str = Field(default="", max_length=2000)
+    swipe_id: str | None = Field(default=None, max_length=128)
+
+
+class SwipeAdaptIn(BaseModel):
+    lane: str = Field(..., min_length=1, max_length=64)
+    promote: bool = False
+    required_urls: list[str] = Field(default_factory=list)
+    extra_facts: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get("/swipes")
+def list_copy_swipes():
+    return swipe_svc.list_swipes()
+
+
+@router.post("/swipes/ingest")
+def ingest_copy_swipe(data: SwipeIngestIn):
+    try:
+        entry = swipe_svc.ingest_swipe_raw(
+            data.body,
+            source=data.source,
+            format=data.format,
+            tags=data.tags,
+            tactics=data.tactics,
+            notes=data.notes,
+            swipe_id=data.swipe_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return entry
+
+
+@router.post("/swipes/{swipe_id}/adapt")
+def adapt_copy_swipe(swipe_id: str, data: SwipeAdaptIn, db: Session = Depends(get_db)):
+    if data.promote:
+        try:
+            return swipe_svc.promote_adapted_to_caption_snippets(
+                db,
+                swipe_id,
+                data.lane,
+                extra_facts=data.extra_facts or None,
+                required_urls=data.required_urls or None,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+    try:
+        body = swipe_svc.adapt_swipe_sync(
+            swipe_id,
+            data.lane,
+            extra_facts=data.extra_facts or None,
+            required_urls=data.required_urls or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    return {"swipe_id": swipe_id, "lane": data.lane, "body": body}

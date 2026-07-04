@@ -48,6 +48,18 @@ def record_referral(
         )
         db.add(rt)
     db.commit()
+    try:
+        from app.services.growth_attribution import EVENT_REFERRAL_RECORDED, record_growth_attribution
+
+        record_growth_attribution(
+            db,
+            event_type=EVENT_REFERRAL_RECORDED,
+            telegram_user_id=int(referred_user_id),
+            extra={"referrer_user_id": int(referrer_user_id)},
+        )
+        db.commit()
+    except Exception:
+        pass
     return {"ok": True}
 
 

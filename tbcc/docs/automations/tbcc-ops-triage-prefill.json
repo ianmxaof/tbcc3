@@ -1,0 +1,28 @@
+{
+  "name": "TBCC critical ops triage",
+  "description": "Poll TBCC ops alerts on :8000, route flywheel tick, apply session-lock playbooks. Diagnose-only unless PR-only auto-fix is enabled for allowlisted codes.",
+  "workflow": {
+    "triggers": [
+      {
+        "cron": {
+          "cron": "0 */15 * * *"
+        }
+      }
+    ],
+    "actions": [],
+    "prompts": [
+      {
+        "prompt": "You are TBCC on-call triage. Run ONLY when the poll step finds a NEW critical alert.\n\n## Poll + route\n1. curl -s http://127.0.0.1:8000/ops/alerts/poll\n2. If alerts[] is empty, exit with \"no new alerts\".\n3. For each alert where severity is critical AND code is one of: session_lock_storm, session_sqlite_lock, worker_crash, api_port_duplicate, uvicorn_orphans, service_traceback, redis_down — process at most ONE alert per run.\n4. curl -s http://127.0.0.1:8000/ops/flywheel/tick -X POST -H \"Content-Type: application/json\" -d \"{\\\"limit\\\":1}\"\n5. curl -s http://127.0.0.1:8000/ops/focus\n6. curl -s http://127.0.0.1:8000/ops/triage/status\n\n## session_sqlite_lock playbook\nSymptom: sqlite3.OperationalError database is locked on Telethon .session files.\n1. POST telegram_relief via /ops/focus or Secretary /relief.\n2. Verify admin_bot uses admin_bot.session (tbcc/backend/app/utils/telethon_session.py).\n3. Bootstrap: TBCC_ADMIN_BOT_AUTO_COPY_ADMIN_SESSION=1.\n4. WAL + busy_timeout: TBCC_TELEGRAM_SQLITE_BUSY_TIMEOUT_MS.\n5. Kill duplicate bot processes.\n\n## Agent triage (optional)\nPOST /ops/triage/run with event_id when CURSOR_API_KEY is set.\nPR-only auto-fix: branch + PR, never push main.\n\nOutput a short markdown report. Do not edit files unless TBCC_CURSOR_TRIAGE_AUTO_FIX allowlist permits it."
+      }
+    ],
+    "model": "",
+    "agentOptions": {
+      "skipInstall": false
+    },
+    "memoryEnabled": true,
+    "gitConfig": {
+      "repo": "ianmxaof/tbcc3",
+      "branch": "main"
+    }
+  }
+}

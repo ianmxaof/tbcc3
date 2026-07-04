@@ -102,7 +102,8 @@
       head.className = "tbcc-archive-row-head";
       const kindEl = document.createElement("span");
       kindEl.className = "master-archive-row__kind";
-      kindEl.textContent = e.kind;
+      kindEl.textContent = e.url_class || e.kind;
+      if (e.route_hint) kindEl.title = e.route_hint;
       head.appendChild(kindEl);
 
       const valWrap = document.createElement("div");
@@ -130,6 +131,11 @@
         sum.className = "tbcc-archive-row-summary";
         sum.textContent = summaryText;
         body.appendChild(sum);
+      } else if (e.route_hint) {
+        const hint = document.createElement("div");
+        hint.className = "tbcc-archive-row-summary";
+        hint.textContent = e.route_hint;
+        body.appendChild(hint);
       }
       const meta = document.createElement("div");
       meta.className = "saved-url-inbox-meta";

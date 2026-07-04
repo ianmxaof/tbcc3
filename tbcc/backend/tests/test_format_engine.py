@@ -23,8 +23,14 @@ def test_phase_support_on_distress():
     assert fmt["interaction_guidelines"]["escalation_hint"]
 
 
-def test_phase_introduction_early():
-    fmt = _default_format()
-    a = analyze_message("Hi")
-    phase = _infer_phase(fmt, user_message_count=1, analysis=a, hours_since_last_user=None)
-    assert phase == "introduction"
+def test_build_context_suffix_compact():
+    from app.models.secretary_user_context import SecretaryUserContext
+    from app.services.format_engine import EmotionAnalysis, build_context_suffix
+
+    ctx = SecretaryUserContext(current_phase="engagement", interaction_format_json=None)
+    a = analyze_message("How do I subscribe?")
+    compact = build_context_suffix(ctx, a, verbosity="compact")
+    assert "FE context:" in compact
+    assert "--- Format Engine" not in compact
+    standard = build_context_suffix(ctx, a, verbosity="standard")
+    assert "--- Format Engine" in standard

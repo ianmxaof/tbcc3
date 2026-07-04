@@ -46,6 +46,7 @@
   const DEFAULT_PAGE_MENU_ITEMS = {
     "save-archive": true,
     "save-archive-all": true,
+    "send-pack-pool": true,
     "save-pool": true,
     "save-saved": true,
     "download-url": true,
@@ -606,6 +607,7 @@
     const items = [
       { act: "save-archive", label: "Save URL to master archive" },
       { act: "save-archive-all", label: "Save all video URLs to master archive" },
+      { act: "send-pack-pool", label: "Send to AOF pack / loot pool" },
       { act: "save-pool", label: "Save to pool" },
       { act: "save-saved", label: "Save to Saved Messages" },
       { act: "download-url", label: "Download media" },
@@ -833,6 +835,22 @@
               action: "tbcc-import-url-from-page-menu",
               url,
               savedOnly: action === "save-saved",
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "send-pack-pool") {
+      const packUrl = url || String(location.href || "").split("#")[0];
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-page-menu-pack-pool",
+              url: packUrl,
               refererPageUrl: location.href.split("#")[0],
             },
             () => resolve()

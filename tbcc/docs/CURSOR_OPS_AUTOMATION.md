@@ -8,7 +8,7 @@ Phases 1–5 of the ops automation ladder are configured in `.env` (see `OPS_TRI
 cd tbcc\scripts
 .\setup-cursor-ops-automation.ps1
 .\register-cursor-ops-automation-task.ps1 -IntervalMinutes 15   # local automation tick
-.\register-openclaw-scheduled-task.ps1 -IntervalMinutes 15      # flywheel + growth
+.\register-flywheel-scheduled-task.ps1 -IntervalMinutes 15      # internal flywheel tick
 ```
 
 **Local automation (step 3 substitute):** Windows Task `TBCC-Cursor-Ops-Triage` runs the same poll/flywheel/focus logic as the Cursor cloud automation. You can still add the cloud automation in Cursor → Automations using the prefill JSON below for IDE-side agent runs.
@@ -90,21 +90,21 @@ curl http://127.0.0.1:8000/ops/focus
 
 Secretary DM: `/status` · `/flywheel` · `/triage <event_id>` · **Approve fix** on flywheel proposals.
 
-## OpenClaw growth tick (content signals)
+## TBCC flywheel tick (ops + growth — internal event bus)
 
-Same scheduler as ops tick, or run manually:
+Same scheduler as ops tick, or run manually. **Not** the OpenClaw gateway.
 
 ```powershell
 cd tbcc\backend
-py -3.13 scripts\run_openclaw_ops_tick.py          # ops + growth
-py -3.13 scripts\run_openclaw_ops_tick.py --dry-run
-py -3.13 scripts\run_openclaw_ops_tick.py --growth-only
+py -3.13 scripts\run_tbcc_flywheel_tick.py          # ops + growth
+py -3.13 scripts\run_tbcc_flywheel_tick.py --dry-run
+py -3.13 scripts\run_tbcc_flywheel_tick.py --growth-only
 ```
 
-API: `POST http://127.0.0.1:8000/analytics/openclaw/tick`
+API: `POST http://127.0.0.1:8000/analytics/tbcc-flywheel/tick` (deprecated: `/analytics/openclaw/tick`)
 
 ## Related
 
 - [OPS_TRIAGE.md](./OPS_TRIAGE.md)
-- OpenClaw stub: `tbcc/scripts/run-openclaw-ops-tick.ps1`
+- Flywheel: `tbcc/scripts/run-tbcc-flywheel-tick.ps1` (deprecated alias: `run-openclaw-ops-tick.ps1`)
 - Playbooks source: `tbcc/backend/app/services/cursor_triage_playbooks.py`

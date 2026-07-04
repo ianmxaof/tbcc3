@@ -143,23 +143,30 @@ public sealed class TbccTrayDarkMenuRenderer : ToolStripProfessionalRenderer
 {
     private static readonly Color Bone = Color.FromArgb(233, 230, 225);
     private static readonly Color BoneDim = Color.FromArgb(140, 138, 135);
+    private static readonly Color BoneOff = Color.FromArgb(88, 86, 82);
     private static readonly Color Bg = Color.FromArgb(30, 30, 30);
 
     public TbccTrayDarkMenuRenderer() : base(new TbccTrayDarkColorTable()) { }
 
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
-        bool on = true;
+        bool running = false;
+        bool enabled = true;
         var tag = e.Item.Tag as System.Collections.IDictionary;
-        if (tag != null && tag.Contains("TbccUserEnabled"))
+        if (tag != null)
         {
-            try { on = System.Convert.ToBoolean(tag["TbccUserEnabled"]); } catch { on = true; }
+            if (tag.Contains("TbccRunning"))
+            {
+                try { running = System.Convert.ToBoolean(tag["TbccRunning"]); } catch { running = false; }
+            }
+            if (tag.Contains("TbccUserEnabled"))
+            {
+                try { enabled = System.Convert.ToBoolean(tag["TbccUserEnabled"]); } catch { enabled = true; }
+            }
         }
-        else
-        {
-            on = e.Item.Enabled;
-        }
-        e.TextColor = on ? Bone : BoneDim;
+        if (!enabled) { e.TextColor = BoneOff; }
+        else if (running) { e.TextColor = Bone; }
+        else { e.TextColor = BoneDim; }
         base.OnRenderItemText(e);
     }
 
@@ -231,6 +238,8 @@ $script:tbccRestartMenuItems = @{}
 $script:tbccStatusRefreshInFlight = $false
 $script:tbccAlertsSeen = @{}
 $script:lastOpsAlertPoll = [DateTime]::MinValue
+$script:lastProcessAuditPoll = [DateTime]::MinValue
+$script:lastProcessAuditAlertToken = ""
 $script:lastTrayBalloonAt = [DateTime]::MinValue
 $script:allowSupervisorExit = $false
 $script:supervisorLogPath = Join-Path $tbccDir ".tbcc-run\supervisor.log"
@@ -334,6 +343,9 @@ function Poll-TbccOrchestratorCompletion {
   Show-TbccOrchestratorCompletionBalloon -Action $action -Success:$success -Message $msg
   $script:orchestratorPending = $null
   Refresh-TbccSupervisorStatusCache
+  if ($action -eq "Stop" -and -not $success) {
+    Show-TbccTrayBalloon -Text ("Stop incomplete - try Stop again or Cleanup orphan API workers. $msg") -TimeoutMs 10000 -Force
+  }
 }
 
 function Poll-TbccOpsAlerts {
@@ -350,6 +362,8 @@ function Poll-TbccOpsAlerts {
     try {
       if (-not $a -or -not $a.id) { continue }
       if ($script:tbccAlertsSeen.ContainsKey([string]$a.id)) { continue }
+      $kind = if ($a.kind) { [string]$a.kind } else { "" }
+      if ($kind -eq "error_hub") { continue }
       $script:tbccAlertsSeen[[string]$a.id] = $true
       if ($script:tbccAlertsSeen.Count -gt 150) {
         $keys = @($script:tbccAlertsSeen.Keys)
@@ -372,21 +386,43 @@ function Poll-TbccOpsAlerts {
   }
 }
 
-function Invoke-TbccColdStartDebounced {
+function Invoke-TbccStackLaunchDebounced {
   $now = [DateTime]::UtcNow
   if (($now - $script:lastColdStart).TotalSeconds -lt 8) {
-    Show-TbccTrayBalloon "Cold start ignored (wait a few seconds)."
+    Show-TbccTrayBalloon "Start ignored (wait a few seconds)."
     return
   }
   $script:lastColdStart = $now
   try {
     Register-TbccOrchestratorWatch -Action ColdStart
-    Invoke-TbccColdStartFromTray -TbccRoot $tbccDir
-    Show-TbccTrayBalloon "Cold start: TBCC-Orchestrator tab in Windows Terminal (you will be notified when finished)."
+    Invoke-TbccStackLaunch -TbccRoot $tbccDir
+    Show-TbccTrayBalloon "Starting TBCC stack in Windows Terminal (core + Album Composer)."
     Poll-TbccOrchestratorCompletion
   } catch {
     $script:orchestratorPending = $null
-    Show-TbccTrayBalloon ("Cold start failed: " + $_.Exception.Message) -Force
+    Show-TbccTrayBalloon ("Start failed: " + $_.Exception.Message) -Force
+  }
+}
+
+function Invoke-TbccLeanStackLaunchDebounced {
+  Invoke-TbccStackLaunchDebounced
+}
+
+function Invoke-TbccFullStackLaunchDebounced {
+  $now = [DateTime]::UtcNow
+  if (($now - $script:lastColdStart).TotalSeconds -lt 8) {
+    Show-TbccTrayBalloon "Start ignored (wait a few seconds)."
+    return
+  }
+  $script:lastColdStart = $now
+  try {
+    Register-TbccOrchestratorWatch -Action ColdStart
+    Invoke-TbccFullStackLaunch -TbccRoot $tbccDir
+    Show-TbccTrayBalloon "Starting full stack in Windows Terminal (all optional bots + enrichment)."
+    Poll-TbccOrchestratorCompletion
+  } catch {
+    $script:orchestratorPending = $null
+    Show-TbccTrayBalloon ("Full start failed: " + $_.Exception.Message) -Force
   }
 }
 
@@ -395,7 +431,7 @@ function Invoke-TbccRestartAllHot {
     Register-TbccOrchestratorWatch -Action Restart
     Invoke-TbccRestartFullStack -TbccRoot $tbccDir
     $script:lastColdStart = [DateTime]::UtcNow
-    Show-TbccTrayBalloon "Restart: orchestrator tab will stop services then reopen tabs (you will be notified when finished)."
+    Show-TbccTrayBalloon "Restarting running services only (profile unchanged)."
     Poll-TbccOrchestratorCompletion
   } catch {
     $script:orchestratorPending = $null
@@ -407,7 +443,7 @@ function Invoke-TbccStopAllHot {
   try {
     Register-TbccOrchestratorWatch -Action Stop
     Invoke-TbccStopFullStack -TbccRoot $tbccDir
-    Show-TbccTrayBalloon "Shutdown: orchestrator tab in Windows Terminal (you will be notified when it is safe to start again)."
+    Show-TbccTrayBalloon "Stopping all TBCC services and terminal tabs."
     Poll-TbccOrchestratorCompletion
   } catch {
     $script:orchestratorPending = $null
@@ -432,83 +468,6 @@ $script:notify.Visible = $true
 # Win11 often hides new tray icons — balloon on start helps users find it.
 $script:notify.BalloonTipTitle = "TBCC"
 
-$menu = New-Object System.Windows.Forms.ContextMenuStrip
-
-$coldStartItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$coldStartItem.Text = "Start full stack (cold)"
-[void]$coldStartItem.Add_Click({
-  try { Invoke-TbccColdStartDebounced } catch {
-    Show-TbccTrayBalloon ("Cold start failed: " + $_.Exception.Message)
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($coldStartItem)
-
-$restartAllItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$restartAllItem.Text = "Restart full stack (stop all + cold start)"
-[void]$restartAllItem.Add_Click({
-  try { Invoke-TbccRestartAllHot } catch {
-    Show-TbccTrayBalloon ("Restart failed: " + $_.Exception.Message)
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($restartAllItem)
-
-$stopAllItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$stopAllItem.Text = "Stop full stack (close services + terminal tabs)"
-[void]$stopAllItem.Add_Click({
-  try { Invoke-TbccStopAllHot } catch {
-    Show-TbccTrayBalloon ("Shutdown failed: " + $_.Exception.Message)
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($stopAllItem)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-$sessionMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-$sessionMenu.Text = "Telegram session (admin.session)"
-
-$stopContendersItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$stopContendersItem.Text = "Stop legacy scraper/admin bots (if any)"
-$stopContendersItem.ToolTipText = "Kills python -m bots.scraper_bot / admin_bot if you ran them manually. Not part of start.ps1 -Full."
-[void]$stopContendersItem.Add_Click({
-  try {
-    $n = @(Stop-TbccTelegramSessionContenders).Count
-    if ($n -gt 0) {
-      Show-TbccTrayBalloon ("Stopped $n contender process(es). Restart Celery if imports were stuck.")
-    } else {
-      Show-TbccTrayBalloon "No scraper_bot or admin_bot processes found."
-    }
-  } catch {
-    Show-TbccTrayBalloon ("Stop contenders failed: " + $_.Exception.Message)
-  }
-}.GetNewClosure())
-[void]$sessionMenu.DropDownItems.Add($stopContendersItem)
-
-$restartCeleryItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$restartCeleryItem.Text = "Restart Celery worker"
-[void]$restartCeleryItem.Add_Click({
-  try {
-    $null = Restart-TbccStackService -ServiceId "celery" -TbccRoot $tbccDir -FullStack -UseErrorHubWrapper
-    Show-TbccTrayBalloon "Celery restarted (clears stuck import/Telegram tasks)."
-  } catch {
-    Show-TbccTrayBalloon ("Celery restart failed: " + $_.Exception.Message)
-  }
-}.GetNewClosure())
-[void]$sessionMenu.DropDownItems.Add($restartCeleryItem)
-
-[void]$menu.Items.Add($sessionMenu)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-$apiPayItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$apiPayItem.Text = "Restart API + Payment bot"
-[void]$apiPayItem.Add_Click({
-  Invoke-TbccRestartApiPayment -TbccRoot $tbccDir
-  Show-TbccTrayBalloon "Restart API + Payment bot..."
-}.GetNewClosure())
-[void]$menu.Items.Add($apiPayItem)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
 function Invoke-TbccFocusProfileApi {
   param([string]$Profile)
   try {
@@ -518,74 +477,12 @@ function Invoke-TbccFocusProfileApi {
       $body = (@{ profile = $Profile; reason = "Tray supervisor" } | ConvertTo-Json -Compress)
       $null = Invoke-RestMethod -Uri "http://127.0.0.1:8000/ops/focus" -Method POST -Body $body -ContentType "application/json" -TimeoutSec 90
     }
-    Show-TbccTrayBalloon ("Focus profile: " + $Profile)
+    Show-TbccTrayBalloon ("Focus mode: " + $Profile)
     Refresh-TbccSupervisorStatusCache
   } catch {
-    Show-TbccTrayBalloon ("Focus failed (TBCC-Backend up?): " + $_.Exception.Message)
+    Show-TbccTrayBalloon ("Focus failed (is TBCC-Backend running?): " + $_.Exception.Message)
   }
 }
-
-$focusMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-$focusMenu.Text = "Focus profile"
-foreach ($pair in @(
-    @{ Label = "Import burst (imports priority)"; Profile = "import_burst" },
-    @{ Label = "Telegram relief (session lock storm)"; Profile = "telegram_relief" },
-    @{ Label = "Watch folder only"; Profile = "watch_folder" },
-    @{ Label = "End focus / restore services"; Profile = "off" }
-  )) {
-  $fi = New-Object System.Windows.Forms.ToolStripMenuItem
-  $fi.Text = $pair.Label
-  $prof = $pair.Profile
-  [void]$fi.Add_Click({
-    Invoke-TbccFocusProfileApi -Profile $prof
-  }.GetNewClosure())
-  [void]$focusMenu.DropDownItems.Add($fi)
-}
-Set-TbccTrayMenuDarkTheme -Strip $focusMenu.DropDown
-[void]$menu.Items.Add($focusMenu)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-$panelItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$panelItem.Text = "Open supervisor panel"
-$panelItem.ToolTipText = "HWiNFO-style live stack dashboard (double-click tray icon)"
-[void]$panelItem.Add_Click({
-  try { Open-TbccSupervisorPanel } catch {
-    Show-TbccTrayBalloon ("Panel failed: " + $_.Exception.Message) -Force
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($panelItem)
-
-$miniPanelItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$miniPanelItem.Text = "Open supervisor mini (always on top)"
-$miniPanelItem.ToolTipText = "Compact CPU/RAM sparklines, stack up count, hub warn/crit"
-[void]$miniPanelItem.Add_Click({
-  try { Open-TbccSupervisorMiniPanel } catch {
-    Show-TbccTrayBalloon ("Mini panel failed: " + $_.Exception.Message) -Force
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($miniPanelItem)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-$restartMenu = New-Object System.Windows.Forms.ToolStripMenuItem
-$restartMenu.Text = "Services"
-$restartMenu.ToolTipText = "Toggle each process on/off (white=enabled, gray=disabled). Ctrl+click restarts."
-[void]$menu.Items.Add($restartMenu)
-
-$procMonItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$procMonItem.Text = "Show process monitor (PowerShell)"
-[void]$procMonItem.Add_Click({
-  $script = Join-Path $tbccDir "scripts\show-tbcc-processes.ps1"
-  if (Test-Path -LiteralPath $script) {
-    Start-Process powershell.exe -ArgumentList @(
-      "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", $script, "-Full"
-    ) -WindowStyle Normal
-  } else {
-    Show-TbccTrayBalloon "Missing show-tbcc-processes.ps1"
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($procMonItem)
 
 function Open-TbccSupervisorPanel {
   if (-not (Get-Command Show-TbccSupervisorPanel -ErrorAction SilentlyContinue)) {
@@ -615,6 +512,229 @@ function Open-TbccSupervisorMiniPanel {
   }
 }
 
+$menu = New-Object System.Windows.Forms.ContextMenuStrip
+
+$startStackItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$startStackItem.Text = "Start stack"
+$startStackItem.ToolTipText = "Cold start: API, dashboard, Celery, payment/secretary/loot, Album Composer. Optional bots off unless enabled in Services."
+[void]$startStackItem.Add_Click({
+  try { Invoke-TbccStackLaunchDebounced } catch {
+    Show-TbccTrayBalloon ("Start failed: " + $_.Exception.Message) -Force
+  }
+}.GetNewClosure())
+[void]$menu.Items.Add($startStackItem)
+
+$restartAllItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$restartAllItem.Text = "Restart all"
+$restartAllItem.ToolTipText = "Stop all TBCC tabs, then reopen only the services that were running. Does not start tray-disabled or profile-skipped services."
+[void]$restartAllItem.Add_Click({
+  try { Invoke-TbccRestartAllHot } catch {
+    Show-TbccTrayBalloon ("Restart failed: " + $_.Exception.Message)
+  }
+}.GetNewClosure())
+[void]$menu.Items.Add($restartAllItem)
+
+$stopAllItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$stopAllItem.Text = "Stop all"
+$stopAllItem.ToolTipText = "Close all TBCC Windows Terminal tabs and stack processes."
+[void]$stopAllItem.Add_Click({
+  try { Invoke-TbccStopAllHot } catch {
+    Show-TbccTrayBalloon ("Stop failed: " + $_.Exception.Message)
+  }
+}.GetNewClosure())
+[void]$menu.Items.Add($stopAllItem)
+
+[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$restartMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$restartMenu.Text = "Services"
+$restartMenu.ToolTipText = "[on] running | [--] stopped | [off] disabled - click toggle, Ctrl+click restart"
+[void]$menu.Items.Add($restartMenu)
+
+[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$advancedMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$advancedMenu.Text = "Advanced"
+
+$troubleMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$troubleMenu.Text = "Troubleshooting"
+
+$stopContendersItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$stopContendersItem.Text = "Stop legacy scraper/admin bots"
+$stopContendersItem.ToolTipText = "Only if you ran scraper_bot or admin_bot manually outside the stack."
+[void]$stopContendersItem.Add_Click({
+  try {
+    $n = @(Stop-TbccTelegramSessionContenders).Count
+    if ($n -gt 0) {
+      Show-TbccTrayBalloon ("Stopped $n legacy bot(s). Restart Celery if imports were stuck.")
+    } else {
+      Show-TbccTrayBalloon "No legacy scraper/admin bots found."
+    }
+  } catch {
+    Show-TbccTrayBalloon ("Stop legacy bots failed: " + $_.Exception.Message)
+  }
+}.GetNewClosure())
+[void]$troubleMenu.DropDownItems.Add($stopContendersItem)
+
+$restartCeleryItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$restartCeleryItem.Text = "Restart Celery worker"
+[void]$restartCeleryItem.Add_Click({
+  try {
+    $null = Restart-TbccStackService -ServiceId "celery" -TbccRoot $tbccDir -FullStack -UseErrorHubWrapper
+    Show-TbccTrayBalloon "Celery restarted."
+  } catch {
+    Show-TbccTrayBalloon ("Celery restart failed: " + $_.Exception.Message)
+  }
+}.GetNewClosure())
+[void]$troubleMenu.DropDownItems.Add($restartCeleryItem)
+
+$cleanupItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$cleanupItem.Text = "Fix duplicate API on port 8000"
+[void]$cleanupItem.Add_Click({
+  $script = Join-Path $tbccDir "scripts\tbcc-cleanup-orphans.ps1"
+  if (Test-Path -LiteralPath $script) {
+    Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script) -WindowStyle Normal
+    Show-TbccTrayBalloon "Orphan cleanup launched."
+  } else {
+    Show-TbccTrayBalloon "Missing tbcc-cleanup-orphans.ps1"
+  }
+}.GetNewClosure())
+[void]$troubleMenu.DropDownItems.Add($cleanupItem)
+
+$procMonItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$procMonItem.Text = "Process monitor"
+[void]$procMonItem.Add_Click({
+  $script = Join-Path $tbccDir "scripts\show-tbcc-processes.ps1"
+  if (Test-Path -LiteralPath $script) {
+    Start-Process powershell.exe -ArgumentList @(
+      "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", $script, "-Full"
+    ) -WindowStyle Normal
+  } else {
+    Show-TbccTrayBalloon "Missing show-tbcc-processes.ps1"
+  }
+}.GetNewClosure())
+[void]$troubleMenu.DropDownItems.Add($procMonItem)
+
+$focusMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$focusMenu.Text = "Focus mode (pause some services)"
+foreach ($pair in @(
+    @{ Label = "Import burst"; Profile = "import_burst" },
+    @{ Label = "Telegram relief"; Profile = "telegram_relief" },
+    @{ Label = "Watch folder only"; Profile = "watch_folder" },
+    @{ Label = "End focus / restore"; Profile = "off" }
+  )) {
+  $fi = New-Object System.Windows.Forms.ToolStripMenuItem
+  $fi.Text = $pair.Label
+  $prof = $pair.Profile
+  [void]$fi.Add_Click({
+    Invoke-TbccFocusProfileApi -Profile $prof
+  }.GetNewClosure())
+  [void]$focusMenu.DropDownItems.Add($fi)
+}
+Set-TbccTrayMenuDarkTheme -Strip $focusMenu.DropDown
+[void]$troubleMenu.DropDownItems.Add($focusMenu)
+
+Set-TbccTrayMenuDarkTheme -Strip $troubleMenu.DropDown
+[void]$advancedMenu.DropDownItems.Add($troubleMenu)
+
+$openMenu = New-Object System.Windows.Forms.ToolStripMenuItem
+$openMenu.Text = "Open"
+
+$panelItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$panelItem.Text = "Supervisor panel"
+$panelItem.ToolTipText = "Live stack dashboard (or double-click tray icon)"
+[void]$panelItem.Add_Click({
+  try { Open-TbccSupervisorPanel } catch {
+    Show-TbccTrayBalloon ("Panel failed: " + $_.Exception.Message) -Force
+  }
+}.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($panelItem)
+
+$miniPanelItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$miniPanelItem.Text = "Supervisor mini"
+[void]$miniPanelItem.Add_Click({
+  try { Open-TbccSupervisorMiniPanel } catch {
+    Show-TbccTrayBalloon ("Mini panel failed: " + $_.Exception.Message) -Force
+  }
+}.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($miniPanelItem)
+
+[void]$openMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$openDash = New-Object System.Windows.Forms.ToolStripMenuItem
+$openDash.Text = "Dashboard"
+[void]$openDash.Add_Click({ Start-Process "http://127.0.0.1:5173/" }.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($openDash)
+
+$healthItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$healthItem.Text = "System health"
+[void]$healthItem.Add_Click({ Start-Process "http://127.0.0.1:8000/health/system" }.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($healthItem)
+
+[void]$openMenu.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$openSupLog = New-Object System.Windows.Forms.ToolStripMenuItem
+$openSupLog.Text = "Supervisor log"
+[void]$openSupLog.Add_Click({
+  if (Test-Path -LiteralPath $script:supervisorLogPath) {
+    Start-Process notepad.exe -ArgumentList $script:supervisorLogPath
+  } else {
+    Show-TbccTrayBalloon "No supervisor.log yet." -Force
+  }
+}.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($openSupLog)
+
+$openErr = New-Object System.Windows.Forms.ToolStripMenuItem
+$openErr.Text = "Error hub log"
+[void]$openErr.Add_Click({
+  if (Test-Path -LiteralPath $errorHubLog) {
+    Start-Process notepad.exe -ArgumentList $errorHubLog
+  } else {
+    Show-TbccTrayBalloon "No error-hub.log yet. Start the stack first."
+  }
+}.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($openErr)
+
+$openFolder = New-Object System.Windows.Forms.ToolStripMenuItem
+$openFolder.Text = "tbcc folder"
+[void]$openFolder.Add_Click({ Start-Process explorer.exe -ArgumentList $tbccDir }.GetNewClosure())
+[void]$openMenu.DropDownItems.Add($openFolder)
+
+Set-TbccTrayMenuDarkTheme -Strip $openMenu.DropDown
+[void]$advancedMenu.DropDownItems.Add($openMenu)
+
+$fullStartAdvItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$fullStartAdvItem.Text = "Start - full (all optional bots)"
+$fullStartAdvItem.ToolTipText = "Cold start with TBCC_STACK_PROFILE=full: macro search, admin, companion, forum, enrichment sidecars when installed."
+[void]$fullStartAdvItem.Add_Click({
+  try { Invoke-TbccFullStackLaunchDebounced } catch {
+    Show-TbccTrayBalloon ("Full start failed: " + $_.Exception.Message) -Force
+  }
+}.GetNewClosure())
+[void]$advancedMenu.DropDownItems.Add($fullStartAdvItem)
+
+Set-TbccTrayMenuDarkTheme -Strip $advancedMenu.DropDown
+[void]$menu.Items.Add($advancedMenu)
+
+[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+
+$exitItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$exitItem.Text = "Exit supervisor"
+$exitItem.ToolTipText = "Closes the tray icon only - TBCC services keep running."
+[void]$exitItem.Add_Click({
+  $script:allowSupervisorExit = $true
+  $script:notify.Visible = $false
+  $script:notify.Dispose()
+  try { $mutex.ReleaseMutex() } catch {}
+  $mutex.Dispose()
+  [System.Windows.Forms.Application]::Exit()
+}.GetNewClosure())
+[void]$menu.Items.Add($exitItem)
+
+Set-TbccTrayMenuDarkTheme -Strip $menu
+
+$script:notify.ContextMenuStrip = $menu
+
 function Apply-TbccSupervisorStatusCacheUi {
   param($Cache)
   if (-not $Cache) { return }
@@ -627,16 +747,38 @@ function Apply-TbccSupervisorStatusCacheUi {
       Apply-TbccServiceMenuItemsUi -MenuItemsById $script:tbccRestartMenuItems -Cache $Cache
     }
     Poll-TbccOpsAlerts
+    Poll-TbccProcessAuditAlerts
   } catch {
     Write-TbccSupervisorLog ("Apply status UI failed: " + $_.Exception.Message)
   }
+}
+
+function Poll-TbccProcessAuditAlerts {
+  $now = [DateTime]::UtcNow
+  if (($now - $script:lastProcessAuditPoll).TotalSeconds -lt 30) { return }
+  $script:lastProcessAuditPoll = $now
+  $auditPath = Join-Path $tbccDir ".tbcc-run\process-audit.json"
+  if (-not (Test-Path -LiteralPath $auditPath)) { return }
+  try {
+    $audit = Get-Content -LiteralPath $auditPath -Raw -ErrorAction Stop | ConvertFrom-Json
+  } catch {
+    return
+  }
+  if (-not $audit -or -not $audit.alertToken) { return }
+  $token = [string]$audit.alertToken
+  if (-not $token -or $token -eq $script:lastProcessAuditAlertToken) { return }
+  $script:lastProcessAuditAlertToken = $token
+  $micro = if ($audit.summaryMicro) { [string]$audit.summaryMicro } else { "issues" }
+  $count = if ($null -ne $audit.issueCount) { [int]$audit.issueCount } else { 0 }
+  if ($count -le 0) { return }
+  Show-TbccTrayBalloon -Text ("Process audit: $count issue(s) - $micro. Use Stop all, then Start stack.") -TimeoutMs 7000 -Force
 }
 
 function Refresh-TbccSupervisorStatusCache {
   if ($script:tbccStatusRefreshInFlight) { return }
   $script:tbccStatusRefreshInFlight = $true
   try {
-    $cache = Update-TbccServiceStatusCache -TbccRoot $tbccDir -FullStack
+    $cache = Update-TbccServiceStatusCache -TbccRoot $tbccDir -FullStack -MenuCatalog
     Apply-TbccSupervisorStatusCacheUi -Cache $cache
   } catch {
     Write-TbccSupervisorLog ("Status cache refresh failed: " + $_.Exception.Message)
@@ -655,84 +797,12 @@ function Initialize-TbccSupervisorRestartMenu {
 }
 
 [void]$restartMenu.Add_DropDownOpening({
-  if (-not $script:tbccStatusCache) {
-    Refresh-TbccSupervisorStatusCache
-  } else {
+  Refresh-TbccSupervisorStatusCache
+  if ($script:tbccRestartMenuItems -and $script:tbccRestartMenuItems.Count -gt 0) {
     Apply-TbccServiceMenuItemsUi -MenuItemsById $script:tbccRestartMenuItems -Cache $script:tbccStatusCache
   }
   Set-TbccTrayMenuDarkTheme -Strip $restartMenu.DropDown
 })
-
-$cleanupItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$cleanupItem.Text = "Cleanup orphan API workers (port 8000)"
-[void]$cleanupItem.Add_Click({
-  $script = Join-Path $tbccDir "scripts\tbcc-cleanup-orphans.ps1"
-  if (Test-Path -LiteralPath $script) {
-    Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $script) -WindowStyle Normal
-    Show-TbccTrayBalloon "Orphan cleanup launched in PowerShell window."
-  } else {
-    Show-TbccTrayBalloon "Missing tbcc-cleanup-orphans.ps1"
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($cleanupItem)
-
-$healthItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$healthItem.Text = "Open system health (browser)"
-[void]$healthItem.Add_Click({ Start-Process "http://127.0.0.1:8000/health/system" }.GetNewClosure())
-[void]$menu.Items.Add($healthItem)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-$openDash = New-Object System.Windows.Forms.ToolStripMenuItem
-$openDash.Text = "Open dashboard"
-[void]$openDash.Add_Click({ Start-Process "http://127.0.0.1:5173/" }.GetNewClosure())
-[void]$menu.Items.Add($openDash)
-
-$openSupLog = New-Object System.Windows.Forms.ToolStripMenuItem
-$openSupLog.Text = "Open supervisor log"
-[void]$openSupLog.Add_Click({
-  if (Test-Path -LiteralPath $script:supervisorLogPath) {
-    Start-Process notepad.exe -ArgumentList $script:supervisorLogPath
-  } else {
-    Show-TbccTrayBalloon "No supervisor.log yet." -Force
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($openSupLog)
-
-$openErr = New-Object System.Windows.Forms.ToolStripMenuItem
-$openErr.Text = "Open error hub log"
-[void]$openErr.Add_Click({
-  if (Test-Path -LiteralPath $errorHubLog) {
-    Start-Process notepad.exe -ArgumentList $errorHubLog
-  } else {
-    Show-TbccTrayBalloon "No error-hub.log yet. Run cold start first."
-  }
-}.GetNewClosure())
-[void]$menu.Items.Add($openErr)
-
-$openFolder = New-Object System.Windows.Forms.ToolStripMenuItem
-$openFolder.Text = "Open tbcc folder"
-[void]$openFolder.Add_Click({ Start-Process explorer.exe -ArgumentList $tbccDir }.GetNewClosure())
-[void]$menu.Items.Add($openFolder)
-
-[void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-
-$exitItem = New-Object System.Windows.Forms.ToolStripMenuItem
-$exitItem.Text = "Exit supervisor (services keep running)"
-[void]$exitItem.Add_Click({
-  $script:allowSupervisorExit = $true
-  $script:notify.Visible = $false
-  $script:notify.Dispose()
-  try { $mutex.ReleaseMutex() } catch {}
-  $mutex.Dispose()
-  [System.Windows.Forms.Application]::Exit()
-}.GetNewClosure())
-[void]$menu.Items.Add($exitItem)
-
-Set-TbccTrayMenuDarkTheme -Strip $menu
-Set-TbccTrayMenuDarkTheme -Strip $sessionMenu.DropDown
-
-$script:notify.ContextMenuStrip = $menu
 
 [void]$script:notify.Add_MouseDoubleClick({
   try { Open-TbccSupervisorPanel } catch {

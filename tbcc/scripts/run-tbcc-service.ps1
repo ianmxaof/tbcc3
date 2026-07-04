@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = "Continue"
 . (Join-Path $PSScriptRoot "tbcc-error-hub.ps1")
 Initialize-TbccServiceConsole -TbccRoot $TbccRoot -Title $ServiceName
+Register-TbccServiceTabSession -TbccRoot $TbccRoot -ServiceName $ServiceName
+Register-TbccServiceTabShell -TbccRoot $TbccRoot -ServiceName $ServiceName -ShellPid $PID
 
 $paths = Get-TbccErrorHubPaths -TbccRoot $TbccRoot
 $safeName = ($ServiceName -replace '[^\w\-]', '_')
@@ -15,7 +17,8 @@ $launcherPath = Join-Path $paths.LaunchersDir ($safeName + ".json")
 if (-not (Test-Path -LiteralPath $launcherPath)) {
   Write-Host ("Launcher missing: " + $launcherPath) -ForegroundColor Red
   Write-Host "Re-run .\start.ps1 (do not start this script directly)." -ForegroundColor Yellow
-  exit 1
+  $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $ServiceName
+  exit 0
 }
 
 $meta = Get-Content -LiteralPath $launcherPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -23,6 +26,36 @@ $cmdLine = [string]$meta.command
 if (-not $cmdLine) {
   Write-Host "Empty command in launcher." -ForegroundColor Red
   exit 1
+}
+
+$controlScript = Join-Path $PSScriptRoot "tbcc-service-control.ps1"
+if (Test-Path -LiteralPath $controlScript) {
+  . $controlScript
+  $wrappers = @(Get-TbccServiceTabWrapperProcesses -ServiceName $ServiceName)
+  if ($wrappers.Count -gt 1) {
+    $sorted = @($wrappers | Sort-Object { $_.CreationDate })
+    $primaryPid = [int]$sorted[0].ProcessId
+    if ($PID -ne $primaryPid) {
+      Write-Host (
+        "[" + $ServiceName + "] duplicate WT tab - exiting (primary pid " + $primaryPid + ")"
+      ) -ForegroundColor Yellow
+      Clear-TbccServiceTabSession -TbccRoot $TbccRoot -ServiceName $ServiceName
+      Clear-TbccServiceTabShell -TbccRoot $TbccRoot -ServiceName $ServiceName
+      exit 0
+    }
+  }
+  $svc = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack -MenuCatalog | Where-Object {
+      $_.Title -eq $ServiceName -or ([string]$_.MenuLabel) -eq $ServiceName
+    } | Select-Object -First 1)
+  if ($svc) {
+    $trimmed = @(Stop-TbccServiceWorkerDuplicates -Service $svc)
+    if ($trimmed.Count -gt 0) {
+      Write-Host (
+        "[" + $ServiceName + "] trimmed " + $trimmed.Count + " duplicate worker(s) before start"
+      ) -ForegroundColor Yellow
+      Start-Sleep -Milliseconds 600
+    }
+  }
 }
 
 $script:TracebackBuf = New-Object System.Collections.Generic.List[string]
@@ -41,6 +74,9 @@ function Flush-TbccTraceback {
 function Process-TbccOutputLine {
   param([string]$Line)
   if ($null -eq $Line) { return }
+  # TBCC-Errors tails error-hub.log; stdout can echo hub lines → infinite [ERROR] nesting.
+  if ($ServiceName -eq 'TBCC-Errors') { return }
+  if (Test-TbccAlreadyHubLine -Line $Line) { return }
 
   if ($script:InTraceback) {
     if ([string]::IsNullOrWhiteSpace($Line)) {
@@ -78,6 +114,8 @@ function Process-TbccOutputLine {
 Write-Host ("[" + $ServiceName + "] " + $cmdLine) -ForegroundColor DarkGray
 Write-Host ""
 
+Write-TbccErrorHubEntry -TbccRoot $TbccRoot -ServiceName $ServiceName -Level "INFO" -Message "Process starting"
+
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $env:ComSpec
 $psi.Arguments = "/c " + $cmdLine + " 2>&1"
@@ -92,7 +130,8 @@ $proc.StartInfo = $psi
 
 if (-not $proc.Start()) {
   Write-TbccErrorHubEntry -TbccRoot $TbccRoot -ServiceName $ServiceName -Level "ERROR" -Message "Failed to start process."
-  exit 1
+  $null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $ServiceName
+  exit 0
 }
 
 $reader = $proc.StandardOutput
@@ -112,13 +151,13 @@ Flush-TbccTraceback
 
 $code = $proc.ExitCode
 if ($code -ne 0) {
-  # -1 / 0xC000013A: tab closed, orchestrator stop, or kill — not necessarily a crash.
+  # -1 / 0xC000013A: tab closed, orchestrator stop, or kill - not necessarily a crash.
   $level = if ($code -eq -1 -or $code -eq -1073741510) { "WARN" } else { "ERROR" }
   Write-TbccErrorHubEntry -TbccRoot $TbccRoot -ServiceName $ServiceName -Level $level -Message ("Process exited with code " + $code)
-  Write-Host ""
-  $color = if ($level -eq "WARN") { "Yellow" } else { "Red" }
-  Write-Host ("[" + $ServiceName + "] exited " + $code + " - see TBCC-Errors tab.") -ForegroundColor $color
-  exit $code
+} else {
+  Write-TbccErrorHubEntry -TbccRoot $TbccRoot -ServiceName $ServiceName -Level "INFO" -Message "Process stopped cleanly"
 }
 
+Start-Sleep -Milliseconds 80
+$null = Invoke-TbccCloseServiceTab -TbccRoot $TbccRoot -ServiceName $ServiceName
 exit 0

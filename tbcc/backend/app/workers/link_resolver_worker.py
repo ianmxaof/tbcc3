@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 
 from app.database.session import SessionLocal
 from app.models.link_resolver_request import LinkResolverRequest
-from app.services.bypass_vip_client import bypass_configured, resolve_bypass_url
+from app.services.link_gate_unwrap import resolve_obfuscated_url
 from app.services.link_resolver_limits import allow_global_window, allow_user_hourly
 from app.services.link_resolver_policy import normalize_input_url, risk_level_for_url
 from app.workers.celery_app import celery
@@ -53,14 +54,6 @@ def _process_one(public_id: str) -> None:
         row.updated_at = datetime.utcnow()
         db.commit()
 
-        if not bypass_configured():
-            row.status = "failed"
-            row.reason_code = "bypass_disabled"
-            row.error_detail = "Set TBCC_BYPASS_API_KEY and TBCC_BYPASS_ENABLED=1"
-            row.updated_at = datetime.utcnow()
-            db.commit()
-            return
-
         normalized, block_reason = normalize_input_url(row.input_url)
         if block_reason:
             row.status = "blocked"
@@ -90,18 +83,19 @@ def _process_one(public_id: str) -> None:
             db.commit()
             return
 
-        result = resolve_bypass_url(normalized or row.input_url)
-        row.provider_latency_ms = result.latency_ms
-        if result.ok and result.final_url:
+        t0_ms = int(datetime.utcnow().timestamp() * 1000)
+        final_url, err = resolve_obfuscated_url(normalized or row.input_url)
+        row.provider_latency_ms = int(datetime.utcnow().timestamp() * 1000) - t0_ms
+        if final_url:
             row.status = "succeeded"
-            row.final_url = result.final_url
-            row.risk_level = risk_level_for_url(row.input_url, result.final_url)
+            row.final_url = final_url
+            row.risk_level = risk_level_for_url(row.input_url, final_url)
             row.error_detail = None
             row.reason_code = None
         else:
             row.status = "failed"
-            row.reason_code = "provider_error"
-            row.error_detail = (result.error_message or "resolve_failed")[:512]
+            row.reason_code = err or "resolve_failed"
+            row.error_detail = (err or "resolve_failed")[:512]
         row.updated_at = datetime.utcnow()
         db.commit()
     except Exception:

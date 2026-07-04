@@ -11,6 +11,21 @@ import tempfile
 logger = logging.getLogger(__name__)
 
 
+def reject_html_or_tiny_payload(data: bytes, *, url: str = "") -> None:
+    """Raise ValueError when bytes look like HTML/JSON/tiny error body, not media."""
+    if not data or len(data) < 200:
+        raise ValueError("Download too small to be a media file")
+    head = data[:512].lstrip().lower()
+    if head.startswith(b"<!doctype html") or head.startswith(b"<html") or head.startswith(b"<head"):
+        raise ValueError(
+            "URL returned HTML instead of media — right-click the image/video on the page, not a bare link."
+        )
+    if head.startswith(b"{") or head.startswith(b"["):
+        snippet = data[:4096].decode("utf-8", errors="replace").strip().lower()
+        if snippet.startswith("{") or snippet.startswith("["):
+            raise ValueError("URL returned JSON/text instead of media")
+
+
 def sniff_media_kind(data: bytes) -> tuple[str, str]:
     """
     Returns (kind, ext) where kind is one of: photo, video, gif, document.

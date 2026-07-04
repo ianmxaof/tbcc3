@@ -2,7 +2,9 @@
 
 Connect the real [OpenClaw](https://github.com/openclaw/openclaw) personal assistant to TBCC / AOF Network.
 
-> **Naming:** TBCC’s old `run_openclaw_ops_tick` scripts are **internal flywheel crons**, not this project. They are renamed to `run_tbcc_flywheel_tick` (deprecated aliases remain).
+> **Naming (two different things):**
+> - **OpenClaw** = [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw) gateway on `:18789`, Telegram bot, MCP. Env: `TBCC_OPENCLAW_AUTO_START`, `TBCC_OPENCLAW_GATEWAY_PORT`.
+> - **TBCC flywheel** = internal ops/growth event bus (HTTP tick, Celery-adjacent). Scripts: `run_tbcc_flywheel_tick.py`, `run-tbcc-flywheel-tick.ps1`. Env: `TBCC_FLYWHEEL_*`. Old `openclaw_*` / `TBCC_OPENCLAW_AUTO_TICK` names are deprecated aliases only.
 
 ## Architecture
 

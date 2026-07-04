@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import json
 import logging
 import os
 from typing import Annotated
@@ -152,6 +153,14 @@ def _watermark_should_apply(
         return False
     if wm and wm.enabled is False:
         return False
+    if context == "erome":
+        from app.services.erome_promo_wire import erome_watermark_required
+        from app.services.watermark_settings_effective import build_apply_config
+
+        if not erome_watermark_required():
+            return False
+        cfg = build_apply_config(db, override=wm)
+        return bool(cfg.enabled and cfg.texts)
     from app.services.watermark_settings_effective import get_effective_watermark_settings
 
     effective = get_effective_watermark_settings(db)
@@ -172,10 +181,11 @@ def _process_media_bytes(
     *,
     crop: ImageCropSettings | None = None,
     wm: WatermarkOptions | None = None,
+    context: str = "default",
 ) -> bytes:
     if kind == "photo" and crop and crop.applies():
         data = apply_image_crop_pipeline(data, crop)
-    if _watermark_should_apply(db, wm):
+    if _watermark_should_apply(db, wm, context=context):
         cfg = build_apply_config(db, override=wm)
         with watermark_config_context(cfg):
             data = maybe_apply_media_watermark(data, kind, config=cfg)
@@ -379,6 +389,12 @@ async def _httpx_get_media_attempt(url: str, timeout: float) -> tuple[bytes, str
         return r.content, r.headers.get("content-type", "")
 
 
+def _reject_non_media_payload(file_bytes: bytes, *, url: str = "") -> None:
+    from app.services.media_sniff import reject_html_or_tiny_payload
+
+    reject_html_or_tiny_payload(file_bytes, url=url)
+
+
 async def _httpx_get_media(url: str, timeout: float) -> tuple[bytes, str]:
     delays_s = (0.0, 0.75, 2.25)
     last_exc: BaseException | None = None
@@ -442,18 +458,117 @@ def _album_composer_bot_user_id() -> int | None:
         return None
 
 
+def _exc_detail(exc: BaseException) -> str:
+    text = str(exc).strip()
+    if text:
+        return text
+    return type(exc).__name__
+
+
 async def _download_bot_api_file(file_id: str, token: str) -> bytes:
     base = f"https://api.telegram.org/bot{token}"
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)) as client:
         meta = await client.get(f"{base}/getFile", params={"file_id": file_id})
-        meta.raise_for_status()
-        payload = meta.json()
-        if not payload.get("ok"):
-            raise ValueError(payload.get("description") or "getFile failed")
+        payload: dict = {}
+        try:
+            payload = meta.json()
+        except Exception:
+            payload = {}
+        if not meta.is_success or not payload.get("ok"):
+            desc = str(payload.get("description") or meta.text or meta.reason_phrase or "getFile failed")
+            low = desc.lower()
+            if meta.status_code == 400 or "wrong file" in low or "file_id" in low:
+                raise ValueError(
+                    "Telegram file_id is invalid or expired — re-send photos/videos to the album bot, "
+                    f"then post again. ({desc})"
+                )
+            meta.raise_for_status()
+            raise ValueError(desc)
         path = str(payload["result"]["file_path"])
         blob = await client.get(f"https://api.telegram.org/file/bot{token}/{path}")
         blob.raise_for_status()
         return blob.content
+
+
+async def _download_album_bot_processed_bytes(
+    *,
+    bot_peer: str,
+    media_count: int,
+    message_ids: list[int] | None,
+    anchor_max_message_id: int | None,
+    files: list[SavedFromBotFileItem] | None,
+    db: Session,
+    crop: ImageCropSettings | None = None,
+    wm: WatermarkOptions | None = None,
+    context: str = "album_composer",
+) -> list[tuple[bytes, str]]:
+    """
+    Download staged album-bot media for watermark/crop pipeline.
+    Prefer Telethon (handles large videos); fall back to Bot API file_id when needed.
+    """
+    msg_ids = [int(i) for i in (message_ids or []) if i]
+    file_items = list(files or [])
+    token = _album_composer_bot_token()
+
+    async def _telethon_bytes(storage):
+        items = await storage.download_bot_batch_bytes(
+            bot_peer,
+            media_count,
+            message_ids=msg_ids or None,
+            anchor_max_message_id=anchor_max_message_id,
+        )
+        return [
+            (_process_media_bytes(data, kind, db, crop=crop, wm=wm, context=context), kind) for data, kind in items
+        ]
+
+    telethon_err: BaseException | None = None
+    try:
+        processed = await run_telegram_album_composer_io(_telethon_bytes)
+        if len(processed) >= media_count:
+            return processed[:media_count]
+        telethon_err = ValueError(
+            f"Telethon returned {len(processed)}/{media_count} item(s) from album bot chat"
+        )
+    except Exception as e:
+        telethon_err = e
+        logger.warning(
+            "album bot Telethon byte download failed (count=%s ids=%s anchor=%s): %s",
+            media_count,
+            msg_ids[:8],
+            anchor_max_message_id,
+            _exc_detail(e),
+        )
+
+    if not file_items:
+        if telethon_err is not None:
+            raise telethon_err
+        raise ValueError(
+            "No staged media found in the album bot chat. Re-send photos/videos to the bot, then post again."
+        )
+
+    if not token:
+        raise ValueError("TBCC_ALBUM_COMPOSER_BOT_TOKEN not set in tbcc/.env")
+
+    logger.info(
+        "album bot Telethon download incomplete (%s); trying Bot API file_id fallback for %s file(s)",
+        _exc_detail(telethon_err) if telethon_err else "unknown",
+        len(file_items),
+    )
+
+    processed: list[tuple[bytes, str]] = []
+    for fi in file_items[:media_count]:
+        data = await _download_bot_api_file(fi.file_id, token)
+        kind = (fi.kind or "photo").lower()
+        if kind not in ("photo", "video"):
+            kind = "photo"
+        processed.append((_process_media_bytes(data, kind, db, crop=crop, wm=wm), kind))
+
+    if len(processed) < media_count:
+        raise ValueError(
+            f"Downloaded {len(processed)}/{media_count} item(s) via Bot API. "
+            "Large videos require Telethon — re-send to the bot and retry, or check admin_album.session login."
+        )
+    return processed
 
 
 async def _saved_batch_from_bot_files(
@@ -482,7 +597,7 @@ async def _saved_batch_from_bot_files(
         items = await asyncio.gather(*[_one(f) for f in files])
     except Exception as e:
         logger.warning("bot API file download failed: %s", e)
-        return {"error": f"Could not download from album bot: {e}"}
+        return {"error": f"Could not download from album bot: {_exc_detail(e)}"}
 
     promo_item = _gallery_send_promo_item(db) if append_send_promo else None
     cap = (caption or "").strip() or None
@@ -614,17 +729,21 @@ async def import_from_url(data: dict, db: Session = Depends(get_db)):
             return {"error": _friendly_download_error(url, e)}
 
         file_bytes = await asyncio.to_thread(maybe_remux_mp4_for_playback, file_bytes)
+        _reject_non_media_payload(file_bytes, url=url)
         media_type = _guess_media_type(url, content_type)
         cap = _caption_from_body(data)
         try:
             if saved_only:
 
                 async def _saved(storage):
-                    await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
+                    return await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
 
-                await run_telegram_import_io(_saved)
-                logger.info("saved_only: sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
-                return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+                msg_id = await run_telegram_import_io(_saved)
+                logger.info("saved_only: sent %s bytes (%s) to Saved Messages msg=%s", len(file_bytes), media_type, msg_id)
+                out = {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+                if msg_id:
+                    out["telegram_message_id"] = int(msg_id)
+                return out
 
             record = await _import_bytes_to_pool(
                 file_bytes,
@@ -672,6 +791,61 @@ async def import_watermark_bytes(
     kind, ext = sniff_media_kind(out)
     mt = (media_type or "photo").lower()
     if kind == "video" or mt == "video":
+        mime = "video/mp4"
+        name = "media.mp4"
+    elif ext == "png":
+        mime = "image/png"
+        name = "media.png"
+    elif ext == "gif":
+        mime = "image/gif"
+        name = "media.gif"
+    else:
+        mime = "image/jpeg"
+        name = "media.jpg"
+    return Response(
+        content=out,
+        media_type=mime,
+        headers={"Content-Disposition": f'inline; filename="{name}"'},
+    )
+
+
+@router.post("/process-bytes")
+async def import_process_bytes(
+    file: UploadFile = File(...),
+    media_type: str = Form("photo"),
+    crop_json: str = Form(""),
+    watermark_json: str = Form(""),
+    skip_watermark: str = Form("false"),
+    db: Session = Depends(get_db),
+):
+    """
+    Crop / blur bands + promo watermark on raw bytes (dashboard curate lightbox preview).
+    Photos: crop + blur + watermark. Videos: watermark only (crop/blur ignored).
+    """
+    raw = await file.read()
+    if not raw:
+        return Response(content=b"", status_code=400)
+    crop: ImageCropSettings | None = None
+    wm: WatermarkOptions | None = None
+    if crop_json.strip():
+        try:
+            crop = ImageCropSettings.model_validate(json.loads(crop_json))
+        except Exception:
+            return Response(content=b"invalid crop_json", status_code=400)
+    if watermark_json.strip():
+        try:
+            wm = WatermarkOptions.model_validate(json.loads(watermark_json))
+        except Exception:
+            return Response(content=b"invalid watermark_json", status_code=400)
+    if _truthy_flag(skip_watermark):
+        wm = WatermarkOptions(skip=True) if wm is None else wm.model_copy(update={"skip": True})
+    kind = (media_type or "photo").lower()
+    if kind not in ("photo", "video"):
+        kind = "photo"
+    out = _process_media_bytes(raw, kind, db, crop=crop, wm=wm, context="default")
+    kind_out, ext = sniff_media_kind(out)
+    mt = kind
+    if kind_out == "video" or mt == "video":
         mime = "video/mp4"
         name = "media.mp4"
     elif ext == "png":
@@ -824,10 +998,11 @@ async def _import_from_bytes_impl(
     try:
         with skip_watermark_context(skip_wm):
             if saved_only_flag:
+                _reject_non_media_payload(file_bytes, url=source or "")
 
                 async def _saved_only(storage):
-                    await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
-                    return "saved_only"
+                    msg_id = await storage.save_to_saved_only(file_bytes, media_type, caption=cap)
+                    return ("saved_only", msg_id)
 
                 result = await run_telegram_import_io(_saved_only)
             else:
@@ -839,6 +1014,18 @@ async def _import_from_bytes_impl(
                     db,
                     skip_watermark=skip_wm,
                 )
+        if isinstance(result, tuple) and result[0] == "saved_only":
+            msg_id = result[1] if len(result) > 1 else None
+            logger.info(
+                "saved_only (bytes): sent %s bytes (%s) to Saved Messages msg=%s",
+                len(file_bytes),
+                media_type,
+                msg_id,
+            )
+            out = {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
+            if msg_id:
+                out["telegram_message_id"] = int(msg_id)
+            return out
         if result == "saved_only":
             logger.info("saved_only (bytes): sent %s bytes (%s) to Saved Messages", len(file_bytes), media_type)
             return {"status": "saved_only", "message": "Saved to Telegram Saved Messages"}
@@ -996,32 +1183,31 @@ async def import_saved_from_bot_messages(body: SavedFromBotMessagesBody, db: Ses
         use_wm,
     )
     if use_bytes:
-        if body.files:
-            return await _saved_batch_from_bot_files(
-                body.files,
-                cap,
-                body.append_send_promo,
-                db,
-                use_album_session=True,
+        file_items = [
+            SavedFromBotFileItem(**f) if isinstance(f, dict) else f for f in (body.files or [])
+        ]
+        try:
+            processed = await _download_album_bot_processed_bytes(
+                bot_peer=bot_peer,
+                media_count=body.media_count,
+                message_ids=body.message_ids or None,
+                anchor_max_message_id=body.anchor_max_message_id,
+                files=file_items or None,
+                db=db,
                 crop=crop,
                 wm=wm,
             )
+        except ImageProcessFailedError as e:
+            return {"error": f"Telegram rejected batch: {e}"}
+        except Exception as e:
+            return {"error": f"Could not download from album bot: {_exc_detail(e)}"}
 
-        async def _telethon_bytes(storage):
-            items = await storage.download_bot_batch_bytes(
-                bot_peer,
-                body.media_count,
-                message_ids=body.message_ids or None,
-                anchor_max_message_id=body.anchor_max_message_id,
-            )
-            processed = [
-                (_process_media_bytes(data, kind, db, crop=crop, wm=wm), kind) for data, kind in items
-            ]
+        async def _save_processed(storage):
             await storage.save_batch_to_saved_only(processed, caption=cap, promo_item=promo_item)
             return len(processed)
 
         try:
-            count = await run_telegram_album_composer_io(_telethon_bytes)
+            count = await run_telegram_album_composer_io(_save_processed)
         except ImageProcessFailedError as e:
             return {"error": f"Telegram rejected batch: {e}"}
         except Exception as e:
@@ -1150,15 +1336,17 @@ def _parse_channel_import_request(data: dict) -> dict | tuple[str, ...]:
         source = f"{source}#topic:{message_thread_id}"
     topic_title = str(data.get("topic_title") or "").strip() or None
     sync = _truthy_flag(data.get("sync"))
+    apply_watermark = _truthy_flag(data.get("apply_watermark"))
     return {
         "channel": channel,
         "pool_id": pool_id,
-        "limit": limit,
+        "limit": limit,  # max NEW items to store (deduped)
         "media_types": media_types,
         "message_thread_id": message_thread_id,
         "source_label": source,
         "topic_title": topic_title,
         "sync": sync,
+        "apply_watermark": apply_watermark,
     }
 
 
@@ -1179,6 +1367,7 @@ def _queue_channel_import(db: Session, parsed: dict) -> dict:
         message_thread_id=parsed["message_thread_id"],
         source_label=parsed["source_label"],
         topic_title=parsed.get("topic_title"),
+        apply_watermark=bool(parsed.get("apply_watermark")),
     )
     task_id = enqueue_channel_import_job(job.id)
     if task_id:
@@ -1203,7 +1392,8 @@ async def import_from_telegram_channel(data: dict, db: Session = Depends(get_db)
     Import recent media from a Telegram channel/group into a pool (admin Telethon session).
     Forwards or downloads each item into Saved Messages, then indexes as pending media.
     The admin account must be a member (or admin) of the target chat.
-    Body: pool_id, channel (@name, t.me/…, or -100… id), limit (1–200), media_types (both|photos|videos).
+    Body: pool_id, channel (@name, t.me/…, or -100… id), limit (1–200 new items, deduped),
+    media_types (both|photos|videos).
     Runs in background on the Celery telegram queue unless sync=true (small tests only).
     """
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
@@ -1226,6 +1416,7 @@ async def import_from_telegram_channel(data: dict, db: Session = Depends(get_db)
                 limit=parsed["limit"],
                 media_types=parsed["media_types"],
                 message_thread_id=parsed["message_thread_id"],
+                apply_watermark=bool(parsed.get("apply_watermark")),
             )
 
         result = await run_telegram_import_io(_import)
@@ -1286,6 +1477,7 @@ async def import_from_telegram_channel_batch(data: dict, db: Session = Depends(g
     default_media = str(data.get("media_types") or "both").strip().lower() or "both"
     if default_media not in ("both", "photos", "videos"):
         return {"error": "media_types must be both, photos, or videos"}
+    apply_watermark = _truthy_flag(data.get("apply_watermark"))
 
     if not sync:
         jobs: list[dict] = []
@@ -1316,6 +1508,7 @@ async def import_from_telegram_channel_batch(data: dict, db: Session = Depends(g
                 "message_thread_id": topic_id,
                 "source_label": source,
                 "topic_title": title or None,
+                "apply_watermark": apply_watermark,
             }
             body = _queue_channel_import(db, parsed)
             body["message_thread_id"] = topic_id
@@ -1354,6 +1547,7 @@ async def import_from_telegram_channel_batch(data: dict, db: Session = Depends(g
                     limit=_lim,
                     media_types=_mt,
                     message_thread_id=_tid,
+                    apply_watermark=apply_watermark,
                 )
 
             part = await run_telegram_import_io(_import)
@@ -1369,3 +1563,67 @@ async def import_from_telegram_channel_batch(data: dict, db: Session = Depends(g
         logger.exception("import/from-channel-batch failed: %s", e)
         return {"error": friendly_telegram_error(e), "results": results}
     return {"status": "ok", "results": results}
+
+
+@router.get("/storage-hub-lanes")
+def list_storage_hub_import_lanes(db: Session = Depends(get_db)) -> dict:
+    """Storage & Bot Hangar subtopics mapped to active AOF channel pools (Media Library import UI)."""
+    from app.services.aof_growth_hub import list_storage_hub_import_lanes as _lanes
+
+    return _lanes(db)
+
+
+@router.post("/from-storage-hub")
+def import_from_storage_hub(data: dict, db: Session = Depends(get_db)) -> dict:
+    """
+    Import NEW media from Storage Hub forum subtopics into matching AOF channel pools.
+    Skips duplicates already in each pool; scans backward until batch size is met.
+    Body: limit (new items per lane, 1–200), network_keys (optional list), media_types.
+    """
+    if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
+        return {"error": "Telegram API not configured"}
+    from app.services.aof_growth_hub import queue_storage_hub_deposits, storage_pool_seed_batch_size
+
+    raw_keys = data.get("network_keys")
+    topic_keys: list[str] | None = None
+    if raw_keys is not None:
+        if not isinstance(raw_keys, list):
+            return {"error": "network_keys must be a list of lane keys (milf, abg, …)"}
+        topic_keys = [str(k).strip().lower() for k in raw_keys if str(k).strip()]
+        if not topic_keys:
+            return {"error": "Select at least one storage lane"}
+
+    try:
+        limit = int(data.get("limit") or storage_pool_seed_batch_size())
+    except (TypeError, ValueError):
+        limit = storage_pool_seed_batch_size()
+    limit = min(max(limit, 1), 200)
+
+    media_types = str(data.get("media_types") or "both").strip().lower() or "both"
+    if media_types not in ("both", "photos", "videos"):
+        return {"error": "media_types must be both, photos, or videos"}
+
+    apply_watermark = _truthy_flag(data.get("apply_watermark"))
+
+    report = queue_storage_hub_deposits(
+        db,
+        limit=limit,
+        topic_keys=topic_keys,
+        media_types=media_types,
+        content_lanes_only=topic_keys is None,
+        include_topic_mirror=False,
+        apply_watermark=apply_watermark,
+    )
+    jobs = []
+    for row in report.get("jobs") or []:
+        job_id = row.get("job_id")
+        if not job_id:
+            continue
+        jobs.append({**row, "poll_url": f"/import/jobs/{job_id}"})
+    return {
+        "ok": True,
+        "async": True,
+        "limit_per_lane": report.get("limit_per_topic"),
+        "matched_count": report.get("matched_count"),
+        "jobs": jobs,
+    }

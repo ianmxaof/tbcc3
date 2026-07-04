@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { MediaItemEditorPanel } from "./MediaItemEditorPanel";
+import { MediaLightboxToolsPanel } from "./MediaLightboxToolsPanel";
 import type { GalleryMediaItem } from "./MediaGalleryModal";
 
 type Props = {
@@ -23,6 +24,7 @@ export function MediaMasterSuiteModal({
   const [mediaLoadError, setMediaLoadError] = useState<string | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [sideTab, setSideTab] = useState<"details" | "tools">("details");
   const overlayRef = useRef<HTMLDivElement>(null);
   const fsWrapRef = useRef<HTMLDivElement>(null);
 
@@ -63,6 +65,7 @@ export function MediaMasterSuiteModal({
   useEffect(() => {
     setMediaLoadError(null);
     setRemoveError(null);
+    setSideTab("details");
   }, [currentId]);
 
   if (!current || openIndex == null || items.length === 0) return null;
@@ -202,11 +205,44 @@ export function MediaMasterSuiteModal({
           className="w-full lg:w-[min(100%,420px)] lg:max-w-[440px] shrink-0 bg-slate-900 flex flex-col max-h-[52vh] lg:max-h-none overflow-hidden"
           onClick={(e) => e.stopPropagation()}
         >
-          <MediaItemEditorPanel mediaId={current.id} className="flex-1 min-h-0 bg-slate-900" />
+          <div className="flex gap-1 border-b border-slate-700 shrink-0 px-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setSideTab("details")}
+              className={`px-3 py-2 text-xs rounded-t border border-b-0 -mb-px ${
+                sideTab === "details"
+                  ? "bg-slate-800 border-slate-600 text-cyan-300"
+                  : "border-transparent text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              Details
+            </button>
+            <button
+              type="button"
+              onClick={() => setSideTab("tools")}
+              className={`px-3 py-2 text-xs rounded-t border border-b-0 -mb-px ${
+                sideTab === "tools"
+                  ? "bg-slate-800 border-slate-600 text-cyan-300"
+                  : "border-transparent text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              Crop & watermark
+            </button>
+          </div>
+          {sideTab === "details" ? (
+            <MediaItemEditorPanel mediaId={current.id} className="flex-1 min-h-0 bg-slate-900" />
+          ) : (
+            <MediaLightboxToolsPanel
+              key={current.id}
+              mediaId={current.id}
+              mediaType={mt}
+              className="flex-1 min-h-0 bg-slate-900"
+            />
+          )}
         </div>
       </div>
       <p className="text-center text-slate-500 text-xs py-2 shrink-0 bg-slate-900 border-t border-slate-800">
-        Wheel: prev / next · Ctrl+wheel: zoom · ← → · Edit tags & pool on the right, then Save
+        Wheel: prev / next · Ctrl+wheel: zoom · ← → · Right panel: Details or Crop & watermark tools
         {onRemoveFromPool ? " · Remove from pool deletes the TBCC row only" : ""}
       </p>
     </div>

@@ -528,6 +528,8 @@ def build_context_suffix(
     ctx: SecretaryUserContext,
     analysis: EmotionAnalysis,
     fmt: dict[str, Any] | None = None,
+    *,
+    verbosity: str | None = None,
 ) -> str:
     """Human-readable block appended to the secretary system prompt."""
     fmt = fmt or _load_format(ctx.interaction_format_json)
@@ -535,13 +537,30 @@ def build_context_suffix(
     prefs = fmt.get("communication_preferences") or {}
     metrics = fmt.get("metrics") or {}
 
+    if verbosity is None:
+        verbosity = str(get_effective_secretary_settings().get("fe_verbosity") or "compact")
+
+    phase = fmt.get("phase", ctx.current_phase)
+    tone = guidelines.get("tone_directive", "clear and helpful")
+    focus = guidelines.get("current_focus", "Answer the FAQ")
+
+    if verbosity == "compact":
+        bits = [f"phase={phase}", f"signal={analysis.dominant}", f"tone={tone[:100]}"]
+        if focus and focus != "Answer the FAQ":
+            bits.append(f"focus={focus[:80]}")
+        if analysis.triggers:
+            bits.append(f"triggers={', '.join(analysis.triggers[:3])}")
+        if guidelines.get("escalation_hint"):
+            bits.append("escalate=human admin if needed")
+        return "FE context: " + "; ".join(bits) + ". Support only — no manipulation."
+
     lines = [
         "--- Format Engine (FE-LLMv4) context ---",
         "Use this as observational context only. Do not manipulate, guilt, or create false intimacy.",
-        f"Interaction phase: {fmt.get('phase', ctx.current_phase)}",
+        f"Interaction phase: {phase}",
         f"Dominant signal (this message): {analysis.dominant}",
-        f"Tone directive: {guidelines.get('tone_directive', 'clear and helpful')}",
-        f"Current focus: {guidelines.get('current_focus', 'Answer the FAQ')}",
+        f"Tone directive: {tone}",
+        f"Current focus: {focus}",
         f"Preferred response length: {prefs.get('response_length', 'medium')}",
     ]
 

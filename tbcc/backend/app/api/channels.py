@@ -42,14 +42,8 @@ async def _resolve_channel_entity(client, ch: Channel):
 
 
 async def _telegram_client_for_channel_ops():
-    """Poster session first (same account that sends scheduled/relay posts)."""
-    try:
-        from app.workers.poster_worker import _get_poster_client
-
-        return await _get_poster_client()
-    except Exception as poster_err:
-        logger.warning("forum/channel ops: poster client unavailable (%s), trying admin", poster_err)
-        return await get_telegram_client()
+    """Dashboard channel ops — admin session with Redis lock (avoid admin_poster SQLite fights with Celery-Post)."""
+    return await get_telegram_client()
 
 
 class ChannelCreate(BaseModel):

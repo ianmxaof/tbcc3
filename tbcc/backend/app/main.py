@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, extension_context_menu, extension_aof_pools, album_composer_drafts
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, extension_context_menu, extension_aof_pools, album_composer_drafts, k2s
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -33,7 +33,8 @@ from app.models.campaign_deploy_event import CampaignDeployEvent  # noqa: F401
 from app.models.scrape_channel_profile import ScrapeChannelProfile  # noqa: F401
 from app.models.secretary_user_context import SecretaryMessageRecord, SecretaryUserContext  # noqa: F401
 from app.models.secretary_settings import SecretarySettings  # noqa: F401
-from app.models.secretary_knowledge import SecretaryKnowledgeEntry  # noqa: F401
+from app.models.secretary_knowledge import SecretaryKnowledgeEntry
+from app.models.industry_benchmark import IndustryBenchmark  # noqa: F401  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
 from app.services.zip_promo_storage import ensure_zip_promo_dir
 from app.services.send_promo_storage import ensure_send_promo_dir
@@ -421,6 +422,7 @@ def on_startup():
                         ("last_sent_caption_html", "TEXT"),
                         ("discord_mirror_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
                         ("reddit_mirror_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
+                        ("erome_mirror_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
                         ("surface_copy_json", "TEXT"),
                     ):
                         if col not in st_cols:
@@ -984,6 +986,7 @@ def on_startup():
                         ("last_sent_caption_html", "TEXT"),
                         ("discord_mirror_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
                         ("reddit_mirror_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                        ("erome_mirror_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
                         ("surface_copy_json", "TEXT"),
                     ):
                     if col not in st_cols:
@@ -1237,6 +1240,7 @@ app.include_router(listening_relay_settings.router, prefix="/listening-relay-set
 app.include_router(zip_bundle_settings.router, prefix="/zip-bundle-settings", tags=["zip-bundle-settings"])
 app.include_router(gallery_send_promo.router, prefix="/gallery-send-promo", tags=["gallery-send-promo"])
 app.include_router(main_channel_divider.router, prefix="/main-channel-divider", tags=["main-channel-divider"])
+app.include_router(k2s.router, prefix="/k2s", tags=["k2s"])
 app.include_router(watermark_settings.router, prefix="/watermark-settings", tags=["watermark-settings"])
 app.include_router(extension_context_menu.router, prefix="/extension/context-menu", tags=["extension-context-menu"])
 app.include_router(extension_aof_pools.router, prefix="/extension/aof-pools", tags=["extension-aof-pools"])

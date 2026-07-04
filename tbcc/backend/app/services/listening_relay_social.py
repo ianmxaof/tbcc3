@@ -8,7 +8,7 @@ from datetime import datetime
 
 from app.database.session import SessionLocal
 from app.models.listening_relay_settings import ListeningRelaySettings
-from app.services.buffer_graphql import buffer_target_channel_ids, create_posts_multi_channel
+from app.services.buffer_graphql import buffer_target_channel_ids, create_post
 from app.services.buffer_x_caption import (
     fit_plaintext_for_x,
     resolve_overflow_url,
@@ -58,7 +58,9 @@ def run_listening_relay_social_fanout(
         return
     hook = (os.environ.get("TBCC_DISCORD_LISTENING_RELAY_WEBHOOK_URL") or "").strip()
     if hook:
-        notify_discord_webhook_text(hook, plain)
+        from app.services.buffer_surface_caption import build_discord_caption
+
+        notify_discord_webhook_text(hook, build_discord_caption(teaser=plain, utm_campaign="relay"))
 
     db = SessionLocal()
     try:
@@ -91,16 +93,67 @@ def run_listening_relay_social_fanout(
                 )
                 return
 
-        if should_fit_for_x():
+        queue = row.get_buffer_x_queue()
+        used_queue = False
+        img: str | None = None
+        if queue:
+            item = queue[0]
+            plain = str(item.get("text") or "").strip()
+            iu = str(item.get("image_url") or "").strip()
+            img = iu if iu.startswith("https://") else None
+            used_queue = bool(plain)
+        elif should_fit_for_x():
             plain = fit_plaintext_for_x(plain, overflow_url=resolve_overflow_url() or None)
+
+        if not plain:
+            return
 
         capped = int(os.environ.get("TBCC_BUFFER_RELAY_MAX_CHANNELS", "6") or 6)
         chans = buffer_target_channel_ids()[: max(1, capped)]
-        create_posts_multi_channel(plain, image_url=None, channel_ids=chans)
+        share_mode = (os.getenv("TBCC_BUFFER_RELAY_SHARE_NOW") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        mode = "shareNow" if share_mode else "addToQueue"
+        from app.services.campaign_surface_copy import buffer_primary_channel_id, buffer_secondary_channel_ids
+        from app.services.buffer_ig_carousel import (
+            ig_create_post_kwargs,
+            ig_story_enabled,
+            next_carousel_image_urls,
+            post_instagram_story,
+        )
+        from app.services.buffer_surface_caption import build_instagram_caption
+
+        primary = buffer_primary_channel_id()
+        secondary = [c for c in buffer_secondary_channel_ids() if c in chans]
+        ig_body = build_instagram_caption(teaser=plain, utm_campaign="relay_armory")
+
+        if primary and primary in chans:
+            create_post(primary, plain, mode=mode, image_url=img)
+        for cid in secondary:
+            create_post(cid, ig_body, mode=mode, **ig_create_post_kwargs())
+            if ig_story_enabled():
+                story_urls = next_carousel_image_urls(slides=1)
+                story_img = story_urls[0] if story_urls else None
+                post_instagram_story(
+                    cid,
+                    build_instagram_caption(teaser="Story → tap link sticker.", utm_campaign="relay_story"),
+                    mode=mode,
+                    image_url=story_img,
+                )
+        if used_queue:
+            row.set_buffer_x_queue(queue[1:])
         row.buffer_relay_posts_today = int(row.buffer_relay_posts_today or 0) + 1
         row.buffer_relay_last_post_at = now
         db.commit()
-        logger.info("listening relay buffer: queued %s channel(s)", len(chans))
+        logger.info(
+            "listening relay buffer: mode=%s source=%s channels=%s queue_remaining=%s",
+            mode,
+            "tbcc_queue" if used_queue else "relay_mirror",
+            len(chans),
+            len(row.get_buffer_x_queue()),
+        )
     except Exception:
         logger.exception("listening_relay_social_fanout failed")
         try:

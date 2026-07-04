@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -11,6 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.promo_affiliate_link import PromoAffiliateLink
+from app.services.promo_affiliate_rotation import (
+    AFFILIATE_PLACEMENTS,
+    affiliate_rotation_stats,
+    preview_affiliates,
+)
 from app.services.promo_shorten import PromoShortenError, validate_and_shorten
 
 router = APIRouter()
@@ -29,6 +35,43 @@ SORT_MODES = frozenset(
 )
 
 
+def _encode_json_list(values: list[str] | None) -> str | None:
+    if not values:
+        return None
+    cleaned = [str(v).strip().lower() for v in values if str(v).strip()]
+    if not cleaned:
+        return None
+    return json.dumps(cleaned)
+
+
+def _decode_json_list(raw: str | None) -> list[str]:
+    if not raw or not str(raw).strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return [str(x).strip() for x in data if str(x).strip()] if isinstance(data, list) else []
+
+
+def _row_out(row: PromoAffiliateLink) -> "PromoAffiliateLinkOut":
+    return PromoAffiliateLinkOut(
+        id=row.id,
+        label=row.label,
+        url=row.url,
+        short_url=row.short_url,
+        payout_kind=row.payout_kind,
+        payout_detail=row.payout_detail,
+        priority_tier=row.priority_tier,
+        expires_at=row.expires_at,
+        active=bool(row.active),
+        created_at=row.created_at,
+        placements=_decode_json_list(getattr(row, "placements_json", None)),
+        network_keys=_decode_json_list(getattr(row, "network_keys_json", None)),
+        copy_template=getattr(row, "copy_template", None),
+    )
+
+
 class PromoAffiliateLinkCreate(BaseModel):
     label: str = Field(..., max_length=512)
     url: str = Field(..., min_length=4, max_length=8192)
@@ -38,6 +81,9 @@ class PromoAffiliateLinkCreate(BaseModel):
     priority_tier: int = Field(default=10, ge=0, le=999)
     expires_at: datetime | None = None
     active: bool = True
+    placements: list[str] = Field(default_factory=lambda: ["manual_only"])
+    network_keys: list[str] = Field(default_factory=list)
+    copy_template: str | None = Field(default=None, max_length=1024)
 
 
 class PromoAffiliateLinkPatch(BaseModel):
@@ -49,6 +95,9 @@ class PromoAffiliateLinkPatch(BaseModel):
     priority_tier: int | None = Field(default=None, ge=0, le=999)
     expires_at: datetime | None = None
     active: bool | None = None
+    placements: list[str] | None = None
+    network_keys: list[str] | None = None
+    copy_template: str | None = Field(default=None, max_length=1024)
 
 
 class PromoAffiliateLinkOut(BaseModel):
@@ -62,6 +111,9 @@ class PromoAffiliateLinkOut(BaseModel):
     expires_at: datetime | None
     active: bool
     created_at: datetime | None
+    placements: list[str] = Field(default_factory=list)
+    network_keys: list[str] = Field(default_factory=list)
+    copy_template: str | None = None
 
     class Config:
         from_attributes = True
@@ -69,6 +121,29 @@ class PromoAffiliateLinkOut(BaseModel):
 
 class PromoBulkIn(BaseModel):
     items: list[PromoAffiliateLinkCreate] = Field(..., min_length=1, max_length=2000)
+
+
+def _validate_placements(placements: list[str]) -> list[str]:
+    out = [p.strip().lower() for p in placements if p.strip()]
+    bad = [p for p in out if p not in AFFILIATE_PLACEMENTS]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"Unknown placements: {', '.join(bad)}")
+    return out or ["manual_only"]
+
+
+def _apply_create_fields(row: PromoAffiliateLink, data: PromoAffiliateLinkCreate) -> None:
+    placements = _validate_placements(data.placements)
+    row.label = data.label.strip()
+    row.url = data.url.strip()
+    row.short_url = (data.short_url.strip()[:8192] if data.short_url and data.short_url.strip() else None)
+    row.payout_kind = (data.payout_kind or "other").strip()[:16] or "other"
+    row.payout_detail = (data.payout_detail.strip()[:64] if data.payout_detail else None)
+    row.priority_tier = int(data.priority_tier)
+    row.expires_at = data.expires_at
+    row.active = bool(data.active)
+    row.placements_json = _encode_json_list(placements)
+    row.network_keys_json = _encode_json_list([k.strip().lower() for k in data.network_keys if k.strip()])
+    row.copy_template = (data.copy_template.strip()[:1024] if data.copy_template and data.copy_template.strip() else None)
 
 
 def _apply_sort(q, sort: str):
@@ -86,8 +161,31 @@ def _apply_sort(q, sort: str):
         return q.order_by(asc(PromoAffiliateLink.id))
     if sort == "created_desc":
         return q.order_by(desc(PromoAffiliateLink.id))
-    # name_asc default
     return q.order_by(asc(PromoAffiliateLink.label))
+
+
+@router.get("/placements")
+def list_affiliate_placements() -> dict[str, list[str]]:
+    return {"placements": sorted(AFFILIATE_PLACEMENTS)}
+
+
+@router.get("/stats")
+def promo_affiliate_stats(db: Session = Depends(get_db)) -> dict:
+    return affiliate_rotation_stats(db)
+
+
+@router.get("/preview-rotation")
+def get_preview_rotation(
+    placement: str = Query(..., min_length=3, max_length=32),
+    network_key: str | None = Query(default=None, max_length=32),
+    count: int = Query(default=5, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    placement = placement.strip().lower()
+    if placement not in AFFILIATE_PLACEMENTS:
+        raise HTTPException(status_code=400, detail=f"Unknown placement: {placement}")
+    picks = preview_affiliates(db, placement, network_key=network_key, count=count)
+    return {"placement": placement, "network_key": network_key, "picks": picks}
 
 
 @router.get("/", response_model=list[PromoAffiliateLinkOut])
@@ -103,25 +201,17 @@ def list_promo_affiliate_links(
         q = q.filter(PromoAffiliateLink.active.is_(True))
     q = _apply_sort(q, sort)
     rows = q.all()
-    return [PromoAffiliateLinkOut.model_validate(r) for r in rows]
+    return [_row_out(r) for r in rows]
 
 
 @router.post("/", response_model=PromoAffiliateLinkOut)
 def create_promo_affiliate_link(data: PromoAffiliateLinkCreate, db: Session = Depends(get_db)):
-    row = PromoAffiliateLink(
-        label=data.label.strip(),
-        url=data.url.strip(),
-        short_url=(data.short_url.strip()[:8192] if data.short_url and data.short_url.strip() else None),
-        payout_kind=(data.payout_kind or "other").strip()[:16] or "other",
-        payout_detail=(data.payout_detail.strip()[:64] if data.payout_detail else None),
-        priority_tier=int(data.priority_tier),
-        expires_at=data.expires_at,
-        active=bool(data.active),
-    )
+    row = PromoAffiliateLink()
+    _apply_create_fields(row, data)
     db.add(row)
     db.commit()
     db.refresh(row)
-    return PromoAffiliateLinkOut.model_validate(row)
+    return _row_out(row)
 
 
 @router.post("/bulk", response_model=dict)
@@ -135,19 +225,9 @@ def bulk_create_promo_affiliate_links(data: PromoBulkIn, db: Session = Depends(g
         label = str(it.label or "").strip()
         if not url or not label:
             continue
-        short_raw = str(it.short_url or "").strip()
-        db.add(
-            PromoAffiliateLink(
-                label=label[:512],
-                url=url[:8192],
-                short_url=short_raw[:8192] if short_raw else None,
-                payout_kind=(it.payout_kind or "other").strip()[:16] or "other",
-                payout_detail=(it.payout_detail.strip()[:64] if it.payout_detail else None),
-                priority_tier=int(it.priority_tier),
-                expires_at=it.expires_at,
-                active=bool(it.active),
-            )
-        )
+        row = PromoAffiliateLink()
+        _apply_create_fields(row, it)
+        db.add(row)
         n += 1
         pending += 1
         if pending >= chunk_size:
@@ -180,9 +260,16 @@ def patch_promo_affiliate_link(link_id: int, data: PromoAffiliateLinkPatch, db: 
         row.expires_at = data.expires_at
     if data.active is not None:
         row.active = bool(data.active)
+    if data.placements is not None:
+        row.placements_json = _encode_json_list(_validate_placements(data.placements))
+    if data.network_keys is not None:
+        row.network_keys_json = _encode_json_list([k.strip().lower() for k in data.network_keys if k.strip()])
+    if data.copy_template is not None:
+        s = data.copy_template.strip()
+        row.copy_template = s[:1024] if s else None
     db.commit()
     db.refresh(row)
-    return PromoAffiliateLinkOut.model_validate(row)
+    return _row_out(row)
 
 
 @router.delete("/{link_id}")
@@ -208,4 +295,4 @@ def shorten_promo_affiliate_link(link_id: int, db: Session = Depends(get_db)):
     row.short_url = short.strip()[:8192]
     db.commit()
     db.refresh(row)
-    return PromoAffiliateLinkOut.model_validate(row)
+    return _row_out(row)

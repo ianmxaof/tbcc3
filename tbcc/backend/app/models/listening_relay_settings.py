@@ -1,3 +1,5 @@
+import json
+
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 
 from .base import Base
@@ -54,3 +56,45 @@ class ListeningRelaySettings(Base):
     buffer_relay_utc_day = Column(String(10), nullable=True)
     buffer_relay_posts_today = Column(Integer, nullable=False, default=0)
     buffer_relay_last_post_at = Column(DateTime, nullable=True)
+    # Pre-written X captions: consumed one per buffer relay trigger (like scheduled_text_posts.buffer_x_queue).
+    buffer_x_queue_json = Column(Text, nullable=True)
+
+    def get_buffer_x_queue(self) -> list[dict]:
+        if not self.buffer_x_queue_json:
+            return []
+        try:
+            raw = json.loads(self.buffer_x_queue_json)
+            if not isinstance(raw, list):
+                return []
+            out: list[dict] = []
+            for x in raw:
+                if not isinstance(x, dict):
+                    continue
+                t = str(x.get("text") or "").strip()
+                if not t:
+                    continue
+                entry: dict = {"text": t}
+                iu = str(x.get("image_url") or "").strip()
+                if iu.startswith("https://"):
+                    entry["image_url"] = iu
+                out.append(entry)
+                if len(out) >= 16:
+                    break
+            return out
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def set_buffer_x_queue(self, items: list[dict]) -> None:
+        norm: list[dict] = []
+        for x in items[:16]:
+            if not isinstance(x, dict):
+                continue
+            t = str(x.get("text") or "").strip()
+            if not t:
+                continue
+            entry: dict = {"text": t[:2800]}
+            iu = str(x.get("image_url") or "").strip()
+            if iu.startswith("https://"):
+                entry["image_url"] = iu[:2048]
+            norm.append(entry)
+        self.buffer_x_queue_json = json.dumps(norm) if norm else None

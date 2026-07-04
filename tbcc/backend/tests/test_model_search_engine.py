@@ -2,6 +2,7 @@
 
 from app.services.model_search_engine import (
     analyze_model_search_html,
+    apply_site_probe_rules,
     build_model_search_url,
     derive_username_template_from_search_url,
     get_macro_search_sites,
@@ -54,3 +55,23 @@ def test_macro_sites_include_builtin_category():
     assert all(s.get("category") == "macro" for s in sites)
     ids = {s["id"] for s in sites}
     assert "leakedzone" in ids or any("macro" in str(s.get("url", "")) for s in sites)
+
+
+def test_site_rule_rejects_livecamrips_empty():
+    html = "<html><title>Search</title><body>no records found for user</body></html>"
+    rule = apply_site_probe_rules(html, "https://livecamrips.to/search/test/1")
+    assert rule and rule.get("action") == "deny"
+
+
+def test_site_rule_accepts_cumcams_profile():
+    html = '<html><body><div class="performer">cool_model profile</div></body></html>'
+    r = analyze_model_search_html(html, "https://cumcams.cc/performer/cool_model", username="cool_model")
+    assert r["has_results"] is True
+    assert r.get("signal") == "site_markers"
+
+
+def test_title_not_found_rejects():
+    html = "<html><head><title>User not found</title></head><body>x</body></html>" * 20
+    r = analyze_model_search_html(html, "https://example.com/u", username="u")
+    assert r["has_results"] is False
+    assert r.get("signal") == "title_not_found"

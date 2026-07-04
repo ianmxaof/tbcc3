@@ -468,6 +468,48 @@ def dismiss_growth_signal_proposal_route(proposal_id: str):
     return result
 
 
+@router.get("/export-flywheel/status")
+def export_flywheel_status_route(db: Session = Depends(get_db)):
+    from app.services.export_flywheel_service import flywheel_status, list_export_proposals
+
+    status = flywheel_status(db)
+    status["proposals_summary"] = {
+        "proposal_count": list_export_proposals(db).get("proposal_count"),
+        "mode": status.get("mode"),
+    }
+    return status
+
+
+@router.get("/export-flywheel/proposals")
+def export_flywheel_proposals_route(db: Session = Depends(get_db)):
+    from app.services.export_flywheel_service import list_export_proposals
+
+    return list_export_proposals(db)
+
+
+@router.post("/export-flywheel/proposals/{proposal_id}/dismiss")
+def dismiss_export_flywheel_proposal_route(proposal_id: str):
+    from app.services.export_flywheel_service import dismiss_export_proposal
+
+    result = dismiss_export_proposal(proposal_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "dismiss failed")
+    return result
+
+
+@router.post("/export-flywheel/proposals/{proposal_id}/approve")
+def approve_export_flywheel_proposal_route(proposal_id: str, db: Session = Depends(get_db)):
+    from app.services.export_flywheel_executor import execute_proposal
+    from app.services.export_flywheel_service import approve_export_proposal, build_export_proposals
+
+    approved = approve_export_proposal(proposal_id)
+    if not approved.get("ok"):
+        raise HTTPException(status_code=400, detail=approved.get("error") or "approve failed")
+    match = next((p for p in build_export_proposals(db) if p.get("id") == proposal_id), None)
+    execution = execute_proposal(db, match) if match else None
+    return {"ok": True, "approved": approved, "execution": execution}
+
+
 @router.get("/industry-benchmarks")
 def list_industry_benchmarks_route(
     db: Session = Depends(get_db),
@@ -539,4 +581,65 @@ def tbcc_flywheel_unified_tick(
             "skipped": True,
             "reason": "TBCC_FLYWHEEL_GROWTH_TICK=0",
         }
+    try:
+        from app.services.export_flywheel_service import flywheel_enabled, tick_observe
+
+        if flywheel_enabled():
+            out["export_flywheel"] = tick_observe(db, push_inbox=False)
+    except Exception as e:
+        out["export_flywheel"] = {"ok": False, "error": str(e)[:200]}
     return out
+
+
+class EromeBrowseIntelIngestBody(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
+
+
+@router.post("/erome-browse-intel")
+def ingest_erome_browse_intel_route(body: EromeBrowseIntelIngestBody = Body(...)):
+    """Ingest Tampermonkey browse-intel JSONL rows (append + dedupe by album/day)."""
+    from app.services.erome_browse_intel import ingest_rows
+
+    if not body.rows:
+        raise HTTPException(status_code=400, detail="rows required")
+    return ingest_rows(body.rows)
+
+
+@router.post("/erome-browse-intel/sync-file")
+def sync_erome_browse_intel_file_route():
+    """Ingest ``browse-intel-drop.jsonl`` from erome-analytics dir if present."""
+    from app.services.erome_browse_intel import sync_from_drop_file
+
+    return sync_from_drop_file()
+
+
+@router.get("/erome-browse-intel/summary")
+def erome_browse_intel_summary_route(days: int = Query(None, ge=1, le=180)):
+    from app.services.erome_browse_intel import intel_summary
+
+    return intel_summary(days=days)
+
+
+@router.post("/market-intel/probe")
+def market_intel_probe_route(limit_per_sub: int = Query(25, ge=1, le=100)):
+    """Run Reddit JSON market probe (public subs, no OAuth)."""
+    from app.services.market_intel_probe import run_market_probes
+
+    return run_market_probes(limit_per_sub=limit_per_sub)
+
+
+@router.post("/market-intel")
+def market_intel_ingest_route(body: EromeBrowseIntelIngestBody = Body(...)):
+    """Ingest multi-platform market-intel rows (platform field per row)."""
+    from app.services.erome_browse_intel import ingest_rows
+
+    if not body.rows:
+        raise HTTPException(status_code=400, detail="rows required")
+    return ingest_rows(body.rows)
+
+
+@router.get("/market-intel/upload-hints")
+def market_intel_upload_hints_route(top_n: int = Query(8, ge=1, le=30)):
+    from app.services.erome_upload_policy import intel_upload_hints
+
+    return intel_upload_hints(top_n=top_n)

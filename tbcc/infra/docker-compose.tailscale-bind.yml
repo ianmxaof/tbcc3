@@ -1,0 +1,15 @@
+# Bind Postgres + Redis to your home Tailscale IP so the remote worker VM can reach them.
+# Replace 100.64.0.1 with: tailscale ip -4  (on home PC)
+#
+# Usage (home):
+#   cd tbcc/infra
+#   docker compose -f docker-compose.infra.yml -f docker-compose.tailscale-bind.yml up -d
+
+services:
+  postgres:
+    ports:
+      - "100.64.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "100.64.0.1:6379:6379"

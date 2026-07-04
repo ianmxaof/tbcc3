@@ -66,6 +66,47 @@ def import_session_stem() -> str:
     return str(_backend_root() / raw)
 
 
+def admin_bot_session_stem() -> str:
+    """Dedicated Telethon session for admin_bot (avoids admin.session lock vs Celery/API)."""
+    raw = (os.getenv("TBCC_ADMIN_BOT_TELEGRAM_SESSION") or "admin_bot").strip() or "admin_bot"
+    p = Path(raw)
+    if p.is_absolute():
+        return normalize_session_stem(str(p))
+    if "/" in raw or "\\" in raw:
+        return normalize_session_stem(str((_backend_root() / raw).resolve()))
+    return str(_backend_root() / raw)
+
+
+def bootstrap_admin_bot_session_from_admin() -> bool:
+    """Copy admin.session -> admin_bot.session when opt-in and target missing."""
+    if (os.getenv("TBCC_ADMIN_BOT_AUTO_COPY_ADMIN_SESSION") or "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    admin_stem = admin_session_stem()
+    bot_stem = admin_bot_session_stem()
+    if _session_paths_equal(admin_stem, bot_stem):
+        return False
+    admin_path = admin_stem + ".session"
+    bot_path = bot_stem + ".session"
+    if not os.path.isfile(admin_path):
+        return False
+    if os.path.isfile(bot_path):
+        return False
+    try:
+        import shutil
+
+        shutil.copy2(admin_path, bot_path)
+        logger.info("Bootstrapped admin_bot Telethon session from %s -> %s", admin_path, bot_path)
+        return True
+    except Exception:
+        logger.exception("Failed to bootstrap admin_bot session from admin.session")
+        return False
+
+
 def _session_paths_equal(a_stem: str, b_stem: str) -> bool:
     return os.path.normcase(os.path.normpath(a_stem + ".session")) == os.path.normcase(
         os.path.normpath(b_stem + ".session")
@@ -90,16 +131,131 @@ def sqlite_busy_timeout_ms() -> int:
         return 120_000
 
 
+def _apply_sqlite_session_pragmas(conn) -> None:
+    ms = sqlite_busy_timeout_ms()
+    conn.execute(f"PRAGMA busy_timeout={ms}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+
+def _installed_telethon_session_version() -> int | None:
+    try:
+        from telethon.sessions.sqlite import CURRENT_VERSION
+
+        return int(CURRENT_VERSION)
+    except Exception:
+        return None
+
+
+def repair_session_schema_for_installed_telethon(stem: str) -> None:
+    """
+    Telethon 1.42 reads session schema v7 (5 columns). Newer builds use v8 (+ tmp_auth_key).
+    If the on-disk session was upgraded but the installed library is older, Telethon raises
+    ``too many values to unpack (expected 5, got 6)`` on connect — breaking loot pulls and imports.
+    When tmp_auth_key is empty we can safely drop that column and rewind the version marker.
+    """
+    path = stem + ".session"
+    if not os.path.isfile(path):
+        return
+    telethon_version = _installed_telethon_session_version()
+    if telethon_version is None:
+        return
+    try:
+        import sqlite3
+
+        timeout_s = sqlite_busy_timeout_ms() / 1000.0
+        conn = sqlite3.connect(path, timeout=timeout_s)
+        try:
+            c = conn.cursor()
+            c.execute("select name from sqlite_master where type='table' and name='version'")
+            if not c.fetchone():
+                return
+            c.execute("select version from version")
+            row = c.fetchone()
+            if not row:
+                return
+            file_version = int(row[0])
+            if file_version <= telethon_version:
+                return
+            c.execute("pragma table_info(sessions)")
+            cols = [r[1] for r in c.fetchall()]
+            if "tmp_auth_key" not in cols:
+                logger.error(
+                    "Telegram session %s is schema v%s but installed Telethon supports v%s — upgrade telethon",
+                    path,
+                    file_version,
+                    telethon_version,
+                )
+                return
+            c.execute("select tmp_auth_key from sessions")
+            if any(r[0] for r in c.fetchall()):
+                logger.error(
+                    "Telegram session %s is schema v%s with non-empty tmp_auth_key — upgrade telethon or re-login",
+                    path,
+                    file_version,
+                )
+                return
+            logger.warning(
+                "Repairing %s: downgrading session schema v%s -> v%s (empty tmp_auth_key)",
+                path,
+                file_version,
+                telethon_version,
+            )
+            c.execute(
+                """
+                CREATE TABLE sessions_new (
+                    dc_id integer primary key,
+                    server_address text,
+                    port integer,
+                    auth_key blob,
+                    takeout_id integer
+                )
+                """
+            )
+            c.execute(
+                """
+                INSERT INTO sessions_new (dc_id, server_address, port, auth_key, takeout_id)
+                SELECT dc_id, server_address, port, auth_key, takeout_id FROM sessions
+                """
+            )
+            c.execute("DROP TABLE sessions")
+            c.execute("ALTER TABLE sessions_new RENAME TO sessions")
+            c.execute("delete from version")
+            c.execute("insert into version values (?)", (telethon_version,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("session schema repair failed for %s", path)
+
+
+def prepare_session_sqlite_file(stem: str) -> None:
+    """Set WAL + busy_timeout on the session file before Telethon opens it."""
+    path = stem + ".session"
+    if not os.path.isfile(path):
+        return
+    repair_session_schema_for_installed_telethon(stem)
+    try:
+        import sqlite3
+
+        timeout_s = sqlite_busy_timeout_ms() / 1000.0
+        conn = sqlite3.connect(path, timeout=timeout_s)
+        try:
+            _apply_sqlite_session_pragmas(conn)
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug("prepare session sqlite failed for %s", path, exc_info=True)
+
+
 def configure_telethon_sqlite_session(client) -> None:
     """WAL + long busy_timeout on Telethon's SQLite session (reduces 'database is locked')."""
     try:
         conn = getattr(client.session, "_conn", None)
         if conn is None:
             return
-        ms = sqlite_busy_timeout_ms()
-        conn.execute(f"PRAGMA busy_timeout={ms}")
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        _apply_sqlite_session_pragmas(conn)
     except Exception:
         logger.debug("could not configure Telethon session SQLite pragmas", exc_info=True)
 
@@ -131,6 +287,9 @@ def telethon_disconnect_import_after_io() -> bool:
     override_global = _env_truthy("TBCC_TELEGRAM_DISCONNECT_AFTER_IO")
     if override_global is not None:
         return override_global
+    # Windows solo Celery + uvicorn: release import.session SQLite after each op (avoids lock storms).
+    if os.name == "nt":
+        return True
     return import_sessions_share_admin_file()
 
 

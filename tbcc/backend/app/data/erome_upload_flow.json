@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "notes": "Record flow: py scripts/erome_codegen.py — override in erome_upload_flow.local.json",
+  "login_url": "https://www.erome.com/user/login",
+  "upload_url": "https://www.erome.com/",
+  "email_login_url": "https://www.erome.com/user/login",
+  "selectors": {
+    "age_gate_button": "",
+    "upload_nav": "",
+    "file_input": "input[type=\"file\"]",
+    "title_input": "",
+    "description_input": "",
+    "submit_button": ""
+  },
+  "locators": {
+    "age_gate_button": {
+      "method": "get_by_role",
+      "args": ["button"],
+      "name_pattern": "^(Enter|I am 18|Yes|Continue)$"
+    },
+    "upload_nav": {
+      "method": "get_by_role",
+      "args": ["link"],
+      "name_pattern": "^Upload$"
+    },
+    "file_input": "input[type=\"file\"]",
+    "title_input": {
+      "method": "get_by_placeholder",
+      "args": ["Title"]
+    },
+    "tags_input": {
+      "method": "get_by_placeholder",
+      "args": ["Tags"]
+    },
+    "submit_button": {
+      "method": "get_by_role",
+      "args": ["button"],
+      "name_pattern": "^(Publish|Upload|Post|Save)$"
+    }
+  },
+  "wait_after_submit_ms": 8000,
+  "upload_complete_timeout_ms": 300000,
+  "album_title_default": "AOF Pack",
+  "allowed_extensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".mp4",
+    ".mov",
+    ".webm",
+    ".avi",
+    ".mkv"
+  ]
+}

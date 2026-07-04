@@ -39,6 +39,8 @@ function RuntimeCard({
     },
   });
   const status = rtQ.data?.status ?? info.status ?? "unknown";
+  const adapter = rtQ.data?.adapter ?? info.adapter ?? "local";
+  const commandMode = adapter === "command";
   const running = status === "running";
 
   return (
@@ -63,17 +65,34 @@ function RuntimeCard({
         </span>
       </div>
       <div className="flex flex-wrap gap-2 mb-2">
-        {(["start", "stop", "restart", "reload"] as const).map((act) => (
-          <button
-            key={act}
-            type="button"
-            disabled={control.isPending}
-            onClick={() => control.mutate(act)}
-            className="px-2.5 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 capitalize"
-          >
-            {act}
-          </button>
-        ))}
+        {commandMode ? (
+          <>
+            <p className="text-xs text-amber-200/90 w-full mb-1">
+              Managed by <strong>TBCC Supervisor</strong> tray — use Services menu (right-click tray icon). Dashboard
+              restart delegates to the same supervisor.
+            </p>
+            <button
+              type="button"
+              disabled={control.isPending}
+              onClick={() => control.mutate("restart")}
+              className="px-2.5 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+            >
+              Restart via tray
+            </button>
+          </>
+        ) : (
+          (["start", "stop", "restart", "reload"] as const).map((act) => (
+            <button
+              key={act}
+              type="button"
+              disabled={control.isPending}
+              onClick={() => control.mutate(act)}
+              className="px-2.5 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 capitalize"
+            >
+              {act}
+            </button>
+          ))
+        )}
         {settingsLink ? (
           <Link
             to={settingsLink}
@@ -101,6 +120,17 @@ export function AutomationBotsPanel() {
 
   return (
     <div className="space-y-8 max-w-5xl">
+      {data?.stack?.available ? (
+        <section className="rounded-lg border border-cyan-900/50 bg-cyan-950/20 px-4 py-3">
+          <p className="text-sm text-cyan-100">
+            <strong>Tray stack:</strong> {data.stack.enabled_up ?? "—"}/{data.stack.enabled ?? "—"} services running
+            {data.stack.profile ? ` (${data.stack.profile})` : ""}
+          </p>
+          <p className="text-xs text-slate-400 mt-1">
+            Same count as TBCC Supervisor tooltip. API: <code className="text-slate-300">GET /ops/stack-status</code>
+          </p>
+        </section>
+      ) : null}
       <section>
         <h2 className="text-lg font-semibold text-slate-100 mb-1">Publish scheduler</h2>
         <p className="text-sm text-slate-400 mb-3">

@@ -105,8 +105,8 @@ function Get-TbccStackProfile {
   param([Parameter(Mandatory = $true)][string]$TbccRoot)
   $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
   $raw = ($dotEnv['TBCC_STACK_PROFILE'] -as [string]).Trim().ToLower()
-  if ($raw -eq 'lean') { return 'lean' }
-  return 'full'
+  if ($raw -eq 'full') { return 'full' }
+  return 'lean'
 }
 
 function Set-TbccStackProfile {
@@ -124,19 +124,17 @@ function Set-TbccStackProfile {
   foreach ($line in $lines) {
     if ($line -match '^\s*#?\s*TBCC_STACK_PROFILE\s*=') {
       $found = $true
-      if ($Profile -eq 'lean') {
-        [void]$out.Add('TBCC_STACK_PROFILE=lean')
-      }
+      [void]$out.Add('TBCC_STACK_PROFILE=' + $Profile)
       continue
     }
     [void]$out.Add($line)
   }
-  if (-not $found -and $Profile -eq 'lean') {
+  if (-not $found) {
     [void]$out.Add('')
-    [void]$out.Add('# Stack profile (tray: Stack profile menu)')
-    [void]$out.Add('TBCC_STACK_PROFILE=lean')
+    [void]$out.Add('# Stack profile: lean (default) | full (Advanced tray start)')
+    [void]$out.Add('TBCC_STACK_PROFILE=' + $Profile)
   }
-  if ($lines.Count -gt 0 -or $Profile -eq 'lean') {
+  if ($lines.Count -gt 0 -or -not $found) {
     Set-Content -LiteralPath $envPath -Value ($out.ToArray()) -Encoding UTF8
   }
   return $Profile
@@ -489,7 +487,9 @@ function Stop-TbccProcessesByServiceTitle {
   return @($killed | Select-Object -Unique)
 }
 
-$script:TbccMenuDefaultOffServiceIds = @('llm_chat', 'watch', 'forum', 'album_composer', 'macro_search')
+$script:TbccMandatoryServiceIds = @('album_composer')
+$script:TbccLeanDefaultOffServiceIds = @('llm_chat', 'watch', 'forum', 'macro_search', 'admin', 'companion')
+$script:TbccFullDefaultOffServiceIds = @('llm_chat', 'watch', 'forum')
 
 function Get-TbccOpenClawGatewayPort {
   param($DotEnv = $null)
@@ -639,16 +639,18 @@ function Get-TbccStackServices {
         Id = "secretary"; Title = "TBCC-SecretaryBot"; Port = 0; CommandMatch = "bots\.secretary_bot";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.secretary_bot')
       })
-    [void]$list.Add([pscustomobject]@{
-        Id = "companion"; Title = "TBCC-CompanionBot"; MenuLabel = "TBCC-CompanionBot (spicy)";
-        Port = 0; CommandMatch = "bots\.companion_bot";
-        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.companion_bot')
-      })
-    [void]$list.Add([pscustomobject]@{
-        Id = "admin"; Title = "TBCC-AdminBot"; MenuLabel = "TBCC-AdminBot (Storage /erome)";
-        Port = 0; CommandMatch = "bots\.admin_bot";
-        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.admin_bot')
-      })
+    if (-not $leanStack -or $MenuCatalog) {
+      [void]$list.Add([pscustomobject]@{
+          Id = "companion"; Title = "TBCC-CompanionBot"; MenuLabel = "TBCC-CompanionBot (spicy)";
+          Port = 0; CommandMatch = "bots\.companion_bot";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.companion_bot')
+        })
+      [void]$list.Add([pscustomobject]@{
+          Id = "admin"; Title = "TBCC-AdminBot"; MenuLabel = "TBCC-AdminBot (Storage /erome)";
+          Port = 0; CommandMatch = "bots\.admin_bot";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.admin_bot')
+        })
+    }
     if (-not $leanStack -or $MenuCatalog) {
       [void]$list.Add([pscustomobject]@{
           Id = "macro_search"; Title = "TBCC-MacroSearchBot"; Port = 0; CommandMatch = "bots\.macro_search_bot";
@@ -659,13 +661,11 @@ function Get-TbccStackServices {
         Id = "loot"; Title = "TBCC-LootBot"; Port = 0; CommandMatch = "bots\.loot_bot";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.loot_bot')
       })
-    if (-not $leanStack -or $MenuCatalog) {
-      [void]$list.Add([pscustomobject]@{
-          Id = "album_composer"; Title = "TBCC-AlbumComposer"; MenuLabel = "TBCC-AlbumComposer (remixer)";
-          Port = 0; CommandMatch = "bots\.album_composer_bot";
-          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.album_composer_bot')
-        })
-    }
+    [void]$list.Add([pscustomobject]@{
+        Id = "album_composer"; Title = "TBCC-AlbumComposer"; MenuLabel = "TBCC-AlbumComposer (remixer)";
+        Port = 0; CommandMatch = "bots\.album_composer_bot";
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.album_composer_bot')
+      })
     if ((Test-TbccOpenClawAutoStartEnabled -DotEnv $dotEnv) -and (Test-TbccOpenClawCliInstalled)) {
       $ocPort = Get-TbccOpenClawGatewayPort -DotEnv $dotEnv
       $runOc = Join-Path $TbccRoot "scripts\run-openclaw-gateway.ps1"
@@ -1132,9 +1132,12 @@ function Test-TbccServiceUserEnabled {
     [Parameter(Mandatory = $true)][string]$ServiceId,
     [Parameter(Mandatory = $true)][string]$TbccRoot
   )
+  if ($ServiceId -in $script:TbccMandatoryServiceIds) { return $true }
   $toggles = Read-TbccServiceToggles -TbccRoot $TbccRoot
   if (-not $toggles.ContainsKey($ServiceId)) {
-    if ($ServiceId -in $script:TbccMenuDefaultOffServiceIds) { return $false }
+    $profile = Get-TbccStackProfile -TbccRoot $TbccRoot
+    $defaultOff = if ($profile -eq 'full') { $script:TbccFullDefaultOffServiceIds } else { $script:TbccLeanDefaultOffServiceIds }
+    if ($ServiceId -in $defaultOff) { return $false }
     return $true
   }
   return [bool]$toggles[$ServiceId]
@@ -2689,8 +2692,21 @@ function Invoke-TbccColdStart {
   Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
 }
 
+function Invoke-TbccStackLaunch {
+  <#
+  Default TBCC cold start (16GB-friendly): API, dashboard, Celery, core bots, mandatory Album Composer.
+  Skips forum, macro search, admin/companion, enrichment sidecars unless enabled in tray Services.
+  #>
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$NoOpenBrowser
+  )
+  Set-TbccStackProfile -TbccRoot $TbccRoot -Profile lean | Out-Null
+  Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
+}
+
 function Invoke-TbccFullStackLaunch {
-  <# Set full profile (remove lean) then cold-start all default services. #>
+  <# Advanced: full profile — optional bots + enrichment sidecars when installed. #>
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$NoOpenBrowser
@@ -2704,19 +2720,15 @@ function Invoke-TbccColdStartFromTray {
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$NoOpenBrowser
   )
-  Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
+  Invoke-TbccStackLaunch -TbccRoot $TbccRoot -NoOpenBrowser:$NoOpenBrowser
 }
 
 function Invoke-TbccLeanStackLaunch {
-  <#
-  One-shot lean profile + cold start (MacroSearch/AlbumComposer + enrichment sidecars skipped; Secretary included).
-  #>
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$NoOpenBrowser
   )
-  Set-TbccStackProfile -TbccRoot $TbccRoot -Profile lean | Out-Null
-  Invoke-TbccOrchestrateInWt -TbccRoot $TbccRoot -Action ColdStart -NoOpen:$NoOpenBrowser
+  Invoke-TbccStackLaunch -TbccRoot $TbccRoot -NoOpenBrowser:$NoOpenBrowser
 }
 
 function Invoke-TbccRestartStack {

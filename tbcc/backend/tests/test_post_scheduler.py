@@ -80,6 +80,37 @@ def test_pool_autopost_skipped_when_any_scheduler_overdue():
                     delay.delay.assert_not_called()
 
 
+def test_ensure_scheduled_drain_spawns_when_stale_tick():
+    from app.services.post_scheduler import ensure_scheduled_drain_running
+
+    with patch("app.services.post_scheduler.scheduler_queue_length", return_value=0):
+        with patch("app.services.post_scheduler.release_post_drain_tick_lock") as release:
+            with patch("app.services.post_scheduler._post_drain_tick_ttl_s", return_value=600):
+                mock_r = MagicMock()
+                mock_r.llen.return_value = 3
+                mock_r.get.return_value = b"1"
+                mock_r.set.return_value = True
+                with patch("redis.from_url", return_value=mock_r):
+                    with patch(
+                        "app.workers.poster_worker.drain_scheduled_post_queue"
+                    ) as drain:
+                        out = ensure_scheduled_drain_running()
+    release.assert_called_once()
+    drain.delay.assert_called_once()
+    assert out["action"] == "spawn_drain"
+
+
+def test_ensure_scheduled_drain_none_when_empty():
+    with patch("app.services.post_scheduler.scheduler_queue_length", return_value=0):
+        mock_r = MagicMock()
+        mock_r.llen.return_value = 0
+        with patch("redis.from_url", return_value=mock_r):
+            from app.services.post_scheduler import ensure_scheduled_drain_running
+
+            out = ensure_scheduled_drain_running()
+    assert out["action"] == "none"
+
+
 def test_check_and_schedule_commits():
     db = MagicMock()
     db.query.return_value.filter.return_value.all.return_value = []

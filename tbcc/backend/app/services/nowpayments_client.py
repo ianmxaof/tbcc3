@@ -21,8 +21,68 @@ def nowpayments_configured() -> bool:
 
 
 def public_api_base_url() -> str:
-    """HTTPS base for IPN callbacks (no trailing slash)."""
-    return (os.getenv("TBCC_PUBLIC_API_BASE_URL") or os.getenv("TBCC_PROMO_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    """HTTPS base for IPN callbacks (no trailing slash; must not include /webhooks/...)."""
+    u = (os.getenv("TBCC_PUBLIC_API_BASE_URL") or os.getenv("TBCC_PROMO_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    suffix = "/webhooks/nowpayments"
+    if u.lower().endswith(suffix):
+        u = u[: -len(suffix)].rstrip("/")
+        logger.warning(
+            "TBCC_PUBLIC_API_BASE_URL must be the API root only (e.g. https://host.ngrok.app); "
+            "stripped %s suffix",
+            suffix,
+        )
+    return u
+
+
+def get_min_checkout_usd() -> float:
+    try:
+        v = float((os.getenv("TBCC_NOWPAYMENTS_MIN_CHECKOUT_USD") or "0").strip() or "0")
+    except Exception:
+        v = 0.0
+    return max(0.0, v)
+
+
+def plan_nowpayments_usd_quote(
+    *,
+    price_stars: int,
+    nowpayments_price_usd: float | None = None,
+) -> dict[str, float | None]:
+    """Catalog USD (Stars/override) vs amount sent to NOWPayments (after min floor)."""
+    catalog = (
+        float(nowpayments_price_usd)
+        if nowpayments_price_usd is not None and float(nowpayments_price_usd) > 0
+        else stars_to_usd(int(price_stars or 0))
+    )
+    min_usd = get_min_checkout_usd()
+    billed = max(catalog, min_usd) if min_usd > 0 else catalog
+    return {
+        "catalog_usd": round(catalog, 2),
+        "billed_usd": round(billed, 2),
+        "min_checkout_usd": round(min_usd, 2) if min_usd > 0 else None,
+    }
+
+
+def plan_crypto_checkout_eligible(
+    *,
+    price_stars: int,
+    nowpayments_price_usd: float | None = None,
+    bot_section: str | None = None,
+) -> bool:
+    """
+    Loot tiers: Stars-only when fixed-currency deposit would overcharge (legacy).
+    With invoice checkout, loot can use crypto at catalog USD (~$2–6).
+    """
+    section = (bot_section or "main").strip().lower()
+    quote = plan_nowpayments_usd_quote(
+        price_stars=price_stars,
+        nowpayments_price_usd=nowpayments_price_usd,
+    )
+    catalog = float(quote["catalog_usd"] or 0)
+    if catalog <= 0:
+        return False
+    if section == "loot" and not use_invoice_checkout():
+        return False
+    return True
 
 
 def can_use_nowpayments_ipn() -> bool:
@@ -72,6 +132,59 @@ def verify_ipn_signature(
     sorted_str = json.dumps(body, sort_keys=True, separators=(",", ":"))
     expected = hmac.new(secret.encode(), sorted_str.encode(), hashlib.sha512).hexdigest()
     return hmac.compare_digest(expected.lower(), sig)
+
+
+def use_invoice_checkout() -> bool:
+    """Hosted NOWPayments page where buyer picks any supported coin (recommended)."""
+    raw = (os.getenv("TBCC_NOWPAYMENTS_USE_INVOICE") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def create_invoice(
+    *,
+    order_id: str,
+    price_usd: float,
+    order_description: str,
+    ipn_callback_url: str,
+    pay_currency: str | None = None,
+) -> dict[str, Any]:
+    """
+    POST /v1/invoice — buyer chooses crypto on hosted page (pay_currency optional).
+    """
+    key = (os.getenv("TBCC_NOWPAYMENTS_API_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("TBCC_NOWPAYMENTS_API_KEY not set")
+
+    payload: dict[str, Any] = {
+        "price_amount": price_usd,
+        "price_currency": "usd",
+        "ipn_callback_url": ipn_callback_url,
+        "order_id": order_id,
+        "order_description": (order_description or "TBCC order")[:512],
+    }
+    currency = (pay_currency or "").strip()
+    if currency:
+        payload["pay_currency"] = currency
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            r = client.post(
+                f"{NP_API}/invoice",
+                headers={"x-api-key": key, "Content-Type": "application/json"},
+                json=payload,
+            )
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = (e.response.text or "")[:400]
+        except Exception:
+            pass
+        logger.warning("NOWPayments create invoice failed: %s %s", e.response.status_code, detail)
+        msg = f"NOWPayments error {e.response.status_code}"
+        if detail:
+            msg += f": {detail}"
+        raise RuntimeError(msg) from e
 
 
 def create_payment(
@@ -136,6 +249,10 @@ def checkout_url_and_hint(np: dict[str, Any]) -> tuple[str | None, str | None]:
         v = np.get(k)
         if isinstance(v, str) and v.startswith("http"):
             return v, None
+    # Invoice API nests URL under id sometimes
+    iid = np.get("id") or np.get("invoice_id")
+    if iid is not None:
+        return f"https://nowpayments.io/payment/?iid={iid}", None
     addr = np.get("pay_address")
     amt = np.get("pay_amount")
     cur = (np.get("pay_currency") or "").strip() or "crypto"

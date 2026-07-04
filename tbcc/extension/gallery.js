@@ -4401,12 +4401,42 @@ async function getCrawlerCookiesForHosts(adapterHint, primaryUrl, useCookies) {
     .join("; ");
 }
 
+function tbccUrlLooksLikeXProfile(url) {
+  try {
+    const u = new URL(url);
+    const h = u.hostname.toLowerCase();
+    if (!/(^|\.)x\.com$/i.test(h) && !/(^|\.)twitter\.com$/i.test(h)) return false;
+    const parts = u.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (!parts.length || !parts[0]) return false;
+    const reserved = new Set([
+      "home",
+      "explore",
+      "notifications",
+      "messages",
+      "settings",
+      "compose",
+      "search",
+      "jobs",
+      "lists",
+      "i",
+      "intent",
+      "login",
+      "signup",
+    ]);
+    if (reserved.has(parts[0].toLowerCase())) return false;
+    return parts.length === 1 || (parts.length === 2 && parts[1] === "media");
+  } catch (_) {
+    return false;
+  }
+}
+
 function detectCrawlerAdapterHint(url) {
   try {
     const h = new URL(url).hostname.toLowerCase();
     if (h === "erome.com" || h.endsWith(".erome.com")) return "erome";
     if (/^(?:app\.)?bunkr+\.\w+$/.test(h)) return "bunkr";
     if (h === "onlyfans.com" || h.endsWith(".onlyfans.com")) return "onlyfans";
+    if (tbccUrlLooksLikeXProfile(url)) return "x-profile";
   } catch (_) {}
   return "auto";
 }
@@ -4642,6 +4672,83 @@ async function deployOnlyFansFromActiveTab(url, adapterHint) {
   );
 }
 
+/**
+ * X / Twitter profile harvest — uses GraphQL in the active tab (must be logged in).
+ * Also injectable on demand for tabs opened before the extension loaded.
+ */
+async function deployXProfileFromActiveTab(url) {
+  let tid = await resolveTargetTabId();
+  let tabUrl = "";
+  if (tid != null) {
+    try {
+      const t = await chrome.tabs.get(tid);
+      tabUrl = (t && t.url) || "";
+    } catch (_) {}
+  }
+  const onProfile = tbccUrlLooksLikeXProfile(tabUrl || url);
+  if (!onProfile) {
+    setCrawlerStatus("Open X profile tab", "error");
+    showToast(
+      "X profile crawl needs an open profile URL (e.g. x.com/username or /username/media). Open it in the active tab, then Crawl again.",
+      "info"
+    );
+    return;
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      files: ["x-profile-harvest.js", "x-profile-overlay.js"],
+    });
+  } catch (e) {
+    throw new Error(
+      "Could not inject X profile harvest into tab: " + (e && e.message ? e.message : e)
+    );
+  }
+
+  setCrawlerStatus("Harvesting X profile…", "info");
+  showToast("Fetching profile media via X GraphQL. Stay on this tab until it finishes.", "info");
+
+  let settings = { maxItems: 120, includeVideo: true, chapterId: 1 };
+  try {
+    const stored = await chrome.storage.local.get("tbccXProfileGallerySettings");
+    if (stored && stored.tbccXProfileGallerySettings) {
+      settings = { ...settings, ...stored.tbccXProfileGallerySettings };
+    }
+  } catch (_) {}
+
+  let result;
+  try {
+    result = await chrome.tabs.sendMessage(tid, {
+      action: "tbcc-x-profile-harvest-run",
+      options: settings,
+    });
+  } catch (e) {
+    throw new Error(
+      "X profile harvest failed: " + (e && e.message ? e.message : e) + ". Reload the profile tab and try again."
+    );
+  }
+
+  if (!result || result.ok === false) {
+    throw new Error((result && result.error) || "X profile harvest returned no data");
+  }
+
+  const list = Array.isArray(result.list) ? result.list : [];
+  if (!list.length) {
+    throw new Error("No media found on this X profile (try /media tab or scroll the profile header into view).");
+  }
+
+  const added = await mergeCrawlerItemsIntoGallery(list, result.summary?.sourceUrl || url, "x-profile");
+  const capNote = result.truncated ? ` (capped at ${settings.maxItems || 120})` : "";
+  const elapsed =
+    result.summary && result.summary.elapsedMs ? Math.round(result.summary.elapsedMs / 1000) + "s" : "";
+  setCrawlerStatus("+" + added.length + " via x-profile", "success");
+  showToast(
+    `X profile harvest added ${added.length} item(s)${capNote}${elapsed ? " in " + elapsed : ""}. Use ZIP or Download next.`,
+    "success"
+  );
+}
+
 async function mergeCrawlerItemsIntoGallery(items, sourceUrl, adapterUsed) {
   const have = new Set(imageList.map((i) => i && i.url).filter(Boolean));
   const added = [];
@@ -4737,6 +4844,16 @@ async function crawlActiveTab() {
     if (adapterHint === "onlyfans") {
       try {
         await deployOnlyFansFromActiveTab(url, adapterHint);
+      } finally {
+        btnCrawlTab.disabled = false;
+      }
+      return;
+    }
+
+    /** X / Twitter profile: GraphQL harvest in the active tab (logged-in session). */
+    if (adapterHint === "x-profile") {
+      try {
+        await deployXProfileFromActiveTab(url);
       } finally {
         btnCrawlTab.disabled = false;
       }
@@ -5454,6 +5571,28 @@ function onGalleryContextMenuAction(key) {
         }
         if (r && r.ok) showToast("Saved tab URL to master archive.", "success");
         else showToast((r && r.error) || "Could not save tab URL.", "error");
+      });
+      return;
+    }
+    case "archiveUrlsPage": {
+      void chrome.runtime.sendMessage({ action: "tbcc-gallery-archive-urls-from-page" }, (r) => {
+        if (chrome.runtime.lastError) {
+          showToast(chrome.runtime.lastError.message || "Could not archive.", "error");
+          return;
+        }
+        if (r && r.ok) showToast(`Archived ${r.added || r.count || 0} URL(s) from page.`, "success");
+        else showToast((r && r.error) || "No URLs archived.", "error");
+      });
+      return;
+    }
+    case "archiveUrlsClipboard": {
+      void chrome.runtime.sendMessage({ action: "tbcc-gallery-archive-urls-from-clipboard" }, (r) => {
+        if (chrome.runtime.lastError) {
+          showToast(chrome.runtime.lastError.message || "Could not archive.", "error");
+          return;
+        }
+        if (r && r.ok) showToast(`Archived ${r.added || r.count || 0} URL(s) from clipboard.`, "success");
+        else showToast((r && r.error) || "Clipboard has no URLs.", "error");
       });
       return;
     }
@@ -6513,6 +6652,45 @@ chrome.runtime.onMessage.addListener((msg) => {
     try {
       window.close();
     } catch (_) {}
+    return;
+  }
+  if (msg && msg.action === "tbcc-gallery-merge-harvest" && Array.isArray(msg.items)) {
+    const sig =
+      String(msg.sourceUrl || "") +
+      "|" +
+      msg.items.length +
+      "|" +
+      (msg.adapter || "") +
+      "|" +
+      (msg.autoZip ? "zip" : "");
+    const now = Date.now();
+    if (
+      window.__tbccLastMergeHarvestSig === sig &&
+      now - (window.__tbccLastMergeHarvestAt || 0) < 5000
+    ) {
+      return;
+    }
+    window.__tbccLastMergeHarvestSig = sig;
+    window.__tbccLastMergeHarvestAt = now;
+    void (async () => {
+      const added = await mergeCrawlerItemsIntoGallery(
+        msg.items,
+        msg.sourceUrl || "",
+        msg.adapter || "harvest"
+      );
+      if (msg.selectAll !== false) {
+        for (const row of added) {
+          if (row && row.url) selectedUrls.add(row.url);
+        }
+        await persistSelection();
+        renderGrid();
+      }
+      if (msg.autoZip && added.length) {
+        await downloadSelectedAsZip();
+      } else if (added.length) {
+        showToast("Added " + added.length + " harvested item(s) to gallery.", "success");
+      }
+    })();
     return;
   }
   if (msg && msg.type === "tbcc-progress") {

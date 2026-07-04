@@ -3,6 +3,8 @@ import { api } from "../api";
 import { useState } from "react";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
 import { CronScheduleBuilder } from "../components/CronScheduleBuilder";
+import { LinkScrapeDeploy } from "../components/LinkScrapeDeploy";
+import { ChannelIntel } from "../components/ChannelIntel";
 import { ScraperTelegramAuth } from "../components/ScraperTelegramAuth";
 import { SourceEditorModal, type SourceRow } from "../components/SourceEditorModal";
 import { buildCronFromState, defaultScheduleState, describeCron } from "../utils/cronSchedule";
@@ -128,8 +130,12 @@ export function Sources({ embedded = false }: { embedded?: boolean }) {
         <ScraperTelegramAuth />
       </div>
 
+      <LinkScrapeDeploy />
+
+      <ChannelIntel />
+
       <div className="bg-slate-800 rounded-lg p-4 mb-6 max-w-2xl">
-        <h2 className="text-lg font-medium mb-1">Add source</h2>
+        <h2 className="text-lg font-medium mb-1">Add media source</h2>
         <p className="text-slate-500 text-xs mb-3">
           Each new channel is a new row (same Telegram login). Stagger schedules (e.g. 06:00, 06:15, 06:30 UTC) for a
           daily chain.

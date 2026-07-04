@@ -64,7 +64,12 @@ async def validate_pre_checkout(
 
     kind, plan_id, user_id = parsed
     buyer = getattr(query, "from_user", None)
-    if not buyer or buyer.id != user_id:
+    if not buyer:
+        return False, _truncate("Could not verify your account.")
+    # createInvoiceLink / shareable checkout uses user_id=0; bind payer at pre_checkout.
+    if user_id == 0:
+        user_id = int(buyer.id)
+    elif buyer.id != user_id:
         return False, _truncate("This payment is tied to another account.")
 
     currency = (getattr(query, "currency", None) or "").upper()

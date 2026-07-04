@@ -47,9 +47,15 @@ Secretary bot = human approval UI. OpenClaw bot = your operator channel (separat
 
 ## Cron suggestion (OpenClaw)
 
-Every 15–30 min while PC is on:
+Every 20 min — ops pulse (`tbcc-ops-check`):
 
-> Run tbcc_health. If OK, tbcc_flywheel_tick(ops_limit=1). If flywheel_approval_bundle has pending, message user with top item only — do not spam. If growth markdown changed, include one-line summary.
+> Run tbcc_health. If OK, tbcc_flywheel_tick(ops_limit=1). If flywheel_approval_bundle has pending, message user with top item only — do not spam.
+
+Every 30 min — growth report (`tbcc-growth-report`, skill `tbcc-growth-signals`):
+
+> analytics_content_performance(run_tick=true). Deliver full markdown + 2-sentence executive summary. Never auto-post.
+
+Install: `tbcc\scripts\setup-openclaw-growth-cron.ps1`
 
 ## Do not confuse
 

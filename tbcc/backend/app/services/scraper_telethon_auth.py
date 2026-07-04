@@ -15,6 +15,8 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 
+from app.utils.telethon_session import normalize_session_stem
+
 logger = logging.getLogger(__name__)
 
 _PENDING_TTL_SEC = 600
@@ -29,7 +31,14 @@ def _backend_root() -> Path:
 
 
 def scraper_session_stem() -> str:
-    return str(_backend_root() / "scraper")
+    """Scraper Telethon session path (TBCC_SCRAPER_TELEGRAM_SESSION or backend/scraper)."""
+    raw = (os.getenv("TBCC_SCRAPER_TELEGRAM_SESSION") or "scraper").strip() or "scraper"
+    p = Path(raw)
+    if p.is_absolute():
+        return normalize_session_stem(str(p))
+    if "/" in raw or "\\" in raw:
+        return normalize_session_stem(str((_backend_root() / raw).resolve()))
+    return str(_backend_root() / raw)
 
 
 def _api_creds() -> tuple[int, str]:

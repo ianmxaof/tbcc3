@@ -57,6 +57,88 @@ def derive_username_template_from_search_url(raw_url: str, sample_username: str)
     return None
 
 
+def _host_from_url(url: str) -> str:
+    try:
+        return (urlparse(str(url or "")).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _url_matches_host(url: str, *hosts: str) -> bool:
+    host = _host_from_url(url)
+    if not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in hosts if h)
+
+
+# Host-specific probe rules ported from ARNA userscript (reduces false +/- on cam archives).
+_SITE_PROBE_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "hosts": ("livecamrips.to",),
+        "deny_contains": ("no records found", "no models found", "no results", "0 models found"),
+        "require_any": ('class="video"', "model-card"),
+    },
+    {
+        "hosts": ("cumcams.cc",),
+        "deny_regex": (r"<h1[^>]*>\s*404\s*</h1>", r"performer\s+not\s+found"),
+        "require_any": ("profile-info", 'class="performer"'),
+    },
+    {
+        "hosts": ("allmy.cam",),
+        "require_any": ('class="video-card"',),
+    },
+    {
+        "hosts": ("showcamrips.com",),
+        "deny_contains": ("data:image/png;base64",),
+    },
+    {
+        "hosts": ("camshowrecordings.com",),
+        "require_any": ('class="h1modelpage"',),
+    },
+    {
+        "hosts": ("livecamsrip.com",),
+        "deny_contains": ("no records found",),
+    },
+    {
+        "hosts": ("camwhores.tv", "camwhoresbay.com"),
+        "deny_regex": (
+            r"there\s+is\s+no\s+data\s+in\s+this\s+list",
+            r"no\s+videos?\s+found",
+            r"\b0\s+videos\b",
+        ),
+    },
+)
+
+
+def _extract_title_lower(html: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", html, re.I | re.S)
+    if not m:
+        return ""
+    return re.sub(r"\s+", " ", m.group(1)).strip().lower()
+
+
+def apply_site_probe_rules(html: str, final_url: str = "") -> dict[str, Any] | None:
+    """Return deny/confirm override for known archive hosts, or None to continue generic analysis."""
+    if not html:
+        return None
+    lower = html.lower()
+    for rule in _SITE_PROBE_RULES:
+        if not _url_matches_host(final_url, *rule.get("hosts", ())):
+            continue
+        for needle in rule.get("deny_contains", ()):
+            if str(needle).lower() in lower:
+                return {"action": "deny", "signal": "site_deny", "reason": "none"}
+        for pattern in rule.get("deny_regex", ()):
+            if re.search(str(pattern), html, re.I):
+                return {"action": "deny", "signal": "site_deny", "reason": "none"}
+        required = rule.get("require_any", ())
+        if required:
+            if not any(str(marker).lower() in lower for marker in required):
+                return {"action": "deny", "signal": "site_require", "reason": "none"}
+            return {"action": "confirm", "count": 1, "signal": "site_markers", "reason": "ok"}
+    return None
+
+
 def guess_result_count_from_html(html: str) -> int | None:
     if not html or not isinstance(html, str):
         return None
@@ -93,6 +175,28 @@ def analyze_model_search_html(html: str, final_url: str = "", *, username: str =
     if blocked:
         return {"has_results": False, "count": 0, "reason": "blocked", "confidence": "none", "signal": "blocked"}
 
+    site_rule = apply_site_probe_rules(html, final_url)
+    if site_rule and site_rule.get("action") == "deny":
+        return {
+            "has_results": False,
+            "count": 0,
+            "reason": site_rule.get("reason") or "none",
+            "confidence": "none",
+            "signal": site_rule.get("signal") or "site_deny",
+            "final_url": final_url or "",
+        }
+
+    title_lc = _extract_title_lower(html)
+    if title_lc and any(term in title_lc for term in ("not found", "404", "error")):
+        return {
+            "has_results": False,
+            "count": 0,
+            "reason": "none",
+            "confidence": "none",
+            "signal": "title_not_found",
+            "final_url": final_url or "",
+        }
+
     stripped = html.strip()
     if stripped.startswith("[") or stripped.startswith("{"):
         try:
@@ -126,8 +230,9 @@ def analyze_model_search_html(html: str, final_url: str = "", *, username: str =
 
     explicit_empty = bool(
         re.search(
-            r"\bno\s+results\b|\b0\s+results\b|nothing\s+found|no\s+matches|not\s+found|"
-            r"keine\s+ergebnisse|aucun\s+résultat",
+            r"\bno\s+results?\b|\b0\s+results?\b|nothing\s+found|no\s+matches|not\s+found|"
+            r"no\s+videos?\s+found|\b0\s+videos\b|does\s+not\s+exist|no\s+records\s+found|"
+            r"there\s+is\s+no\s+data\s+in\s+this\s+list|keine\s+ergebnisse|aucun\s+résultat",
             lower,
             re.I,
         )
@@ -174,16 +279,21 @@ def analyze_model_search_html(html: str, final_url: str = "", *, username: str =
             "final_url": final_url or "",
         }
 
-    has_results = count is not None and count > 0
-    if has_results and user_lc and user_lc not in lower:
-        # Count signals without the searched handle in static HTML are usually template noise.
-        has_results = False
-        count = 0
-        signal = "no_username_in_html"
+    if site_rule and site_rule.get("action") == "confirm":
+        count = max(int(site_rule.get("count") or 1), int(count or 0))
+        signal = str(site_rule.get("signal") or "site_markers")
+        has_results = True
+    else:
+        has_results = count is not None and count > 0
+        if has_results and user_lc and user_lc not in lower:
+            # Count signals without the searched handle in static HTML are usually template noise.
+            has_results = False
+            count = 0
+            signal = "no_username_in_html"
 
     confidence = "none"
     if has_results:
-        if signal in ("json", "json_total") or (count or 0) >= 2:
+        if signal in ("json", "json_total", "site_markers") or (count or 0) >= 2:
             confidence = "high"
         else:
             confidence = "medium"

@@ -9,6 +9,7 @@ import type { ListeningRelaySettings, RelaySlotExtra } from "../api";
 import { EmojiPackWayfinding } from "../components/EmojiPackWayfinding";
 import { CustomEmojiTools } from "./CustomEmojiTools";
 import { EmojiFactoryPanel } from "./EmojiFactoryPanel";
+import { EmojiFactoryRowDividers } from "../components/EmojiFactoryRowDividers";
 import { SilentTelegramSendOption } from "../components/SilentTelegramSendOption";
 import { EMPTY_RELAY_SLOT_EXTRA, normalizeRelaySlotExtra } from "../components/RelayCopySlotExtras";
 import { RelayTemplateSlotsEditor } from "../components/RelayTemplateSlotsEditor";
@@ -312,6 +313,396 @@ function GallerySendPromoSection() {
   );
 }
 
+function K2SLibrarySection() {
+  const qc = useQueryClient();
+  const statusQ = useQuery({ queryKey: ["k2sStatus"], queryFn: () => api.k2s.status(), retry: false });
+  const [lane, setLane] = useState("packs");
+  const [checkUrl, setCheckUrl] = useState("");
+  const [mirrorModId, setMirrorModId] = useState("");
+  const libraryQ = useQuery({
+    queryKey: ["k2sLibrary", lane],
+    queryFn: () => api.k2s.library(lane),
+    enabled: statusQ.data?.configured === true,
+    retry: false,
+  });
+  const ensureFolders = useMutation({
+    mutationFn: () => api.k2s.ensureFolders(),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["k2sStatus"] });
+      qc.invalidateQueries({ queryKey: ["k2sLibrary"] });
+    },
+  });
+  const check = useMutation({
+    mutationFn: () => api.k2s.checkUrl(checkUrl.trim()),
+  });
+  const mirror = useMutation({
+    mutationFn: () => {
+      const id = parseInt(mirrorModId, 10);
+      if (!id) throw new Error("Enter modifier id");
+      return api.k2s.mirror(id, lane);
+    },
+  });
+  const st = statusQ.data;
+  const lanes = st?.lanes ?? [];
+
+  return (
+    <section
+      id="k2s-library"
+      className="h-full border border-slate-700 rounded-lg p-6 bg-slate-900/40 overflow-visible xl:col-span-2"
+    >
+      <h2 className="text-lg font-medium text-slate-100 mb-1">Keep2Share library</h2>
+      <p className="text-slate-400 text-sm mb-4">
+        Lane folders for <strong className="text-slate-300">main</strong>,{" "}
+        <strong className="text-slate-300">AI</strong>,{" "}
+        <strong className="text-slate-300">taboo</strong>,{" "}
+        <strong className="text-slate-300">voyeur</strong>, packs, and loot. MEGA resolves mirror here;
+        VIP gets direct <code className="text-slate-500">getUrl</code> when mirrored.
+      </p>
+      <div className="flex flex-wrap gap-2 text-xs mb-4">
+        <span className={`px-2 py-0.5 rounded ${st?.enabled ? "bg-emerald-900 text-emerald-200" : "bg-slate-800 text-slate-400"}`}>
+          {st?.enabled ? "enabled" : "disabled"}
+        </span>
+        <span className={`px-2 py-0.5 rounded ${st?.configured ? "bg-emerald-900 text-emerald-200" : "bg-amber-900 text-amber-200"}`}>
+          {st?.configured ? "API configured" : "needs TBCC_K2S_ACCESS_TOKEN"}
+        </span>
+        <span className={`px-2 py-0.5 rounded ${st?.mirror_enabled ? "bg-cyan-900 text-cyan-200" : "bg-slate-800 text-slate-400"}`}>
+          mirror {st?.mirror_enabled ? "on" : "off"}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <select
+          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200"
+          value={lane}
+          onChange={(e) => setLane(e.target.value)}
+        >
+          {lanes.map((l) => (
+            <option key={l.lane} value={l.lane}>
+              {l.folder_name || l.lane}
+              {l.folder_id ? ` (${l.folder_id.slice(0, 8)}…)` : ""}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-sm disabled:opacity-40"
+          disabled={!st?.configured || ensureFolders.isPending}
+          onClick={() => ensureFolders.mutate()}
+        >
+          {ensureFolders.isPending ? "Creating…" : "Ensure lane folders"}
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-sm disabled:opacity-40"
+          disabled={!st?.configured}
+          onClick={() => qc.invalidateQueries({ queryKey: ["k2sLibrary", lane] })}
+        >
+          Refresh library
+        </button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 mb-4">
+        <div className="space-y-2">
+          <label className="text-xs text-slate-400 block">Dead-link check (K2S + file hosts)</label>
+          <div className="flex gap-2">
+            <input
+              type="url"
+              className="flex-1 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200"
+              placeholder="https://k2s.cc/file/…"
+              value={checkUrl}
+              onChange={(e) => setCheckUrl(e.target.value)}
+            />
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded bg-violet-800 text-white text-sm disabled:opacity-40"
+              disabled={!checkUrl.trim() || check.isPending}
+              onClick={() => check.mutate()}
+            >
+              Check
+            </button>
+          </div>
+          {check.data ? (
+            <p className={`text-xs ${check.data.ok ? "text-emerald-400" : "text-rose-400"}`}>
+              {check.data.ok ? "Live" : "Dead"} · {check.data.host_kind || "unknown"}
+              {check.data.reason ? ` · ${check.data.reason}` : ""}
+            </p>
+          ) : null}
+        </div>
+        <div className="space-y-2">
+          <label className="text-xs text-slate-400 block">Manual mirror (loot modifier id)</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              className="w-28 bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200"
+              placeholder="mod id"
+              value={mirrorModId}
+              onChange={(e) => setMirrorModId(e.target.value)}
+            />
+            <button
+              type="button"
+              className="px-3 py-1.5 rounded bg-cyan-800 text-white text-sm disabled:opacity-40"
+              disabled={!mirrorModId.trim() || !st?.mirror_enabled || mirror.isPending}
+              onClick={() => mirror.mutate()}
+            >
+              Mirror to K2S
+            </button>
+          </div>
+          {mirror.data ? (
+            <p className="text-xs text-slate-400 truncate">
+              {String((mirror.data as { ok?: boolean }).ok ? "OK" : "Failed")}{" "}
+              {(mirror.data as { k2s_url?: string }).k2s_url || (mirror.data as { error?: string }).error || ""}
+            </p>
+          ) : null}
+        </div>
+      </div>
+      {libraryQ.isError ? (
+        <p className="text-xs text-amber-400">Library unavailable — configure K2S token and ensure folders.</p>
+      ) : (
+        <div className="max-h-64 overflow-auto border border-slate-800 rounded">
+          <table className="w-full text-xs text-left">
+            <thead className="text-slate-500 sticky top-0 bg-slate-900">
+              <tr>
+                <th className="p-2">Name</th>
+                <th className="p-2">Size</th>
+                <th className="p-2">Link</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(libraryQ.data?.files ?? []).map((f) => (
+                <tr key={f.id} className="border-t border-slate-800">
+                  <td className="p-2 text-slate-200">{f.name || f.id}</td>
+                  <td className="p-2 text-slate-400">{f.size ? `${Math.round(f.size / 1024 / 1024)} MB` : "—"}</td>
+                  <td className="p-2">
+                    {f.public_url ? (
+                      <a href={f.public_url} className="text-cyan-400 hover:underline" target="_blank" rel="noreferrer">
+                        open
+                      </a>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!libraryQ.data?.files?.length && !libraryQ.isLoading ? (
+            <p className="text-xs text-slate-500 p-3">No files in this lane folder yet.</p>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MainChannelDividerSection() {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["mainChannelDivider"], queryFn: () => api.mainChannelDivider.get() });
+  const emojiSrcQ = useQuery({
+    queryKey: ["mainChannelDividerEmojiSources"],
+    queryFn: () => api.mainChannelDivider.listEmojiFactorySources(),
+  });
+  const [enabled, setEnabled] = useState(false);
+  const [rotateImages, setRotateImages] = useState(true);
+  const [applyInTopics, setApplyInTopics] = useState(false);
+  const [dividerFile, setDividerFile] = useState<File | null>(null);
+  const [label, setLabel] = useState("");
+
+  const s = q.data?.settings;
+
+  useEffect(() => {
+    if (!s) return;
+    setEnabled(s.enabled === true);
+    setRotateImages(s.rotate_images !== false);
+    setApplyInTopics(s.apply_in_topics === true);
+  }, [s]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.mainChannelDivider.patch({
+        enabled,
+        rotate_images: rotateImages,
+        apply_in_topics: applyInTopics,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["mainChannelDivider"] }),
+  });
+
+  const upload = useMutation({
+    mutationFn: () => {
+      if (!dividerFile) throw new Error("Pick an image");
+      return api.mainChannelDivider.uploadImage(dividerFile, label.trim() || undefined);
+    },
+    onSuccess: () => {
+      setDividerFile(null);
+      setLabel("");
+      qc.invalidateQueries({ queryKey: ["mainChannelDivider"] });
+    },
+  });
+
+  const importEmoji = useMutation({
+    mutationFn: (body: { job_id: string; tile: string; label?: string }) =>
+      api.mainChannelDivider.importFromEmojiFactory(body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["mainChannelDivider"] });
+    },
+  });
+
+  const images = s?.images ?? [];
+  const emojiJobs = emojiSrcQ.data?.jobs ?? [];
+
+  return (
+    <section className="h-full border border-violet-800/40 rounded-lg p-6 bg-violet-950/10">
+      <h2 className="text-lg font-medium text-violet-100 mb-1">Main channel post dividers</h2>
+      <p className="text-slate-400 text-sm mb-4">
+        After each post to the <strong className="text-slate-300">AOF Main Group</strong> main chat, TBCC sends a
+        standalone divider image (like the ornamental line in your reference). Telegram shows its own{" "}
+        <strong className="text-slate-300">views + timestamp</strong> on that spacer message between content drops.
+        Upload a transparent PNG of your divider art (horizontal line / flourish), or import a frame from a completed{" "}
+        <strong className="text-slate-300">emoji splitter</strong> job below.
+        <span className="block mt-2 text-slate-500 text-xs">
+          Telegram <strong className="text-slate-400">custom emoji packs</strong> cannot be used as full-width dividers —
+          they are tiny inline caption tiles (~100–512px), not standalone channel images.
+        </span>
+      </p>
+      {q.isError ? (
+        <QueryErrorBanner
+          title="Could not load divider settings"
+          message={String(q.error instanceof Error ? q.error.message : q.error ?? "Unknown")}
+          onRetry={() => void q.refetch()}
+        />
+      ) : null}
+      <label className="flex items-center gap-2 text-sm text-slate-200 mb-2">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        Enable dividers after main-chat posts
+      </label>
+      <label className="flex items-center gap-2 text-sm text-slate-200 mb-2">
+        <input type="checkbox" checked={rotateImages} onChange={(e) => setRotateImages(e.target.checked)} />
+        Rotate divider images (random pick when multiple uploaded)
+      </label>
+      <label className="flex items-center gap-2 text-sm text-slate-200 mb-4">
+        <input type="checkbox" checked={applyInTopics} onChange={(e) => setApplyInTopics(e.target.checked)} />
+        Also send after forum topic posts (off = main chat only)
+      </label>
+      <div className="flex flex-wrap gap-2 mb-3">
+        {images.map((img) => (
+          <div key={img.id} className="relative w-28 h-12 rounded border border-slate-600 overflow-hidden bg-slate-900">
+            <img src={img.url} alt={img.label || ""} className="w-full h-full object-contain" />
+            {img.id === s?.active_image_id ? (
+              <span className="absolute top-0 left-0 text-[9px] bg-violet-600 text-white px-1">active</span>
+            ) : null}
+            <button
+              type="button"
+              className="absolute bottom-0 inset-x-0 text-[9px] bg-black/70 text-slate-200 py-0.5"
+              onClick={() =>
+                api.mainChannelDivider.patch({ active_image_id: img.id }).then(() =>
+                  qc.invalidateQueries({ queryKey: ["mainChannelDivider"] })
+                )
+              }
+            >
+              Use
+            </button>
+          </div>
+        ))}
+        {!images.length ? <p className="text-xs text-slate-500">No divider images yet — upload your line art PNG.</p> : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-sm text-slate-200 w-28"
+          placeholder="Label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+        />
+        <input type="file" accept="image/png,image/webp,image/jpeg" onChange={(e) => setDividerFile(e.target.files?.[0] ?? null)} />
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-slate-700 text-slate-200 text-sm disabled:opacity-40"
+          disabled={!dividerFile || upload.isPending}
+          onClick={() => upload.mutate()}
+        >
+          {upload.isPending ? "Uploading…" : "Add divider"}
+        </button>
+        <button
+          type="button"
+          className="px-3 py-1.5 rounded bg-violet-800 text-white text-sm disabled:opacity-40"
+          disabled={save.isPending}
+          onClick={() => save.mutate()}
+        >
+          Save
+        </button>
+      </div>
+
+      <div className="mt-5 pt-4 border-t border-violet-900/50">
+        <h3 className="text-sm font-medium text-violet-200 mb-2">Import from emoji splitter</h3>
+        <p className="text-xs text-slate-500 mb-3">
+          Completed jobs in <code className="text-slate-400">.tbcc-run/emoji-factory-jobs</code> — import single tiles,
+          or use <strong className="text-slate-400">row strips</strong> (full horizontal crop per grid row) for dividers.
+        </p>
+        {emojiSrcQ.isError ? (
+          <p className="text-xs text-red-400 mb-2">Could not list emoji factory jobs.</p>
+        ) : null}
+        {!emojiJobs.length && !emojiSrcQ.isLoading ? (
+          <p className="text-xs text-slate-500">No completed emoji splitter jobs found.</p>
+        ) : null}
+        {emojiJobs.map((job) => (
+          <details key={job.job_id} className="mb-3 rounded border border-slate-700/80 bg-slate-900/40 p-2">
+            <summary className="cursor-pointer text-xs text-slate-300">
+              Job {job.job_id} · {job.cols}×{job.rows} grid · {job.tile_count} tiles
+              {job.tile_px ? ` · ${job.tile_px}px` : ""}
+            </summary>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {job.has_normalized ? (
+                <button
+                  type="button"
+                  className="text-left rounded border border-slate-600 p-1 hover:border-violet-500"
+                  disabled={importEmoji.isPending}
+                  onClick={() =>
+                    importEmoji.mutate({ job_id: job.job_id, tile: "normalized", label: `master ${job.job_id.slice(0, 8)}` })
+                  }
+                >
+                  <img
+                    src={job.normalized_preview_url}
+                    alt="normalized master"
+                    className="w-24 h-16 object-contain bg-black/40"
+                  />
+                  <span className="block text-[9px] text-slate-400 mt-0.5">full master</span>
+                </button>
+              ) : null}
+              {job.tiles.map((tile) => (
+                <button
+                  key={tile.tile}
+                  type="button"
+                  className="text-left rounded border border-slate-600 p-1 hover:border-violet-500"
+                  disabled={importEmoji.isPending}
+                  onClick={() =>
+                    importEmoji.mutate({
+                      job_id: job.job_id,
+                      tile: tile.tile,
+                      label: `${tile.emoji || ""} ${tile.tile}`.trim(),
+                    })
+                  }
+                >
+                  <img src={tile.preview_url} alt={tile.tile} className="w-14 h-14 object-contain bg-black/40" />
+                  <span className="block text-[9px] text-slate-400 mt-0.5">
+                    {tile.emoji} {tile.row},{tile.col}
+                  </span>
+                </button>
+              ))}
+            </div>
+            {job.row_strips?.length ? (
+              <div className="mt-3">
+                <EmojiFactoryRowDividers
+                  jobId={job.job_id}
+                  rows={job.rows}
+                  rowStrips={job.row_strips}
+                  compact
+                />
+              </div>
+            ) : null}
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 type MiscTab = "tools" | "emoji";
 
 export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
@@ -520,21 +911,56 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
   });
 
   const [promoBulkJson, setPromoBulkJson] = useState("");
+  const [affiliatePreviewPlacement, setAffiliatePreviewPlacement] = useState("telegram_footer");
+  const [affiliateNetworkKey, setAffiliateNetworkKey] = useState("ai");
+  const promoStatsQ = useQuery({
+    queryKey: ["promoAffiliateStats"],
+    queryFn: () => api.promoAffiliateLinks.stats(),
+  });
+  const promoPreviewQ = useQuery({
+    queryKey: ["promoAffiliatePreview", affiliatePreviewPlacement, affiliateNetworkKey],
+    queryFn: () =>
+      api.promoAffiliateLinks.previewRotation({
+        placement: affiliatePreviewPlacement,
+        network_key: affiliateNetworkKey || undefined,
+        count: 5,
+      }),
+  });
+  const promoLinksListQ = useQuery({
+    queryKey: ["promoAffiliateLinks", "misc-panel"],
+    queryFn: () => api.promoAffiliateLinks.list({ sort: "priority_asc", active_only: true }),
+  });
   const promoBulkImport = useMutation({
     mutationFn: (body: {
       items: Array<{
         label: string;
         url: string;
+        short_url?: string | null;
         payout_kind?: string;
         payout_detail?: string | null;
         priority_tier?: number;
         expires_at?: string | null;
         active?: boolean;
+        placements?: string[];
+        network_keys?: string[];
+        copy_template?: string | null;
       }>;
     }) => api.promoAffiliateLinks.bulk(body),
     onSuccess: () => {
       setPromoBulkJson("");
       qc.invalidateQueries({ queryKey: ["promoAffiliateLinks"] });
+      qc.invalidateQueries({ queryKey: ["promoAffiliateStats"] });
+      qc.invalidateQueries({ queryKey: ["promoAffiliatePreview"] });
+    },
+  });
+  const syncAffiliateRotation = useMutation({
+    mutationFn: () => api.growthHub.syncAffiliateRotation(),
+    onSuccess: (r) => {
+      const n = r.affiliate?.active_rows ?? 0;
+      const partners = r.bulletin_has_partners ? "yes" : "no";
+      qc.invalidateQueries({ queryKey: ["growth-hub-status"] });
+      qc.invalidateQueries({ queryKey: ["scheduledPosts"] });
+      window.alert(`Affiliate sync done — ${n} active rows · partners in bulletin: ${partners}`);
     },
   });
 
@@ -1160,6 +1586,8 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
       </section>
 
       <div className="grid gap-6 xl:grid-cols-2 items-start">
+      <K2SLibrarySection />
+      <MainChannelDividerSection />
       <GallerySendPromoSection />
       <ZipBundlePromoSection />
 
@@ -1169,35 +1597,108 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
       >
         <h2 className="text-lg font-medium text-slate-100 mb-1">Promo affiliate links</h2>
         <p className="text-slate-400 text-sm mb-4">
-          Curated tracking URLs for scheduled posts and relay templates. Use the unified <strong className="text-slate-300">Insert…</strong> menu
-          on caption fields, or bulk-import
-          JSON (same shape as{" "}
-          <code className="text-slate-500">{`POST /promo-affiliate-links/bulk`}</code>
-          ). Optional <code className="text-slate-500">short_url</code> per row is used first when you insert from the
-          picker; you can paste it manually or use <code className="text-slate-500">POST …/shorten</code> from the picker
-          when the API has <code className="text-slate-500">TBCC_PROMO_SHORTEN_PROVIDER</code> set (see{" "}
-          <code className="text-slate-500">.env.example</code>) — e.g.{" "}
-          <code className="text-slate-500">isgd</code>,{" "}
-          <code className="text-slate-500">tinyurl</code>, or{" "}
-          <code className="text-slate-500">pixeldrain</code>{" "}
-          (<code className="text-slate-500">TBCC_PIXELDRAIN_API_KEY</code>; uploads the URL as a tiny{" "}
-          <code className="text-slate-500">.txt</code>, viewer link like ShareX).
+          Curated tracking URLs with <strong className="text-slate-300">placements</strong> for auto-rotation:
+          <code className="text-slate-500"> telegram_footer</code>,{" "}
+          <code className="text-slate-500"> x_buffer</code>,{" "}
+          <code className="text-slate-500"> links_hub</code>,{" "}
+          <code className="text-slate-500"> links_hub_ai</code>, or{" "}
+          <code className="text-slate-500"> manual_only</code>. Use the Insert menu on caption fields, bulk-import
+          JSON, then <strong className="text-slate-300">Sync affiliate rotation</strong> to push sponsor footers into
+          network schedulers and the links hub bulletin.
         </p>
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <PromoAffiliateLinksPopover buttonLabel="Open promo picker…" dropUp />
+          <button
+            type="button"
+            className="text-xs px-3 py-1.5 rounded bg-emerald-700 text-white hover:bg-emerald-600 disabled:opacity-50"
+            disabled={syncAffiliateRotation.isPending}
+            onClick={() => syncAffiliateRotation.mutate()}
+          >
+            {syncAffiliateRotation.isPending ? "Syncing…" : "Sync affiliate rotation"}
+          </button>
         </div>
+        {promoStatsQ.data ? (
+          <p className="text-xs text-slate-500 mb-3">
+            Active: {promoStatsQ.data.active_rows} · telegram_footer:{" "}
+            {promoStatsQ.data.by_placement?.telegram_footer ?? 0} · x_buffer:{" "}
+            {promoStatsQ.data.by_placement?.x_buffer ?? 0} · links_hub:{" "}
+            {promoStatsQ.data.by_placement?.links_hub ?? 0} · links_hub_ai:{" "}
+            {promoStatsQ.data.by_placement?.links_hub_ai ?? 0}
+          </p>
+        ) : null}
+        <div className="mb-4 grid gap-2 sm:grid-cols-3">
+          <label className="text-xs text-slate-400">
+            Preview placement
+            <select
+              className="mt-1 block w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100"
+              value={affiliatePreviewPlacement}
+              onChange={(e) => setAffiliatePreviewPlacement(e.target.value)}
+            >
+              <option value="telegram_footer">telegram_footer</option>
+              <option value="x_buffer">x_buffer</option>
+              <option value="links_hub">links_hub</option>
+              <option value="links_hub_ai">links_hub_ai</option>
+              <option value="manual_only">manual_only</option>
+            </select>
+          </label>
+          <label className="text-xs text-slate-400">
+            Network key
+            <input
+              className="mt-1 block w-full bg-slate-800 border border-slate-600 rounded px-2 py-1 text-slate-100"
+              value={affiliateNetworkKey}
+              onChange={(e) => setAffiliateNetworkKey(e.target.value)}
+              placeholder="ai, main, …"
+            />
+          </label>
+          <div className="text-xs text-slate-400">
+            Next picks
+            <ul className="mt-1 max-h-24 overflow-auto rounded border border-slate-700 bg-slate-950/60 p-2 text-slate-300">
+              {(promoPreviewQ.data?.picks ?? []).map((p) => (
+                <li key={p.id} className="truncate">
+                  {p.label}
+                </li>
+              ))}
+              {promoPreviewQ.isSuccess && !(promoPreviewQ.data?.picks?.length) ? (
+                <li className="text-slate-500">No matches</li>
+              ) : null}
+            </ul>
+          </div>
+        </div>
+        {promoLinksListQ.data && promoLinksListQ.data.length > 0 ? (
+          <div className="mb-4 max-h-40 overflow-auto rounded border border-slate-700 text-xs">
+            <table className="w-full text-left">
+              <thead className="sticky top-0 bg-slate-900 text-slate-500">
+                <tr>
+                  <th className="p-2">Label</th>
+                  <th className="p-2">Tier</th>
+                  <th className="p-2">Placements</th>
+                </tr>
+              </thead>
+              <tbody>
+                {promoLinksListQ.data.slice(0, 20).map((row) => (
+                  <tr key={row.id} className="border-t border-slate-800">
+                    <td className="p-2 text-slate-200">{row.label}</td>
+                    <td className="p-2 text-slate-400">{row.priority_tier}</td>
+                    <td className="p-2 text-slate-500">{(row.placements || []).join(", ") || "manual_only"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
         <details className="border border-slate-700 rounded-lg p-4 bg-slate-950/40">
           <summary className="text-sm text-slate-300 cursor-pointer select-none">Bulk import JSON</summary>
           <p className="text-xs text-slate-500 mt-3 mb-2 whitespace-pre-wrap">
             {`{
   "items": [
     {
-      "label": "Brand — offer",
-      "url": "https://…",
-      "short_url": "https://is.gd/abc",
+      "label": "Musebox AI",
+      "url": "https://musebox.ai/?ref=uOg77ImI",
       "payout_kind": "revshare",
-      "payout_detail": "$25",
-      "priority_tier": 1
+      "priority_tier": 4,
+      "placements": ["x_buffer", "telegram_footer", "links_hub_ai"],
+      "network_keys": ["ai", "main"],
+      "copy_template": "🎨 {link} — AI creative playground"
     }
   ]
 }`}
@@ -1224,6 +1725,9 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
                     priority_tier?: number;
                     expires_at?: string | null;
                     active?: boolean;
+                    placements?: string[];
+                    network_keys?: string[];
+                    copy_template?: string | null;
                   }>;
                 };
                 const raw = Array.isArray(parsed.items) ? parsed.items : [];
@@ -1238,6 +1742,9 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
                     priority_tier: it.priority_tier,
                     expires_at: it.expires_at,
                     active: it.active,
+                    placements: Array.isArray(it.placements) ? it.placements.map(String) : undefined,
+                    network_keys: Array.isArray(it.network_keys) ? it.network_keys.map(String) : undefined,
+                    copy_template: typeof it.copy_template === "string" ? it.copy_template : undefined,
                   }))
                   .filter((it) => it.label && it.url);
                 if (!items.length) return;

@@ -916,6 +916,35 @@ export const api = {
         body: JSON.stringify(body),
         timeoutMs: 60_000,
       }),
+    /** Crop / blur + watermark preview (curate lightbox). Returns processed blob. */
+    processBytes: async (
+      file: Blob,
+      opts: {
+        mediaType?: string;
+        crop?: Record<string, unknown>;
+        watermark?: Record<string, unknown>;
+        skipWatermark?: boolean;
+        filename?: string;
+      }
+    ) => {
+      const form = new FormData();
+      form.append("file", file, opts.filename || "media.jpg");
+      form.append("media_type", opts.mediaType || "photo");
+      if (opts.crop) form.append("crop_json", JSON.stringify(opts.crop));
+      if (opts.watermark) form.append("watermark_json", JSON.stringify(opts.watermark));
+      if (opts.skipWatermark) form.append("skip_watermark", "true");
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/import/process-bytes`, { method: "POST", body: form });
+      } catch (e) {
+        throw new Error(e instanceof TypeError ? "Cannot reach backend." : String(e));
+      }
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || res.statusText);
+      }
+      return res.blob();
+    },
   },
   sources: {
     list: () => fetchApi<Array<Record<string, unknown>>>("/sources"),
@@ -1221,6 +1250,16 @@ export const api = {
           last_sync_kind: string | null;
         }>;
       }>("/analytics/income/affiliates"),
+    incomePollStatus: () =>
+      fetchApi<{
+        enabled: boolean;
+        interval_hours: number;
+        last_poll_at: string | null;
+        last_poll_ok: boolean | null;
+        last_results: Array<Record<string, unknown>>;
+        beat_task: string;
+        redis_error?: string;
+      }>("/analytics/income/poll-status"),
     postEvents: (opts?: { limit?: number; offset?: number }) => {
       const p = new URLSearchParams();
       if (opts?.limit != null) p.set("limit", String(opts.limit));

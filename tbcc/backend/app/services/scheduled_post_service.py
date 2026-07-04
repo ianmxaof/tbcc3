@@ -233,6 +233,15 @@ def _load_pool_media_items(
         rows = q.all()
         random.shuffle(rows)
         return rows[:album_size]
+    try:
+        from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
+
+        if rank_picks_enabled():
+            ranked = rank_pool_media(db, effective_pool_id, album_size, randomize=False)
+            if ranked:
+                return ranked
+    except Exception:
+        pass
     return q.order_by(Media.id.asc()).limit(album_size).all()
 
 
@@ -788,8 +797,29 @@ async def send_scheduled_post(
             maybe_queue_post_refill_after_scheduled_send(db, post=post, media_items=media_items)
         except Exception:
             logger.debug("scheduled post-refill skipped", exc_info=True)
+    nk: str | None = None
+    if post.pool_id:
+        from app.services.export_flywheel_service import network_key_for_pool
+
+        nk = network_key_for_pool(db, int(post.pool_id))
+    if not nk and post.channel_id:
+        from app.data.aof_network import AOF_NETWORK_CHANNELS
+        from app.models.channel import Channel
+
+        ch_row = db.query(Channel).filter(Channel.id == int(post.channel_id)).first()
+        ident = (ch_row.identifier or "") if ch_row else ""
+        for nc in AOF_NETWORK_CHANNELS:
+            if nc.identifier == ident:
+                nk = nc.key
+                break
+    mids = [int(m.id) for m in media_items] if media_items else None
     return build_scheduled_send_outcome(
-        post, sent_result, slot_index=slot, pack_modifier_id=pack_modifier_id
+        post,
+        sent_result,
+        slot_index=slot,
+        pack_modifier_id=pack_modifier_id,
+        media_ids=mids,
+        network_key=nk,
     )
 
 

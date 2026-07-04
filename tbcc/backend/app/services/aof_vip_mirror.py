@@ -78,11 +78,19 @@ def _is_gate_url(url: str) -> bool:
     return is_linkvertise_host(u)
 
 
+def vip_gate_live_resolve_enabled() -> bool:
+    """
+    Live bypass.vip / redirect chain during Telegram send.
+    Off by default — resolve_to_file_host can take minutes per caption and holds the poster session lock.
+  """
+    raw = (os.getenv("TBCC_VIP_GATE_LIVE_RESOLVE") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def direct_url_for_gate(db: Session, gate_url: str) -> str | None:
     """Best-effort: map LV/gate button URL → direct file host for VIP subscribers."""
     from app.models.loot import LootModifier
     from app.services.k2s_vip_access import resolve_k2s_vip_download_url
-    from app.services.mega_link_pipeline import resolve_to_file_host
 
     gate = (gate_url or "").strip().split()[0]
     if not gate:
@@ -102,7 +110,9 @@ def direct_url_for_gate(db: Session, gate_url: str) -> str | None:
         for token in _gate_url_re().findall(mod.source_note or ""):
             if not _is_gate_url(token):
                 return token
-    if mod:
+    if mod and vip_gate_live_resolve_enabled():
+        from app.services.mega_link_pipeline import resolve_to_file_host
+
         pipeline = resolve_to_file_host(gate)
         if pipeline.ok and pipeline.destination_url and not _is_gate_url(pipeline.destination_url):
             return pipeline.destination_url

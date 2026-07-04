@@ -10,6 +10,8 @@
 $ErrorActionPreference = "Continue"
 $tbccDir = $PSScriptRoot
 $backendDir = Join-Path $tbccDir "backend"
+$controlScript = Join-Path $tbccDir "scripts\tbcc-service-control.ps1"
+if (Test-Path -LiteralPath $controlScript) { . $controlScript }
 
 $apiOnly = ($args -contains "-ApiOnly") -or ($args -contains "-NoPaymentBot")
 
@@ -75,6 +77,10 @@ function Start-TbccCmdWindow {
 Write-Host "TBCC restart (API + payment bot)" -ForegroundColor Cyan
 Write-Host ""
 
+if (Get-Command Set-TbccBackendRestartGrace -ErrorAction SilentlyContinue) {
+  $null = Set-TbccBackendRestartGrace -TbccRoot $tbccDir
+}
+
 Write-Host "[1] Stopping listener(s) on port 8000..." -ForegroundColor Yellow
 $p8000 = Stop-ListenersOnPort -Port 8000
 if ($p8000.Count -gt 0) {
@@ -118,6 +124,9 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 if ($backendUp) {
   Write-Host "  API is up." -ForegroundColor Green
+  if (Get-Command Clear-TbccBackendRestartGrace -ErrorAction SilentlyContinue) {
+    $null = Clear-TbccBackendRestartGrace -TbccRoot $tbccDir
+  }
 } else {
   Write-Host "  API not responding yet - check the TBCC-Backend window for errors." -ForegroundColor Yellow
 }

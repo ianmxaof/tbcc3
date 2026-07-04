@@ -133,28 +133,23 @@ def followups_from_json(raw: str | None) -> list[RelayCopyFollowup]:
     return [RelayCopyFollowup.from_json_dict(x) for x in arr if isinstance(x, dict)]
 
 
-def _merge_copy_checkout_buttons(followup: RelayCopyFollowup, db: Session) -> list[dict]:
-    base = list(followup.buttons)
-    if not followup.checkout_stars_enabled or not followup.checkout_stars_plan_id:
-        return base
-    bot = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "").strip().lstrip("@")
-    if not bot:
-        return base
-    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(followup.checkout_stars_plan_id)).first()
-    if not plan or plan.is_active is False or int(plan.price_stars or 0) <= 0:
-        return base
-    payload = _checkout_deep_link_payload(int(followup.checkout_stars_plan_id), followup.checkout_referral_code)
-    if not payload:
-        return base
-    url = f"https://t.me/{bot}?start={payload}"
-    label = (followup.checkout_button_label or "").strip()
-    if not label:
-        stars = int(plan.price_stars or 0)
-        name = (plan.name or "Subscribe").strip()[:36]
-        label = f"{name} — {stars}⭐"
-    if len(label) > 64:
-        label = label[:63] + "…"
-    return base + [{"text": label, "url": url}]
+def _merge_copy_checkout_buttons(
+    followup: RelayCopyFollowup,
+    db: Session,
+    *,
+    allow_inline_checkout: bool = True,
+) -> list[dict]:
+    from app.services.aof_vip_checkout import merge_checkout_buttons
+
+    return merge_checkout_buttons(
+        followup.buttons,
+        db,
+        checkout_stars_enabled=followup.checkout_stars_enabled,
+        checkout_stars_plan_id=followup.checkout_stars_plan_id,
+        checkout_button_label=followup.checkout_button_label,
+        checkout_referral_code=followup.checkout_referral_code,
+        allow_inline_checkout=allow_inline_checkout,
+    )
 
 
 class _RelayMediaOrderPost:
@@ -195,15 +190,27 @@ async def send_relay_copy_followups(
     for fu in followups:
         if not (fu.html or "").strip() and not fu.media_ids and not fu.attachment_urls:
             continue
-        merged = _merge_copy_checkout_buttons(fu, db)
-        reply_markup = _build_reply_markup(merged)
         media_items = _load_copy_media(db, fu.media_ids, fu.album_order_mode)
         promo_urls = list(fu.attachment_urls)
         if fu.album_order_mode == "shuffle":
             import random
 
             random.shuffle(promo_urls)
+        album_count = len(media_items) if media_items else len(promo_urls)
+        multi_album = album_count > 1
         caption = (fu.html or "").strip() or " "
+        if fu.checkout_stars_enabled and fu.checkout_stars_plan_id and multi_album:
+            from app.services.aof_vip_checkout import refresh_checkout_caption_for_send
+
+            caption = refresh_checkout_caption_for_send(
+                caption,
+                db,
+                int(fu.checkout_stars_plan_id),
+                multi_album_media=True,
+                referral_code=fu.checkout_referral_code,
+            )
+        merged = _merge_copy_checkout_buttons(fu, db, allow_inline_checkout=not multi_album)
+        reply_markup = _build_reply_markup(merged)
         try:
             sent = await _execute_telegram_scheduled_send(
                 client,
@@ -226,6 +233,23 @@ async def send_relay_copy_followups(
             if sent:
                 msg = sent[0] if isinstance(sent, list) else sent
                 new_id = getattr(msg, "id", None)
+            if fu.checkout_stars_enabled and fu.checkout_stars_plan_id and new_id:
+                from app.services.aof_vip_checkout import deliver_stars_checkout_bot_followup
+                from telethon.utils import get_peer_id
+
+                if isinstance(channel_identifier, str):
+                    ch_ident = normalize_telethon_peer_identifier(channel_identifier)
+                else:
+                    ch_ident = str(get_peer_id(peer))
+                await deliver_stars_checkout_bot_followup(
+                    ch_ident,
+                    db,
+                    plan_id=int(fu.checkout_stars_plan_id),
+                    reply_to_message_id=int(new_id),
+                    message_thread_id=None,
+                    checkout_button_label=fu.checkout_button_label,
+                    checkout_referral_code=fu.checkout_referral_code,
+                )
             if new_id:
                 anchor = new_id
         except Exception:

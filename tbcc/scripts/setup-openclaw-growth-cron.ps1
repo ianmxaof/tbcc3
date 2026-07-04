@@ -156,8 +156,8 @@ if (Test-Path -LiteralPath $ocPath) {
 }
 
 Write-Host "`n=== Next ===" -ForegroundColor Cyan
-Write-Host "1. Lean stack: TBCC_STACK_PROFILE=lean is set - restart via tray Start - lean or:"
-Write-Host "   . tbcc\scripts\tbcc-service-control.ps1; Invoke-TbccLeanStackLaunch -TbccRoot `"$TbccRoot`""
+Write-Host "1. Default stack: tray Start stack or:"
+Write-Host "   . tbcc\scripts\tbcc-service-control.ps1; Invoke-TbccStackLaunch -TbccRoot `"$TbccRoot`""
 Write-Host "2. Ensure OpenClaw gateway tab is up (TBCC_OPENCLAW_AUTO_START=1)"
 Write-Host "3. Test growth MCP: mcporter call tbcc.analytics_content_performance run_tick=true"
 Write-Host "4. Cron list: openclaw cron list (after gateway restart picks up jobs.json)"

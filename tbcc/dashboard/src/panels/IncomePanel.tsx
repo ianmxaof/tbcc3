@@ -37,6 +37,8 @@ const SYNC_SOURCES = [
   { key: "bmc", label: "Buy Me a Coffee" },
 ];
 
+const INCOME_REFRESH_MS = 2 * 60 * 1000;
+
 export function IncomePanel() {
   const qc = useQueryClient();
   const [rangeDays, setRangeDays] = useState<number | undefined>(undefined);
@@ -51,16 +53,25 @@ export function IncomePanel() {
   const summaryQ = useQuery({
     queryKey: ["analytics", "income", "summary", rangeDays],
     queryFn: () => api.analytics.incomeSummary({ days: rangeDays }),
+    refetchInterval: INCOME_REFRESH_MS,
+  });
+
+  const pollQ = useQuery({
+    queryKey: ["analytics", "income", "poll-status"],
+    queryFn: () => api.analytics.incomePollStatus(),
+    refetchInterval: INCOME_REFRESH_MS,
   });
 
   const entriesQ = useQuery({
     queryKey: ["analytics", "income", "entries", rangeDays],
     queryFn: () => api.analytics.incomeEntries({ days: rangeDays, limit: 40 }),
+    refetchInterval: INCOME_REFRESH_MS,
   });
 
   const affiliatesQ = useQuery({
     queryKey: ["analytics", "income", "affiliates"],
     queryFn: () => api.analytics.incomeAffiliates(),
+    refetchInterval: INCOME_REFRESH_MS,
   });
 
   const manualMut = useMutation({
@@ -108,6 +119,10 @@ export function IncomePanel() {
   }, [summaryQ.data]);
 
   const totals = summaryQ.data?.totals;
+  const pollStatus = pollQ.data;
+  const lastPollLabel = pollStatus?.last_poll_at
+    ? new Date(pollStatus.last_poll_at).toLocaleString()
+    : null;
 
   return (
     <div className="max-w-6xl space-y-8">
@@ -117,6 +132,15 @@ export function IncomePanel() {
           <p className="text-slate-400 text-sm mt-1">
             Unified rollup across Stars, crypto, gates, affiliates, and donations.
           </p>
+          {pollStatus?.enabled ? (
+            <p className="text-slate-500 text-xs mt-1">
+              Auto-sync every {pollStatus.interval_hours ?? 6}h via Celery Beat
+              {lastPollLabel ? ` · Last poll ${lastPollLabel}` : " · No poll yet"}
+              {pollStatus.last_poll_ok === false ? " · Last poll failed" : ""}
+            </p>
+          ) : (
+            <p className="text-amber-500/90 text-xs mt-1">Auto-sync off — set TBCC_INCOME_POLL_ENABLED=1</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Link to="/subscriptions" className="text-sm text-cyan-400 hover:text-cyan-300">
@@ -276,7 +300,8 @@ export function IncomePanel() {
         <section className="bg-slate-800 rounded-lg p-4 border border-slate-700 space-y-3">
           <h2 className="text-lg font-medium">External sync</h2>
           <p className="text-slate-400 text-sm">
-            Pull cumulative balances where configured (.env URLs/tokens). Records only new deltas since last sync.
+            Celery Beat runs a light poll every {pollStatus?.interval_hours ?? 6} hours (no browser popups).
+            Manual sync below is optional.
           </p>
           <div className="flex flex-wrap gap-2">
             <button

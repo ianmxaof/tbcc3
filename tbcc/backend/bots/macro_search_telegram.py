@@ -25,6 +25,7 @@ from telegram.ext import (
 )
 
 from app.services.model_search_engine import (
+    analyze_model_search_html,
     build_model_search_url,
     derive_username_template_from_search_url,
     extract_video_links_from_html,

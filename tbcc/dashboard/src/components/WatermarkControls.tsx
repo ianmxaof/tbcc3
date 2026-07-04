@@ -17,6 +17,11 @@ type WatermarkEffective = {
 type Props = {
   /** When true, shows the saved-import uptake toggle prominently */
   showSavedImportToggle?: boolean;
+  /** Generic per-action apply toggle (channel/storage/upload panels) */
+  showApplyToggle?: boolean;
+  applyToggleLabel?: string;
+  applyChecked?: boolean;
+  onApplyToggleChange?: (apply: boolean) => void;
   compact?: boolean;
   onApplyChange?: (applyOnSavedImport: boolean) => void;
 };
@@ -27,7 +32,15 @@ declare global {
   }
 }
 
-export function WatermarkControls({ showSavedImportToggle = false, compact = false, onApplyChange }: Props) {
+export function WatermarkControls({
+  showSavedImportToggle = false,
+  showApplyToggle = false,
+  applyToggleLabel = "Apply on this import (download + re-upload with burn-in)",
+  applyChecked = false,
+  onApplyToggleChange,
+  compact = false,
+  onApplyChange,
+}: Props) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ["watermarkSettings"],
@@ -196,6 +209,17 @@ export function WatermarkControls({ showSavedImportToggle = false, compact = fal
             }}
           />
           <span>Apply on <strong>Import from Saved</strong> (re-upload watermarked copy into pool)</span>
+        </label>
+      )}
+
+      {showApplyToggle && !showSavedImportToggle && (
+        <label className="flex items-center gap-2 text-amber-200/90">
+          <input
+            type="checkbox"
+            checked={applyChecked}
+            onChange={(e) => onApplyToggleChange?.(e.target.checked)}
+          />
+          <span>{applyToggleLabel}</span>
         </label>
       )}
 

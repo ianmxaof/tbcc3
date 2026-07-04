@@ -9,25 +9,17 @@ cd tbcc\tools
 
 Right-click the notification-area icon:
 
-- **Start full stack (cold)** - runs `start.ps1 -Full -WtTabs -NoOpen`
-- **Restart full stack (stop all + cold start)** - kills prior TBCC Windows Terminal tabs, Backend, Celery, bots started by the stack, then cold-starts (use after `database is locked` / duplicate :8000)
-- **Telegram session (admin.session)** submenu:
-  - **Stop scraper + admin bots** - kills standalone `scraper_bot` / `admin_bot` (not managed as stack tabs; they fight the API on `admin.session`)
-  - **Restart Celery worker** - clears stuck import/Telegram tasks without restarting the API
-- **Services** — Extensity-style toggles: **white** = enabled, **gray** = disabled (no `[up]`/`[down]`). Click to enable/disable; **Ctrl+click** to restart. Disabled services are skipped on cold start. State saved in `.tbcc-run/service-toggles.json`.
-- **Cleanup orphan API workers (port 8000)** - when multiple uvicorn children are listening
-- **Open system health (browser)** - `GET /health/system` shows scraper/admin_bot conflicts and shared-session warnings
-- **Restart API + Payment bot** - same as `restart-api-payment.ps1`
+**Stack**
+- **Start — lean** — fresh launch with fewer auto-started bots; saves lean as default
+- **Start — full** — fresh launch with all default bots and enrichment sidecars
+- **Restart all** — stop everything, then cold-start using your saved default
+- **Stop all** — close all TBCC terminal tabs and processes
 
-### Session lock recovery (typical order)
+**Services** — toggle any process on/off; Ctrl+click to restart. Full catalog (spicy bot, remixer, LLM chat, etc.) even on lean.
 
-1. **Restart full stack (stop all + cold start)** — one action; closes duplicate `TBCC-*` terminal tabs and stack processes.
-2. **Telegram session → Stop scraper + admin bots** — if you ran scraper/admin manually outside the stack.
-3. **Telegram session → Restart Celery** — if error hub still shows import/Telethon noise after (1).
-4. **Open system health** — confirm no `telethon_shared_session` / `scraper_running` warnings.
-5. One-time in `tbcc/.env`: `TBCC_POSTER_TELEGRAM_SESSION=admin_poster` and `TBCC_POSTER_AUTO_COPY_ADMIN_SESSION=1`, then **Restart full stack** again.
+**Advanced** — troubleshooting (session fixes, focus mode, port 8000 cleanup), open dashboard/health/logs/panel.
 
-See `docs/TELEGRAM_OPS.md` for `.env` details and avoiding heavy imports while the media library warms thumbnails.
+Double-click the tray icon for the live supervisor panel.
 
 Optional logon shortcut:
 

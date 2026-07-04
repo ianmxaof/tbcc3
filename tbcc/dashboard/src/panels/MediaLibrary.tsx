@@ -16,6 +16,7 @@ import {
 } from "../components/SilentTelegramSendOption";
 import { suggestPoolIdForTopicTitle } from "../utils/suggestPoolForTopic";
 import { WatermarkControls } from "../components/WatermarkControls";
+import { ApprovalQueueCounter } from "../components/ApprovalQueueCounter";
 
 type MediaRow = Record<string, unknown>;
 
@@ -133,12 +134,48 @@ export function MediaLibrary() {
     queryKey: ["pools"],
     queryFn: () => api.pools.list(),
   });
+
+  const {
+    data: storageHubLanesRes,
+    isPending: storageHubLanesPending,
+    isError: storageHubLanesError,
+    error: storageHubLanesErr,
+    refetch: refetchStorageHubLanes,
+  } = useQuery({
+    queryKey: ["storage-hub-lanes"],
+    queryFn: () => api.import.storageHubLanes(),
+    staleTime: 120_000,
+    retry: 2,
+  });
+  const storageHubLanes =
+    (storageHubLanesRes?.lanes as Array<{
+      network_key: string;
+      topic_title: string;
+      pool_name: string;
+      channel_name: string;
+    }>) ?? [];
+
+  useEffect(() => {
+    if (!storageHubLanes.length) return;
+    setStorageHubSelected((prev) => {
+      if (Object.keys(prev).length) return prev;
+      const next: Record<string, boolean> = {};
+      for (const lane of storageHubLanes) next[lane.network_key] = true;
+      return next;
+    });
+    if (storageHubLanesRes?.default_batch_size) {
+      setStorageHubBatchLimit(storageHubLanesRes.default_batch_size);
+    }
+  }, [storageHubLanes, storageHubLanesRes?.default_batch_size]);
   const poolMap = Object.fromEntries(
     (pools as Array<Record<string, unknown>>).map((p) => [String(p.id), String(p.name ?? p.id)])
   );
   const [savedImportPool, setSavedImportPool] = useState(1);
   const [savedImportLimit, setSavedImportLimit] = useState(50);
   const [savedImportApplyWatermark, setSavedImportApplyWatermark] = useState(false);
+  const [storageHubApplyWatermark, setStorageHubApplyWatermark] = useState(false);
+  const [channelImportApplyWatermark, setChannelImportApplyWatermark] = useState(false);
+  const [uploadApplyWatermark, setUploadApplyWatermark] = useState(true);
   const [channelImportPool, setChannelImportPool] = useState(1);
   /** Registered channel row id; -1 = manual identifier fallback */
   const [channelImportChannelId, setChannelImportChannelId] = useState(0);
@@ -155,6 +192,11 @@ export function MediaLibrary() {
   const [channelImportStatus, setChannelImportStatus] = useState<string | null>(null);
   /** one = pick subtopic + pool; batch = checkbox map table */
   const [channelImportMode, setChannelImportMode] = useState<"one" | "batch">("one");
+  const [storageHubBatchLimit, setStorageHubBatchLimit] = useState(8);
+  const [storageHubMediaTypes, setStorageHubMediaTypes] = useState<"both" | "photos" | "videos">("both");
+  const [storageHubSelected, setStorageHubSelected] = useState<Record<string, boolean>>({});
+  const [storageHubImportStatus, setStorageHubImportStatus] = useState<string | null>(null);
+  const [storageHubResults, setStorageHubResults] = useState<string | null>(null);
 
   function summarizeChannelImportResult(data: Record<string, unknown> | undefined): {
     stored: number;
@@ -282,7 +324,10 @@ export function MediaLibrary() {
       api.import.fromSaved(savedImportPool, savedImportLimit, {
         applyWatermark: savedImportApplyWatermark,
       }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["media"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["media"] });
+      void queryClient.invalidateQueries({ queryKey: ["media-pending-summary"] });
+    },
   });
 
   const importFromChannel = useMutation({
@@ -298,6 +343,7 @@ export function MediaLibrary() {
         channel: channelImportIdentifierResolved,
         limit: channelImportLimit,
         media_types: channelImportMediaTypes,
+        apply_watermark: channelImportApplyWatermark,
         ...(channelImportTopicId != null ? { message_thread_id: channelImportTopicId } : {}),
         ...(topicTitle ? { topic_title: topicTitle } : {}),
       });
@@ -312,6 +358,7 @@ export function MediaLibrary() {
     onSuccess: () => {
       setChannelImportStatus(null);
       void queryClient.invalidateQueries({ queryKey: ["media"] });
+      void queryClient.invalidateQueries({ queryKey: ["media-pending-summary"] });
     },
     onError: () => setChannelImportStatus(null),
   });
@@ -334,6 +381,7 @@ export function MediaLibrary() {
         channel: channelImportIdentifierResolved,
         limit: channelImportLimit,
         media_types: channelImportMediaTypes,
+        apply_watermark: channelImportApplyWatermark,
         imports,
       });
       if (queued.error && !queued.jobs?.length) throw new Error(String(queued.error));
@@ -362,8 +410,47 @@ export function MediaLibrary() {
     onSuccess: () => {
       setChannelImportStatus(null);
       void queryClient.invalidateQueries({ queryKey: ["media"] });
+      void queryClient.invalidateQueries({ queryKey: ["media-pending-summary"] });
     },
     onError: () => setChannelImportStatus(null),
+  });
+
+  const importFromStorageHub = useMutation({
+    mutationFn: async () => {
+      const keys = storageHubLanes
+        .filter((lane) => storageHubSelected[lane.network_key])
+        .map((lane) => lane.network_key);
+      if (!keys.length) throw new Error("Select at least one storage lane.");
+      setStorageHubResults(null);
+      setStorageHubImportStatus(`Queueing ${keys.length} lane(s)…`);
+      const queued = await api.import.fromStorageHub({
+        limit: storageHubBatchLimit,
+        network_keys: keys,
+        media_types: storageHubMediaTypes,
+        apply_watermark: storageHubApplyWatermark,
+      });
+      if (queued.error && !queued.jobs?.length) throw new Error(String(queued.error));
+      if (!queued.jobs?.length) throw new Error("No import jobs were queued.");
+      const summaries: string[] = [];
+      for (const j of queued.jobs) {
+        if (!j.job_id) continue;
+        const label = String(j.topic_title || j.network_key || j.pool_name || "lane");
+        const final = await waitForChannelImportJob(j.job_id, label);
+        const stats = summarizeChannelImportResult(final as Record<string, unknown>);
+        summaries.push(`${label}: ${stats.stored} new (${stats.skipped_duplicate} dupes skipped)`);
+      }
+      return summaries.join(" · ");
+    },
+    onSuccess: (msg) => {
+      setStorageHubImportStatus(null);
+      setStorageHubResults(msg);
+      void queryClient.invalidateQueries({ queryKey: ["media"] });
+      void queryClient.invalidateQueries({ queryKey: ["media-pending-summary"] });
+    },
+    onError: () => {
+      setStorageHubImportStatus(null);
+      setStorageHubResults(null);
+    },
   });
 
   useEffect(() => {
@@ -409,6 +496,7 @@ export function MediaLibrary() {
             savedOnly: true,
             caption: captionForTelegram,
             sync: true,
+            skipWatermark: !uploadApplyWatermark,
           });
           return { lines: [`${list[0].name}: sent to Saved Messages`] };
         }
@@ -419,7 +507,10 @@ export function MediaLibrary() {
       const mediaIds: number[] = [];
       const lines: string[] = [];
       for (const f of list) {
-        const r = await api.import.bytes(f, uploadPoolId, "dashboard:media-library", { sync: true });
+        const r = await api.import.bytes(f, uploadPoolId, "dashboard:media-library", {
+          sync: true,
+          skipWatermark: !uploadApplyWatermark,
+        });
         if (r.error) lines.push(`${f.name}: ${String(r.error)}`);
         else if (r.media_id != null) {
           mediaIds.push(Number(r.media_id));
@@ -460,6 +551,7 @@ export function MediaLibrary() {
     onMutate: () => setStatusMutationErr(null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["media-pending-summary"] });
       setStatusMutationErr(null);
     },
     onError: (e: Error) => setStatusMutationErr(e.message),
@@ -470,6 +562,7 @@ export function MediaLibrary() {
     onMutate: () => setStatusMutationErr(null),
     onSuccess: (_, { ids }) => {
       queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["media-pending-summary"] });
       setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
       setStatusMutationErr(null);
     },
@@ -652,6 +745,7 @@ export function MediaLibrary() {
         />
       )}
       <h1 className="text-2xl font-semibold mb-2">Master media pool</h1>
+      <ApprovalQueueCounter className="mb-3" />
       <div className="mb-3 flex justify-end">
         <InfoDisclosure>
           Central store for imported media. Use <strong>List pool</strong> below to show only one queue (curate per pool) or{" "}
@@ -666,7 +760,7 @@ export function MediaLibrary() {
           . With exactly one selection, <strong>AI suggest</strong> uses <code className="text-slate-400">TBCC_OPENAI_API_KEY</code>.
         </InfoDisclosure>
       </div>
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-4 items-stretch">
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 mb-4 items-stretch">
         <div className="tbcc-panel bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
             <h2 className="text-sm font-medium text-slate-200">Import from Saved Messages</h2>
@@ -738,6 +832,148 @@ export function MediaLibrary() {
           )}
           {importFromSaved.isSuccess && importFromSaved.data?.error && (
             <p className="text-red-400 text-xs mt-2">{String(importFromSaved.data.error)}</p>
+          )}
+        </div>
+
+        <div className="tbcc-panel bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0 xl:col-span-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <h2 className="text-sm font-medium text-slate-200">Storage Hub → channel pools</h2>
+            <InfoDisclosure>
+              <p>
+                Pull <strong>new</strong> media from each <strong>Storage &amp; Bot Hangar</strong> subtopic into its
+                matching AOF channel pool (milf, ABG/LBFM, big tits, …). Skips duplicates already in that pool — run
+                another batch to go deeper into the topic history.
+              </p>
+            </InfoDisclosure>
+          </div>
+          <div className="flex flex-wrap gap-2 sm:gap-3 items-end mb-3">
+            <label className="block text-xs text-slate-400">
+              New items per lane
+              <input
+                type="number"
+                min={1}
+                max={200}
+                title="Max new items to import per selected lane (deduped)"
+                className="mt-1 block w-24 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={storageHubBatchLimit}
+                onChange={(e) =>
+                  setStorageHubBatchLimit(Math.min(200, Math.max(1, Number(e.target.value) || 8)))
+                }
+              />
+            </label>
+            <label className="block text-xs text-slate-400">
+              Media
+              <select
+                className="mt-1 block bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
+                value={storageHubMediaTypes}
+                onChange={(e) =>
+                  setStorageHubMediaTypes(e.target.value as "both" | "photos" | "videos")
+                }
+              >
+                <option value="both">Photos + videos</option>
+                <option value="photos">Photos only</option>
+                <option value="videos">Videos only</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              onClick={() => importFromStorageHub.mutate()}
+              disabled={
+                importFromStorageHub.isPending ||
+                !storageHubLanes.some((lane) => storageHubSelected[lane.network_key])
+              }
+              className="px-3 py-2 rounded bg-emerald-600/90 text-white text-sm font-medium hover:bg-emerald-500 disabled:opacity-50 shrink-0"
+            >
+              {importFromStorageHub.isPending || storageHubImportStatus
+                ? storageHubImportStatus || "Importing…"
+                : "Import selected lanes"}
+            </button>
+            <button
+              type="button"
+              className="px-2 py-2 rounded border border-slate-600 text-slate-300 text-xs hover:bg-slate-700/50"
+              onClick={() => {
+                const next: Record<string, boolean> = {};
+                for (const lane of storageHubLanes) next[lane.network_key] = true;
+                setStorageHubSelected(next);
+              }}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              className="px-2 py-2 rounded border border-slate-600 text-slate-300 text-xs hover:bg-slate-700/50"
+              onClick={() => setStorageHubSelected({})}
+            >
+              None
+            </button>
+          </div>
+          {storageHubLanesPending ? (
+            <p className="text-slate-500 text-xs">Loading storage lanes…</p>
+          ) : storageHubLanesError ? (
+            <div className="text-xs space-y-1">
+              <p className="text-red-400">
+                Could not load storage lanes: {(storageHubLanesErr as Error)?.message || "request failed"}
+              </p>
+              <button
+                type="button"
+                className="text-cyan-400 hover:text-cyan-300 underline"
+                onClick={() => void refetchStorageHubLanes()}
+              >
+                Retry
+              </button>
+            </div>
+          ) : storageHubLanes.length === 0 ? (
+            <p className="text-amber-300/90 text-xs">
+              No storage lanes configured. Check AOF network map and restart the backend after updating.
+            </p>
+          ) : (
+            <div className="max-h-44 overflow-y-auto border border-slate-600/80 rounded-lg bg-slate-950/40 divide-y divide-slate-700/60">
+              {storageHubLanes.map((lane) => (
+                <label
+                  key={lane.network_key}
+                  className="flex flex-wrap items-center gap-2 px-2 py-1.5 text-xs cursor-pointer hover:bg-slate-800/50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!storageHubSelected[lane.network_key]}
+                    onChange={(e) =>
+                      setStorageHubSelected((prev) => ({
+                        ...prev,
+                        [lane.network_key]: e.target.checked,
+                      }))
+                    }
+                  />
+                  <span className="text-slate-200 font-medium min-w-[6rem]">{lane.channel_name}</span>
+                  <span className="text-slate-500 truncate flex-1" title={lane.topic_title}>
+                    {lane.topic_title}
+                  </span>
+                  <span className="text-slate-400 shrink-0">→ {lane.pool_name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <details className="mt-3 rounded border border-slate-600/80 bg-slate-900/40 p-2">
+            <summary className="cursor-pointer text-xs text-slate-300 font-medium select-none">
+              Promo watermark settings
+            </summary>
+            <div className="mt-2">
+              <WatermarkControls
+                showApplyToggle
+                applyToggleLabel="Apply on Storage Hub import (download + re-upload with burn-in; slower than forward-only)"
+                applyChecked={storageHubApplyWatermark}
+                onApplyToggleChange={setStorageHubApplyWatermark}
+                compact
+              />
+            </div>
+          </details>
+          {storageHubImportStatus && (
+            <p className="text-sky-300/90 text-xs mt-2">{storageHubImportStatus}</p>
+          )}
+          {importFromStorageHub.isError && (
+            <p className="text-red-400 text-xs mt-2">{(importFromStorageHub.error as Error)?.message}</p>
+          )}
+          {storageHubResults && (
+            <p className="text-green-400 text-xs mt-2">{storageHubResults}</p>
           )}
         </div>
 
@@ -887,11 +1123,12 @@ export function MediaLibrary() {
               </label>
             )}
             <label className="block text-xs text-slate-400">
-              Scan up to
+              Import up to (new)
               <input
                 type="number"
                 min={1}
                 max={200}
+                title="Max new items to import (skips duplicates, scans older messages as needed)"
                 className="mt-1 block w-20 bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-slate-100 text-sm"
                 value={channelImportLimit}
                 onChange={(e) =>
@@ -1030,6 +1267,20 @@ export function MediaLibrary() {
           {importFromChannelBatch.isSuccess && importFromChannelBatch.data?.error && (
             <p className="text-red-400 text-xs mt-2">{String(importFromChannelBatch.data.error)}</p>
           )}
+          <details className="mt-3 rounded border border-slate-600/80 bg-slate-900/40 p-2">
+            <summary className="cursor-pointer text-xs text-slate-300 font-medium select-none">
+              Promo watermark settings
+            </summary>
+            <div className="mt-2">
+              <WatermarkControls
+                showApplyToggle
+                applyToggleLabel="Apply on channel / group import (download + re-upload with burn-in)"
+                applyChecked={channelImportApplyWatermark}
+                onApplyToggleChange={setChannelImportApplyWatermark}
+                compact
+              />
+            </div>
+          </details>
         </div>
 
         <div className="tbcc-panel bg-slate-800 border border-slate-600 rounded-lg p-3 min-w-0">
@@ -1193,6 +1444,20 @@ export function MediaLibrary() {
             {uploadMsg}
           </pre>
         )}
+        <details className="mt-3 rounded border border-slate-600/80 bg-slate-900/40 p-2">
+          <summary className="cursor-pointer text-xs text-slate-300 font-medium select-none">
+            Promo watermark settings
+          </summary>
+          <div className="mt-2">
+            <WatermarkControls
+              showApplyToggle
+              applyToggleLabel="Apply on local file upload (burn-in before indexing to pool)"
+              applyChecked={uploadApplyWatermark}
+              onApplyToggleChange={setUploadApplyWatermark}
+              compact
+            />
+          </div>
+        </details>
         </div>
       </div>
 
@@ -1428,6 +1693,11 @@ export function MediaLibrary() {
       {fastRebuildMode && (
         <div className="mb-3 rounded border border-amber-700/60 bg-amber-900/20 px-3 py-2 text-xs text-amber-100">
           Fast rebuild mode is on: media thumbnails are disabled to reduce Telegram session contention during bulk ingest.
+          For per-pool curation with safe pagination, use{" "}
+          <a href="/curate" className="text-cyan-300 underline hover:text-cyan-200">
+            Curate
+          </a>{" "}
+          (cache-only by default).
         </div>
       )}
       {selectedIds.length > 0 && (

@@ -55,7 +55,7 @@ def flywheel_route(body: FlywheelRouteBody):
 
 @router.post("/tick")
 def flywheel_tick(body: FlywheelTickBody | None = None):
-    """OpenClaw / scheduled poller entry point."""
+    """TBCC flywheel / scheduled poller entry point (internal event bus)."""
     limit = body.limit if body else 1
     return tick_flywheel(limit=limit)
 

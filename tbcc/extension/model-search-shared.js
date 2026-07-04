@@ -72,6 +72,86 @@ function guessResultCountFromHtml(html) {
   return null;
 }
 
+function hostFromUrl(url) {
+  try {
+    return new URL(String(url || "")).hostname.toLowerCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+function urlMatchesHost(url, hosts) {
+  const host = hostFromUrl(url);
+  if (!host) return false;
+  return hosts.some((h) => host === h || host.endsWith("." + h));
+}
+
+/** Host-specific probe rules (ARNA parity). */
+const SITE_PROBE_RULES = [
+  {
+    hosts: ["livecamrips.to"],
+    denyContains: ["no records found", "no models found", "no results", "0 models found"],
+    requireAny: ['class="video"', "model-card"],
+  },
+  {
+    hosts: ["cumcams.cc"],
+    denyRegex: [/<h1[^>]*>\s*404\s*<\/h1>/i, /performer\s+not\s+found/i],
+    requireAny: ["profile-info", 'class="performer"'],
+  },
+  {
+    hosts: ["allmy.cam"],
+    requireAny: ['class="video-card"'],
+  },
+  {
+    hosts: ["showcamrips.com"],
+    denyContains: ["data:image/png;base64"],
+  },
+  {
+    hosts: ["camshowrecordings.com"],
+    requireAny: ['class="h1modelpage"'],
+  },
+  {
+    hosts: ["livecamsrip.com"],
+    denyContains: ["no records found"],
+  },
+  {
+    hosts: ["camwhores.tv", "camwhoresbay.com"],
+    denyRegex: [/there\s+is\s+no\s+data\s+in\s+this\s+list/i, /no\s+videos?\s+found/i, /\b0\s+videos\b/i],
+  },
+];
+
+function extractTitleLower(html) {
+  const m = String(html || "").match(/<title[^>]*>(.*?)<\/title>/is);
+  if (!m) return "";
+  return m[1].replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function applySiteProbeRules(html, finalUrl) {
+  if (!html) return null;
+  const lower = html.toLowerCase();
+  for (const rule of SITE_PROBE_RULES) {
+    if (!urlMatchesHost(finalUrl, rule.hosts)) continue;
+    for (const needle of rule.denyContains || []) {
+      if (lower.includes(String(needle).toLowerCase())) {
+        return { action: "deny", signal: "site_deny", reason: "none" };
+      }
+    }
+    for (const rx of rule.denyRegex || []) {
+      if (rx.test(html)) {
+        return { action: "deny", signal: "site_deny", reason: "none" };
+      }
+    }
+    const required = rule.requireAny || [];
+    if (required.length) {
+      if (!required.some((marker) => lower.includes(String(marker).toLowerCase()))) {
+        return { action: "deny", signal: "site_require", reason: "none" };
+      }
+      return { action: "confirm", count: 1, signal: "site_markers", reason: "ok" };
+    }
+  }
+  return null;
+}
+
 /**
  * Best-effort: does this search/profile page look like it has content?
  * Returns { hasResults, count, reason } where reason is ok | none | blocked | error.
@@ -87,6 +167,23 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
       html
     );
   if (blocked) return { hasResults: false, count: 0, reason: "blocked", confidence: "none", signal: "blocked" };
+
+  const siteRule = applySiteProbeRules(html, finalUrl);
+  if (siteRule && siteRule.action === "deny") {
+    return {
+      hasResults: false,
+      count: 0,
+      reason: siteRule.reason || "none",
+      confidence: "none",
+      signal: siteRule.signal || "site_deny",
+      finalUrl: finalUrl || "",
+    };
+  }
+
+  const titleLc = extractTitleLower(html);
+  if (titleLc && ["not found", "404", "error"].some((term) => titleLc.includes(term))) {
+    return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "title_not_found", finalUrl: finalUrl || "" };
+  }
 
   if (/^\s*[\[{]/.test(html.trim())) {
     try {
@@ -108,7 +205,7 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
   }
 
   const explicitEmpty =
-    /\bno\s+results\b|\b0\s+results\b|nothing\s+found|no\s+matches|not\s+found|keine\s+ergebnisse|aucun\s+résultat/i.test(
+    /\bno\s+results?\b|\b0\s+results?\b|nothing\s+found|no\s+matches|not\s+found|no\s+videos?\s+found|\b0\s+videos\b|does\s+not\s+exist|no\s+records\s+found|there\s+is\s+no\s+data\s+in\s+this\s+list|keine\s+ergebnisse|aucun\s+résultat/i.test(
       lower
     );
   let count = guessResultCountFromHtml(html);
@@ -143,7 +240,11 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
   }
 
   let hasResults = count != null && count > 0;
-  if (hasResults && userLc && !lower.includes(userLc)) {
+  if (siteRule && siteRule.action === "confirm") {
+    count = Math.max(Number(siteRule.count) || 1, Number(count) || 0);
+    signal = siteRule.signal || "site_markers";
+    hasResults = true;
+  } else if (hasResults && userLc && !lower.includes(userLc)) {
     hasResults = false;
     count = 0;
     signal = "no_username_in_html";
@@ -151,7 +252,7 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
 
   let confidence = "none";
   if (hasResults) {
-    confidence = signal === "json" || signal === "json_total" || (count || 0) >= 2 ? "high" : "medium";
+    confidence = signal === "json" || signal === "json_total" || signal === "site_markers" || (count || 0) >= 2 ? "high" : "medium";
   }
 
   return {
