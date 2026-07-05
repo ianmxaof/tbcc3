@@ -8,6 +8,11 @@ function Get-TbccLaunchPowerShellExe {
 }
 
 function Get-TbccControlPythonCmd {
+  # Returns a cmd.exe command-line FRAGMENT (e.g. "py -3.13") for interpolation into
+  # WT/cmd launch strings like: cd /d "..." & py -3.13 -m uvicorn ...
+  # Do NOT invoke the result with the call operator (`& $py`) -- the whole string is
+  # treated as one executable name and fails. For `&` invocation use
+  # Get-TbccControlPythonExe instead, which returns a single bare python.exe path.
   try {
     & py -3.13 -c "import sys" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { return "py -3.13" }
@@ -17,12 +22,38 @@ function Get-TbccControlPythonCmd {
   return "python"
 }
 
+function Get-TbccControlPythonExe {
+  # Returns a single, bare python.exe path suitable for `& $exe <args>` invocation.
+  # The call operator treats the returned string as ONE command token, so neither
+  # "py -3.13" (multi-word) nor a quoted path work there. Resolve the py launcher to
+  # its real interpreter and return the bare path. Fallbacks: py -3.13 -> py ->
+  # known 3.13 install path -> python on PATH.
+  foreach ($ver in @('-3.13', '')) {
+    try {
+      $probe = @()
+      if ($ver) { $probe += $ver }
+      $probe += @('-c', 'import sys; print(sys.executable)')
+      $exe = & py @probe 2>$null
+      if ($LASTEXITCODE -eq 0 -and $exe) {
+        $exe = ([string[]]@($exe) | Where-Object { $_ } | Select-Object -First 1)
+        if ($exe) { $exe = $exe.Trim() }
+        if ($exe -and (Test-Path -LiteralPath $exe)) { return $exe }
+      }
+    } catch {}
+  }
+  $py313 = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"
+  if (Test-Path -LiteralPath $py313) { return $py313 }
+  $cmd = Get-Command python -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source) { return $cmd.Source }
+  return "python"
+}
+
 function Set-TbccBackendRestartGrace {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [int]$Seconds = 0
   )
-  $py = Get-TbccControlPythonCmd
+  $py = Get-TbccControlPythonExe
   $backendDir = Join-Path $TbccRoot "backend"
   $script = Join-Path $backendDir "scripts\set_backend_restart_grace.py"
   if (-not (Test-Path -LiteralPath $script)) { return @{ ok = $false } }
@@ -37,7 +68,7 @@ function Clear-TbccBackendRestartGrace {
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [int]$TailSeconds = -1
   )
-  $py = Get-TbccControlPythonCmd
+  $py = Get-TbccControlPythonExe
   $backendDir = Join-Path $TbccRoot "backend"
   $script = Join-Path $backendDir "scripts\set_backend_restart_grace.py"
   if (-not (Test-Path -LiteralPath $script)) { return @{ ok = $false } }
@@ -208,6 +239,33 @@ function Test-TbccBackgroundServiceStartEnabled {
   $raw = ($dotEnv['TBCC_BACKGROUND_SERVICE_START'] -as [string]).Trim().ToLower()
   if ($raw -match '^(0|false|no|off)$') { return $false }
   return $true
+}
+
+function Test-TbccWtMonolithEnabled {
+  <#
+  Monolith mode: all service restarts reuse the single TBCC Windows Terminal host (no hidden PS popups).
+  Default on when TBCC_WT_MONOLITH is unset — set TBCC_WT_MONOLITH=0 to allow headless auto-restarts.
+  #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $raw = ($dotEnv['TBCC_WT_MONOLITH'] -as [string]).Trim().ToLower()
+  if ($raw -match '^(0|false|no|off)$') { return $false }
+  return $true
+}
+
+function Test-TbccUseHeadlessServiceStart {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$BackgroundRequested,
+    [int]$WtHostPid = 0
+  )
+  if ($BackgroundRequested) {
+    if ((Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot) -and $WtHostPid -gt 0) { return $false }
+    return $true
+  }
+  if ((Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot) -and $WtHostPid -gt 0) { return $false }
+  if (-not (Test-TbccBackgroundServiceStartEnabled -TbccRoot $TbccRoot)) { return $false }
+  return ($WtHostPid -le 0)
 }
 
 function Start-TbccStackServiceHeadless {
@@ -956,7 +1014,8 @@ function Ensure-TbccStackWorkersSingleton {
         }
         continue
       }
-      Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper -Background -Force | Out-Null
+      $bg = -not (Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot)
+      Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper -Background:$bg -Force | Out-Null
       Start-Sleep -Seconds 6
       $after = @(Get-TbccServiceWorkerProcesses -Service $svc)
       $kept = if ($after.Count -gt 0) { [int]$after[0].ProcessId } else { 0 }
@@ -2282,9 +2341,8 @@ function Start-TbccStackService {
   }
 
   $wtHost = Get-TbccWtHostPid -TbccRoot $TbccRoot
-  $useHeadless = $Background -or (
-    (Test-TbccBackgroundServiceStartEnabled -TbccRoot $TbccRoot) -and -not $wtHost
-  )
+  $wtHostVal = if ($wtHost) { [int]$wtHost } else { 0 }
+  $useHeadless = Test-TbccUseHeadlessServiceStart -TbccRoot $TbccRoot -BackgroundRequested:$Background -WtHostPid $wtHostVal
   if ($useHeadless) {
     $null = Start-TbccStackServiceHeadless -Service $Service -TbccRoot $TbccRoot `
       -UseErrorHubWrapper:($hubReady) -Command $cmd
@@ -2376,7 +2434,12 @@ function Restart-TbccStackService {
     $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
     Start-Sleep -Milliseconds 800
   }
-  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper -Force -Background:$Background
+  $wtHostVal = 0
+  $hostPid = Get-TbccWtHostPid -TbccRoot $TbccRoot
+  if ($hostPid) { $wtHostVal = [int]$hostPid }
+  $useBg = $Background.IsPresent -and $Background
+  if ((Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot) -and $wtHostVal -gt 0) { $useBg = $false }
+  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper -Force -Background:$useBg
   if ($ServiceId -eq "backend") {
     $up = Wait-TbccBackendHealth -TimeoutSec 90
     if ($up) {

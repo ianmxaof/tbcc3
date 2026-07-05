@@ -219,7 +219,7 @@ $clearPostRedis = Join-Path $TbccRoot "backend\scripts\clear_post_scheduling_red
 if (Test-Path -LiteralPath $clearPostRedis) {
   Write-OrchestratorPhase "Clearing post-scheduler Redis locks (restart hook)..."
   try {
-    $py = Get-TbccControlPythonCmd
+    $py = Get-TbccControlPythonExe
     $out = & $py $clearPostRedis 2>&1
     Write-Host ("  " + ($out | Out-String).Trim()) -ForegroundColor Gray
     Write-OrchestratorLog ("post redis clear: " + ($out | Out-String).Trim())
