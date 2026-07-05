@@ -2546,6 +2546,43 @@ function Get-TbccProcessTreePids {
   return @($seen)
 }
 
+function Test-TbccProcessTreeHasLiveWorker {
+  # True when the process tree rooted at $RootPid still contains a live TBCC python
+  # worker. Used by trim/kill paths as a guard: never tear down a tree (WT host or
+  # tab wrapper) that is the only thing keeping a service's worker alive.
+  param(
+    [Parameter(Mandatory = $true)][int]$RootPid,
+    $AllProcesses = $null
+  )
+  if (-not $AllProcesses) {
+    $AllProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  }
+  foreach ($procId in @(Get-TbccProcessTreePids -RootPid $RootPid -AllProcesses $AllProcesses)) {
+    $p = $AllProcesses | Where-Object { $_.ProcessId -eq $procId } | Select-Object -First 1
+    if (-not $p) { continue }
+    $n = [string]$p.Name
+    $cmd = [string]$p.CommandLine
+    if ($n -match '^(python|py)\.exe$' -and $cmd -match 'powercore-repo-main\\telegram_bot2\\tbcc|telegram_bot2/tbcc') {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Select-TbccTabWrapperKeepPid {
+  # Decide which duplicate run-tbcc-service tab wrapper to KEEP so a trim can never
+  # remove the only live worker for a service (the 0/10 incident). Pure function:
+  # input is an array of objects with .Pid (int), .Created (datetime|null) and
+  # .OwnsLive (bool). Prefer the newest wrapper that still owns a live worker; if no
+  # wrapper owns one, keep the newest wrapper outright so we never drop to zero.
+  param([Parameter(Mandatory = $true)]$Wrappers)
+  $arr = @($Wrappers)
+  if ($arr.Count -eq 0) { return $null }
+  $live = @($arr | Where-Object { $_.OwnsLive } | Sort-Object { $_.Created } -Descending)
+  if ($live.Count -gt 0) { return [int]$live[0].Pid }
+  return [int](@($arr | Sort-Object { $_.Created } -Descending)[0]).Pid
+}
+
 function Get-TbccWindowsTerminalHostPids {
   param(
     [string]$TbccRoot,
