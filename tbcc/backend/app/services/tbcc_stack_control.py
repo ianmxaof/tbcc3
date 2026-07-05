@@ -234,15 +234,26 @@ def infer_service_id_from_event(event: dict[str, Any]) -> str | None:
         }:
             return s
         norm = re.sub(r"[^a-z0-9]", "", s.lower())
-        best: tuple[int, str] | None = None
+        # Rank match quality so an exact title always beats a partial containment:
+        # exact (2) > needle contained in event text (1) > event text contained in a
+        # longer needle (0). Without the tier, "TBCC-Celery-Post" would score the longer
+        # "celery_post_scheduler" needle higher purely on length and mis-route.
+        best: tuple[int, int, str] | None = None
         for needle, sid in SERVICE_TITLE_TO_ID.items():
             needle_norm = re.sub(r"[^a-z0-9]", "", needle.lower())
-            if norm == needle_norm or needle_norm in norm or norm in needle_norm:
-                score = len(needle_norm)
-                if best is None or score > best[0]:
-                    best = (score, sid)
+            if norm == needle_norm:
+                tier = 2
+            elif needle_norm in norm:
+                tier = 1
+            elif norm in needle_norm:
+                tier = 0
+            else:
+                continue
+            score = (tier, len(needle_norm))
+            if best is None or score > best[:2]:
+                best = (tier, len(needle_norm), sid)
         if best:
-            return best[1]
+            return best[2]
     body = str(event.get("body") or event.get("message") or "").lower()
     if "celery-post" in body or "celery_post" in body:
         return "celery_post"
@@ -285,6 +296,39 @@ def restart_scheduling_stack() -> dict[str, Any]:
         )
         return {
             "ok": proc.returncode == 0,
+            "stdout": (proc.stdout or "")[-500:],
+            "stderr": (proc.stderr or "")[-500:],
+            "returncode": proc.returncode,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
+def force_restart_scheduling_stack() -> dict[str, Any]:
+    """Stop+start Beat, Celery-Post, Celery-Post-Scheduler even when PIDs exist (Windows tray)."""
+    script = tbcc_root() / "scripts" / "_force-restart-scheduling-stack.ps1"
+    if not script.is_file():
+        order = ("beat", "celery_post", "celery_post_scheduler")
+        results = [restart_stack_service(sid) for sid in order]
+        return {"ok": all(r.get("ok") for r in results), "results": results, "mode": "fallback"}
+    try:
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            cwd=str(tbcc_root()),
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "mode": "force",
             "stdout": (proc.stdout or "")[-500:],
             "stderr": (proc.stderr or "")[-500:],
             "returncode": proc.returncode,
