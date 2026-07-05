@@ -601,6 +601,11 @@ if (Test-Path -LiteralPath $cleanupOrphans) {
 }
 
 # Service commands (cmd.exe: use one & between parts - avoids PS7 tokenizing && in scripts)
+# TBCC_UVICORN_RELOAD in .env is authoritative when set, so cold start matches the
+# tray/service-control restart path; the -Reload/-NoReload switch is the fallback.
+$reloadEnv = ($dotEnv['TBCC_UVICORN_RELOAD'] -as [string]).Trim().ToLower()
+if ($reloadEnv -match '^(1|true|yes|on)$') { $noReload = $false }
+elseif ($reloadEnv -match '^(0|false|no|off)$') { $noReload = $true }
 $uvicornReload = if ($noReload) { '' } else { ' --reload --reload-exclude scripts --reload-delay 1' }
 $cmdBackend = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m uvicorn app.main:app --host 127.0.0.1 --port 8000' + $uvicornReload
 $cmdDashboard = 'cd /d "' + $dashboardDir + '" & npm run dev'

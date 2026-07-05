@@ -1,5 +1,14 @@
 # TBCC process audit — shared by show-tbcc-processes.ps1, run-tbcc-stackwatch.ps1, orchestrator.
 # Dot-source only; no side effects at load.
+#
+# Steady-state lean footprint (VPS-style always-on, 10 enabled services), for reference
+# when reading audit/footprint output:
+#   1  WindowsTerminal host (canonical pid in .tbcc-run\windows-terminal-host.pid)
+#   ~10 python/py workers  (one per enabled service; node for dashboard/forum)
+#   ~10-12 cmd.exe tab shells (one per WT tab; legitimate, do NOT trim as a group)
+#   1  tbcc-supervisor.ps1 (a second = duplicate tray; trim keeps the oldest)
+#   0  waste (duplicate workers, orphans, extra WT hosts/supervisors)
+# See Show-TbccProcessFootprint in show-tbcc-processes.ps1 for the live one-line summary.
 
 $script:TbccLeanForbiddenPatterns = @(
   @{ Title = "TBCC-MacroSearchBot"; Pattern = "bots\.macro_search_bot" },
