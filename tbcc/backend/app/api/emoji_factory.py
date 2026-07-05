@@ -39,6 +39,7 @@ class UploadPackBody(BaseModel):
     title: str = Field("TBCC emoji pack", min_length=1, max_length=64)
     short_name: str = Field(..., min_length=1, max_length=64)
     dry_run: bool = False
+    post_saved_preview: bool = False
 
 
 class RunSplitBody(BaseModel):
@@ -204,6 +205,7 @@ async def create_pack_from_upload(
                     title=title.strip() or "TBCC emoji pack",
                     short_name=sn,
                     dry_run=dry_run,
+                    post_saved_preview=False,
                 )
         except FileNotFoundError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -220,6 +222,7 @@ class FollowUpBody(BaseModel):
     title: str = Field("TBCC emoji pack", max_length=64)
     short_name: str = Field("", max_length=64)
     preset_title: str = Field("", max_length=256)
+    post_saved_preview: bool = False
 
 
 @router.post("/jobs/create-async")
@@ -348,6 +351,48 @@ def post_emoji_factory_follow_up(job_id: str, body: FollowUpBody, db: Session = 
     return {"ok": True, "job_id": job_id.strip(), "followup": result, "split": split, "upload": upload or None}
 
 
+@router.post("/jobs/{job_id}/publish")
+async def publish_emoji_factory_job_route(job_id: str, body: FollowUpBody, db: Session = Depends(get_db)):
+    """Upload an existing split job to Telegram (+ optional dividers / sketchbook preset). No re-split."""
+    from app.services.emoji_factory_async import publish_emoji_factory_job
+
+    try:
+        job_dir_for(job_id.strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    try:
+        result = await publish_emoji_factory_job(
+            db,
+            job_id=job_id.strip(),
+            import_dividers=body.import_dividers,
+            save_sketchbook_preset=body.save_sketchbook_preset,
+            title=(body.title or "TBCC emoji pack").strip(),
+            short_name=body.short_name.strip(),
+            preset_title=(body.preset_title or "").strip(),
+            post_saved_preview=body.post_saved_preview,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=friendly_telegram_error(e)) from e
+    if not result.get("ok"):
+        code = 404 if result.get("error") == "not_found" else 400
+        raise HTTPException(status_code=code, detail=result.get("error") or "publish_failed")
+    return result
+
+
+@router.post("/jobs/{job_id}/preview-to-saved")
+async def post_emoji_factory_preview_to_saved(job_id: str, body: FollowUpBody):
+    """Optional: copy live emoji grid for a published pack to Saved Messages."""
+    from app.services.emoji_factory_async import post_saved_preview_for_job
+
+    try:
+        result = await post_saved_preview_for_job(job_id.strip(), title=(body.title or "TBCC emoji pack").strip())
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=friendly_telegram_error(e)) from e
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "preview_failed")
+    return result
+
+
 @router.get("/prerequisites")
 async def emoji_factory_prerequisites():
     """ffmpeg + Telethon admin session readiness for factory upload."""
@@ -396,6 +441,7 @@ async def upload_pack_from_manifest(body: UploadPackBody):
                 title=body.title.strip(),
                 short_name=body.short_name.strip(),
                 dry_run=body.dry_run,
+                post_saved_preview=body.post_saved_preview,
             )
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

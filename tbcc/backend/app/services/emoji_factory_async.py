@@ -209,6 +209,7 @@ async def _upload_manifest_async(
     title: str,
     short_name: str,
     dry_run: bool,
+    post_saved_preview: bool = False,
 ) -> dict[str, Any]:
     load_manifest(manifest_path)
     async with import_lock():
@@ -223,7 +224,36 @@ async def _upload_manifest_async(
             title=title.strip() or "TBCC emoji pack",
             short_name=short_name.strip(),
             dry_run=dry_run,
+            post_saved_preview=post_saved_preview,
         )
+
+
+async def post_saved_preview_for_job(job_id: str, *, title: str = "TBCC emoji pack") -> dict[str, Any]:
+    """Copy live emoji grid for an already-published pack to Saved Messages."""
+    jid = (job_id or "").strip()
+    status = read_job_status(job_dir_for(jid)) or {}
+    upload = status.get("upload") if isinstance(status.get("upload"), dict) else {}
+    split = status.get("split") if isinstance(status.get("split"), dict) else {}
+    short_name = str(upload.get("short_name") or "").strip()
+    manifest_path = Path(str(split.get("manifest_path") or ""))
+    if not short_name or not manifest_path.is_file():
+        return {"ok": False, "error": "publish the pack first", "job_id": jid}
+    from app.services.emoji_pack_telethon import post_pack_preview_to_saved
+
+    async with import_lock():
+        client = await get_telegram_client()
+        preview_id = await post_pack_preview_to_saved(
+            client,
+            short_name=short_name,
+            title=title.strip() or "TBCC emoji pack",
+            manifest_path=manifest_path,
+        )
+    return {
+        "ok": True,
+        "job_id": jid,
+        "short_name": short_name,
+        "saved_messages_preview_id": preview_id,
+    }
 
 
 async def build_pack_sketchbook_html(*, short_name: str, title: str, cols: int, rows: int) -> str:
@@ -315,3 +345,86 @@ def is_terminal_job(job_id: str) -> bool:
     if not status:
         return False
     return str(status.get("status") or "") in TERMINAL_STATUSES
+
+
+async def publish_emoji_factory_job(
+    db: Session,
+    *,
+    job_id: str,
+    import_dividers: bool = False,
+    save_sketchbook_preset: bool = False,
+    title: str = "TBCC emoji pack",
+    short_name: str = "",
+    preset_title: str = "",
+    dry_run: bool = False,
+    post_saved_preview: bool = False,
+) -> dict[str, Any]:
+    """
+    Upload tiles from an existing split job (no re-split). Optional dividers + sketchbook preset.
+    """
+    jid = (job_id or "").strip()
+    job_dir = job_dir_for(jid)
+    status = read_job_status(job_dir) or {}
+    split = status.get("split") if isinstance(status.get("split"), dict) else {}
+    manifest_path = Path(str(split.get("manifest_path") or ""))
+    if not manifest_path.is_file():
+        return {"ok": False, "job_id": jid, "error": "split manifest missing — run grid split first"}
+
+    upload_result = status.get("upload") if isinstance(status.get("upload"), dict) else None
+    if not upload_result:
+        write_job_status(job_dir, status="running", stage="uploading", split=split)
+        try:
+            upload_result = await _upload_manifest_async(
+                manifest_path=manifest_path,
+                title=title.strip() or "TBCC emoji pack",
+                short_name=short_name.strip() or str(split.get("suggested_short_name") or ""),
+                dry_run=dry_run,
+                post_saved_preview=post_saved_preview,
+            )
+        except Exception as e:
+            err = friendly_telegram_error(e)
+            write_job_status(
+                job_dir,
+                status="failed",
+                stage="upload_failed",
+                split=split,
+                error=err,
+            )
+            body = public_job_status(jid)
+            body["ok"] = False
+            body["terminal"] = True
+            return body
+        write_job_status(job_dir, status="running", stage="uploading", split=split, upload=upload_result)
+
+    followup: dict[str, Any] | None = status.get("followup") if isinstance(status.get("followup"), dict) else None
+    if import_dividers or save_sketchbook_preset:
+        write_job_status(
+            job_dir,
+            status="running",
+            stage="followup",
+            split=split,
+            upload=upload_result,
+        )
+        sn = (short_name or (upload_result or {}).get("short_name") or "").strip()
+        followup = run_emoji_factory_followup(
+            db,
+            job_id=jid,
+            import_dividers=import_dividers,
+            save_sketchbook_preset=save_sketchbook_preset,
+            title=title.strip() or "TBCC emoji pack",
+            short_name=sn,
+            preset_title=preset_title,
+        )
+
+    write_job_status(
+        job_dir,
+        status="done",
+        stage="done",
+        split=split,
+        upload=upload_result,
+        followup=followup,
+    )
+    body = public_job_status(jid)
+    body["ok"] = True
+    body["terminal"] = True
+    return body

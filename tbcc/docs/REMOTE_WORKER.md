@@ -61,9 +61,11 @@ Allow Windows Firewall inbound on 5432/6379 **Private** profile for Tailscale ad
 
 ---
 
-## 3. Oracle Cloud free VM (or Hetzner)
+## 3. Oracle Cloud free VM (or Hetzner / GCP)
 
-**Oracle (always-free ARM):**
+**Full lean stack on GCP:** see [GCP_VPS.md](./GCP_VPS.md) (`scripts/gcp/`).
+
+**Oracle (always-free ARM) — scrape worker only:**
 
 1. Create Ubuntu 22.04/24.04 VM (Ampere A1, 1 OCPU / 6 GB is enough).
 2. Open outbound HTTPS (Telegram API); **no** inbound ports required (Tailscale handles mesh).

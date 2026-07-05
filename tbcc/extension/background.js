@@ -2446,6 +2446,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-x-profile-merge-to-gallery") {
     void (async () => {
       try {
+        const mergePayload = {
+          action: "tbcc-gallery-merge-harvest",
+          items: Array.isArray(msg.items) ? msg.items : [],
+          sourceUrl: msg.sourceUrl || "",
+          adapter: msg.adapter || "x-profile",
+          autoZip: !!msg.autoZip,
+          selectAll: msg.selectAll !== false,
+          mergeId: "mh-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+        };
+        try {
+          await chrome.storage.session.set({ tbccPendingGalleryMerge: mergePayload });
+        } catch (_) {}
         if (msg.openPanel !== false) {
           const tabId = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
           let windowId = _sender && _sender.tab && _sender.tab.windowId != null ? _sender.tab.windowId : null;
@@ -2462,14 +2474,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             await tbccEnsureGallerySidePanelOpen();
           }
         }
-        tbccPostGalleryPanelMessage({
-          action: "tbcc-gallery-merge-harvest",
-          items: Array.isArray(msg.items) ? msg.items : [],
-          sourceUrl: msg.sourceUrl || "",
-          adapter: msg.adapter || "x-profile",
-          autoZip: !!msg.autoZip,
-          selectAll: msg.selectAll !== false,
-        });
+        tbccPostGalleryPanelMessage(mergePayload);
         sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
@@ -4867,6 +4872,35 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.action === "tbcc-erome-browse-intel-push") {
+    (async () => {
+      try {
+        const rows = Array.isArray(msg.rows) ? msg.rows : [];
+        if (!rows.length) {
+          sendResponse({ ok: false, error: "No rows to push." });
+          return;
+        }
+        const apiUrl = String(msg.apiUrl || "http://127.0.0.1:8000/analytics/erome-browse-intel").trim();
+        const r = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rows }),
+        });
+        let data = {};
+        try {
+          data = await r.json();
+        } catch (_) {}
+        if (!r.ok) {
+          sendResponse({ ok: false, error: data.detail || `HTTP ${r.status}` });
+          return;
+        }
+        sendResponse({ ok: true, appended: data.appended, scanned: data.scanned });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+      }
+    })();
+    return true;
+  }
   if (msg.action === "tbcc-download-url-from-page-menu") {
     (async () => {
       try {
@@ -4898,10 +4932,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             return "media";
           }
         })();
+        const customFilename = String(msg.filename || "").trim();
         chrome.downloads.download(
           {
             url: downloadUrl,
-            filename: path,
+            filename: customFilename || path,
             saveAs: false,
             conflictAction: "uniquify",
           },

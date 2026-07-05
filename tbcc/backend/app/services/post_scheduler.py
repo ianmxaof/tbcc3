@@ -241,6 +241,33 @@ def release_post_drain_tick_lock() -> None:
         pass
 
 
+def requeue_scheduled_post_due_ids(post_ids: list[int]) -> int:
+    """Put post ids back on the Redis due queue after a drain abort (e.g. poster lock timeout)."""
+    ids = [int(x) for x in post_ids if x is not None]
+    if not ids:
+        return 0
+    try:
+        import redis
+
+        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.from_url(url, socket_connect_timeout=1.5)
+        pipe = r.pipeline()
+        for pid in ids:
+            pipe.rpush(_POST_DUE_QUEUE_KEY, str(pid))
+        pipe.execute()
+        return len(ids)
+    except Exception:
+        return 0
+
+
+def scheduler_drain_in_flight() -> bool:
+    """True when due work exists and a drain consumer task is already on the scheduler queue."""
+    snap = scheduled_drain_snapshot()
+    due_len = int(snap.get("due_len") or 0)
+    sched_len = int(snap.get("scheduler_queue") or 0)
+    return due_len > 0 and sched_len > 0
+
+
 def pool_auto_post_enabled() -> bool:
     """Pool interval cron via Beat → check_and_schedule. Set TBCC_POOL_AUTO_POST=0 to disable."""
     return (os.getenv("TBCC_POOL_AUTO_POST") or "1").strip().lower() in ("1", "true", "yes", "on")
@@ -395,14 +422,46 @@ def _migrate_scheduler_tasks_off_post_queue() -> dict[str, Any]:
     )
 
 
-def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
+def nudge_scheduled_posting() -> dict[str, Any]:
     """
-    Unblock stalled schedulers: purge stale post-queue tasks, clear Redis enqueue locks,
-    re-run check_and_schedule so overdue interval jobs enqueue ahead of pool work.
+    Gentle scheduler recovery: re-run Beat scan and kick the drain worker.
+    Does not purge Celery queues or clear enqueue locks — safe to run every watch tick.
+    """
+    snap = scheduled_drain_snapshot()
+    if (
+        int(snap.get("due_len") or 0) > 0
+        and bool(snap.get("drain_tick"))
+        and int(snap.get("scheduler_queue") or 0) == 0
+    ):
+        release_post_drain_tick_lock()
+
+    out: dict[str, Any] = {"ok": True, "mode": "nudge"}
+    db = SessionLocal()
+    try:
+        out["priority"] = prioritize_scheduled_post_lane(db)
+        check_and_schedule(db)
+        out["scheduled"] = True
+    finally:
+        db.close()
+    out["drain"] = ensure_scheduled_drain_running()
+    out["snap"] = scheduled_drain_snapshot()
+    out["post_queue_length"] = _post_queue_length()
+    return out
+
+
+def resume_scheduled_posting(*, purge_post_queue: bool = True, force: bool = False) -> dict:
+    """
+    Hard unblock for stalled schedulers: optionally purge stale queue tasks, clear Redis
+    enqueue locks, re-run check_and_schedule. Skips scheduler-queue purge when a drain is
+    in flight unless force=True (avoids killing an active batch send).
     """
     from app.services.celery_queue_ops import purge_celery_queues, purge_post_pool_tasks_from_queue
 
-    out: dict = {"ok": True}
+    in_flight = scheduler_drain_in_flight()
+    if purge_post_queue and in_flight and not force:
+        purge_post_queue = False
+
+    out: dict = {"ok": True, "mode": "hard", "purge_skipped_in_flight": in_flight and not force}
     out["migrate_post_queue"] = _migrate_scheduler_tasks_off_post_queue()
     if purge_post_queue:
         out["purge"] = purge_celery_queues([SCHEDULER_POST_QUEUE, POOL_POST_QUEUE], min_length=0)

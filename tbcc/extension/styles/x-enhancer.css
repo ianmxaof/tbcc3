@@ -1,0 +1,139 @@
+.x-master-dl {
+  margin-left: 12px;
+  order: 99;
+}
+.x-master-dl:hover > div > div > div > div {
+  color: #1da1f2;
+}
+.x-master-dl:hover > div > div > div > div > div {
+  background-color: rgba(29, 161, 242, 0.1);
+}
+.x-master-dl:active > div > div > div > div > div {
+  background-color: rgba(29, 161, 242, 0.2);
+}
+.x-master-dl:hover svg {
+  color: #1da1f2;
+}
+.x-master-dl:hover div:first-child:not(:last-child) {
+  background-color: rgba(29, 161, 242, 0.1);
+}
+.x-master-dl:active div:first-child:not(:last-child) {
+  background-color: rgba(29, 161, 242, 0.2);
+}
+.x-master-dl.tmd-media {
+  position: absolute;
+  right: 0;
+}
+.x-master-dl.tmd-media > div {
+  border-radius: 99px;
+  display: flex;
+  margin: 2px;
+}
+.x-master-dl.tmd-media > div > div {
+  color: #fff;
+  display: flex;
+  margin: 6px;
+}
+.x-master-dl.tmd-media:hover > div {
+  background-color: hsla(0, 0%, 100%, 0.6);
+}
+.x-master-dl.tmd-media:hover > div > div {
+  color: #1da1f2;
+}
+.x-master-dl.tmd-media:not(:hover) > div > div {
+  filter: drop-shadow(0 0 1px #000);
+}
+.x-master-dl g {
+  display: none;
+}
+.x-master-dl.completed g.completed,
+.x-master-dl.download g.download,
+.x-master-dl.failed g.failed,
+.x-master-dl.loading g.loading {
+  display: unset;
+}
+.x-master-dl.loading svg {
+  animation: tbcc-xe-spin 1s linear infinite;
+}
+.x-master-dl.download g.download {
+  color: #1da1f2;
+}
+.x-master-dl.tmd-img {
+  bottom: 0;
+  display: none !important;
+  position: absolute;
+  right: 0;
+}
+.x-master-dl.tmd-img > div {
+  background-color: hsla(0, 0%, 100%, 0.6);
+  border-radius: 99px;
+  display: flex;
+  margin: 2px;
+}
+.x-master-dl.tmd-img > div > div {
+  color: #fff !important;
+  display: flex;
+  margin: 6px;
+}
+.x-master-dl.tmd-img:not(:hover) > div > div {
+  filter: drop-shadow(0 0 1px #000);
+}
+.x-master-dl.tmd-img:hover > div > div {
+  color: #1da1f2;
+}
+.tmd-img.completed,
+.tmd-img.failed,
+.tmd-img.loading,
+:hover > .x-master-dl.tmd-img {
+  display: block !important;
+}
+.tweet-detail-action-item {
+  width: 20% !important;
+}
+@keyframes tbcc-xe-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(1turn);
+  }
+}
+/* Reveal sensitive media blur overlay */
+li[role="listitem"] > div > div > div > div:not(:last-child) {
+  filter: none;
+}
+li[role="listitem"] > div > div > div > div + div:last-child {
+  display: none;
+}
+/* Simplify mode layout */
+@media (min-width: 800px) {
+  .tbcc-xe-simplify [role="listbox"] {
+    max-width: 500px !important;
+  }
+}
+.tbcc-xe-simplify #react-root main {
+  -webkit-flex-grow: 1 !important;
+  flex-grow: 1 !important;
+}
+/* Settings gear */
+.tbcc-xe-settings-btn {
+  all: initial;
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 2147483646;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #1d9bf0;
+  color: #fff;
+  font-size: 18px;
+  line-height: 36px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(29, 155, 240, 0.45);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.tbcc-xe-settings-btn:hover {
+  background: #1a8cd8;
+}

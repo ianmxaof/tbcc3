@@ -4192,6 +4192,7 @@ async function appendMergedCapture(tabId) {
 }
 
 async function doRefresh() {
+  _galleryRefreshInFlight = true;
   showLoading(true);
   let scanStripHandled = false;
   const prevImageList = Array.isArray(imageList) ? imageList.slice() : [];
@@ -4276,6 +4277,7 @@ async function doRefresh() {
       if (perchanceTab) startPerchancePoll(currentTabId);
       else stopPerchancePoll();
       if (settings.subtabEnabled) snapshotCurrentStateIntoActiveSubtab();
+      await flushQueuedGalleryMergeHarvests();
       return;
     }
     stopPerchancePoll();
@@ -4284,12 +4286,14 @@ async function doRefresh() {
     imageList = prevImageList;
     selectedUrls = prevSelection;
   } finally {
+    _galleryRefreshInFlight = false;
     showLoading(false);
     if (!scanStripHandled) setScanStripVisible(false);
   }
   renderGrid();
   if (settings.subtabEnabled) snapshotCurrentStateIntoActiveSubtab();
   await notifyOverlayRefresh();
+  await flushQueuedGalleryMergeHarvests();
 }
 
 function addLocalFiles(files) {
@@ -4766,6 +4770,77 @@ async function mergeCrawlerItemsIntoGallery(items, sourceUrl, adapterUsed) {
     renderGrid();
   }
   return added;
+}
+
+const PENDING_MERGE_SESSION_KEY = "tbccPendingGalleryMerge";
+let _mergeHarvestInbox = [];
+let _galleryRefreshInFlight = false;
+
+function enqueueGalleryMergeHarvest(msg) {
+  if (!msg || !Array.isArray(msg.items) || !msg.items.length) return;
+  _mergeHarvestInbox.push(msg);
+}
+
+async function harvestItemsToGalleryRows(items, sourceUrl, adapter) {
+  await mergeCrawlerItemsIntoGallery(items, sourceUrl, adapter);
+  const rows = [];
+  for (const item of items) {
+    if (!item || !item.url) continue;
+    let row = imageList.find((r) => r && r.url === item.url);
+    if (!row) {
+      row = crawlerItemToGalleryItem(item, sourceUrl, adapter);
+      imageList.push(row);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function processGalleryMergeHarvest(msg) {
+  const sig =
+    String(msg.mergeId || "") ||
+    String(msg.sourceUrl || "") + "|" + msg.items.length + "|" + (msg.adapter || "") + "|" + (msg.autoZip ? "zip" : "");
+  const now = Date.now();
+  if (
+    !msg.autoZip &&
+    window.__tbccLastMergeHarvestSig === sig &&
+    now - (window.__tbccLastMergeHarvestAt || 0) < 5000
+  ) {
+    return;
+  }
+  window.__tbccLastMergeHarvestSig = sig;
+  window.__tbccLastMergeHarvestAt = now;
+
+  const rows = await harvestItemsToGalleryRows(msg.items, msg.sourceUrl || "", msg.adapter || "harvest");
+  if (!rows.length) return;
+
+  if (msg.selectAll !== false) {
+    for (const row of rows) {
+      if (row && row.url) selectedUrls.add(row.url);
+    }
+    await persistSelection();
+    renderGrid();
+  }
+  if (msg.autoZip) {
+    await downloadSelectedAsZip({ explicitItems: rows });
+  } else {
+    showToast("Added " + rows.length + " harvested item(s) to gallery.", "success");
+  }
+}
+
+async function flushQueuedGalleryMergeHarvests() {
+  while (_mergeHarvestInbox.length) {
+    const msg = _mergeHarvestInbox.shift();
+    await processGalleryMergeHarvest(msg);
+  }
+  try {
+    const got = await chrome.storage.session.get(PENDING_MERGE_SESSION_KEY);
+    const pending = got && got[PENDING_MERGE_SESSION_KEY];
+    if (pending && Array.isArray(pending.items) && pending.items.length) {
+      await chrome.storage.session.remove(PENDING_MERGE_SESSION_KEY);
+      await processGalleryMergeHarvest(pending);
+    }
+  } catch (_) {}
 }
 
 async function tryCrawlViaMyjd(url) {
@@ -5615,17 +5690,54 @@ function filenameFromUrl(url) {
   try {
     const u = new URL(url);
     const seg = u.pathname.split("/").filter(Boolean).pop() || "media";
-    const clean = seg.split("?")[0].replace(/[^\w.\-]+/g, "_") || "media";
+    let clean = seg.split("?")[0].replace(/[^\w.\-]+/g, "_") || "media";
     const m = clean.match(/^(.+)-((?:jpe?g|jpg|png|gif|webp|avif|bmp|mp4|webm|mov|m4v|mkv))\.\d+$/i);
     if (m && m[1] && m[2]) {
       const stem = m[1].replace(/[^\w.\-]+/g, "_") || "media";
       const ext = m[2].toLowerCase() === "jpeg" ? "jpg" : m[2].toLowerCase();
       return `${stem}.${ext}`;
     }
+    if (!/\.\w{2,5}$/i.test(clean)) {
+      const fmt = u.searchParams.get("format");
+      if (fmt && /^[a-z0-9]+$/i.test(fmt)) {
+        const ext = fmt.toLowerCase() === "jpeg" ? "jpg" : fmt.toLowerCase();
+        if (/^(jpg|jpeg|png|gif|webp|avif|bmp)$/i.test(ext)) clean = `${clean}.${ext}`;
+      }
+    }
     return clean;
   } catch (_) {
     return "media";
   }
+}
+
+/** Prefer crawler/overlay filename (Comic Looms-style titles) over URL path parsing. */
+function zipFilenameHintForItem(it, url) {
+  const fromItem = it && (it.name || it.filename) ? String(it.name || it.filename).trim() : "";
+  if (fromItem && fromItem !== "media") return fromItem.replace(/[^\w.\-]+/g, "_") || "media";
+  return filenameFromUrl(url) || "media";
+}
+
+/** Ensure ZIP entries for raster images always carry a recognizable extension (.jpg default). */
+function ensureZipRasterFilename(name, blob) {
+  let n = String(name || "media").trim() || "media";
+  n = n.replace(/[^\w.\-]+/g, "_");
+  if (/\.\w{2,5}$/i.test(n)) {
+    if (
+      tbccWebpConvertEnabled() &&
+      typeof TbccWebp !== "undefined" &&
+      TbccWebp.tbccReplaceExtToJpg &&
+      /\.webp$/i.test(n)
+    ) {
+      return TbccWebp.tbccReplaceExtToJpg(n);
+    }
+    return n;
+  }
+  const mime = blob && blob.type ? String(blob.type).toLowerCase() : "";
+  if (mime === "image/jpeg" || mime === "image/jpg") return n + ".jpg";
+  if (mime === "image/png") return n + ".png";
+  if (mime === "image/webp") return tbccWebpConvertEnabled() ? n + ".jpg" : n + ".webp";
+  if (mime === "image/gif") return n + ".gif";
+  return n + ".jpg";
 }
 
 /** Trim pct% off left, right, top, and bottom (each edge), after any manual crop step. */
@@ -5922,6 +6034,7 @@ async function tbccPrepareRasterBlob(blob, url, filenameHint) {
     out = await applyImagePipeline(out, url);
     name = filenameForCropUrl(url);
   }
+  name = ensureZipRasterFilename(name, out);
   return { blob: out, name };
 }
 
@@ -6083,11 +6196,14 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
     const r = await fetch(it.url);
     const blob = await r.blob();
     if (isImageItem(it)) {
-      const prep = await tbccPrepareRasterBlob(blob, it.url, "media.webp");
+      const prep = await tbccPrepareRasterBlob(blob, it.url, zipFilenameHintForItem(it, it.url) || "media.jpg");
       const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
       return { filename: pad + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), blob: wm };
     }
-    return { filename: pad + "_media", blob: await tbccApplyPromoWatermarkBlob(blob, "video") };
+    return {
+      filename: (pad + "_" + (zipFilenameHintForItem(it, it.url) || "media") + ".mp4").replace(/[^\w.\-]+/g, "_"),
+      blob: await tbccApplyPromoWatermarkBlob(blob, "video"),
+    };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
     const httpFetchUrl = bestHttpMediaUrlForItem(it) || it.url;
@@ -6105,7 +6221,7 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
     let blob = await fetchUrlBytesToBlob(url, refPage, it);
     if (!blob) throw new Error("Could not fetch: " + String(httpFetchUrl).slice(0, 96));
     if (isImageItem(it)) {
-      const prep = await tbccPrepareRasterBlob(blob, it.url, filenameFromUrl(httpFetchUrl));
+      const prep = await tbccPrepareRasterBlob(blob, it.url, zipFilenameHintForItem(it, httpFetchUrl));
       const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
       return {
         filename: (pad + "_" + prep.name).replace(/[^\w.\-]+/g, "_"),
@@ -6655,42 +6771,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     return;
   }
   if (msg && msg.action === "tbcc-gallery-merge-harvest" && Array.isArray(msg.items)) {
-    const sig =
-      String(msg.sourceUrl || "") +
-      "|" +
-      msg.items.length +
-      "|" +
-      (msg.adapter || "") +
-      "|" +
-      (msg.autoZip ? "zip" : "");
-    const now = Date.now();
-    if (
-      window.__tbccLastMergeHarvestSig === sig &&
-      now - (window.__tbccLastMergeHarvestAt || 0) < 5000
-    ) {
-      return;
-    }
-    window.__tbccLastMergeHarvestSig = sig;
-    window.__tbccLastMergeHarvestAt = now;
-    void (async () => {
-      const added = await mergeCrawlerItemsIntoGallery(
-        msg.items,
-        msg.sourceUrl || "",
-        msg.adapter || "harvest"
-      );
-      if (msg.selectAll !== false) {
-        for (const row of added) {
-          if (row && row.url) selectedUrls.add(row.url);
-        }
-        await persistSelection();
-        renderGrid();
-      }
-      if (msg.autoZip && added.length) {
-        await downloadSelectedAsZip();
-      } else if (added.length) {
-        showToast("Added " + added.length + " harvested item(s) to gallery.", "success");
-      }
-    })();
+    enqueueGalleryMergeHarvest(msg);
+    if (!_galleryRefreshInFlight) void flushQueuedGalleryMergeHarvests();
     return;
   }
   if (msg && msg.type === "tbcc-progress") {
@@ -7888,9 +7970,14 @@ async function appendZipPromoFiles(zip, opts) {
   return n;
 }
 
-async function downloadSelectedAsZip() {
-  const list = getFilteredList();
-  const selected = list.filter((i) => selectedUrls.has(i.url));
+async function downloadSelectedAsZip(opts) {
+  let selected;
+  if (opts && Array.isArray(opts.explicitItems) && opts.explicitItems.length) {
+    selected = opts.explicitItems.slice();
+  } else {
+    const list = getFilteredList();
+    selected = list.filter((i) => selectedUrls.has(i.url));
+  }
   if (selected.length === 0 || !chrome.downloads) return;
   const jobId = await beginGalleryJob("zip-export", "ZIP export");
   try {
@@ -10678,6 +10765,7 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
     mergeUrlsIntoImageListFromSelection();
     renderGrid();
     await notifyOverlayRefresh();
+    await flushQueuedGalleryMergeHarvests();
   }
   await syncOverlayToggleButton();
   tbccLightboxClose && tbccLightboxClose.addEventListener("click", closeLightbox);

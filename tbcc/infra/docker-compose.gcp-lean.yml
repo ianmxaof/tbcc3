@@ -1,0 +1,146 @@
+# TBCC lean stack for a single GCP VPS (Postgres + Redis + API + Celery + Beat + bots).
+#
+# Quick start (on VM after install-gcp-lean-stack.sh):
+#   cd /opt/tbcc/infra
+#   cp env.gcp-lean.example .env.gcp-lean   # or receive from sync-stack-to-gcp.ps1
+#   docker compose -f docker-compose.gcp-lean.yml up -d --build
+#
+# Migrations (first boot or after pull):
+#   docker compose -f docker-compose.gcp-lean.yml run --rm api python -m alembic upgrade head
+#
+# See tbcc/docs/GCP_VPS.md
+
+name: tbcc-gcp-lean
+
+x-backend-build: &backend_build
+  context: ../backend
+  dockerfile: Dockerfile
+
+x-backend-env: &backend_env
+  env_file:
+    - .env.gcp-lean
+  environment:
+    PYTHONPATH: /app
+  volumes:
+    - ./data/sessions:/data/sessions
+    - ./data/media:/data/media
+  working_dir: /app
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tbcc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tbcc"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    # No host port — not reachable from the internet
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata:/data
+    # No host port
+
+  api:
+    <<: *backend_env
+    build: *backend_build
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  celery:
+    <<: *backend_env
+    build: *backend_build
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info -P solo
+      -Q ${TBCC_CELERY_HOME_QUEUES:-celery,scrape,subscription,telegram}
+      -n celery@gcp
+      --without-gossip --without-mingle
+
+  celery_post:
+    <<: *backend_env
+    build: *backend_build
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info -P solo -Q post -n post@gcp
+      --without-gossip --without-mingle
+
+  celery_post_scheduler:
+    <<: *backend_env
+    build: *backend_build
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info -P solo -Q post_scheduler -n scheduler@gcp
+      --without-gossip --without-mingle
+
+  beat:
+    <<: *backend_env
+    build: *backend_build
+    command: celery -A app.workers.celery_app beat -l info
+    depends_on:
+      - redis
+
+  payment_bot:
+    <<: *backend_env
+    build: *backend_build
+    command: python -m bots.payment_bot
+    depends_on:
+      - api
+
+  secretary_bot:
+    <<: *backend_env
+    build: *backend_build
+    command: python -m bots.secretary_bot
+    depends_on:
+      - api
+
+  loot_bot:
+    <<: *backend_env
+    build: *backend_build
+    command: python -m bots.loot_bot
+    depends_on:
+      - api
+
+  album_composer:
+    <<: *backend_env
+    build: *backend_build
+    command: python -m bots.album_composer_bot
+    depends_on:
+      - api
+
+  # Optional: serve built dashboard (run npm build on host first or use profile dashboard-build)
+  dashboard:
+    profiles: ["dashboard"]
+    image: node:20-alpine
+    working_dir: /app
+    env_file:
+      - .env.gcp-lean
+    volumes:
+      - ../dashboard:/app
+      - ../:/tbcc
+    command: sh -c "npm ci && npm run build && npm run preview -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:

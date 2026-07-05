@@ -802,9 +802,24 @@ def drain_scheduled_post_queue():
         result = asyncio.run(run())
     except TimeoutError as e:
         release_post_drain_tick_lock()
-        logger.warning("drain_scheduled_post_queue: poster lock timeout — %s", e)
+        from app.services.post_scheduler import requeue_scheduled_post_due_ids, release_post_enqueue_lock
+
+        requeued = requeue_scheduled_post_due_ids(ordered)
+        for pid in ordered:
+            release_post_enqueue_lock(int(pid))
+        logger.warning(
+            "drain_scheduled_post_queue: poster lock timeout — requeued %s/%s post(s): %s",
+            requeued,
+            len(ordered),
+            e,
+        )
         _chain_scheduled_drain_if_needed()
-        return {"ok": False, "error": "poster_lock_timeout", "count": len(ordered)}
+        return {
+            "ok": False,
+            "error": "poster_lock_timeout",
+            "count": len(ordered),
+            "requeued": requeued,
+        }
     _chain_scheduled_drain_if_needed()
     return result
 

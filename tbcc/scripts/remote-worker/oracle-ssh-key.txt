@@ -1,0 +1,26 @@
+PowerShell 7.6.2
+
+   A new PowerShell stable release is available: v7.6.3
+   Upgrade now, or check out the release page at:
+     https://aka.ms/PowerShell-Release?tag=v7.6.3
+
+Loading personal and system profiles took 1726ms.
+C:\Users\ianmp (HEAD*)> ssh-keygen -t ed25519 -f $env:USERPROFILE\.ssh\oci_tbcc -N '""'
+Generating public/private ed25519 key pair.
+Your identification has been saved in C:\Users\ianmp\.ssh\oci_tbcc
+Your public key has been saved in C:\Users\ianmp\.ssh\oci_tbcc.pub
+The key fingerprint is:
+SHA256:mvPycAcrIlTGto9uAv5WVbX9sGCPc7qQSCLGm9oq6Zg ianmp@KaiUlew
+The key's randomart image is:
++--[ED25519 256]--+
+|          ..     |
+|   .     .  o    |
+|    =   .  + o   |
+|  .+ . .  . + +  |
+|  .+....S  o + . |
+|... ++oo.o. +    |
+|.o.o+ B.oo..     |
+|+o++...* .. .    |
+|E++=.  oo  .     |
++----[SHA256]-----+
+C:\Users\ianmp (HEAD*)>

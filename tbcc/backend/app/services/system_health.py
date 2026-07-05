@@ -29,8 +29,8 @@ CONFLICT_ACTIONS: dict[str, dict[str, str]] = {
         "action_label": "Resume scheduled posting",
     },
     "schedulers_overdue": {
-        "action": "resume_scheduled_posting",
-        "action_label": "Resume scheduled posting",
+        "action": "nudge_scheduled_posting",
+        "action_label": "Nudge schedulers",
     },
     "scheduling_paused_focus": {
         "action": "restore_focus",
@@ -391,11 +391,7 @@ def restart_tbcc_stack_service(service_id: str) -> dict[str, Any]:
         return {"ok": False, "error": f"missing {ps1}"}
     ps_cmd = (
         f'. "{ps1}"; '
-        f'$root = "{root}"; '
-        f'$svc = Get-TbccStackServices -TbccRoot $root -FullStack | Where-Object {{ $_.Id -eq "{sid}" }} | Select-Object -First 1; '
-        f'if (-not $svc) {{ exit 2 }}; '
-        f'foreach ($p in @(Get-TbccServiceWorkerProcesses -Service $svc)) {{ try {{ Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop }} catch {{}} }}; '
-        f'Start-TbccStackService -Service $svc -TbccRoot $root -UseErrorHubWrapper -Background -Force | Out-Null'
+        f'Restart-TbccStackService -ServiceId "{sid}" -TbccRoot "{root}" -FullStack -UseErrorHubWrapper'
     )
     try:
         proc = subprocess.run(
@@ -567,14 +563,24 @@ def remediate_system_issues(codes: list[str] | None = None) -> dict[str, Any]:
         except Exception as e:
             results.append({"code": "focus_telegram_relief", "ok": False, "error": str(e)[:200]})
 
-    if "celery_queue_backlog" in want or "purge_celery_queues" in want or "resume_scheduled_posting" in want:
+    if (
+        "schedulers_overdue" in want
+        or "celery_queue_backlog" in want
+        or "purge_celery_queues" in want
+        or "resume_scheduled_posting" in want
+        or "nudge_scheduled_posting" in want
+    ):
         try:
-            from app.services.post_scheduler import resume_scheduled_posting
+            from app.services.post_scheduler import nudge_scheduled_posting, resume_scheduled_posting
 
-            r = resume_scheduled_posting(purge_post_queue=True)
-            results.append({"code": "resume_scheduled_posting", **r})
+            if "schedulers_overdue" in want and "celery_queue_backlog" not in want:
+                r = nudge_scheduled_posting()
+                results.append({"code": "nudge_scheduled_posting", **r})
+            else:
+                r = resume_scheduled_posting(purge_post_queue=True, force="celery_queue_backlog" in want)
+                results.append({"code": "resume_scheduled_posting", **r})
         except Exception as e:
-            results.append({"code": "resume_scheduled_posting", "ok": False, "error": str(e)[:200]})
+            results.append({"code": "nudge_scheduled_posting", "ok": False, "error": str(e)[:200]})
 
     if "purge_celery_queues" in want and "resume_scheduled_posting" not in want:
         try:
@@ -1120,12 +1126,14 @@ def health_auto_remediate_enabled() -> bool:
 
 _AUTO_REMEDIATE_COOLDOWN_S: dict[str, int] = {
     "restore_focus": 90,
-    # Post-queue lane recovery is owned by scheduler_watchdog_tick and must react fast
-    # enough to clear overdue schedulers within the 5-minute unattended SLO.
-    "resume_scheduled_posting": 30,
+    # Gentle nudge: safe every watch tick when schedulers are slightly overdue.
+    "nudge_scheduled_posting": 20,
+    # Hard resume (queue purge + lock clear) — only after persistent stall or deep backlog.
+    "resume_scheduled_posting": 120,
     "watchdog_pool_purge": 30,
     "restart_post_scheduler_worker": 120,
     "start_scheduling_stack": 300,
+    "force_restart_scheduling_stack": 300,
 }
 
 
@@ -1240,6 +1248,8 @@ _WATCHDOG_OVERDUE_STREAK = 0
 _WATCHDOG_IMPORT_IDLE_SINCE: datetime | None = None
 _WATCHDOG_LAST_ACTION: dict[str, Any] | None = None
 _WATCHDOG_DRAIN_STUCK: dict[str, Any] | None = None
+_WATCHDOG_OVERDUE_BEFORE_RESUME: int | None = None
+_WATCHDOG_RESUME_NO_IMPROVE_TICKS = 0
 
 
 def _watchdog_drain_stuck_seconds() -> int:
@@ -1279,13 +1289,42 @@ def _watchdog_import_idle_dwell_minutes() -> int:
         return 3
 
 
+def _watchdog_hard_resume_streak() -> int:
+    """Watch ticks with overdue schedulers before a hard queue purge (default ~2 min at 25s)."""
+    raw = (os.getenv("TBCC_WATCHDOG_HARD_RESUME_STREAK") or "5").strip()
+    try:
+        return max(2, min(24, int(raw)))
+    except ValueError:
+        return 5
+
+
+def _watchdog_force_restart_streak() -> int:
+    """Ticks with no overdue improvement after hard resume before force scheduling stack restart."""
+    raw = (os.getenv("TBCC_WATCHDOG_FORCE_RESTART_STREAK") or "2").strip()
+    try:
+        return max(1, min(8, int(raw)))
+    except ValueError:
+        return 2
+
+
+def _watchdog_drain_empty_queue_overdue_min() -> int:
+    raw = (os.getenv("TBCC_WATCHDOG_DRAIN_EMPTY_OVERDUE_MIN") or "2").strip()
+    try:
+        return max(1, min(20, int(raw)))
+    except ValueError:
+        return 2
+
+
 def reset_scheduler_watchdog_state() -> None:
     """Reset in-memory watchdog state (test hook / manual reset). Cooldowns are file-based."""
     global _WATCHDOG_OVERDUE_STREAK, _WATCHDOG_IMPORT_IDLE_SINCE, _WATCHDOG_LAST_ACTION, _WATCHDOG_DRAIN_STUCK
+    global _WATCHDOG_OVERDUE_BEFORE_RESUME, _WATCHDOG_RESUME_NO_IMPROVE_TICKS
     _WATCHDOG_OVERDUE_STREAK = 0
     _WATCHDOG_IMPORT_IDLE_SINCE = None
     _WATCHDOG_LAST_ACTION = None
     _WATCHDOG_DRAIN_STUCK = None
+    _WATCHDOG_OVERDUE_BEFORE_RESUME = None
+    _WATCHDOG_RESUME_NO_IMPROVE_TICKS = 0
 
 
 def _record_watchdog_action(
@@ -1304,11 +1343,13 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
     Refreshes the cached scheduling scan every tick so /health/scheduling/fast stays cheap.
     """
     global _WATCHDOG_OVERDUE_STREAK, _WATCHDOG_IMPORT_IDLE_SINCE, _WATCHDOG_DRAIN_STUCK
+    global _WATCHDOG_OVERDUE_BEFORE_RESUME, _WATCHDOG_RESUME_NO_IMPROVE_TICKS
 
     from app.services.post_scheduler import (
         _post_queue_length,
         clear_post_scheduling_redis_state,
         ensure_scheduled_drain_running,
+        nudge_scheduled_posting,
         post_queue_backlog_threshold,
         resume_scheduled_posting,
         scheduled_drain_snapshot,
@@ -1345,6 +1386,15 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
         _WATCHDOG_OVERDUE_STREAK += 1
     else:
         _WATCHDOG_OVERDUE_STREAK = 0
+        _WATCHDOG_OVERDUE_BEFORE_RESUME = None
+        _WATCHDOG_RESUME_NO_IMPROVE_TICKS = 0
+
+    if _WATCHDOG_OVERDUE_BEFORE_RESUME is not None and overdue > 0:
+        if overdue >= _WATCHDOG_OVERDUE_BEFORE_RESUME:
+            _WATCHDOG_RESUME_NO_IMPROVE_TICKS += 1
+        else:
+            _WATCHDOG_OVERDUE_BEFORE_RESUME = None
+            _WATCHDOG_RESUME_NO_IMPROVE_TICKS = 0
 
     actions: list[dict[str, Any]] = []
     enabled = health_auto_remediate_enabled()
@@ -1385,17 +1435,94 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
                     r,
                 )
 
-        # Overdue schedulers OR scheduler-lane backlog: purge, clear locks, re-enqueue.
-        resume_needed = overdue > 0 or post_len >= backlog_threshold
-        if resume_needed and _auto_remediate_cooldown_ok("resume_scheduled_posting"):
+        if (
+            due_len > 0
+            and int(drain_snap.get("scheduler_queue") or 0) == 0
+            and overdue >= _watchdog_drain_empty_queue_overdue_min()
+            and _WATCHDOG_OVERDUE_STREAK >= 2
+            and _auto_remediate_cooldown_ok("force_restart_scheduling_stack")
+        ):
             try:
-                r = resume_scheduled_posting(purge_post_queue=True)
+                from app.services.tbcc_stack_control import force_restart_scheduling_stack
+
+                r = force_restart_scheduling_stack()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)[:200]}
+            _mark_auto_remediate_cooldown(["force_restart_scheduling_stack"])
+            _WATCHDOG_OVERDUE_BEFORE_RESUME = None
+            _WATCHDOG_RESUME_NO_IMPROVE_TICKS = 0
+            _WATCHDOG_DRAIN_STUCK = None
+            _record_watchdog_action(
+                "force_restart_scheduling_stack",
+                f"due_len={due_len} overdue={overdue} scheduler_queue=0 drain_empty",
+                actions,
+                r,
+            )
+
+        # Overdue schedulers OR scheduler-lane backlog: nudge first (no purge), hard resume only
+        # after a persistent streak so we do not kill an in-flight drain every 30s.
+        needs_attention = overdue > 0 or post_len >= backlog_threshold
+        if needs_attention and _auto_remediate_cooldown_ok("nudge_scheduled_posting"):
+            try:
+                r = nudge_scheduled_posting()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)[:200]}
+            _mark_auto_remediate_cooldown(["nudge_scheduled_posting"])
+            _record_watchdog_action(
+                "nudge_scheduled_posting",
+                f"overdue={overdue} scheduler_queue={post_len} backlog_threshold={backlog_threshold}",
+                actions,
+                r,
+            )
+
+        hard_resume = False
+        if overdue > 0 and _WATCHDOG_OVERDUE_STREAK >= _watchdog_hard_resume_streak():
+            hard_resume = True
+        if post_len >= backlog_threshold and _WATCHDOG_OVERDUE_STREAK >= 2:
+            hard_resume = True
+        if due_len > 0 and int(drain_snap.get("scheduler_queue") or 0) == 0 and bool(
+            drain_snap.get("drain_tick")
+        ):
+            hard_resume = True
+
+        if hard_resume and _auto_remediate_cooldown_ok("resume_scheduled_posting"):
+            try:
+                r = resume_scheduled_posting(purge_post_queue=True, force=True)
             except Exception as e:
                 r = {"ok": False, "error": str(e)[:200]}
             _mark_auto_remediate_cooldown(["resume_scheduled_posting"])
+            _WATCHDOG_OVERDUE_BEFORE_RESUME = overdue
             _record_watchdog_action(
                 "resume_scheduled_posting",
-                f"overdue={overdue} scheduler_queue={post_len} backlog_threshold={backlog_threshold}",
+                (
+                    f"overdue={overdue} streak={_WATCHDOG_OVERDUE_STREAK} "
+                    f"scheduler_queue={post_len} due_len={due_len}"
+                ),
+                actions,
+                r,
+            )
+
+        if (
+            overdue > 0
+            and _WATCHDOG_RESUME_NO_IMPROVE_TICKS >= _watchdog_force_restart_streak()
+            and _auto_remediate_cooldown_ok("force_restart_scheduling_stack")
+        ):
+            no_improve = _WATCHDOG_RESUME_NO_IMPROVE_TICKS
+            try:
+                from app.services.tbcc_stack_control import force_restart_scheduling_stack
+
+                r = force_restart_scheduling_stack()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)[:200]}
+            _mark_auto_remediate_cooldown(["force_restart_scheduling_stack"])
+            _WATCHDOG_OVERDUE_BEFORE_RESUME = None
+            _WATCHDOG_RESUME_NO_IMPROVE_TICKS = 0
+            _record_watchdog_action(
+                "force_restart_scheduling_stack",
+                (
+                    f"overdue={overdue} no_improve_ticks={no_improve} "
+                    f"scheduler_queue={post_len} due_len={due_len}"
+                ),
                 actions,
                 r,
             )

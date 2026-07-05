@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.23.3",
+  "version": "1.25.2",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -72,6 +72,27 @@
       "all_frames": false
     },
     {
+      "matches": ["*://www.erome.com/*", "*://erome.com/*"],
+      "js": ["erome-enhancer.js", "erome-media-download.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://x.com/*", "*://twitter.com/*"],
+      "exclude_matches": ["*://x.com/i/flow/*"],
+      "js": ["x-enhancer-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://x.com/*", "*://twitter.com/*"],
+      "exclude_matches": ["*://x.com/i/flow/*"],
+      "js": ["x-enhancer.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
       "matches": ["*://x.com/*", "*://twitter.com/*"],
       "js": ["x-profile-harvest.js", "x-profile-overlay.js"],
       "run_at": "document_idle",
@@ -84,7 +105,17 @@
       "matches": ["*://onlyfans.com/*", "*://*.onlyfans.com/*"]
     },
     {
-      "resources": ["x-profile-harvest.js", "x-profile-overlay.js"],
+      "resources": ["erome-enhancer.js", "erome-media-download.js", "styles/erome-enhancer.css", "styles/erome-media-download.css"],
+      "matches": ["*://www.erome.com/*", "*://erome.com/*"]
+    },
+    {
+      "resources": [
+        "x-profile-harvest.js",
+        "x-profile-overlay.js",
+        "x-enhancer-hook.js",
+        "x-enhancer.js",
+        "styles/x-enhancer.css"
+      ],
       "matches": ["*://x.com/*", "*://twitter.com/*"]
     }
   ]

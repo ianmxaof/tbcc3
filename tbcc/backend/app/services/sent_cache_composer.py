@@ -258,7 +258,7 @@ def compose_sent_cache_albums_sync(
     pool_id: int | None,
     moved_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    from app.services.import_job_runner import _run_on_worker_loop
+    from app.services.import_job_runner import run_coroutine_on_worker_loop_safe
     from app.services.telegram_admin import run_telegram_import_io
 
     async def _go(storage):
@@ -271,7 +271,7 @@ def compose_sent_cache_albums_sync(
             moved_items=moved_items,
         )
 
-    return _run_on_worker_loop(run_telegram_import_io(_go))
+    return run_coroutine_on_worker_loop_safe(run_telegram_import_io(_go))
 
 
 def notify_composer_bot(

@@ -46,6 +46,34 @@ def _run_on_worker_loop(coro):
     return _worker_event_loop().run_until_complete(coro)
 
 
+def run_coroutine_on_worker_loop_safe(coro):
+    """
+    Run async IO on the Celery worker loop. If the loop is already running (Windows solo pool),
+    execute in a one-shot thread with a fresh loop to avoid 'event loop is already running'.
+    """
+    loop = _worker_event_loop()
+    if not loop.is_running():
+        return loop.run_until_complete(coro)
+    import concurrent.futures
+
+    timeout = float(import_telegram_timeout_s()) + 60.0
+
+    def _fresh_loop_run():
+        new_loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(new_loop)
+            return new_loop.run_until_complete(coro)
+        finally:
+            try:
+                new_loop.close()
+            except Exception:
+                pass
+            asyncio.set_event_loop(loop)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_fresh_loop_run).result(timeout=timeout)
+
+
 def shutdown_import_worker_async() -> None:
     """Celery worker shutdown: disconnect Telethon and close the worker loop."""
     global _worker_loop

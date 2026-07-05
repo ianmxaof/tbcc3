@@ -1,0 +1,216 @@
+.ee-duration-badge,
+.ee-watched-badge,
+.ee-deleted-overlay {
+  position: absolute;
+  pointer-events: none;
+}
+.ee-duration-badge {
+  top: 8px;
+  right: 8px;
+  background: rgba(0, 0, 0, 0.85);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  z-index: 12;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  line-height: 1.2;
+  font-size: 11px;
+}
+.ee-watched-overlay {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10;
+}
+.ee-watched-badge {
+  top: 8px;
+  left: 8px;
+  background: rgba(235, 99, 149, 0.9);
+  color: white;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  z-index: 11;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+.ee-deleted-overlay {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.3s ease;
+}
+.ee-page-separator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 30px 0;
+  height: 40px;
+  width: 100%;
+  clear: both;
+  grid-column: 1 / -1;
+}
+#eromeSortControls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+  max-width: 900px;
+}
+#eromeSortControls button {
+  padding: 8px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid #d0d0d0;
+  border-radius: 6px;
+  cursor: pointer;
+  background: #fff;
+  color: #333;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  min-width: 120px;
+  text-align: center;
+}
+#eromeSortControls button:hover {
+  background: #f6f6f6;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.settings-section {
+  margin-bottom: 25px;
+}
+.section-header {
+  font-weight: 600;
+  color: #eb6395;
+  font-size: 15px;
+  margin-bottom: 15px;
+  padding-bottom: 8px;
+  border-bottom: 2px solid #444;
+  display: flex;
+  align-items: center;
+}
+.section-content {
+  padding-left: 10px;
+}
+.form-group {
+  margin-bottom: 20px;
+}
+.control-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ddd;
+}
+.form-control {
+  background: #444;
+  border: 1px solid #555;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+.form-control:focus {
+  border-color: #eb6395;
+  box-shadow: 0 0 0 3px rgba(235, 99, 149, 0.2);
+  background: #444;
+  color: #fff;
+  outline: none;
+}
+.checkbox {
+  margin-bottom: 12px;
+}
+.checkbox label {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  color: #ddd;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.checkbox label:hover {
+  color: #fff;
+}
+.checkbox input[type="checkbox"] {
+  margin-right: 10px;
+  transform: scale(1.2);
+  accent-color: #eb6395;
+}
+.btn {
+  border-radius: 6px;
+  font-size: 13px;
+  padding: 10px 18px;
+  transition: all 0.3s ease;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+}
+.btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.ee-action-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 15px;
+  border-top: 1px solid #444;
+}
+.ee-action-btn {
+  width: 100%;
+  white-space: nowrap;
+}
+#clearViewed {
+  background: #555 !important;
+  border-color: #666 !important;
+  color: #ccc !important;
+}
+#clearViewed:hover {
+  background: #666 !important;
+  border-color: #777 !important;
+}
+#resetDurationFilter {
+  border: 1px solid #eb6395 !important;
+  color: #eb6395 !important;
+  background: transparent !important;
+}
+#resetDurationFilter:hover {
+  background: rgba(235, 99, 149, 0.15) !important;
+  box-shadow: 0 4px 12px rgba(235, 99, 149, 0.2) !important;
+}
+#saveEnhancer:hover {
+  background: #d85585 !important;
+  border-color: #d85585 !important;
+  box-shadow: 0 6px 16px rgba(235, 99, 149, 0.4) !important;
+}
+.modal-content {
+  border-radius: 4px;
+  box-shadow: 0 15px 40px rgba(0, 0, 0, 0.6);
+  border: 1px solid #444;
+}
+.modal-header {
+  background: linear-gradient(135deg, #2b2b2b 0%, #333 100%);
+}
+.modal-body {
+  background: linear-gradient(135deg, #2b2b2b 0%, #2f2f2f 100%);
+}

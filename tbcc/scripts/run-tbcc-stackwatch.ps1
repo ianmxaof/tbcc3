@@ -21,8 +21,20 @@ Write-Host ""
 
 $lastLoggedSig = ""
 $trimCooldownPath = Join-Path $TbccRoot ".tbcc-run\stackwatch-trim-cooldown.txt"
+$strayScript = Join-Path $PSScriptRoot "tbcc-kill-stray-processes.ps1"
 while ($true) {
   try {
+    if (Test-Path -LiteralPath $strayScript) {
+      try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $strayScript -TbccRoot $TbccRoot 2>$null | Out-Null
+      } catch {}
+    }
+    $trimScript = Join-Path $PSScriptRoot "tbcc-trim-process-fat.ps1"
+    if (Test-Path -LiteralPath $trimScript) {
+      try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $trimScript -TbccRoot $TbccRoot 2>$null | Out-Null
+      } catch {}
+    }
     $report = Get-TbccProcessAuditReport -Root $TbccRoot -FullStack
     $prevToken = ""
     $tokenPath = Get-TbccProcessAuditAlertTokenPath -TbccRoot $TbccRoot

@@ -154,6 +154,23 @@ async def _send_pack_preview_to_saved(
     return int(msg.id) if msg else None
 
 
+async def post_pack_preview_to_saved(
+    client: TelegramClient,
+    *,
+    short_name: str,
+    title: str,
+    manifest_path: Path,
+) -> int | None:
+    """Post the live emoji grid to Saved Messages (optional; pack must already exist)."""
+    manifest = load_manifest(manifest_path.resolve())
+    return await _send_pack_preview_to_saved(
+        client,
+        short_name=short_name,
+        title=title[:64],
+        manifest=manifest,
+    )
+
+
 async def upload_custom_emoji_pack_from_manifest(
     client: TelegramClient,
     *,
@@ -161,10 +178,11 @@ async def upload_custom_emoji_pack_from_manifest(
     title: str,
     short_name: str,
     dry_run: bool = False,
+    post_saved_preview: bool = False,
 ) -> dict:
     """
     Create a custom emoji sticker set from manifest.json produced by emoji-factory.
-    On success, posts one grid preview to Saved Messages (tap any tile → Add emoji).
+    Optionally posts a live emoji grid to Saved Messages (post_saved_preview=True).
     """
     manifest_path = manifest_path.resolve()
     base_dir = manifest_path.parent
@@ -243,21 +261,29 @@ async def upload_custom_emoji_pack_from_manifest(
     for item in rest:
         await client(AddStickerToSetRequest(stickerset=stickerset, sticker=item))
 
-    preview_msg_id = await _send_pack_preview_to_saved(
-        client,
-        short_name=short_name,
-        title=title[:64],
-        manifest=manifest,
-    )
+    preview_msg_id: int | None = None
+    if post_saved_preview:
+        preview_msg_id = await _send_pack_preview_to_saved(
+            client,
+            short_name=short_name,
+            title=title[:64],
+            manifest=manifest,
+        )
+
+    install_url = f"https://t.me/addemoji/{short_name}"
+    if post_saved_preview:
+        install_hint = (
+            "Live emoji grid copied to Saved Messages — tap any tile → Add emoji."
+        )
+    else:
+        install_hint = "Tap View Emoji to install the pack."
 
     return {
         "dry_run": False,
         "title": title,
         "short_name": short_name,
         "tile_count": len(sticker_items),
+        "install_url": install_url,
         "saved_messages_preview_id": preview_msg_id,
-        "install_hint": (
-            "Open Saved Messages — you should see one message with your emoji grid. "
-            "Tap any emoji → Add emoji. Or Settings → My Profile → Emoji."
-        ),
+        "install_hint": install_hint,
     }

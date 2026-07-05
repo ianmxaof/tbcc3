@@ -127,48 +127,99 @@ def _watchdog_env(
     return stack, mark
 
 
-def test_watchdog_resume_when_overdue_and_queue_nonempty():
+def test_watchdog_nudge_when_overdue_and_queue_nonempty():
     sh.reset_scheduler_watchdog_state()
     stack, mark = _watchdog_env(overdue=2, post_len=5)
     with stack:
         with patch(
-            "app.services.post_scheduler.resume_scheduled_posting",
+            "app.services.post_scheduler.nudge_scheduled_posting",
             return_value={"ok": True},
-        ) as resume:
-            out = sh.scheduler_watchdog_tick()
-    resume.assert_called_once_with(purge_post_queue=True)
-    mark.assert_any_call(["resume_scheduled_posting"])
-    assert any(a["action"] == "resume_scheduled_posting" for a in out["actions"])
-    assert sh._WATCHDOG_LAST_ACTION["action"] == "resume_scheduled_posting"
+        ) as nudge:
+            with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+                out = sh.scheduler_watchdog_tick()
+    nudge.assert_called_once()
+    resume.assert_not_called()
+    mark.assert_any_call(["nudge_scheduled_posting"])
+    assert any(a["action"] == "nudge_scheduled_posting" for a in out["actions"])
+    assert sh._WATCHDOG_LAST_ACTION["action"] == "nudge_scheduled_posting"
 
 
-def test_watchdog_resume_on_deep_queue_even_without_overdue():
+def test_watchdog_nudge_on_deep_queue_even_without_overdue():
     sh.reset_scheduler_watchdog_state()
-    # No scheduler overdue yet, but the post queue is backed up past the threshold (default 5).
     stack, mark = _watchdog_env(overdue=0, post_len=9)
     with stack:
         with patch(
-            "app.services.post_scheduler.resume_scheduled_posting",
+            "app.services.post_scheduler.nudge_scheduled_posting",
             return_value={"ok": True},
-        ) as resume:
-            out = sh.scheduler_watchdog_tick()
-    resume.assert_called_once_with(purge_post_queue=True)
-    mark.assert_any_call(["resume_scheduled_posting"])
-    assert any(a["action"] == "resume_scheduled_posting" for a in out["actions"])
+        ) as nudge:
+            with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+                out = sh.scheduler_watchdog_tick()
+    nudge.assert_called_once()
+    resume.assert_not_called()
+    mark.assert_any_call(["nudge_scheduled_posting"])
+    assert any(a["action"] == "nudge_scheduled_posting" for a in out["actions"])
 
 
-def test_watchdog_resume_when_overdue_and_empty_scheduler_queue():
+def test_watchdog_nudge_when_overdue_and_empty_scheduler_queue():
     sh.reset_scheduler_watchdog_state()
     stack, mark = _watchdog_env(overdue=2, post_len=0)
     with stack:
         with patch(
-            "app.services.post_scheduler.resume_scheduled_posting",
+            "app.services.post_scheduler.nudge_scheduled_posting",
             return_value={"ok": True},
-        ) as resume:
-            out = sh.scheduler_watchdog_tick()
-    resume.assert_called_once_with(purge_post_queue=True)
+        ) as nudge:
+            with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+                out = sh.scheduler_watchdog_tick()
+    nudge.assert_called_once()
+    resume.assert_not_called()
+    mark.assert_any_call(["nudge_scheduled_posting"])
+    assert any(a["action"] == "nudge_scheduled_posting" for a in out["actions"])
+
+
+def test_watchdog_hard_resume_after_persistent_overdue_streak():
+    sh.reset_scheduler_watchdog_state()
+    sh._WATCHDOG_OVERDUE_STREAK = sh._watchdog_hard_resume_streak()
+    stack, mark = _watchdog_env(overdue=2, post_len=0)
+    with stack:
+        with patch(
+            "app.services.post_scheduler.nudge_scheduled_posting",
+            return_value={"ok": True},
+        ) as nudge:
+            with patch(
+                "app.services.post_scheduler.resume_scheduled_posting",
+                return_value={"ok": True},
+            ) as resume:
+                out = sh.scheduler_watchdog_tick()
+    nudge.assert_called_once()
+    resume.assert_called_once_with(purge_post_queue=True, force=True)
     mark.assert_any_call(["resume_scheduled_posting"])
     assert any(a["action"] == "resume_scheduled_posting" for a in out["actions"])
+
+
+def test_watchdog_force_restart_when_hard_resume_ineffective():
+    sh.reset_scheduler_watchdog_state()
+    sh._WATCHDOG_OVERDUE_BEFORE_RESUME = 5
+    sh._WATCHDOG_RESUME_NO_IMPROVE_TICKS = sh._watchdog_force_restart_streak()
+    stack, mark = _watchdog_env(overdue=5, post_len=0)
+    with stack:
+        with patch(
+            "app.services.post_scheduler.scheduled_drain_snapshot",
+            return_value={"due_len": 0, "scheduler_queue": 0, "drain_tick": False},
+        ):
+            with patch(
+                "app.services.post_scheduler.nudge_scheduled_posting",
+                return_value={"ok": True},
+            ):
+                with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+                    with patch(
+                        "app.services.tbcc_stack_control.force_restart_scheduling_stack",
+                        return_value={"ok": True, "mode": "force"},
+                    ) as force:
+                        out = sh.scheduler_watchdog_tick()
+    resume.assert_not_called()
+    force.assert_called_once()
+    mark.assert_any_call(["force_restart_scheduling_stack"])
+    assert any(a["action"] == "force_restart_scheduling_stack" for a in out["actions"])
 
 
 def test_watchdog_import_burst_restores_only_after_dwell():
@@ -207,11 +258,27 @@ def test_watchdog_actions_gated_when_remediate_disabled():
     sh.reset_scheduler_watchdog_state()
     stack, _ = _watchdog_env(overdue=5, post_len=9, enabled=False)
     with stack:
-        with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
-            out = sh.scheduler_watchdog_tick()
+        with patch("app.services.post_scheduler.nudge_scheduled_posting") as nudge:
+            with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+                out = sh.scheduler_watchdog_tick()
+    nudge.assert_not_called()
     resume.assert_not_called()
     assert out["enabled"] is False
     assert out["overdue_count"] == 5
+
+
+def test_remediate_schedulers_overdue_uses_nudge():
+    health = {"ok": False, "conflicts": [{"code": "schedulers_overdue"}]}
+    with patch("app.services.system_health.collect_system_health", return_value=health):
+        with patch(
+            "app.services.post_scheduler.nudge_scheduled_posting",
+            return_value={"ok": True, "mode": "nudge"},
+        ) as nudge:
+            with patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+                out = sh.remediate_system_issues(["schedulers_overdue"])
+    nudge.assert_called_once()
+    resume.assert_not_called()
+    assert out["results"][0]["code"] == "nudge_scheduled_posting"
 
 
 def test_fast_snapshot_uses_cache_and_never_scans():

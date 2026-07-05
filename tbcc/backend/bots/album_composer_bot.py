@@ -82,6 +82,7 @@ MAX_STAGED = ALBUM_CHUNK * MAX_ALBUMS
 MEDIA_GROUP_DELAY = 1.2
 _HTTP_TIMEOUT = httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)
 _EMOJI_PACK_POLL_TIMEOUT = httpx.Timeout(connect=15.0, read=45.0, write=120.0, pool=10.0)
+_EMOJI_PACK_SYNC_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=120.0, pool=10.0)
 _EMOJI_PACK_JOB_TIMEOUT_S = 900.0
 
 SESSION_KEY = "album_composer"
@@ -165,6 +166,10 @@ class ComposerSession:
     erome_title: str = ""
     erome_tags: str = ""
     erome_network_key: str = ""
+    last_emoji_job_id: str = ""
+    last_emoji_cols: int = 4
+    last_emoji_rows: int = 4
+    last_emoji_preview: bytes | None = None
 
 
 # Remixable state mirrored between the session and the active AlbumEntry.
@@ -2286,19 +2291,51 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if data == "ac:emojipack":
         await _safe_callback_answer(query)
+        staged = len(sess.items) == 1 and sess.items[0].kind == "photo"
         await query.message.reply_text(
-            _emoji_pack_help_text(),
+            _emoji_pack_help_text(staged=staged),
             parse_mode=ParseMode.HTML,
             reply_markup=_emoji_pack_menu_keyboard(),
+            disable_web_page_preview=True,
         )
         return
 
+    if data == "ac:emojipack:publish":
+        await _safe_callback_answer(query, "Publishing here…")
+        if not sess.last_emoji_job_id:
+            await query.answer("Run a grid split first", show_alert=True)
+            return
+        await _execute_emoji_pack_publish(
+            update, context, EmojiPackOptions(upload=True), sess.last_emoji_job_id, deliver_chat=True
+        )
+        return
+
+    if data == "ac:emojipack:publishfull":
+        await _safe_callback_answer(query, "Publishing + dividers…")
+        if not sess.last_emoji_job_id:
+            await query.answer("Run a grid split first", show_alert=True)
+            return
+        opts = EmojiPackOptions(upload=True, dividers=True, preset=True)
+        await _execute_emoji_pack_publish(update, context, opts, sess.last_emoji_job_id, deliver_chat=True)
+        return
+
+    if data == "ac:emojipack:saved":
+        await _safe_callback_answer(query, "Copying to Saved Messages…")
+        if not sess.last_emoji_job_id:
+            await query.answer("Run a grid split first", show_alert=True)
+            return
+        await _execute_emoji_pack_saved_copy(update, context, sess.last_emoji_job_id)
+        return
+
     if data.startswith("ac:emojipack:"):
-        await _safe_callback_answer(query)
         opts = _emoji_pack_options_from_callback(data)
         if opts is None:
             await query.answer("Unknown emoji grid", show_alert=True)
             return
+        if not _resolve_emoji_pack_media(update, sess):
+            await query.answer("Stage one photo first", show_alert=True)
+            return
+        await _safe_callback_answer(query, f"Splitting {opts.cols}×{opts.rows}…")
         await _execute_emoji_pack(update, context, opts)
         return
 
@@ -2877,7 +2914,7 @@ EMOJI_GRID_PRESETS: tuple[tuple[str, int, int], ...] = (
     ("5×5", 5, 5),
     ("6×6", 6, 6),
     ("8×8", 8, 8),
-    ("8×4", 8, 4),  # 32 tiles — common itosbot-style layout
+    ("8×4", 8, 4),
     ("4×8", 4, 8),
 )
 
@@ -2910,20 +2947,21 @@ def _emoji_pack_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _emoji_pack_help_text() -> str:
-    preset_hint = " ".join(f"<code>{c}x{r}</code>" for _, c, r in EMOJI_GRID_PRESETS[:6])
+def _emoji_pack_help_text(*, staged: bool = False) -> str:
+    staged_line = (
+        "📷 <b>1 photo staged</b> — pick a grid size below.\n\n"
+        if staged
+        else "Stage <b>one cropped photo</b> in the workshop, then open this menu.\n\n"
+    )
     return (
-        "<b>Emoji pack</b> — split an image into Telegram custom emoji tiles (like "
-        "<a href=\"https://t.me/itosbot\">@itosbot</a>).\n\n"
-        "<b>How to use</b>\n"
-        "• Stage <b>one photo</b> (crop white margins first if your art has gutters)\n"
-        "• Tap a grid preset below, or reply with <code>/emoji_pack 8x8</code>\n"
-        "• Caption flag: <code>/emoji_pack 8x4 upload</code>\n\n"
-        "<b>Grids</b> (up to 10×10, ~200 tiles max): "
-        f"{preset_hint} …\n\n"
-        "<b>Flags</b>: <code>static</code> <code>upload</code> <code>dividers</code> "
-        "<code>preset</code> <code>full</code>\n\n"
-        "<i>Requires TBCC backend + ffmpeg + Celery. Upload needs admin Telethon.</i>"
+        "<b>Emoji pack</b>\n\n"
+        f"{staged_line}"
+        "<b>Steps</b>\n"
+        "1. Pick grid — status updates while tiles encode\n"
+        "2. <b>Publish here</b> — install link lands in this chat\n"
+        "3. <b>+ dividers</b> — also saves row strips + sketchbook preset\n"
+        "4. <b>Saved Messages copy</b> — optional live emoji grid there\n\n"
+        "Max 10×10 grid."
     )
 
 
@@ -3043,6 +3081,9 @@ def _parse_emoji_pack_args(text: str) -> EmojiPackOptions:
             opts.dividers = True
             opts.preset = True
             continue
+        if token == "publish":
+            opts.upload = True
+            continue
         if token.startswith("title:"):
             opts.title = raw.split(":", 1)[1].strip()[:64] or opts.title
             continue
@@ -3083,24 +3124,79 @@ async def _download_telegram_file(context: ContextTypes.DEFAULT_TYPE, file_id: s
     return buf.getvalue(), filename
 
 
-async def _post_emoji_pack_async(file_bytes: bytes, filename: str, opts: EmojiPackOptions) -> dict:
-    mime = _guess_upload_mime(filename)
-    files = {"file": (filename, file_bytes, mime)}
-    data = {
+def _render_grid_preview_png(image_bytes: bytes, cols: int, rows: int) -> bytes | None:
+    """Quick grid overlay preview (itosbot-style visual feedback before ffmpeg encode)."""
+    try:
+        from PIL import Image, ImageDraw
+
+        with Image.open(BytesIO(image_bytes)) as im:
+            im = im.convert("RGB")
+            side = min(im.size)
+            left = (im.width - side) // 2
+            top = (im.height - side) // 2
+            im = im.crop((left, top, left + side, top + side))
+            preview = im.resize((512, 512))
+            draw = ImageDraw.Draw(preview)
+            w, h = preview.size
+            for c in range(1, cols):
+                x = w * c // cols
+                draw.line([(x, 0), (x, h)], fill=(255, 255, 255), width=2)
+            for r in range(1, rows):
+                y = h * r // rows
+                draw.line([(0, y), (w, y)], fill=(255, 255, 255), width=2)
+            out = BytesIO()
+            preview.save(out, format="JPEG", quality=90)
+            return out.getvalue()
+    except Exception:
+        logger.debug("grid preview render failed", exc_info=True)
+        return None
+
+
+async def _send_grid_preview(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    image_bytes: bytes,
+    cols: int,
+    rows: int,
+) -> None:
+    png = _render_grid_preview_png(image_bytes, cols, rows)
+    if not png:
+        return
+    try:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=BytesIO(png),
+            caption=f"{cols}×{rows} grid preview",
+        )
+    except Exception:
+        logger.debug("grid preview send failed", exc_info=True)
+
+
+def _emoji_pack_form_data(opts: EmojiPackOptions, *, upload_telegram: bool) -> dict[str, str]:
+    return {
         "cols": str(opts.cols),
         "rows": str(opts.rows),
         "tile_px": "100",
         "static": "true" if opts.static else "false",
-        "upload_telegram": "true" if opts.upload else "false",
+        "upload_telegram": "true" if upload_telegram else "false",
         "dry_run": "true" if opts.dry_run else "false",
-        "import_dividers": "true" if opts.dividers else "false",
-        "save_sketchbook_preset": "true" if opts.preset else "false",
         "title": opts.title,
         "short_name": opts.short_name,
-        "source": "album_composer_bot",
     }
-    async with httpx.AsyncClient(timeout=_EMOJI_PACK_POLL_TIMEOUT) as client:
-        r = await client.post(f"{API_BASE}/emoji-factory/jobs/create-async", files=files, data=data)
+
+
+async def _post_emoji_pack_sync(
+    file_bytes: bytes,
+    filename: str,
+    opts: EmojiPackOptions,
+    *,
+    upload_telegram: bool = False,
+) -> dict:
+    mime = _guess_upload_mime(filename)
+    files = {"file": (filename, file_bytes, mime)}
+    data = _emoji_pack_form_data(opts, upload_telegram=upload_telegram)
+    async with httpx.AsyncClient(timeout=_EMOJI_PACK_SYNC_TIMEOUT) as client:
+        r = await client.post(f"{API_BASE}/emoji-factory/create-from-upload", files=files, data=data)
     if r.status_code >= 400:
         detail = r.text[:400]
         try:
@@ -3110,84 +3206,237 @@ async def _post_emoji_pack_async(file_bytes: bytes, filename: str, opts: EmojiPa
             pass
         return {"ok": False, "error": detail}
     body = r.json()
-    body["ok"] = True
+    split = body.get("split") if isinstance(body.get("split"), dict) else {}
+    job_id = str(split.get("job_id") or "")
+    out = {
+        "ok": True,
+        "job_id": job_id,
+        "status": "done",
+        "stage": "done",
+        "terminal": True,
+        "split": split,
+    }
+    if body.get("upload"):
+        out["upload"] = body["upload"]
+    return out
+
+
+async def _fetch_emoji_job_status(client: httpx.AsyncClient, job_id: str) -> dict:
+    r = await client.get(f"{API_BASE}/emoji-factory/jobs/{job_id}/status")
+    if r.status_code >= 400:
+        detail = r.text[:300]
+        try:
+            detail = str(r.json().get("detail") or detail)
+        except Exception:
+            pass
+        return {"ok": False, "error": detail, "job_id": job_id}
+    body = r.json()
+    body["ok"] = body.get("status") == "done"
     return body
 
 
-async def _poll_emoji_pack_job(job_id: str, *, on_stage) -> dict:
-    deadline = asyncio.get_running_loop().time() + _EMOJI_PACK_JOB_TIMEOUT_S
-    last: dict = {"status": "queued", "stage": "queued"}
-    queued_since: float | None = None
-    async with httpx.AsyncClient(timeout=_EMOJI_PACK_POLL_TIMEOUT) as client:
-        while asyncio.get_running_loop().time() < deadline:
-            r = await client.get(f"{API_BASE}/emoji-factory/jobs/{job_id}/status")
-            if r.status_code >= 400:
-                return {"ok": False, "error": r.text[:300]}
-            last = r.json()
-            stage = str(last.get("stage") or last.get("status") or "…")
+async def _post_emoji_pack_publish(
+    job_id: str,
+    opts: EmojiPackOptions,
+    *,
+    post_saved_preview: bool = False,
+) -> dict:
+    payload = {
+        "import_dividers": bool(opts.dividers),
+        "save_sketchbook_preset": bool(opts.preset),
+        "title": opts.title,
+        "short_name": opts.short_name,
+        "post_saved_preview": post_saved_preview,
+    }
+    publish_timeout = httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=10.0)
+    async with httpx.AsyncClient(timeout=publish_timeout) as client:
+        r = await client.post(f"{API_BASE}/emoji-factory/jobs/{job_id}/publish", json=payload)
+        if r.status_code == 404:
+            return await _publish_emoji_job_legacy(client, job_id, opts, post_saved_preview=post_saved_preview)
+        if r.status_code >= 400:
+            detail = r.text[:400]
             try:
-                await on_stage(stage, last)
+                body = r.json()
+                detail = str(body.get("detail") or body.get("error") or detail)
             except Exception:
                 pass
-            if last.get("terminal"):
-                last["ok"] = last.get("status") == "done"
-                return last
-            if last.get("status") == "queued":
-                if queued_since is None:
-                    queued_since = asyncio.get_running_loop().time()
-                elif asyncio.get_running_loop().time() - queued_since >= 15.0:
-                    kr = await client.post(f"{API_BASE}/emoji-factory/jobs/{job_id}/kick")
-                    if kr.status_code < 400:
-                        last = kr.json()
-                        if last.get("terminal"):
-                            last["ok"] = last.get("status") == "done"
-                            return last
-                    queued_since = None
-            else:
-                queued_since = None
-            await asyncio.sleep(2.0)
-    return {"ok": False, "error": f"Timed out waiting for job {job_id}", **last}
+            return {"ok": False, "error": detail, "job_id": job_id}
+        body = r.json()
+        body["ok"] = True
+        return body
+
+
+async def _publish_emoji_job_legacy(
+    client: httpx.AsyncClient,
+    job_id: str,
+    opts: EmojiPackOptions,
+    *,
+    post_saved_preview: bool = False,
+) -> dict:
+    """Fallback when /publish route is missing (backend not restarted yet)."""
+    status = await _fetch_emoji_job_status(client, job_id)
+    if not status.get("ok") and status.get("error"):
+        return status
+    split = status.get("split") if isinstance(status.get("split"), dict) else {}
+    manifest = str(split.get("manifest_path") or "").strip()
+    if not manifest:
+        return {"ok": False, "error": "split manifest missing — re-run grid split", "job_id": job_id}
+
+    upload = status.get("upload") if isinstance(status.get("upload"), dict) else None
+    if not upload and opts.upload:
+        short_name = (opts.short_name or split.get("suggested_short_name") or "pack").strip()
+        ur = await client.post(
+            f"{API_BASE}/emoji-factory/upload-from-manifest",
+            json={
+                "manifest_path": manifest,
+                "title": opts.title,
+                "short_name": short_name,
+                "dry_run": bool(opts.dry_run),
+                "post_saved_preview": post_saved_preview,
+            },
+        )
+        if ur.status_code >= 400:
+            detail = ur.text[:400]
+            try:
+                detail = str(ur.json().get("detail") or detail)
+            except Exception:
+                pass
+            return {"ok": False, "error": detail, "job_id": job_id}
+        upload = ur.json()
+
+    followup = status.get("followup") if isinstance(status.get("followup"), dict) else None
+    if (opts.dividers or opts.preset) and not followup:
+        sn = (opts.short_name or (upload or {}).get("short_name") or split.get("suggested_short_name") or "").strip()
+        fr = await client.post(
+            f"{API_BASE}/emoji-factory/jobs/{job_id}/follow-up",
+            json={
+                "import_dividers": bool(opts.dividers),
+                "save_sketchbook_preset": bool(opts.preset),
+                "title": opts.title,
+                "short_name": sn,
+            },
+        )
+        if fr.status_code >= 400:
+            detail = fr.text[:400]
+            try:
+                detail = str(fr.json().get("detail") or detail)
+            except Exception:
+                pass
+            if upload:
+                return {
+                    "ok": True,
+                    "job_id": job_id,
+                    "status": "done",
+                    "split": split,
+                    "upload": upload,
+                    "followup": {"ok": False, "error": detail},
+                }
+            return {"ok": False, "error": detail, "job_id": job_id}
+        followup = fr.json().get("followup")
+
+    if opts.upload and not upload:
+        return {"ok": False, "error": "Telegram upload did not complete", "job_id": job_id}
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "status": "done",
+        "split": split,
+        "upload": upload,
+        "followup": followup,
+    }
+
+
+def _remember_emoji_job(sess: ComposerSession, job_id: str, opts: EmojiPackOptions) -> None:
+    sess.last_emoji_job_id = (job_id or "").strip()
+    sess.last_emoji_cols = int(opts.cols)
+    sess.last_emoji_rows = int(opts.rows)
+
+
+def _should_publish_existing(sess: ComposerSession, opts: EmojiPackOptions, update: Update) -> bool:
+    """After a split-only run, publish/dividers/preset should not re-upload the image."""
+    if not sess.last_emoji_job_id:
+        return False
+    if not (opts.upload or opts.dividers or opts.preset):
+        return False
+    msg = update.effective_message
+    if msg and msg.reply_to_message and _emoji_pack_media_from_message(msg.reply_to_message):
+        return False
+    if int(opts.cols) != int(sess.last_emoji_cols) or int(opts.rows) != int(sess.last_emoji_rows):
+        return False
+    return True
+
+
+def _emoji_pack_progress_text(stage: str, opts: EmojiPackOptions, job_id: str = "") -> str:
+    labels = {
+        "queue": f"🧩 Queuing emoji split ({opts.cols}×{opts.rows})…",
+        "preview": f"🧩 Grid preview sent · encoding {opts.cols}×{opts.rows}…",
+        "encoding": f"🧩 Encoding {opts.cols}×{opts.rows} tiles…",
+        "uploading": "📤 Publishing pack to Telegram…",
+        "followup": "📤 Row dividers + sketchbook preset…",
+    }
+    text = labels.get(stage, f"🧩 {stage}…")
+    if job_id:
+        text += f"\nJob <code>{html.escape(job_id)}</code>"
+    return text
+
+
+def _emoji_pack_publish_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📤 Publish here", callback_data="ac:emojipack:publish"),
+                InlineKeyboardButton("📤 + dividers", callback_data="ac:emojipack:publishfull"),
+            ],
+            [
+                InlineKeyboardButton("💾 Saved Messages copy", callback_data="ac:emojipack:saved"),
+            ],
+            [InlineKeyboardButton("🧩 Grid menu", callback_data="ac:emojipack")],
+        ]
+    )
 
 
 def _format_emoji_pack_result(body: dict, opts: EmojiPackOptions) -> str:
     if not body.get("ok"):
-        err = body.get("error") or "unknown error"
-        return f"❌ Emoji pack failed\n\n<code>{html.escape(str(err)[:500])}</code>"
+        err = body.get("error") or body.get("detail") or "unknown error"
+        stage = str(body.get("stage") or body.get("status") or "").strip()
+        if stage and stage not in ("done", "unknown"):
+            err = f"{stage}: {err}"
+        return f"❌ <b>Emoji pack failed</b>\n\n<code>{html.escape(str(err)[:500])}</code>"
     split = body.get("split") if isinstance(body.get("split"), dict) else {}
     upload = body.get("upload") if isinstance(body.get("upload"), dict) else {}
     followup = body.get("followup") if isinstance(body.get("followup"), dict) else {}
     tiles = split.get("tile_count", "?")
+    job_id = html.escape(str(body.get("job_id") or split.get("job_id") or "?"))
+    if upload and not upload.get("dry_run"):
+        lines = [
+            "✅ <b>Published</b>",
+            f"Grid: {opts.cols}×{opts.rows} · tiles: <b>{tiles}</b>",
+            f"Job: <code>{job_id}</code>",
+            "Install link is in this chat — tap <b>View Emoji</b>.",
+        ]
+        if followup:
+            imported = followup.get("imported_dividers")
+            if isinstance(imported, list) and imported:
+                ok_rows = sum(
+                    1 for row in imported if isinstance(row, dict) and row.get("ok", True) and row.get("imported")
+                )
+                lines.append(f"Dividers: {ok_rows}/{len(imported)} rows imported.")
+            preset = followup.get("sketchbook_preset")
+            if isinstance(preset, dict) and preset.get("ok"):
+                lines.append(f"Sketchbook preset #{preset.get('id')} saved.")
+        return "\n".join(lines)
     over = int(split.get("over_soft_limit") or 0)
     lines = [
         "✅ <b>Emoji pack ready</b>",
         f"Grid: {opts.cols}×{opts.rows} · tiles: <b>{tiles}</b>",
-        f"Job: <code>{html.escape(str(body.get('job_id') or split.get('job_id') or '?'))}</code>",
+        f"Job: <code>{job_id}</code>",
     ]
     if over > 0:
-        lines.append(f"⚠️ {over} tile(s) over 256 KB soft limit — try <code>static</code> or smaller grid.")
-    if upload:
-        if upload.get("dry_run"):
-            lines.append(f"Dry-run pack: <code>{html.escape(str(upload.get('short_name') or '?'))}</code>")
-        else:
-            sn = upload.get("short_name") or "?"
-            lines.append(f"Pack: <code>{html.escape(str(sn))}</code>")
-            hint = upload.get("install_hint")
-            if hint:
-                lines.append(html.escape(str(hint))[:280])
-    if followup:
-        imported = followup.get("imported_dividers")
-        if isinstance(imported, list) and imported:
-            ok_rows = sum(1 for row in imported if isinstance(row, dict) and row.get("ok", True) and row.get("imported"))
-            lines.append(f"Row dividers imported: {ok_rows}/{len(imported)}")
-        preset = followup.get("sketchbook_preset")
-        if isinstance(preset, dict):
-            if preset.get("ok"):
-                lines.append(f"Sketchbook preset saved (#{preset.get('id')}).")
-            elif preset.get("error"):
-                lines.append(f"Sketchbook preset skipped: {html.escape(str(preset['error'])[:120])}")
-    lines.append(
-        "\n<i>Usage: reply to media with</i> <code>/emoji_pack 4x4 upload dividers preset</code>"
-    )
+        lines.append(f"⚠️ {over} tile(s) over size limit — try a smaller grid.")
+    lines.append("")
+    lines.append("Tap <b>Publish here</b> when ready.")
+    lines.append("<i>+ dividers</i> also imports row strips. <i>Saved Messages copy</i> is optional.")
     return "\n".join(lines)
 
 
@@ -3205,6 +3454,145 @@ def _resolve_emoji_pack_media(update: Update, sess: ComposerSession) -> tuple[st
     return None
 
 
+async def _deliver_emoji_pack_in_chat(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    result: dict,
+    opts: EmojiPackOptions,
+    preview_bytes: bytes | None,
+) -> None:
+    upload = result.get("upload") if isinstance(result.get("upload"), dict) else {}
+    sn = str(upload.get("short_name") or "").strip()
+    if not sn:
+        return
+    url = str(upload.get("install_url") or f"https://t.me/addemoji/{sn}")
+    if preview_bytes:
+        try:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=BytesIO(preview_bytes),
+                caption=f"{opts.cols}×{opts.rows} emoji grid",
+            )
+        except Exception:
+            logger.debug("emoji pack preview photo failed", exc_info=True)
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ <b>{html.escape(opts.title)}</b>\n"
+                "Tap <b>View Emoji</b> to install this pack."
+            ),
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("View Emoji", url=url)]]
+            ),
+        )
+    except Exception:
+        logger.debug("emoji pack install link failed", exc_info=True)
+
+
+async def _post_emoji_pack_saved_copy(job_id: str, *, title: str = "TBCC emoji pack") -> dict:
+    async with httpx.AsyncClient(timeout=_EMOJI_PACK_SYNC_TIMEOUT) as client:
+        r = await client.post(
+            f"{API_BASE}/emoji-factory/jobs/{job_id}/preview-to-saved",
+            json={"title": title},
+        )
+    if r.status_code == 404:
+        return {"ok": False, "error": "Publish here first, then retry Saved Messages copy."}
+    if r.status_code >= 400:
+        detail = r.text[:400]
+        try:
+            detail = str(r.json().get("detail") or detail)
+        except Exception:
+            pass
+        return {"ok": False, "error": detail}
+    body = r.json()
+    body["ok"] = True
+    return body
+
+
+async def _execute_emoji_pack_saved_copy(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    job_id: str,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    status = await msg.reply_text("💾 Copying live grid to Saved Messages…", parse_mode=ParseMode.HTML)
+    try:
+        result = await _post_emoji_pack_saved_copy(job_id)
+        if not result.get("ok"):
+            await status.edit_text(
+                f"❌ Saved Messages copy failed\n\n<code>{html.escape(str(result.get('error') or '?')[:400])}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await status.edit_text(
+            "✅ <b>Saved Messages copy sent</b>\n"
+            "Open Saved Messages — long-press any tile → <b>Add emoji</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.exception("emoji_pack saved copy failed job=%s", job_id)
+        err = str(e).strip() or type(e).__name__
+        await status.edit_text(
+            f"❌ Saved Messages copy failed\n\n<code>{html.escape(err[:400])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def _execute_emoji_pack_publish(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    opts: EmojiPackOptions,
+    job_id: str,
+    *,
+    deliver_chat: bool = True,
+    post_saved_preview: bool = False,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    sess = _session(context)
+    status = await msg.reply_text(
+        _emoji_pack_progress_text("uploading", opts, job_id),
+        parse_mode=ParseMode.HTML,
+    )
+    try:
+        result = await _post_emoji_pack_publish(
+            job_id,
+            opts,
+            post_saved_preview=post_saved_preview,
+        )
+        _remember_emoji_job(sess, job_id, opts)
+        if result.get("ok") and deliver_chat and result.get("upload"):
+            await _deliver_emoji_pack_in_chat(
+                context,
+                msg.chat_id,
+                result,
+                opts,
+                sess.last_emoji_preview,
+            )
+        text = _format_emoji_pack_result(result, opts)
+        markup = None if result.get("upload") else _emoji_pack_publish_keyboard()
+        await status.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except httpx.ConnectError:
+        await status.edit_text(
+            f"Cannot reach TBCC API at <code>{html.escape(API_BASE)}</code>. "
+            "Start TBCC-Backend, then retry.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        logger.exception("emoji_pack publish failed job=%s", job_id)
+        report_bot_error("album-composer-bot", "emoji_pack publish", e)
+        err = str(e).strip() or type(e).__name__
+        await status.edit_text(
+            f"❌ Emoji pack publish failed\n\n<code>{html.escape(err[:400])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def _execute_emoji_pack(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -3214,51 +3602,94 @@ async def _execute_emoji_pack(
     if not msg:
         return
     sess = _session(context)
+    if _should_publish_existing(sess, opts, update):
+        await _execute_emoji_pack_publish(update, context, opts, sess.last_emoji_job_id, deliver_chat=True)
+        return
     media = _resolve_emoji_pack_media(update, sess)
     if not media:
+        if (opts.upload or opts.dividers or opts.preset) and sess.last_emoji_job_id:
+            await _execute_emoji_pack_publish(update, context, opts, sess.last_emoji_job_id, deliver_chat=True)
+            return
+        staged = len(sess.items) == 1 and sess.items[0].kind == "photo"
         await msg.reply_text(
-            _emoji_pack_help_text(),
+            _emoji_pack_help_text(staged=staged),
             parse_mode=ParseMode.HTML,
             reply_markup=_emoji_pack_menu_keyboard(),
+            disable_web_page_preview=True,
         )
         return
 
     file_id, filename = media
+    if _guess_upload_mime(filename).startswith("image/") and not opts.static:
+        opts.static = True
     status = await msg.reply_text(
-        f"🧩 Queuing emoji split ({opts.cols}×{opts.rows})…",
+        _emoji_pack_progress_text("queue", opts),
         parse_mode=ParseMode.HTML,
     )
     try:
-        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_PHOTO)
         file_bytes, filename = await _download_telegram_file(context, file_id, filename)
-        queued = await _post_emoji_pack_async(file_bytes, filename, opts)
-        if not queued.get("ok"):
-            await status.edit_text(_format_emoji_pack_result(queued, opts), parse_mode=ParseMode.HTML)
-            return
-        job_id = str(queued.get("job_id") or "")
-        if not job_id:
-            await status.edit_text("❌ API did not return a job_id.", parse_mode=ParseMode.HTML)
-            return
-
-        async def _on_stage(stage: str, _payload: dict) -> None:
-            label = {
-                "queued": "Queued…",
-                "splitting": "Splitting grid (ffmpeg)…",
-                "uploading": "Uploading pack to Telegram…",
-                "followup": "Importing dividers / sketchbook preset…",
-                "done": "Done.",
-                "failed": "Failed.",
-            }.get(stage, stage)
+        sess.last_emoji_preview = _render_grid_preview_png(file_bytes, opts.cols, opts.rows)
+        if sess.last_emoji_preview:
+            await _send_grid_preview(context, msg.chat_id, file_bytes, opts.cols, opts.rows)
             try:
                 await status.edit_text(
-                    f"🧩 <b>{html.escape(label)}</b>\nJob <code>{html.escape(job_id)}</code>",
+                    _emoji_pack_progress_text("preview", opts),
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
                 pass
-
-        result = await _poll_emoji_pack_job(job_id, on_stage=_on_stage)
-        await status.edit_text(_format_emoji_pack_result(result, opts), parse_mode=ParseMode.HTML)
+        else:
+            try:
+                await status.edit_text(
+                    _emoji_pack_progress_text("encoding", opts),
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        split_only = not (opts.upload or opts.dividers or opts.preset)
+        want_followup = opts.dividers or opts.preset
+        result = await _post_emoji_pack_sync(
+            file_bytes,
+            filename,
+            opts,
+            upload_telegram=bool(opts.upload and not want_followup),
+        )
+        if not result.get("ok"):
+            await status.edit_text(_format_emoji_pack_result(result, opts), parse_mode=ParseMode.HTML)
+            return
+        job_id = str(result.get("job_id") or (result.get("split") or {}).get("job_id") or "")
+        if not job_id:
+            await status.edit_text("❌ Split finished but job id missing.", parse_mode=ParseMode.HTML)
+            return
+        _remember_emoji_job(sess, job_id, opts)
+        try:
+            await status.edit_text(
+                _emoji_pack_progress_text("encoding", opts, job_id),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
+        if opts.upload and (want_followup or not result.get("upload")):
+            await _execute_emoji_pack_publish(
+                update,
+                context,
+                opts,
+                job_id,
+                deliver_chat=True,
+            )
+            return
+        if split_only and not result.get("upload"):
+            text = _format_emoji_pack_result(result, opts)
+            await status.edit_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=_emoji_pack_publish_keyboard(),
+            )
+            return
+        text = _format_emoji_pack_result(result, opts)
+        markup = None if result.get("upload") else _emoji_pack_publish_keyboard()
+        await status.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except httpx.ConnectError:
         await status.edit_text(
             f"Cannot reach TBCC API at <code>{html.escape(API_BASE)}</code>. "
@@ -3268,8 +3699,9 @@ async def _execute_emoji_pack(
     except Exception as e:
         logger.exception("emoji_pack failed")
         report_bot_error("album-composer-bot", "emoji_pack", e)
+        err = str(e).strip() or type(e).__name__
         await status.edit_text(
-            f"❌ Emoji pack error\n\n<code>{html.escape(str(e)[:400])}</code>",
+            f"❌ Failed\n\n<code>{html.escape(err[:400])}</code>",
             parse_mode=ParseMode.HTML,
         )
 
