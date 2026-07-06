@@ -214,6 +214,53 @@ def test_watchdog_actions_gated_when_remediate_disabled():
     assert out["overdue_count"] == 5
 
 
+def test_watchdog_holds_resume_on_send_failure_signature():
+    # Overdue persists across the streak, queue empty, both post workers alive: the sends
+    # are failing (not the queue stalling). The breaker holds resume and defers to per-row
+    # auto-pause instead of churning purge+re-enqueue.
+    sh.reset_scheduler_watchdog_state()
+    sched = {
+        "beat_running": True,
+        "celery_post_worker_running": True,
+        "celery_post_scheduler_worker_running": True,
+    }
+    stack, _ = _watchdog_env(overdue=3, post_len=0, sched=sched)
+    with stack:
+        with patch(
+            "app.services.post_scheduler.scheduled_drain_snapshot",
+            return_value={"due_len": 0, "scheduler_queue": 0},
+        ), patch("app.services.post_scheduler.resume_scheduled_posting") as resume:
+            # Prime the overdue streak past the breaker threshold (default 2).
+            sh._WATCHDOG_OVERDUE_STREAK = sh._watchdog_send_failure_streak()
+            out = sh.scheduler_watchdog_tick()
+    resume.assert_not_called()
+    assert any(a["action"] == "send_failure_hold" for a in out["actions"])
+
+
+def test_watchdog_resumes_when_worker_down_even_if_queue_empty():
+    # Same empty-queue / overdue shape, but the scheduler worker is DOWN — that is a stall,
+    # not a send failure. The breaker must not fire; resume still runs.
+    sh.reset_scheduler_watchdog_state()
+    sched = {
+        "beat_running": True,
+        "celery_post_worker_running": True,
+        "celery_post_scheduler_worker_running": False,
+    }
+    stack, _ = _watchdog_env(overdue=3, post_len=0, sched=sched)
+    with stack:
+        with patch(
+            "app.services.post_scheduler.scheduled_drain_snapshot",
+            return_value={"due_len": 0, "scheduler_queue": 0},
+        ), patch(
+            "app.services.post_scheduler.resume_scheduled_posting",
+            return_value={"ok": True},
+        ) as resume:
+            sh._WATCHDOG_OVERDUE_STREAK = sh._watchdog_send_failure_streak()
+            out = sh.scheduler_watchdog_tick()
+    resume.assert_called_once_with(purge_post_queue=True)
+    assert not any(a["action"] == "send_failure_hold" for a in out["actions"])
+
+
 def test_fast_snapshot_uses_cache_and_never_scans():
     sh.reset_scheduler_watchdog_state()
     with patch(

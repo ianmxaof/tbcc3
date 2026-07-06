@@ -1270,6 +1270,45 @@ def _watchdog_drain_consumer_stuck(snap: dict[str, Any]) -> bool:
     return False
 
 
+def _watchdog_send_failure_streak() -> int:
+    """
+    Consecutive overdue ticks (queue empty, workers up) before the watchdog concludes
+    sends are failing rather than the queue stalling. Reuses TBCC_WATCHDOG_FORCE_RESTART_STREAK
+    (historically a no-op) so an existing operator setting keeps meaning "how patient the
+    breaker is." Floor of 2: a single overdue tick before the first enqueue is normal.
+    """
+    raw = (os.getenv("TBCC_WATCHDOG_FORCE_RESTART_STREAK") or "2").strip()
+    try:
+        return max(2, min(20, int(raw)))
+    except ValueError:
+        return 2
+
+
+def _watchdog_send_failure_suspected(
+    sched: dict[str, Any] | None, post_len: int, drain_snap: dict[str, Any]
+) -> bool:
+    """
+    Distinguish "sends failing" from "queue stalled".
+
+    When schedulers stay overdue for several ticks yet the scheduler queue AND the Redis
+    due-queue are both empty and both post workers are alive, the posts drained but their
+    sends failed (Telegram lock/flood/auth) — they are not stuck in a queue. Re-enqueuing
+    them (resume_scheduled_posting purge=True) just churns doomed rows; poster_worker owns
+    per-row auto-pause. Returning True tells the watchdog to hold, not restart.
+    """
+    if post_len > 0:
+        return False
+    if int((drain_snap or {}).get("due_len") or 0) > 0:
+        return False
+    if _WATCHDOG_OVERDUE_STREAK < _watchdog_send_failure_streak():
+        return False
+    if not sched:
+        return False
+    return bool(sched.get("celery_post_scheduler_worker_running")) and bool(
+        sched.get("celery_post_worker_running")
+    )
+
+
 def _watchdog_import_idle_dwell_minutes() -> int:
     """Restore import_burst focus once no import job has been processing this long."""
     raw = (os.getenv("TBCC_WATCHDOG_IMPORT_IDLE_MINUTES") or "3").strip()
@@ -1387,6 +1426,20 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
 
         # Overdue schedulers OR scheduler-lane backlog: purge, clear locks, re-enqueue.
         resume_needed = overdue > 0 or post_len >= backlog_threshold
+
+        # Circuit breaker: workers up + both queues empty + overdue persisting means the
+        # sends themselves are failing, not the queue stalling. Re-enqueuing just churns
+        # doomed rows; poster_worker's per-row auto-pause owns recovery. Hold, don't restart.
+        if resume_needed and _watchdog_send_failure_suspected(sched, post_len, drain_snap):
+            resume_needed = False
+            _record_watchdog_action(
+                "send_failure_hold",
+                f"overdue_streak={_WATCHDOG_OVERDUE_STREAK} queue_empty workers_up: "
+                "holding resume (per-row auto-pause owns recovery)",
+                actions,
+                {"ok": True},
+            )
+
         if resume_needed and _auto_remediate_cooldown_ok("resume_scheduled_posting"):
             try:
                 r = resume_scheduled_posting(purge_post_queue=True)
