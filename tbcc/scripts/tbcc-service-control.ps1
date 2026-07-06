@@ -1780,7 +1780,11 @@ function Start-TbccWtTab {
 
   $openingNewWindow = ($NewWindow -or -not $WtHostPid)
   if (-not $openingNewWindow -and (Get-Command Invoke-TbccWtCommandSilent -ErrorAction SilentlyContinue)) {
+    $doDemote = ((Get-Command Test-TbccWtNewTabBackground -ErrorAction SilentlyContinue) -and (Test-TbccWtNewTabBackground -TbccRoot $TbccRoot) -and -not (Get-TbccWtHostForeground -WtHostPid $WtHostPid))
+    $demote = if ($doDemote) { Start-TbccWtHostDemotionAsync -WtHostPid $WtHostPid } else { $null }
     $null = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @($al.ToArray())
+    if ($demote) { Stop-TbccWtHostDemotionAsync -Job $demote }
+    elseif ($doDemote) { $null = Set-TbccWtHostWindowBackground -WtHostPid $WtHostPid }
     return $true
   }
   $winStyle = if ($openingNewWindow -and $Minimized) { 'Minimized' } else { 'Normal' }
@@ -2249,7 +2253,11 @@ function Start-TbccWtTabs {
   }
 
   if ($reuseWindow -and (Get-Command Invoke-TbccWtCommandSilent -ErrorAction SilentlyContinue)) {
+    $doDemote = ((Get-Command Test-TbccWtNewTabBackground -ErrorAction SilentlyContinue) -and (Test-TbccWtNewTabBackground -TbccRoot $TbccRoot) -and -not (Get-TbccWtHostForeground -WtHostPid $WtHostPid))
+    $demote = if ($doDemote) { Start-TbccWtHostDemotionAsync -WtHostPid $WtHostPid } else { $null }
     $null = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @($al.ToArray()) -TimeoutMs 120000
+    if ($demote) { Stop-TbccWtHostDemotionAsync -Job $demote }
+    elseif ($doDemote) { $null = Set-TbccWtHostWindowBackground -WtHostPid $WtHostPid }
     Refresh-TbccWtHostPid -TbccRoot $TbccRoot -PreferredPid $WtHostPid
     return $true
   }
