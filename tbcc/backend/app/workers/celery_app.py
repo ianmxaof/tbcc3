@@ -72,8 +72,17 @@ celery.conf.task_routes = {
     "app.workers.grant_access_worker.*": {"queue": "subscription"},
     "app.workers.milestone_worker.*": {"queue": "subscription"},
     "app.workers.landing_bulletin_worker.*": {"queue": "subscription"},
-    # Last.fm relay polls on the general worker so TBCC-Celery-Post stays reserved for channel posts.
-    "app.workers.listening_relay_worker.*": {"queue": "celery"},
+    # Ops lanes (Phase 4): heavy, non-latency-critical Beat ticks route off the home `celery`
+    # worker so run_schedule (post_scheduler lane) never serializes behind them on the solo pool.
+    # Consumed by TBCC-Celery-Ops (-Q ops_growth,ops_relay,ops_erome). If that worker is not
+    # running, add these queues to TBCC_CELERY_HOME_QUEUES or the tasks strand in Redis.
+    "app.workers.listening_relay_worker.*": {"queue": "ops_relay"},
+    "app.workers.export_flywheel_worker.*": {"queue": "ops_growth"},
+    "app.workers.income_poll_worker.*": {"queue": "ops_growth"},
+    "app.workers.market_intel_worker.*": {"queue": "ops_growth"},
+    "app.workers.storage_pool_seed_worker.*": {"queue": "ops_growth"},
+    "app.workers.erome_analytics_worker.*": {"queue": "ops_erome"},
+    # Light / user-facing tasks stay on the home worker.
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
     "app.workers.sent_cache_composer_worker.*": {"queue": "telegram"},
@@ -85,11 +94,7 @@ celery.conf.task_routes = {
     "app.workers.topic_mirror_worker.*": {"queue": "telegram"},
     "app.workers.thumbnail_warm_worker.*": {"queue": "telegram"},
     "app.workers.k2s_mirror_worker.*": {"queue": "celery"},
-    "app.workers.storage_pool_seed_worker.*": {"queue": "celery"},
     "app.workers.content_performance_worker.*": {"queue": "celery"},
-    "app.workers.income_poll_worker.*": {"queue": "celery"},
-    "app.workers.erome_analytics_worker.*": {"queue": "celery"},
-    "app.workers.market_intel_worker.*": {"queue": "celery"},
     "app.workers.emoji_factory_worker.*": {"queue": "celery"},
 }
 
@@ -188,6 +193,20 @@ celery.conf.beat_schedule["storage-pool-seed"] = {
     "task": "app.workers.storage_pool_seed_worker.seed_pools_from_storage_hub",
     "schedule": crontab(minute=40, hour=_storage_pool_seed_crontab_hours()),
 }
+
+
+# Phase 1: internal thin-lane backfill (replaces public drop-signal posts). Opt-in; routes to
+# ops_growth (Phase 4). Shares the global Telegram account lock with posting — keep to ~4h.
+if (os.getenv("TBCC_THIN_POOL_BACKFILL_ENABLED") or "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    celery.conf.beat_schedule["thin-pool-backfill"] = {
+        "task": "app.workers.storage_pool_seed_worker.backfill_thin_pools",
+        "schedule": crontab(minute=55, hour="*/4"),
+    }
 
 
 def _income_poll_crontab_hours() -> str:

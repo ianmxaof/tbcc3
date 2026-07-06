@@ -199,6 +199,13 @@ async def forum_erome_upload_from_bot(body: ForumEromeUploadFromBotBody, db: Ses
     )
     if not report.get("ok"):
         return report
+    # Producer signal for the idle governor: fresh erome album -> wake erome_view_sync.
+    try:
+        from app.services.idle_service_governor import touch_service_activity
+
+        touch_service_activity("erome_view_sync")
+    except Exception:
+        pass
     report["reply_text"] = format_erome_upload_reply(report, html=False)
     return report
 

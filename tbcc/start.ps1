@@ -613,6 +613,9 @@ $cmdAofForum = if ($hasAofForum) { 'cd /d "' + $aofForumDir + '" & npm run dev' 
 $cmdCelery = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,scrape,subscription,telegram'
 $cmdCeleryPost = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post -n post@%h'
 $cmdCeleryPostScheduler = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post_scheduler -n scheduler@%h'
+$celeryOpsQueues = ($dotEnv['TBCC_CELERY_OPS_QUEUES'] -as [string]).Trim()
+if (-not $celeryOpsQueues) { $celeryOpsQueues = 'ops_growth,ops_relay,ops_erome' }
+$cmdCeleryOps = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q ' + $celeryOpsQueues + ' -n ops@%h'
 $cmdBeat = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app beat -l info'
 $cmdPay = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.payment_bot'
 $cmdSecretary = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m bots.secretary_bot'
@@ -716,8 +719,8 @@ if ($wtTabs) {
     $cmds += $cmdAofForum
   }
   if ($fullStack -and $redisOk) {
-    $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Celery-Post-Scheduler', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
-    $cmds += $cmdCelery, $cmdCeleryPost, $cmdCeleryPostScheduler, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot, $cmdAlbumComposer
+    $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Celery-Post-Scheduler', 'TBCC-Celery-Ops', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
+    $cmds += $cmdCelery, $cmdCeleryPost, $cmdCeleryPostScheduler, $cmdCeleryOps, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot, $cmdAlbumComposer
     if (-not $leanStack) {
       $titles += 'TBCC-MacroSearchBot', 'TBCC-CompanionBot', 'TBCC-AdminBot'
       $cmds += $cmdMacroSearch, $cmdCompanion, $cmdAdminBot
@@ -871,6 +874,7 @@ if ($fullStack) {
     Start-TbccServiceWindow -Title "TBCC-Celery" -Command $cmdCelery
     Start-TbccServiceWindow -Title "TBCC-Celery-Post" -Command $cmdCeleryPost
     Start-TbccServiceWindow -Title "TBCC-Celery-Post-Scheduler" -Command $cmdCeleryPostScheduler
+    Start-TbccServiceWindow -Title "TBCC-Celery-Ops" -Command $cmdCeleryOps
     Write-Host "  Celery workers started." -ForegroundColor Green
     Write-Host '[5/8] Starting Celery Beat (new window)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-Beat" -Command $cmdBeat

@@ -513,6 +513,7 @@ function Open-TbccSupervisorMiniPanel {
 }
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
+$menu.ShowItemToolTips = $true
 
 $startStackItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $startStackItem.Text = "Start stack"
@@ -548,7 +549,7 @@ $stopAllItem.ToolTipText = "Close all TBCC Windows Terminal tabs and stack proce
 
 $restartMenu = New-Object System.Windows.Forms.ToolStripMenuItem
 $restartMenu.Text = "Services"
-$restartMenu.ToolTipText = "[on] running | [--] stopped | [off] disabled - click toggle, Ctrl+click restart"
+$restartMenu.ToolTipText = "Plain labels + hover for queues, Beat, sessions. [on]/[--]/[off] - click toggle, Ctrl restart"
 [void]$menu.Items.Add($restartMenu)
 
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))

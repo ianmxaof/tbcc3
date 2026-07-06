@@ -86,6 +86,21 @@ def liveness_checkout_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def liveness_drop_signals_public_enabled() -> bool:
+    """
+    Public "this lane is thin" drop-signal posts. Default on (current behavior). Set
+    TBCC_LIVENESS_DROP_SIGNALS_PUBLIC=0 to stop them publicly — Phase 1 replaces them with
+    internal thin-pool backfill (backfill_thin_pools_from_storage_hub).
+    """
+    raw = (os.getenv("TBCC_LIVENESS_DROP_SIGNALS_PUBLIC") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+# Sentinel written to posting_auto_pause_reason so re-enabling only un-pauses rows WE paused
+# (never a row auto-paused by real send failures).
+DROP_SIGNAL_DISABLE_REASON = "liveness_drop_signals_public=0"
+
+
 def _a_tag(url: str, anchor: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(anchor)}</a>'
 
@@ -426,7 +441,44 @@ def _enable_pool_backup_posts(db: Session, intervals: dict[str, int], execute: b
     return rows
 
 
+def _drop_signal_rows(db: Session):
+    return (
+        db.query(ScheduledTextPost)
+        .filter(ScheduledTextPost.name.like(f"{DROP_SIGNAL_PREFIX}%"))
+        .all()
+    )
+
+
+def _disable_public_drop_signals(db: Session, execute: bool) -> list[dict]:
+    """Pause existing public drop-signal schedulers (TBCC_LIVENESS_DROP_SIGNALS_PUBLIC=0)."""
+    rows: list[dict] = []
+    for sched in _drop_signal_rows(db):
+        already = sched.posting_auto_paused_at is not None
+        rows.append({
+            "name": sched.name,
+            "id": sched.id,
+            "status": "already_disabled" if already else ("would_disable" if not execute else "disabled"),
+        })
+        if execute and not already:
+            sched.posting_auto_paused_at = datetime.now(timezone.utc)
+            sched.posting_auto_pause_reason = DROP_SIGNAL_DISABLE_REASON
+    return rows
+
+
+def _reactivate_public_drop_signals(db: Session) -> None:
+    """Clear ONLY the pause we set (sentinel reason) so real send-failure pauses stay put."""
+    for sched in _drop_signal_rows(db):
+        if sched.posting_auto_pause_reason == DROP_SIGNAL_DISABLE_REASON:
+            sched.posting_auto_paused_at = None
+            sched.posting_auto_pause_reason = None
+            sched.send_failure_streak = 0
+
+
 def _upsert_drop_signals(db: Session, lv: dict[str, str], intervals: dict[str, int], execute: bool) -> list[dict]:
+    if not liveness_drop_signals_public_enabled():
+        return _disable_public_drop_signals(db, execute)
+    if execute:
+        _reactivate_public_drop_signals(db)
     footer = build_addlist_footer(lv)
     rows: list[dict] = []
     signal_interval = max(intervals["thin_min"] * 2, 180)

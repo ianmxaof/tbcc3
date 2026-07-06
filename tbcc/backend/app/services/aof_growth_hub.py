@@ -1034,6 +1034,71 @@ def storage_pool_seed_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def thin_pool_backfill_enabled() -> bool:
+    raw = (os.getenv("TBCC_THIN_POOL_BACKFILL_ENABLED") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _pool_content_depth(db: Session, pool_id: int) -> int:
+    """Imported depth = approved + pending (storage-hub deposits land pending, so approved
+    alone never rises and the lane would look thin forever)."""
+    from sqlalchemy import func
+
+    from app.models.media import Media
+
+    return int(
+        db.query(func.count(Media.id))
+        .filter(Media.pool_id == int(pool_id), Media.status.in_(("approved", "pending")))
+        .scalar()
+        or 0
+    )
+
+
+def backfill_thin_pools_from_storage_hub(
+    db: Session, *, execute: bool = True, limit: int | None = None
+) -> dict[str, Any]:
+    """
+    Internal replacement for public "thin lane" drop signals: import Storage Hub content into
+    lanes whose pool depth is below the network median, so thin lanes trend toward the median.
+    Reuses queue_storage_hub_deposits narrowed to the thin topic_keys only (bounded, non-
+    destructive). Deposits share the global Telegram account lock with posting — keep the
+    caller's cadence conservative (default Beat entry runs every 4h and is opt-in).
+    """
+    import statistics
+
+    from app.services.export_flywheel_service import pool_id_for_network_key
+
+    depths: dict[str, int] = {}
+    for key in sorted(CONTENT_LANE_NETWORK_KEYS):
+        pid = pool_id_for_network_key(db, key)
+        depths[key] = _pool_content_depth(db, pid) if pid else 0
+
+    report: dict[str, Any] = {"ok": True, "execute": execute, "depths": depths}
+    if not depths:
+        report.update({"thin_lanes": [], "reason": "no_lanes"})
+        return report
+
+    median = float(statistics.median(depths.values()))
+    thin = sorted(k for k, v in depths.items() if v < median)
+    report.update({"median": median, "thin_lanes": thin})
+    if not thin:
+        report["reason"] = "no_thin_lanes"
+        return report
+    if not execute:
+        report["would_queue"] = thin
+        return report
+
+    batch = limit if limit is not None else storage_pool_seed_batch_size()
+    report["queued"] = queue_storage_hub_deposits(
+        db,
+        topic_keys=thin,
+        limit=batch,
+        media_types="both",
+        include_topic_mirror=False,
+    )
+    return report
+
+
 def list_storage_hub_import_lanes(db: Session) -> dict[str, Any]:
     """Content lanes from Storage Hub map with ensured channel/pool rows for the dashboard."""
     from app.data.aof_network import network_channel_by_key

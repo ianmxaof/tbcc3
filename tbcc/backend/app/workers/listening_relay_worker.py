@@ -29,6 +29,11 @@ def _ensure_row(db) -> ListeningRelaySettings:
 
 @celery.task(name="app.workers.listening_relay_worker.poll_listening_relay_lastfm")
 def poll_listening_relay_lastfm():
+    from app.services.idle_service_governor import governed_service_active
+
+    if not governed_service_active("listening_relay"):
+        return {"ok": True, "skipped": "governed_idle"}
+
     db = SessionLocal()
     try:
         row = _ensure_row(db)

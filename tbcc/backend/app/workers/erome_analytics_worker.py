@@ -14,6 +14,10 @@ def sync_erome_views():
     from app.database.session import SessionLocal
     from app.services.content_performance import sync_erome_views_to_delivery_ledger
     from app.services.erome_view_sync import sync_ledger_views
+    from app.services.idle_service_governor import governed_service_active
+
+    if not governed_service_active("erome_view_sync"):
+        return {"ok": True, "skipped": "governed_idle"}
 
     try:
         from app.services.erome_browse_intel import sync_from_drop_file

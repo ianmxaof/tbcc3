@@ -629,6 +629,206 @@ function Get-TbccStackServiceById {
     Where-Object { $_.Id -eq $ServiceId } | Select-Object -First 1)
 }
 
+function Get-TbccServiceOpsCatalog {
+  <#
+  Phase 6 (Calm Ops): plain-language tray labels + linked queues / Beat / related services.
+  Keys merge onto stack service objects in Merge-TbccServiceOpsCatalog.
+  #>
+  return @{
+    backend = @{
+      MenuGroup  = "core"
+      MenuLabel  = "API + ops watchdog"
+      MenuBeat   = @("focus watch loop", "idle governor tick (opt-in)")
+      MenuRelated = @("beat", "celery_post_scheduler")
+      MenuLane   = "core · :8000"
+    }
+    dashboard = @{
+      MenuGroup = "core"
+      MenuLabel = "Dashboard UI"
+      MenuLane  = "vite · :5173"
+    }
+    forum = @{
+      MenuGroup = "extra"
+      MenuLabel = "AOF Forum dev"
+      MenuLane  = ":3001"
+    }
+    beat = @{
+      MenuGroup  = "celery"
+      MenuLabel  = "Beat cron (enqueues ticks)"
+      MenuBeat   = @("schedule-posts", "listening-relay", "scrape-tick", "loot-promo", "storage-pool-seed", "thin-pool-backfill (opt-in)")
+      MenuRelated = @("celery", "celery_post_scheduler", "celery_ops")
+      MenuLane   = "scheduling"
+    }
+    celery = @{
+      MenuGroup  = "celery"
+      MenuLabel  = "Celery home (imports, scrape, light)"
+      MenuQueues = @("celery", "scrape", "subscription", "telegram")
+      MenuBeat   = @("scrape-scheduler-tick", "loot-daily-promo", "buffer-armory", "aof-milestone-fomo")
+      MenuRelated = @("beat", "celery_post", "celery_ops")
+      MenuLane   = "home worker"
+    }
+    celery_post = @{
+      MenuGroup   = "celery"
+      MenuLabel   = "Celery post (Telegram send)"
+      MenuQueues  = @("post")
+      MenuRelated = @("celery_post_scheduler", "album_composer")
+      MenuSession = "admin_poster.session"
+      MenuLane    = "posting"
+    }
+    celery_post_scheduler = @{
+      MenuGroup  = "celery"
+      MenuLabel  = "Post scheduler (run_schedule)"
+      MenuQueues = @("post_scheduler")
+      MenuBeat   = @("schedule-posts every ~2m")
+      MenuRelated = @("beat", "celery_post")
+      MenuLane   = "scheduling lane"
+    }
+    celery_ops = @{
+      MenuGroup  = "celery"
+      MenuLabel  = "Celery ops (growth / relay / erome)"
+      MenuQueues = @("ops_growth", "ops_relay", "ops_erome")
+      MenuBeat   = @("listening-relay", "export-flywheel", "erome analytics", "income-poll", "thin-pool-backfill")
+      MenuRelated = @("beat", "admin", "celery")
+      MenuLane   = "background ops"
+    }
+    payment = @{
+      MenuGroup = "bots"
+      MenuLabel = "Payment bot"
+      MenuLane  = "revenue /resolve"
+    }
+    secretary = @{
+      MenuGroup = "bots"
+      MenuLabel = "Secretary bot"
+      MenuLane  = "ops commands"
+    }
+    loot = @{
+      MenuGroup = "bots"
+      MenuLabel = "Loot bot"
+      MenuLane  = "modifiers / promos"
+    }
+    album_composer = @{
+      MenuGroup  = "bots"
+      MenuLabel  = "Album composer (remixer)"
+      MenuRelated = @("celery_post")
+      MenuLane   = "emoji / albums"
+    }
+    companion = @{
+      MenuGroup = "bots"
+      MenuLabel = "Companion bot (spicy)"
+      MenuLane  = "optional"
+    }
+    admin = @{
+      MenuGroup   = "bots"
+      MenuLabel   = "Admin / Storage bot (/erome)"
+      MenuSession = "admin.session"
+      MenuRelated = @("celery_ops", "celery")
+      MenuLane    = "scrape + storage hub"
+    }
+    macro_search = @{
+      MenuGroup = "bots"
+      MenuLabel = "Macro search bot"
+      MenuLane  = "catalog"
+    }
+    openclaw = @{
+      MenuGroup = "extra"
+      MenuLabel = "OpenClaw gateway"
+      MenuLane  = "growth agent"
+    }
+    llm_chat = @{
+      MenuGroup = "extra"
+      MenuLabel = "LLM chat bot"
+      MenuLane  = "catalog only"
+    }
+    watch = @{
+      MenuGroup = "extra"
+      MenuLabel = "Watch folder organizer"
+      MenuLane  = "filesystem"
+    }
+    nsfw = @{
+      MenuGroup = "extra"
+      MenuLabel = "NSFW detect"
+      MenuLane  = ":8001 enrichment"
+    }
+    lustpress = @{
+      MenuGroup = "extra"
+      MenuLabel = "Lustpress"
+      MenuLane  = ":3000 enrichment"
+    }
+    clip = @{
+      MenuGroup = "extra"
+      MenuLabel = "CLIP categorize"
+      MenuLane  = ":8002 enrichment"
+    }
+  }
+}
+
+function Merge-TbccServiceOpsCatalog {
+  param(
+    [Parameter(Mandatory = $true)]$Service,
+    $DotEnv = @{}
+  )
+  $catalog = Get-TbccServiceOpsCatalog
+  $meta = $catalog[[string]$Service.Id]
+  if (-not $meta) {
+    $meta = @{ MenuGroup = "extra" }
+    $title = [string]$Service.Title
+    if (-not $Service.MenuLabel -and $title -match '^TBCC-') {
+      $meta.MenuLabel = $title.Substring(5)
+    }
+  }
+  foreach ($key in $meta.Keys) {
+    $Service | Add-Member -NotePropertyName $key -NotePropertyValue $meta[$key] -Force
+  }
+  if ($Service.Id -eq "celery" -and $DotEnv) {
+    $hq = ($DotEnv["TBCC_CELERY_HOME_QUEUES"] -as [string]).Trim()
+    if ($hq) { $Service | Add-Member -NotePropertyName MenuQueues -NotePropertyValue @($hq -split ',') -Force }
+  }
+  if ($Service.Id -eq "celery_ops" -and $DotEnv) {
+    $oq = ($DotEnv["TBCC_CELERY_OPS_QUEUES"] -as [string]).Trim()
+    if ($oq) { $Service | Add-Member -NotePropertyName MenuQueues -NotePropertyValue @($oq -split ',') -Force }
+  }
+}
+
+function Get-TbccServiceMenuTooltip {
+  param(
+    $Service,
+    [string]$Status = "",
+    [bool]$UserEnabled = $true
+  )
+  $lines = New-Object System.Collections.ArrayList
+  if ($Service.MenuLane) { [void]$lines.Add([string]$Service.MenuLane) }
+  if ($Service.MenuQueues -and @($Service.MenuQueues).Count -gt 0) {
+    $q = @($Service.MenuQueues)
+    if ($q.Count -eq 1 -and [string]$q[0] -match ',') { $q = [string]$q[0] -split ',' }
+    [void]$lines.Add(("Queues: " + (($q | ForEach-Object { $_.Trim() }) -join ", ")))
+  }
+  if ($Service.MenuBeat -and @($Service.MenuBeat).Count -gt 0) {
+    [void]$lines.Add(("Beat: " + (@($Service.MenuBeat) -join "; ")))
+  }
+  if ($Service.MenuSession) { [void]$lines.Add(("Session: " + [string]$Service.MenuSession)) }
+  if ($Service.MenuRelated -and @($Service.MenuRelated).Count -gt 0) {
+    [void]$lines.Add(("Related tabs: " + (@($Service.MenuRelated) -join ", ")))
+  }
+  if ($Service.Port -gt 0) { [void]$lines.Add(("Port: " + $Service.Port)) }
+  if ($UserEnabled) {
+    if ($Status -eq "up") {
+      [void]$lines.Add("Click: stop/disable  |  Ctrl+click: restart")
+    } else {
+      [void]$lines.Add("Click: enable + start  |  Ctrl+click: restart")
+    }
+  } else {
+    [void]$lines.Add("Click: enable + start")
+  }
+  return ($lines -join [Environment]::NewLine)
+}
+
+function Get-TbccServicePanelShortLabel {
+  param($Service)
+  $label = if ($Service.MenuLabel) { [string]$Service.MenuLabel } else { [string]$Service.Title }
+  if ($label.Length -gt 22) { return ($label.Substring(0, 20) + "..") }
+  return $label
+}
+
 function Get-TbccStackServices {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
@@ -685,6 +885,13 @@ function Get-TbccStackServices {
         Id = "celery_post_scheduler"; Title = "TBCC-Celery-Post-Scheduler"; Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q post_scheduler";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post_scheduler -n scheduler@%h')
       })
+    $celeryOpsQueues = ($dotEnv['TBCC_CELERY_OPS_QUEUES'] -as [string]).Trim()
+    if (-not $celeryOpsQueues) { $celeryOpsQueues = 'ops_growth,ops_relay,ops_erome' }
+    [void]$list.Add([pscustomobject]@{
+        Id = "celery_ops"; Title = "TBCC-Celery-Ops";
+        Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q ops_growth";
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q ' + $celeryOpsQueues + ' -n ops@%h')
+      })
     [void]$list.Add([pscustomobject]@{
         Id = "beat"; Title = "TBCC-Beat"; Port = 0; CommandMatch = "app\.workers\.celery_app beat";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app beat -l info')
@@ -699,12 +906,12 @@ function Get-TbccStackServices {
       })
     if (-not $leanStack -or $MenuCatalog) {
       [void]$list.Add([pscustomobject]@{
-          Id = "companion"; Title = "TBCC-CompanionBot"; MenuLabel = "TBCC-CompanionBot (spicy)";
+          Id = "companion"; Title = "TBCC-CompanionBot";
           Port = 0; CommandMatch = "bots\.companion_bot";
           Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.companion_bot')
         })
       [void]$list.Add([pscustomobject]@{
-          Id = "admin"; Title = "TBCC-AdminBot"; MenuLabel = "TBCC-AdminBot (Storage /erome)";
+          Id = "admin"; Title = "TBCC-AdminBot";
           Port = 0; CommandMatch = "bots\.admin_bot";
           Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.admin_bot')
         })
@@ -720,7 +927,7 @@ function Get-TbccStackServices {
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.loot_bot')
       })
     [void]$list.Add([pscustomobject]@{
-        Id = "album_composer"; Title = "TBCC-AlbumComposer"; MenuLabel = "TBCC-AlbumComposer (remixer)";
+        Id = "album_composer"; Title = "TBCC-AlbumComposer";
         Port = 0; CommandMatch = "bots\.album_composer_bot";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.album_composer_bot')
       })
@@ -799,6 +1006,10 @@ function Get-TbccStackServices {
         } catch {}
       }
     }
+  }
+
+  foreach ($svc in $list) {
+    Merge-TbccServiceOpsCatalog -Service $svc -DotEnv $dotEnv
   }
 
   return @($list.ToArray())
@@ -1558,9 +1769,16 @@ function Initialize-TbccServiceToggleMenu {
   if (-not $PSBoundParameters.ContainsKey('MenuCatalog')) { $MenuCatalog = $true }
   Clear-TbccRestartServiceMenu -MenuItem $MenuItem
   $map = @{}
+  $prevGroup = ""
   foreach ($svc in (Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog)) {
+    $grp = if ($svc.MenuGroup) { [string]$svc.MenuGroup } else { "extra" }
+    if ($prevGroup -and $grp -ne $prevGroup) {
+      [void]$MenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+    }
+    $prevGroup = $grp
     $item = New-Object System.Windows.Forms.ToolStripMenuItem
     $item.Text = Get-TbccServiceMenuText -Service $svc
+    $item.ToolTipText = Get-TbccServiceMenuTooltip -Service $svc
     $item.Tag = @{ Id = $svc.Id; Title = $svc.Title; TbccUserEnabled = $true }
     $sid = $svc.Id
     [void]$item.Add_Click({
@@ -1581,8 +1799,13 @@ function Initialize-TbccServiceToggleMenu {
   $hint.Text = "[on] running  [--] stopped  [off] disabled  |  click toggle  Ctrl restart"
   $hint.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
   $hint.Enabled = $false
+  $hint2 = New-Object System.Windows.Forms.ToolStripMenuItem
+  $hint2.Text = "Hover for queues, Beat ticks, sessions, and related tabs (Calm Ops)"
+  $hint2.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
+  $hint2.Enabled = $false
   [void]$MenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
   [void]$MenuItem.DropDownItems.Add($hint)
+  [void]$MenuItem.DropDownItems.Add($hint2)
   return $map
 }
 
@@ -1603,15 +1826,7 @@ function Apply-TbccServiceMenuItemsUi {
     $item.Tag.TbccUserEnabled = [bool]$row.UserEnabled
     $item.Tag.TbccRunning = $running
     $item.Enabled = $true
-    if ($row.UserEnabled) {
-      if ($running) {
-        $item.ToolTipText = "Running - click to stop/disable | Ctrl+click restart"
-      } else {
-        $item.ToolTipText = "Stopped (enabled) - click to disable | Ctrl+click start"
-      }
-    } else {
-      $item.ToolTipText = "Disabled - click to enable and start"
-    }
+    $item.ToolTipText = Get-TbccServiceMenuTooltip -Service $row.Service -Status $row.Status -UserEnabled:([bool]$row.UserEnabled)
   }
 }
 

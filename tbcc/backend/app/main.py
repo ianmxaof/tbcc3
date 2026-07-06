@@ -90,6 +90,13 @@ def on_startup():
                         # Watchdog owns the post-queue lane; run it before auto_remediate.
                         scheduler_watchdog_tick()
                         auto_remediate_health_conflicts()
+                        # Idle governor (opt-in) self-rate-limits to its eval interval.
+                        try:
+                            from app.services.idle_service_governor import governor_tick
+
+                            governor_tick()
+                        except Exception:
+                            logger.debug("idle governor tick failed", exc_info=True)
                     except Exception:
                         logger.debug("focus watch loop tick failed", exc_info=True)
 

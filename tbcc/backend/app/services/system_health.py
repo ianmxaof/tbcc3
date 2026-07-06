@@ -611,11 +611,15 @@ def _scheduling_process_counts() -> dict[str, int]:
     post = _win_leaf_worker_count(
         r"app\.workers\.celery_app worker.*-Q\s+post\s+-n\s+post@"
     )
+    ops = _win_leaf_worker_count(
+        r"app\.workers\.celery_app worker.*-Q\s+ops_growth|-n\s+ops@"
+    )
     return {
         "beat": beat,
         "celery_worker": worker,
         "celery_post_scheduler": post_scheduler,
         "celery_post": post,
+        "celery_ops": ops,
     }
 
 
@@ -658,10 +662,12 @@ def collect_scheduling_health() -> dict[str, Any]:
         "celery_worker_processes": counts["celery_worker"],
         "celery_post_scheduler_worker_processes": scheduler_workers,
         "celery_post_worker_processes": post_workers,
+        "celery_ops_worker_processes": counts["celery_ops"],
         "beat_running": counts["beat"] > 0,
         "celery_worker_running": counts["celery_worker"] > 0,
         "celery_post_scheduler_worker_running": scheduler_workers > 0,
         "celery_post_worker_running": post_workers > 0,
+        "celery_ops_worker_running": counts["celery_ops"] > 0,
         "pool_auto_post_enabled": pool_auto,
         "scheduling_paused_by_focus": pause,
         "focus_profile": focus_profile,
