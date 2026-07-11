@@ -60,7 +60,7 @@ def _last_loud_at() -> datetime | None:
             return None
         return datetime.fromisoformat(str(raw).replace("Z", ""))
     except Exception as e:
-        logger.debug("main group notify gate read: %s", e)
+        logger.debug("commons notify gate read: %s", e)
         return None
 
 
@@ -71,7 +71,7 @@ def _record_loud_notify() -> None:
         ttl = int(notify_window_hours() * 3600) + 3600
         r.set(REDIS_NOTIFY_KEY, now, ex=ttl)
     except Exception as e:
-        logger.debug("main group notify gate write: %s", e)
+        logger.debug("commons notify gate write: %s", e)
 
 
 def resolve_main_group_send_silent(
@@ -97,7 +97,7 @@ def resolve_main_group_send_silent(
     window = timedelta(hours=notify_window_hours())
     if last and _utcnow() - last < window:
         logger.info(
-            "main group notify gate: forcing silent (last loud %s ago, window %.1fh, media=%s)",
+            "commons notify gate: forcing silent (last loud %s ago, window %.1fh, media=%s)",
             _utcnow() - last,
             notify_window_hours(),
             had_media,
@@ -105,7 +105,7 @@ def resolve_main_group_send_silent(
         return True
 
     _record_loud_notify()
-    logger.info("main group notify gate: allowing loud send (media=%s)", had_media)
+    logger.info("commons notify gate: allowing loud send (media=%s)", had_media)
     return False
 
 

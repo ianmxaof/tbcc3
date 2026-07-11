@@ -6,9 +6,9 @@ import re
 from dataclasses import dataclass
 
 MAIN_GROUP_IDENT = "-1003206350461"
-MAIN_GROUP_INVITE = "https://t.me/+hMQzGsBFjF02MDkx"
+MAIN_GROUP_INVITE = "https://t.me/+NWathiLSqZ1lMzlh"
 ADDLIST_RAW = "https://t.me/addlist/r-7_7CGIkExhMDcx"
-MAINHUB_RAW = "https://t.me/aofmainhub"
+MAINHUB_RAW = "https://t.me/aof_lootgod_bot?start=loot_free"
 
 STORAGE_HUB_IDENT = "-1003812457581"
 STORAGE_HUB_INVITE = "https://t.me/+KT3qS_OfvNk4N2Mx"
@@ -27,7 +27,7 @@ AOF_FULL_LENGTH_INVITE = "https://t.me/+D1zANbpc18Y0OTMx"
 AOF_FULL_LENGTH_POOL_NAME = "AOF FULL LENGTH POOL"
 
 BULLETIN_MARKER = "AOF LINKS HUB"
-LINKS_HUB_SCHED_NAME = "AOF MAIN — Links Hub bulletin (pinned)"
+LINKS_HUB_SCHED_NAME = "AOF LOOT ROOM — Links Hub bulletin (pinned)"
 CROSS_CHANNEL_SCHED_NAME = "AOF CROSS-CHANNEL SCHEDULER"
 
 
@@ -52,12 +52,12 @@ AOF_NETWORK_CHANNELS: tuple[AofNetworkChannel, ...] = (
         key="main",
         identifier=MAIN_GROUP_IDENT,
         invite=MAIN_GROUP_INVITE,
-        display_name="AOF MAIN GROUP",
-        scheduler_name="AOF MAIN GROUP + X SCHEDULER",
-        pool_name="AOF MAIN GROUP POOL",
-        topic_patterns=_topic("main", "hub", "community"),
+        display_name="AOF LOOT ROOM",
+        scheduler_name="AOF LOOT ROOM + X SCHEDULER",
+        pool_name="AOF LOOT ROOM POOL",
+        topic_patterns=_topic("loot room", "public commons", "community"),
         promo_html=(
-            "🔥 <b>AOF MAIN</b> — hub that feeds the network. "
+            "🔥 <b>AOF LOOT ROOM</b> — public commons that feeds the network. "
             "TBCC pipeline · LOOT keys · premium lanes — @aofsubscriptions_bot · /loot · /referral"
         ),
     ),
@@ -222,7 +222,7 @@ if AOF_FULL_LENGTH_IDENT.strip():
         AofNetworkChannel(
             key="full_length",
             identifier=AOF_FULL_LENGTH_IDENT.strip(),
-            invite=(AOF_FULL_LENGTH_INVITE or "").strip() or "https://t.me/aofmainhub",
+            invite=(AOF_FULL_LENGTH_INVITE or "").strip() or MAINHUB_RAW,
             display_name="AOF FULL LENGTH",
             scheduler_name="AOF FULL LENGTH SCHEDULER",
             pool_name=AOF_FULL_LENGTH_POOL_NAME,
@@ -246,8 +246,8 @@ if AOF_FULL_LENGTH_IDENT.strip():
 BULLETIN_CHANNEL_INVITES: dict[str, tuple[str, str]] = {
     ch.key: (ch.display_name, ch.invite) for ch in AOF_NETWORK_CHANNELS if ch.key != "main"
 }
-BULLETIN_CHANNEL_INVITES["main_group"] = ("AOF Main Group", MAIN_GROUP_INVITE)
-BULLETIN_CHANNEL_INVITES["mainhub"] = ("aofmainhub", MAINHUB_RAW)
+BULLETIN_CHANNEL_INVITES["main_group"] = ("AOF Loot Room", MAIN_GROUP_INVITE)
+BULLETIN_CHANNEL_INVITES["mainhub"] = ("aof_lootgod_bot", MAINHUB_RAW)
 BULLETIN_CHANNEL_INVITES["addlist"] = ("ADDLIST", ADDLIST_RAW)
 BULLETIN_CHANNEL_INVITES["vip"] = ("AOF VIP", AOF_VIP_INVITE_PRIMARY)
 

@@ -161,7 +161,7 @@ def replace_stale_gates_in_buttons(buttons_json: str | None, gates: dict[str, st
                 b["url"] = gates[key]
                 changes += 1
             elif "download" not in label:
-                # Network promo buttons without a label match → main hub gate.
+                # Network promo buttons without a label match -> default public gate.
                 b["url"] = gates.get("main_group", u)
                 changes += 1
     return json.dumps(btns), changes

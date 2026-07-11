@@ -36,7 +36,7 @@ def test_infer_lane_from_text():
     assert infer_lane_from_text("AOF Taboo drop", "taboo pack") == "taboo"
     assert infer_lane_from_text("voyeur cam pack") == "voyeur"
     assert infer_lane_from_text("AOF AI deepfake") == "ai"
-    assert infer_lane_from_text("main group bulletin") == "main"
+    assert infer_lane_from_text("public commons bulletin") == "main"
     assert infer_lane_from_text("loot room modifier") == "loot"
 
 

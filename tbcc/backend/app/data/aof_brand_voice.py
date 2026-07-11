@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Core AOF voice (main group, edgy sharpen pass, X armory).
+# Core AOF voice (Loot Room commons, edgy sharpen pass, X armory).
 AOF_CORE_VOICE = (
     "Adult NSFW Telegram network. Audience: depraved, edgy, self-aware degenerates who hate corporate "
     "'bird speak'. Dense and arrogant when minimal; never sound like a SaaS landing page."

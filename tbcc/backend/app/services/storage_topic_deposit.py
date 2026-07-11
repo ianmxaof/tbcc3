@@ -483,7 +483,7 @@ async def run_deposit_subtopic_followup(
 
         mirror_ids = _mirror_task_ids(report) if wait_for_mirror and stored > 0 else []
         if mirror_ids:
-            text = f"{text}\n\n⏳ Mirroring to main group (silent albums)…"
+            text = f"{text}\n\n⏳ Mirroring to Loot Room (silent albums)…"
             await set_message_text(text)
 
             mirror_delay = 0

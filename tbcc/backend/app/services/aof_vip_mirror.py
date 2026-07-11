@@ -160,7 +160,7 @@ def transform_buttons_for_vip(buttons: list[dict], db: Session) -> list[dict]:
             continue
         low = text.lower()
         if vip_strip_checkout_on_mirror() and (
-            "subscribe" in low or "500" in low or "crypto" in low or "main group" in low
+            "subscribe" in low or "500" in low or "crypto" in low or "public commons" in low
         ):
             continue
         if _is_gate_url(url):

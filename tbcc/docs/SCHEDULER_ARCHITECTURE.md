@@ -47,7 +47,7 @@ Dashboard **Lean** view groups rows by `scheduler_category` (or name-regex fallb
 
 | Category | Typical names |
 |----------|---------------|
-| `main_lane` | `* SCHEDULER`, main group hubs |
+| `main_lane` | `* SCHEDULER`, Loot Room commons / network hubs |
 | `bot_commands` | `AOF — bot commands — …` |
 | `liveness` | `AOF — network liveness — …` |
 | `promo_bulletin` | PACKS, Links Hub, cross-channel, celebrations |

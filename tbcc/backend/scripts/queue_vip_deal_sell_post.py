@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Queue pinned AOF VIP deal-seller post on main group (checkout enabled)."""
+"""Queue pinned AOF VIP deal-seller post on Loot Room commons (checkout enabled)."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ VIP_DEAL_SELL_NAME = "AOF VIP — Hall Pass deal seller"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Queue VIP deal-seller post on main group")
+    parser = argparse.ArgumentParser(description="Queue VIP deal-seller post on Loot Room commons")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--pin", action="store_true", help="Pin after send")
     parser.add_argument("--force", action="store_true", help="Re-queue even if already sent")
@@ -35,7 +35,7 @@ def main() -> int:
     try:
         main_ch = db.query(Channel).filter(Channel.identifier == MAIN_GROUP_IDENT).first()
         if not main_ch:
-            print("main group channel not in DB — run ensure scripts first", file=sys.stderr)
+            print("Loot Room commons channel not in DB — run ensure scripts first", file=sys.stderr)
             return 1
         plan_id = resolve_group_access_plan_id(db)
         body = build_vip_deal_caption_html(db, plan_id, include_urgency=True)

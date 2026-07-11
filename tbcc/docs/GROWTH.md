@@ -17,8 +17,8 @@
 
 Replace **both** numeric user ids with:
 
-- **Landing:** your real **landing** chat — public `@YourChannel` or `-100…` (not the `t.me/+hash` invite slug).
-- **Milestone (optional):** often the **main group** `-100…` so members see FOMO; can match landing or stay in DM.
+- **Landing:** the Loot Room Group / public commons chat id (`-100…`, not the `t.me/+hash` invite slug).
+- **Milestone (optional):** usually the same Loot Room commons chat so members see FOMO; can match landing or stay in DM.
 
 Then **Save** in **Dashboard → Growth** if you use overrides, or edit `.env` and restart workers.
 

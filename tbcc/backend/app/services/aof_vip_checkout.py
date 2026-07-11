@@ -22,7 +22,7 @@ from app.services.telegram_stars_invoice import (
 logger = logging.getLogger(__name__)
 
 SUBSCRIPTION_PERIOD_SECONDS = 2_592_000  # 30 days — only value Telegram allows today
-BOT_FALLBACK_LABEL = "Crypto & main group →"
+BOT_FALLBACK_LABEL = "Crypto & Loot Room →"
 CHECKOUT_CAPTION_MARKERS = (
     "Subscribe to AOF VIP",
     "Start payment for group access",
@@ -48,7 +48,7 @@ def checkout_multi_album_followup_enabled() -> bool:
 
 
 def main_group_checkout_every_n() -> int:
-    """Main group: attach Stars checkout on every Nth send (1 = every post)."""
+    """Loot Room commons: attach Stars checkout on every Nth send (1 = every post)."""
     raw = (os.getenv("TBCC_MAIN_GROUP_CHECKOUT_EVERY_N") or "1").strip()
     try:
         return max(1, min(6, int(raw)))
@@ -62,7 +62,7 @@ def checkout_active_for_send(
     *,
     caption_slot_index: int,
 ) -> bool:
-    """Whether this send should include Stars checkout (main group uses every-N cadence)."""
+    """Whether this send should include Stars checkout (commons uses every-N cadence)."""
     if not getattr(post, "checkout_stars_enabled", False) or not getattr(post, "checkout_stars_plan_id", None):
         return False
     from app.data.aof_network import MAIN_GROUP_IDENT

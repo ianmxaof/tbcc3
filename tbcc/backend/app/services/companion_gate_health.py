@@ -116,7 +116,7 @@ async def probe_companion_bot_channel_admin(*, force: bool = False) -> dict[str,
     _CACHE["checked_at_mono"] = now
     if not all_ok and gate_enabled():
         logger.warning(
-            "companion gate: bot not admin in %d/%d channels — membership verify will fail outside Main Group",
+            "companion gate: bot not admin in %d/%d channels — membership verify will fail outside Loot Room commons",
             len(missing),
             len(probes),
         )

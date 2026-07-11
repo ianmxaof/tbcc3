@@ -36,9 +36,9 @@ from app.data.aof_manual_gate_links import manual_gate_url, manual_gate_urls
 from app.services.link_gate_provider import wrap_gate_url
 
 MAIN_GROUP_IDENT = "-1003206350461"
-MAIN_GROUP_INVITE = "https://t.me/+hMQzGsBFjF02MDkx"
+MAIN_GROUP_INVITE = "https://t.me/+NWathiLSqZ1lMzlh"
 ADDLIST_RAW = "https://t.me/addlist/r-7_7CGIkExhMDcx"
-MAINHUB_RAW = "https://t.me/aofmainhub"
+MAINHUB_RAW = "https://t.me/aof_lootgod_bot?start=loot_free"
 
 # Content channels listed in the links hub bulletin (raw invites → LV-wrapped at runtime).
 BULLETIN_CHANNEL_INVITES: dict[str, tuple[str, str]] = {
@@ -61,13 +61,13 @@ NEW_CHANNELS: tuple[tuple[str, str, str, str], ...] = (
     ("AOF BOP", "-1003763051030", "https://t.me/+woiIGJFd19NmZjkx", "AOF BOP POOL"),
 )
 
-BULLETIN_SCHED_NAME = "AOF MAIN — Links Hub bulletin (pinned)"
+BULLETIN_SCHED_NAME = "AOF LOOT ROOM — Links Hub bulletin (pinned)"
 PACKS_SCHED_NAME = "AOF PACKS — seed rotation"
 COMMANDS_SCHED_PREFIX = "AOF — bot commands"
 FOOTER_MARKER = "Join the full AOF stack"
 
 CONTENT_SCHEDULER_NAMES = (
-    "AOF MAIN GROUP + X SCHEDULER",
+    "AOF LOOT ROOM + X SCHEDULER",
     "AOF AI SCHEDULER",
     "AOF BLOWJOB SCHEDULER",
     "AOF BIG TITS SCHEDULER",
@@ -101,11 +101,11 @@ def _lv_urls(db) -> dict[str, str]:
 def build_links_hub_bulletin(lv: dict[str, str]) -> str:
     return (
         "📌 <b>AOF LINKS HUB</b>\n"
-        "Central hub for AOF groups, channels, bots, &amp; resources.\n"
+        "AOF network entry: Loot Bot first, Loot Room commons, niche lanes after.\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>MAIN COMMUNITY</b>\n"
-        f"💬 Main Group: {_a_tag(lv['main_group'], 'join')}\n"
-        f"🔗 Flagship hub: {_a_tag(lv['mainhub'], 't.me/aofmainhub')}\n"
+        "🔥 <b>PUBLIC ENTRY</b>\n"
+        f"🎲 Loot Bot: {_a_tag(MAINHUB_RAW, '@aof_lootgod_bot')}\n"
+        f"🏛 Loot Room: {_a_tag(lv['main_group'], 'Loot Room Group')}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📂 <b>CONTENT</b>\n"
         f"📌 {_a_tag(lv['addlist'], 'ADDLIST — all channels')}\n"
@@ -139,7 +139,7 @@ def build_addlist_footer(lv: dict[str, str]) -> str:
     return (
         "\n\n━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>{FOOTER_MARKER}</b>\n"
-        f"🌐 {_a_tag(lv['addlist'], 'addlist')} | 🔗 {_a_tag(lv['mainhub'], 'aofmainhub')}\n"
+        f"🌐 {_a_tag(lv['addlist'], 'addlist')} | 🎲 {_a_tag(MAINHUB_RAW, 'loot bot')} | 🏛 {_a_tag(lv['main_group'], 'loot room')}\n"
         "🗝 @aofsubscriptions_bot · /loot · /subscribe · /referral"
     )
 
@@ -204,7 +204,7 @@ def _build_packs_captions(lv_urls: list[str], footer: str) -> list[str]:
 def _ensure_growth_settings(db, execute: bool) -> dict:
     intro = (
         "🔥 AOF — referrals & milestones\n\n"
-        "Flagship hub: t.me/aofmainhub — join the full stack via addlist.\n"
+        "Loot Bot: t.me/aof_lootgod_bot?start=loot_free — Loot Room commons plus full stack via addlist.\n"
         "• Referrals: @aofsubscriptions_bot → /referral\n"
         "• Loot Room keys: /loot · Premium: /subscribe"
     )
@@ -215,7 +215,7 @@ def _ensure_growth_settings(db, execute: bool) -> dict:
         "landing_bulletin_bot_username": "aofsubscriptions_bot",
         "landing_bulletin_intro": intro,
         "referral_group_invite_link": MAIN_GROUP_INVITE,
-        "referral_group_name": "AOF Main Hub",
+        "referral_group_name": "AOF Loot Room",
         "referral_reward_days": 7,
         "referral_mode": "community",
     }
@@ -327,7 +327,7 @@ def _update_packs_sched(db, lv: dict[str, str], execute: bool) -> dict:
         [
             [
                 {"text": "⬇ Download Pack", "url": lv_terabox},
-                {"text": "⭐ AOF Main — 500⭐", "url": "https://t.me/aofsubscriptions_bot?start=c6"},
+                {"text": "⭐ AOF VIP — 500⭐", "url": "https://t.me/aofsubscriptions_bot?start=c6"},
             ],
             [
                 {"text": "📌 Full stack addlist", "url": lv["addlist"]},

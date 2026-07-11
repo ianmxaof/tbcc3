@@ -139,9 +139,9 @@ PACK_STRATEGIES: tuple[dict[str, object], ...] = (
         "tactic": "addlist_one_click_punch",
         "hooks": (
             "👌 <b>ALL LANES. ONE TAP.</b>\n\n"
-            "One pack today — full AOF stack waiting in the footer. Tourists scroll; you addlist.",
+            "One pack today — full AOF stack waiting in the footer. Tourists scroll; you tap the map.",
             "😳 <b>ONE CLICK — FULL NETWORK</b>\n\n"
-            "This drop is one lane. The addlist unlocks the rest. Links unchanged below.",
+            "This drop is one lane. The footer map unlocks the rest. Links unchanged below.",
         ),
     },
     {

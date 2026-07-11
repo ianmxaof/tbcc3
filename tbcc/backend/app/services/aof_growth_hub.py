@@ -19,9 +19,7 @@ from app.data.aof_network import (
     BULLETIN_MARKER,
     CROSS_CHANNEL_SCHED_NAME,
     LINKS_HUB_SCHED_NAME,
-    MAINHUB_RAW,
     MAIN_GROUP_IDENT,
-    MAIN_GROUP_INVITE,
     STORAGE_HUB_IDENT,
     STORAGE_HUB_INVITE,
     network_channel_by_key,
@@ -104,13 +102,16 @@ def _gate_link(lv: dict[str, str], key: str, anchor: str) -> str:
 
 def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> str:
     """
-    Pinned AOF LINKS HUB copy for the main supergroup (not the @aofmainhub channel).
-    Posted via scheduler LINKS_HUB_SCHED_NAME; @aofmainhub is linked under MAIN COMMUNITY.
+    Pinned AOF public entry copy for the Loot Room commons.
+    Posted via scheduler LINKS_HUB_SCHED_NAME.
     """
     from app.services.aof_social_links import donation_link_html
+    from app.services.aof_social_links import aof_public_cta_url, loot_room_public_url
     from app.services.promo_affiliate_rotation import build_sponsor_link_html, list_candidates
 
     donate = donation_link_html(label="Buy me a coffee")
+    loot_bot = _a_tag(aof_public_cta_url(), "@aof_lootgod_bot")
+    loot_room = _a_tag(loot_room_public_url(), "Loot Room Group")
     donate_line = f"☕ Donate: {donate}\n" if donate else ""
     ai_tools_lines = ""
     partner_lines = ""
@@ -137,11 +138,11 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
             )
     return (
         "📌 <b>AOF LINKS HUB</b>\n"
-        "Central hub for AOF groups, channels, bots, &amp; resources.\n"
+        "AOF network entry: Loot Bot first, Loot Room commons, niche lanes after.\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "🔥 <b>MAIN COMMUNITY</b>\n"
-        f"💬 Main Group: {_gate_link(lv, 'main_group', 'join')}\n"
-        f"🔗 Flagship hub: {_gate_link(lv, 'mainhub', 't.me/aofmainhub')}\n"
+        "🔥 <b>PUBLIC ENTRY</b>\n"
+        f"🎲 Loot Bot: {loot_bot}\n"
+        f"🏛 Loot Room: {loot_room}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📂 <b>CONTENT</b>\n"
         f"📌 {_gate_link(lv, 'addlist', 'ADDLIST — all channels')}\n"
@@ -180,8 +181,11 @@ def build_addlist_footer(lv: dict[str, str], *, sponsor_line_html: str | None = 
     from app.services.aof_social_links import donation_link_html
 
     bot = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+    from app.services.aof_social_links import aof_public_cta_url, loot_room_public_url
+
     addlist = _gate_link(lv, "addlist", "addlist")
-    hub = _gate_link(lv, "mainhub", "aofmainhub")
+    loot_bot = _a_tag(aof_public_cta_url(), "loot bot")
+    loot_room = _a_tag(loot_room_public_url(), "loot room")
     donate = donation_link_html(label="☕ support")
     donate_bit = f" | {donate}" if donate else ""
     sponsor_bit = f"{sponsor_line_html.strip()}\n" if sponsor_line_html and sponsor_line_html.strip() else ""
@@ -189,7 +193,7 @@ def build_addlist_footer(lv: dict[str, str], *, sponsor_line_html: str | None = 
         "\n\n━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>{FOOTER_MARKER}</b>\n"
         f"{sponsor_bit}"
-        f"🌐 {addlist} | 🔗 {hub}{donate_bit}\n"
+        f"🌐 {addlist} | 🎲 {loot_bot} | 🏛 {loot_room}{donate_bit}\n"
         f"🗝 @{bot} · /loot · /subscribe · /referral"
     )
 
@@ -811,7 +815,7 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
             entry["status"] = "would_update"
         rows.append(entry)
 
-    # Pinned links hub one-shot row on main group
+    # Pinned links hub one-shot row on the configured commons channel
     main_ch = db.query(Channel).filter(Channel.identifier == MAIN_GROUP_IDENT).first()
     if main_ch:
         pinned = (

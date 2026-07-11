@@ -43,7 +43,10 @@ def test_pick_promo_image_respects_pool(tmp_path, monkeypatch):
 
 def test_build_flywheel_x_caption_includes_erome(monkeypatch):
     monkeypatch.setenv("TBCC_X_USE_LINKVERTISE", "0")
-    monkeypatch.setenv("TBCC_AOF_HUB_INVITE_URL", "https://t.me/+hub")
+    monkeypatch.delenv("TBCC_BUFFER_X_OVERFLOW_URL", raising=False)
+    monkeypatch.delenv("TBCC_AOF_PUBLIC_CTA_MODE", raising=False)
+    monkeypatch.delenv("TBCC_BUFFER_FLYWHEEL_INCLUDE_LANE_INVITE", raising=False)
+    monkeypatch.setenv("TBCC_AOF_HUB_INVITE_URL", "https://t.me/+oldmain")
     text = build_flywheel_x_caption(
         "AOF BIG TITS",
         erome_album_url="https://www.erome.com/a/abc123",
@@ -51,5 +54,18 @@ def test_build_flywheel_x_caption_includes_erome(monkeypatch):
     )
     assert "Erome" in text or "erome.com" in text
     assert "erome.com/a/abc123" in text
-    assert "t.me/+lane" in text
+    assert "t.me/aof_lootgod_bot?start=loot_free" in text
+    assert "t.me/+lane" not in text
+    assert "t.me/+oldmain" not in text
     assert len(text) <= 280
+
+
+def test_build_flywheel_x_caption_can_include_lane_invite_when_enabled(monkeypatch):
+    monkeypatch.setenv("TBCC_X_USE_LINKVERTISE", "0")
+    monkeypatch.setenv("TBCC_BUFFER_FLYWHEEL_INCLUDE_LANE_INVITE", "1")
+    text = build_flywheel_x_caption(
+        "AOF TABOO",
+        erome_album_url="https://www.erome.com/a/xyz",
+        telegram_invite="https://t.me/+lane",
+    )
+    assert "t.me/+lane" in text

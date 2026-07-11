@@ -121,7 +121,7 @@ def admin_telegram_ids() -> frozenset[int]:
 
 def network_channel_idents() -> list[tuple[str, str, str]]:
     """(key, chat_id, display_name) for membership checks — deduped by chat id."""
-    rows: list[tuple[str, str, str]] = [("main_group", MAIN_GROUP_IDENT, "AOF Main Group")]
+    rows: list[tuple[str, str, str]] = [("main_group", MAIN_GROUP_IDENT, "AOF Loot Room")]
     seen = {MAIN_GROUP_IDENT}
     for ch in AOF_NETWORK_CHANNELS:
         if ch.identifier in seen:

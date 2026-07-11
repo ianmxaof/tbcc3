@@ -350,13 +350,16 @@ def _a_tag(lv_url: str, anchor: str) -> str:
 
 
 def _packs_footer() -> str:
+    from app.services.aof_social_links import aof_public_cta_url, loot_room_public_url
+
     addlist_lv = manual_gate_url("addlist") or manual_gate_url("main_group") or ""
-    mainhub_lv = manual_gate_url("mainhub") or ""
+    loot_bot = aof_public_cta_url()
+    loot_room = loot_room_public_url()
     return (
         "\n\n━━━━━━━━━━━━━━━━━━\n"
         "📌 <b>Join the full AOF stack</b> — one tap\n"
         f'{_a_tag(addlist_lv, "addlist all channels")} · '
-        f'hub {_a_tag(mainhub_lv, "aofmainhub")}\n'
+        f'loot {_a_tag(loot_bot, "bot")} · {_a_tag(loot_room, "room")}\n'
         "🗝 @aofsubscriptions_bot · /loot · /subscribe · /referral"
     )
 
@@ -385,6 +388,8 @@ def refresh_aof_packs_scheduler(db: Session) -> dict[str, Any]:
     primary_lv_parts = (first_gates.gate_lv_url or "").strip().split()
     primary_lv = primary_lv_parts[0] if primary_lv_parts else ""
     addlist_lv = manual_gate_url("addlist") or manual_gate_url("main_group") or ""
+    from app.services.aof_social_links import aof_public_cta_url, loot_room_public_url
+
     button_row: list[dict[str, str]] = []
     if primary_lv:
         button_row.append({"text": "🔗 Linkvertise", "url": primary_lv})
@@ -397,7 +402,8 @@ def refresh_aof_packs_scheduler(db: Session) -> dict[str, Any]:
             button_row or [{"text": "⬇ Download Pack", "url": primary_adm or primary_lv}],
             [
                 {"text": "📌 Full stack addlist", "url": addlist_lv},
-                {"text": "🗝 Loot Room", "url": "https://t.me/aofsubscriptions_bot?start=menu_loot"},
+                {"text": "🎲 Free pull", "url": aof_public_cta_url()},
+                {"text": "🏛 Loot Room", "url": loot_room_public_url()},
             ],
         ]
     )

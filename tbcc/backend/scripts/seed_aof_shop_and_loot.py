@@ -1,5 +1,5 @@
 """
-Seed subscription plans (loot 24h keys + basic main), loot pools, modifiers after DB wipe.
+Seed subscription plans (loot 24h keys + VIP), loot pools, modifiers after DB wipe.
 
   cd tbcc/backend && py -3.13 scripts/seed_aof_shop_and_loot.py
   py -3.13 scripts/seed_aof_shop_and_loot.py --execute
@@ -30,7 +30,7 @@ from app.services.loot_pool_eligibility_seed import (
 
 STARS_USD = float(os.getenv("TBCC_STARS_USD_PER_STAR") or "0.012")
 LOOT_GROUP_CHANNEL_ID = 8  # LOOT ROOM GROUP
-MAIN_HUB_CHANNEL_ID = 1
+VIP_CHANNEL_ID = 1
 
 LOOT_PLANS = [
     ("m60", "Loot Room 24h — 60min drops", 150, "Standard pace: one drop per hour for 24 hours."),
@@ -53,7 +53,7 @@ LOOT_POOL_NAMES = [
 ]
 
 CHANNEL_INVITES = [
-    ("AOF Main Hub", "https://t.me/+hMQzGsBFjF02MDkx", "telegram_group", 1),
+    ("AOF Loot Room", "https://t.me/+NWathiLSqZ1lMzlh", "telegram_group", 1),
     ("AOF AI", "https://t.me/+4umB83be5n41MmEx", "telegram_channel", 5),
     ("AOF ASS", "https://t.me/+gQaguoQE7eM4MzA5", "telegram_channel", 5),
     ("AOF BIG TITS", "https://t.me/+vPhWRgtpteI4NTdh", "telegram_channel", 5),
@@ -76,7 +76,7 @@ def _lv(url: str, pub: str) -> str:
 
 def seed(execute: bool) -> dict:
     pub = publisher_id_from_env()
-    loot_invite = (os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "https://t.me/+97f4Crv3G1RkMGU5").strip()
+    loot_invite = (os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "https://t.me/+NWathiLSqZ1lMzlh").strip()
     report: dict = {"plans": [], "pools": [], "modifiers": [], "eligibility": []}
 
     db = SessionLocal()
@@ -85,7 +85,7 @@ def seed(execute: bool) -> dict:
         if existing_plans == 0:
             for code, name, stars, blurb in LOOT_PLANS:
                 desc = (
-                    f"{blurb}\n\n24-hour private Loot Room access. "
+                    f"{blurb}\n\n24-hour Loot Room key. "
                     f"Join: {loot_invite}\nRolls via @aof_lootgod_bot\nInterval code: {code}"
                 )
                 report["plans"].append({"name": name, "stars": stars, "section": "loot"})
@@ -113,19 +113,19 @@ def seed(execute: bool) -> dict:
                             ),
                         )
                     )
-            # One main community sub
-            report["plans"].append({"name": "AOF Main — 30 days", "stars": 500, "section": "main"})
+            # One premium VIP sub
+            report["plans"].append({"name": "AOF VIP — 30 days", "stars": 500, "section": "vip"})
             if execute:
                 db.add(
                     SubscriptionPlan(
-                        name="AOF Main — 30 days",
+                        name="AOF VIP — 30 days",
                         price_stars=500,
                         duration_days=30,
-                        channel_id=MAIN_HUB_CHANNEL_ID,
-                        description="30-day access to the AOF main community hub.",
+                        channel_id=VIP_CHANNEL_ID,
+                        description="30-day access to AOF VIP premium.",
                         is_active=True,
                         product_type="subscription",
-                        bot_section="main",
+                        bot_section="vip",
                         nowpayments_price_usd=_usd(500),
                         nowpayments_allow_any_currency=True,
                     )

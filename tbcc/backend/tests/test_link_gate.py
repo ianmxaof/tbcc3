@@ -15,7 +15,7 @@ from app.services.link_gate_unwrap import (
 
 
 def test_unwrap_linkvertise_dynamic_roundtrip() -> None:
-    dest = "https://t.me/+hMQzGsBFjF02MDkx"
+    dest = "https://t.me/+NWathiLSqZ1lMzlh"
     wrapped = wrap_linkvertise_url(1367336, dest)
     assert unwrap_linkvertise_dynamic(wrapped) == dest
 

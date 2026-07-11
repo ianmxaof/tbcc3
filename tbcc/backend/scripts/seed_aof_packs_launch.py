@@ -130,12 +130,13 @@ def seed(*, execute: bool) -> dict:
         lv_extra = [wrap_linkvertise_url(pub, dest) for _, dest in EXTRA_DESTINATIONS]
         lv_urls = [lv_terabox, lv_extra[0], lv_extra[1], lv_terabox, lv_extra[0], lv_extra[1], lv_terabox, lv_extra[0]]
         addlist_lv = wrap_linkvertise_url(pub, "https://t.me/addlist/r-7_7CGIkExhMDcx")
-        mainhub_lv = wrap_linkvertise_url(pub, "https://t.me/aofmainhub")
+        loot_bot = "https://t.me/aof_lootgod_bot?start=loot_free"
+        loot_room = "https://t.me/+NWathiLSqZ1lMzlh"
         footer = (
             "\n\n━━━━━━━━━━━━━━━━━━\n"
             "📌 <b>Join the full AOF stack</b> — one tap\n"
             f'{_a_tag(addlist_lv, "addlist all channels")} · '
-            f'hub {_a_tag(mainhub_lv, "aofmainhub")}\n'
+            f'loot {_a_tag(loot_bot, "bot")} · {_a_tag(loot_room, "room")}\n'
             "🗝 @aofsubscriptions_bot · /loot · /subscribe · /referral"
         )
         report["lv_urls"] = lv_urls
@@ -162,19 +163,20 @@ def seed(*, execute: bool) -> dict:
             len(captions),
             link_slot_offset=len(mods),
         )
-        # One row: LV download + Stars deep link (AOF Main plan id 6 after shop seed).
+        # One row: LV download + Stars deep link (AOF VIP plan id 6 after shop seed).
         buttons = json.dumps(
             [
                 [
                     {"text": "⬇ Download Pack", "url": lv_terabox},
                     {
-                        "text": "⭐ AOF Main — 500⭐",
+                        "text": "⭐ AOF VIP — 500⭐",
                         "url": "https://t.me/aofsubscriptions_bot?start=c6",
                     },
                 ],
                 [
                     {"text": "📌 Full stack addlist", "url": addlist_lv},
-                    {"text": "🗝 Loot Room", "url": "https://t.me/aofsubscriptions_bot?start=menu_loot"},
+                    {"text": "🎲 Free pull", "url": loot_bot},
+                    {"text": "🏛 Loot Room", "url": loot_room},
                 ],
             ]
         )

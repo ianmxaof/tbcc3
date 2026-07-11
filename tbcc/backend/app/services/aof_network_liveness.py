@@ -643,7 +643,7 @@ def liveness_status(db: Session) -> dict[str, Any]:
 
 
 def post_milestone_fomo_to_main(db: Session) -> dict[str, Any]:
-    """Post milestone progress line to main group (used by periodic beat task)."""
+    """Post milestone progress line to the configured commons channel (used by periodic beat task)."""
     main = db.query(Channel).filter(Channel.identifier == MAIN_GROUP_IDENT).first()
     if not main:
         return {"ok": False, "error": "main_group_not_found"}

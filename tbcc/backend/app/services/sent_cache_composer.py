@@ -1,4 +1,4 @@
-"""SENT CACHE composer — bundle stamped items into albums, export to main group + Erome."""
+"""SENT CACHE composer — bundle stamped items into albums, export to Loot Room + Erome."""
 
 from __future__ import annotations
 

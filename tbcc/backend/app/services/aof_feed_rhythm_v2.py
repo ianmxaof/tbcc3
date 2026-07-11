@@ -209,7 +209,7 @@ def _channel_age_days(channel: Channel | None) -> int | None:
 
 
 def vip_social_proof_line(db: Session) -> str:
-    """One-line stat tease: VIP channel media density vs main group."""
+    """One-line stat tease: VIP channel media density vs Loot Room commons."""
     vip_pool = db.query(ContentPool).filter(ContentPool.name == AOF_VIP_POOL_NAME).first()
     main_pool = None
     for nc in AOF_NETWORK_CHANNELS:

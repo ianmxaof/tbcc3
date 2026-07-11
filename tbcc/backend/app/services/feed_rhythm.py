@@ -1,4 +1,4 @@
-"""Detect monotonous text streaks on main group and queue media interjections."""
+"""Detect monotonous text streaks on Loot Room commons and queue media interjections."""
 
 from __future__ import annotations
 

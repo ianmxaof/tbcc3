@@ -1585,7 +1585,7 @@ async def cmd_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not text:
         await update.message.reply_text(
             "<b>Promo watermark</b> (burn-in on photos/videos at send)\n\n"
-            "• <code>/watermark t.me/aofmainhub</code> — primary text\n"
+            "• <code>/watermark t.me/aof_lootgod_bot</code> — primary text\n"
             "• <code>/watermark 2 extra.link</code> — secondary\n"
             "• <code>/watermark 3 third.link</code> — tertiary\n"
             "• <code>/watermark opacity 0.65</code>\n"

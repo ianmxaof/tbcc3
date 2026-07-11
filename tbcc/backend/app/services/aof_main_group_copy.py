@@ -1,4 +1,4 @@
-"""Minimal PACKS-style copy for AOF main group — dense, hyperlinked, depraved edge."""
+"""Minimal PACKS-style copy for the AOF Loot Room commons — dense, hyperlinked, depraved edge."""
 
 from __future__ import annotations
 
@@ -36,21 +36,24 @@ def minimal_checkout_caption_html(
     bot = _bot()
     price = f"<b>{stars}⭐</b>/{days}d · " if stars > 0 else ""
     return (
-        f"🎫 <b>AOF VIP</b> — {price}skip the gates, daily god roll, weekly mega dump, "
-        f"@{bot} credits. Unwrapped lanes, bigger drops, VIP-only perks — public stays on the wrapped feed. "
+        f"🎫 <b>AOF VIP Hall Pass</b> — {price}skip the gates, daily god roll, weekly mega dump, "
+        f"Companion credits via @{bot}. Unwrapped lanes, bigger drops, VIP-only perks — public stays on the wrapped feed. "
         f"<i>Tap Pay ⭐ — instant access.</i>"
     )
 
 
 def heartbeat_variations(lv: dict[str, str], checkout_line: str) -> list[str]:
-    """Short pulse lines for main-group heartbeat rotation."""
+    """Short pulse lines for Loot Room heartbeat rotation."""
+    from app.services.aof_social_links import aof_public_cta_url, loot_room_public_url
+
     addlist = _a(lv.get("addlist", ""), "addlist")
-    hub = _a(lv.get("mainhub", "https://t.me/aofmainhub"), "hub")
+    loot_bot = _a(aof_public_cta_url(), "loot bot")
+    loot_room = _a(loot_room_public_url(), "loot room")
     bot = _bot()
     return [
         (
-            f"🔥 <b>AOF MAIN</b> — TBCC pipeline feeding the network. "
-            f"LOOT keys · premium lanes · {addlist} · {hub} · @{bot}"
+            f"🔥 <b>AOF LOOT ROOM</b> — TBCC pipeline feeding the network. "
+            f"LOOT keys · premium lanes · {addlist} · {loot_bot} · @{bot}"
             f"{checkout_line}"
         ),
         (
@@ -65,7 +68,7 @@ def heartbeat_variations(lv: dict[str, str], checkout_line: str) -> list[str]:
         ),
         (
             f"💀 You weren't invited. You stayed anyway. "
-            f"Gates filter tourists — {hub} · @{bot} · /loot · /referral"
+            f"Gates filter tourists — {loot_room} · @{bot} · /loot · /referral"
             f"{checkout_line}"
         ),
     ]

@@ -11,12 +11,15 @@ AOF_X_PROMO_DEFAULTS: list[dict[str, str]] = [
 
 Behind every channel: TBCC — scheduling, smart routing, vision tagging, and a backend that actually keeps the firehose organized. Website v1, LOOT ROOM rollout, and community upgrades are all in the pipe.
 
-Pick your lane ↓
+Start with the Loot Bot, then pick your lane ↓
 
-🤍 Main hub
-https://t.me/+hMQzGsBFjF02MDkx
+🪙 Loot Bot — free pull
+https://t.me/aof_lootgod_bot?start=loot_free
 
-🔓 Subscriptions → @aofsubscriptions_bot
+🏛 Loot Room commons
+https://t.me/+NWathiLSqZ1lMzlh
+
+🔓 VIP / subscriptions → @aofsubscriptions_bot
 
 🧠 AOF AI
 https://t.me/+4umB83be5n41MmEx
@@ -33,7 +36,7 @@ https://t.me/+w46b7uJK5eo0MDcx
 👀 AOF PUBLIC VOYEUR
 https://t.me/+ag3BSf3fliwyYTgx
 
-🪙 AOF LOOT ROOM (first version landing soon)
+🪙 AOF LOOT ROOM
 https://t.me/+NWathiLSqZ1lMzlh""",
     },
     {
@@ -42,9 +45,9 @@ https://t.me/+NWathiLSqZ1lMzlh""",
 🤩     🤍   the whole AOF map in one drop   🤍🤩
 🤩🤩🤩🤩     .⬇️⬇️     🤩🤩🤩
 
-Hub + every specialty channel — one tap each.
+Loot Bot + every specialty channel — one tap each.
 
-https://t.me/+hMQzGsBFjF02MDkx
+https://t.me/aof_lootgod_bot?start=loot_free
 
 Keys & packs: @aofsubscriptions_bot
 
@@ -55,7 +58,7 @@ Keys & packs: @aofsubscriptions_bot
 👀 AOF PUBLIC VOYEUR → https://t.me/+ag3BSf3fliwyYTgx
 🪙 AOF LOOT ROOM → https://t.me/+NWathiLSqZ1lMzlh
 
-PS: TBCC is cooking — site + LOOT v1 + sharper community tools. Stay close.""",
+PS: TBCC is cooking — site + Loot Room commons + sharper community tools. Stay close.""",
     },
     {
         "title": f"{AOF_X_PROMO_TITLE_PREFIX} TBCC engine",
@@ -63,10 +66,10 @@ PS: TBCC is cooking — site + LOOT v1 + sharper community tools. Stay close."""
 
 TBCC (Telegram Bot Command Center) runs the AOF channels: ingest → pools → scheduled drops → auto-tagging → multi-channel campaigns. It's the reason the network can scale without going stale.
 
-Coming: AOF Hub website, LOOT ROOM v1, and a tighter community stack.
+Coming: AOF Hub website, Loot Room commons, and a tighter community stack.
 
 Start here:
-https://t.me/+hMQzGsBFjF02MDkx
+https://t.me/aof_lootgod_bot?start=loot_free
 
 @aofsubscriptions_bot
 
@@ -79,11 +82,14 @@ LOOT ROOM · https://t.me/+NWathiLSqZ1lMzlh""",
     },
     {
         "title": f"{AOF_X_PROMO_TITLE_PREFIX} LOOT ROOM",
-        "body": """🪙 LOOT ROOM is the wildest lane on the network — and v1 is almost here.
+        "body": """🪙 LOOT ROOM is the public commons for the AOF network.
 
-24h keys, private drops, tier rolls — all wired through TBCC behind the scenes. While that ships, the rest of AOF is wide open:
+Free pulls start in the Loot Bot. Paid keys and VIP stay separate. The rest of AOF is still wide open:
 
-https://t.me/+hMQzGsBFjF02MDkx
+https://t.me/aof_lootgod_bot?start=loot_free
+
+Loot Room commons:
+https://t.me/+NWathiLSqZ1lMzlh
 
 @aofsubscriptions_bot
 
@@ -94,13 +100,13 @@ https://t.me/+hMQzGsBFjF02MDkx
 👀 PUBLIC VOYEUR https://t.me/+ag3BSf3fliwyYTgx
 🪙 LOOT https://t.me/+NWathiLSqZ1lMzlh
 
-Website + community upgrades in the same pipeline. Worth bookmarking the hub.""",
+Website + community upgrades in the same pipeline. Worth starting at Loot.""",
     },
     {
         "title": f"{AOF_X_PROMO_TITLE_PREFIX} Short + links",
-        "body": """AOF isn't one channel — it's a network. TBCC keeps it fed. LOOT ROOM v1 + the site + community upgrades are next.
+        "body": """AOF isn't one channel — it's a network. TBCC keeps it fed. Loot Bot is first contact; Loot Room is the commons.
 
-Hub: https://t.me/+hMQzGsBFjF02MDkx · @aofsubscriptions_bot
+Start: https://t.me/aof_lootgod_bot?start=loot_free · Room: https://t.me/+NWathiLSqZ1lMzlh · @aofsubscriptions_bot
 
 🧠 AI https://t.me/+4umB83be5n41MmEx
 🔥 ASS https://t.me/+gQaguoQE7eM4MzA5

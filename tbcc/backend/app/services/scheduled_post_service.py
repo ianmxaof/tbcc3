@@ -363,7 +363,7 @@ async def _deliver_checkout_after_scheduled_send(
     reply_to_message_id: int | None,
     message_thread_id: int | None = None,
 ) -> None:
-    """Global Pay ⭐ delivery for all checkout-enabled schedulers (channels + main group)."""
+    """Global Pay ⭐ delivery for all checkout-enabled schedulers (channels + commons)."""
     from app.services.aof_vip_checkout import (
         checkout_multi_album_followup_enabled,
         deliver_stars_checkout_bot_followup,

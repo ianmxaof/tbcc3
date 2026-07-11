@@ -13,7 +13,7 @@ SECOND_BATCH_POOL_KEYS: tuple[str, ...] = ("milf", "big_tits")
 # Third batch — lanes not covered in first two batches.
 THIRD_BATCH_POOL_KEYS: tuple[str, ...] = ("blowjob", "ass", "taboo", "packs")
 
-# All inbound folder-mapped pool keys (excludes AOF main hub).
+# All inbound folder-mapped pool keys (excludes AOF Loot Room commons).
 ALL_FOLDER_POOL_KEYS: tuple[str, ...] = (
     "bop",
     "goon",
@@ -77,7 +77,7 @@ SKIP_INBOUND_CHAT_IDS: frozenset[int] = frozenset(
         -1003812457581,  # Storage & Bot Hangar
         -1004247083739,  # AOF PACKS
         -1003970144685,  # AOF LINK HUB
-        -1003206350461,  # AOF main group
+        -1003206350461,  # AOF Loot Room commons
     }
 )
 

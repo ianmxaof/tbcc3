@@ -2,17 +2,29 @@
 
 > [!INFO]- 📋 AOF QUICK‑COPY HUB (click to expand)
 > Use the **Copy** button on each code block to grab promo + link.  
-> **Obfuscated gates:** set `TBCC_AOF_GATE_URL` in `tbcc/.env` and re-run `scripts/stock_buffer_armory.py`.  
+> **Public funnel:** default X / Erome / Buffer traffic now starts at `@aof_lootgod_bot?start=loot_free` or the Loot Room Group. Use legacy gates only when intentionally rotating a manual slug.
 > **Never commit API keys** — rotate any key pasted in chat immediately.
 
-> > [!EXAMPLE]+ 🔥 Main hub & gates
+> > [!EXAMPLE]+ 🔥 Loot entry & gates
+> **Loot Bot — first contact (public default)**
+> ```
+> Free pull, cards, rolls, and upgrade prompts.
+> https://t.me/aof_lootgod_bot?start=loot_free
+> ```
+>
+> **Loot Room Group — public commons**
+> ```
+> Teasers, lane previews, drops, announcements, and upgrade prompts.
+> https://t.me/+NWathiLSqZ1lMzlh
+> ```
+>
 > **Folder / add-list (bulk join)**
 > ```
 > Join the full AOF channel stack in one shot.
 > https://t.me/addlist/r-7_7CGIkExhMDcx
 > ```
 >
-> **Gate A — Linkvertise (public X / Buffer / promos)** — [Linkvertise](https://linkvertise.com/)
+> **Gate A — Linkvertise (manual / legacy rotation)** — [Linkvertise](https://linkvertise.com/)
 > ```
 > You weren't invited. Finish the gate if you want in.
 > https://link-center.net/1367336/irj3uxd3iYFV
@@ -20,18 +32,18 @@
 >
 > **Gate B — Linkvertise (alternate / rotate when A is flagged)**
 > ```
-> Private hub — ad step, then paste, then Telegram.
+> AOF gate — ad step, then Loot Bot / Loot Room.
 > https://link-center.net/1367336/7XeubkKSFA8j
 > ```
 >
-> **Direct hub (members / emergency only — burns fast if spam-reported)**
+> **Legacy Main invite (do not use for new public traffic)**
 > ```
-> https://t.me/+hMQzGsBFjF02MDkx
+> RETIRED — use Loot Bot / Loot Room above.
 > ```
 >
-> **Pixeldrain paste (inner layer behind Linkvertise)** — *host t.me/aofmainhub text via Dashboard → Misc → pixeldrain shorten*
+> **Pixeldrain paste (inner layer behind Linkvertise)** — *host Loot Bot / Loot Room text via Dashboard → Misc → pixeldrain shorten*
 > ```
-> Private invite — read the paste, not the comments.
+> Loot entry — read the paste, not the comments.
 > YOUR_PIXELDRAIN_U_URL
 > ```
 
@@ -79,14 +91,14 @@
 >
 > **AOF LOOT ROOM**
 > ```
-> Keys, rolls, chaos — v1 live on the network.
+> Public commons: teasers, drops, lane previews, upgrade prompts.
 > https://t.me/+NWathiLSqZ1lMzlh
 > ```
 
 > > [!EXAMPLE]+ 🤖 Official bots
 > **Subscriptions & packs**
 > ```
-> Keys, Stars checkout, packs — the money bot.
+> Keys, Stars checkout, packs, VIP — the money bot.
 > @aofsubscriptions_bot
 > ```
 >
@@ -97,7 +109,7 @@
 >
 > **Loot God**
 > ```
-> Daily promo, rolls, modifier zips.
+> First contact: free pull, cards, rolls, modifier teases.
 > @aof_lootgod_bot
 > ```
 

@@ -7,8 +7,8 @@ def test_normalize_bare_digits_to_minus100():
 
 def test_extract_invite_hash_tme_plus():
     assert (
-        extract_invite_hash("https://t.me/+hMQzGsBFjF02MDkx")
-        == "hMQzGsBFjF02MDkx"
+        extract_invite_hash("https://t.me/+NWathiLSqZ1lMzlh")
+        == "NWathiLSqZ1lMzlh"
     )
 
 
