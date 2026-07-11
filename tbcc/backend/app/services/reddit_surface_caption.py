@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import re
 
-from app.data.aof_network import MAINHUB_RAW
 from app.models.reddit_subreddit_profile import RedditSubredditProfile
+from app.services.aof_social_links import aof_public_cta_url
 from app.services.utm_links import allmylinks_tracked_url
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -31,7 +31,8 @@ def build_reddit_body(
     comment_link is set when link_policy=comment_only (post body stays clean; link goes in first comment).
     """
     policy = (profile.link_policy or "bio_style").strip().lower()
-    hub = MAINHUB_RAW.replace("https://", "").replace("http://", "")
+    hub_url = aof_public_cta_url()
+    hub = hub_url.replace("https://", "").replace("http://", "")
     aml = allmylinks_tracked_url(source="reddit", medium="post", campaign=utm_campaign)
     aml_disp = aml.replace("https://", "").replace("http://", "") if aml else "allmylinks.com/aof69"
 
@@ -50,7 +51,7 @@ def build_reddit_body(
         lines.extend(
             [
                 "",
-                f"Hub: {hub}",
+                f"Loot entry: {hub}",
                 f"Full map: {aml_disp}",
                 "",
                 "(Links in profile — not spamming direct gates in-body.)",
@@ -58,9 +59,9 @@ def build_reddit_body(
         )
     elif policy == "comment_only":
         lines.extend(["", "Link in first comment."])
-        comment_link = aml or MAINHUB_RAW
+        comment_link = aml or hub_url
     elif policy == "direct_ok":
-        lines.extend(["", f"Hub: {MAINHUB_RAW}", f"Map: {aml or aml_disp}"])
+        lines.extend(["", f"Loot entry: {hub_url}", f"Map: {aml or aml_disp}"])
         comment_link = None
     else:
         lines.append(f"Map: {aml_disp}")

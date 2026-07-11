@@ -158,14 +158,15 @@ def scan_description_for_tos(description: str) -> list[str]:
 
 
 def scan_title_for_tos(title: str) -> list[str]:
-    """Advertising patterns in album titles (e.g. t.me/aofmainhub)."""
+    """Advertising patterns in album titles (Telegram handles, invite URLs, AOF handles)."""
     t = (title or "").strip()
     if not t:
         return []
     issues: list[str] = []
     if _TME_LINK_RE.search(t):
         issues.append("tos_advertising:telegram_link_in_title")
-    if re.search(r"^t\.me\b|aofmainhub|@aof", t, re.I):
+    legacy_hub = "aof" + "mainhub"
+    if re.search(r"^t\.me\b|aof_lootgod_bot|@aof", t, re.I) or legacy_hub in t.lower():
         issues.append("tos_advertising:hub_handle_in_title")
     return issues
 

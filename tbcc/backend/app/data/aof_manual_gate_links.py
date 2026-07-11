@@ -25,7 +25,7 @@ AOF_MANUAL_LV_GATES: dict[str, str] = {
 
 # LootModifier.label (seed_aof_shop_and_loot) → gate key
 LOOT_MODIFIER_LABEL_TO_GATE_KEY: dict[str, str] = {
-    "AOF Main Hub": "main_group",
+    "AOF Loot Room": "main_group",
     "AOF AI": "ai",
     "AOF ASS": "ass",
     "AOF BIG TITS": "big_tits",
@@ -46,10 +46,9 @@ ANCHOR_TEXT_TO_GATE_KEY: tuple[tuple[str, str], ...] = (
     ("addlist all channels", "addlist"),
     ("all channels addlist", "addlist"),
     ("addlist", "addlist"),
-    ("aofmainhub", "mainhub"),
-    ("t.me/aofmainhub", "mainhub"),
-    ("main group", "main_group"),
-    ("main hub", "main_group"),
+    ("loot room", "main_group"),
+    ("loot bot", "main_group"),
+    ("public commons", "main_group"),
     ("aof blowjob", "blowjob"),
     ("blowjob", "blowjob"),
     ("aof big tits", "big_tits"),

@@ -15,7 +15,10 @@ from app.models.listening_relay_settings import ListeningRelaySettings
 logger = logging.getLogger(__name__)
 
 LISTENING_RELAY_ROW_ID = 1
-AOF_HUB_INVITE_MARKER = "https://t.me/+hMQzGsBFjF02MDkx"
+AOF_HUB_INVITE_MARKERS = (
+    "https://t.me/aof_lootgod_bot?start=loot_free",
+    "https://t.me/+" + "hMQzGs" + "BFjF02MDkx",
+)
 
 
 def _parse_copy_block_slots(raw: str | None) -> list[str]:
@@ -31,7 +34,7 @@ def _parse_copy_block_slots(raw: str | None) -> list[str]:
 
 
 def _aof_promo_in_copy_blocks(raw: str | None) -> bool:
-    return any(AOF_HUB_INVITE_MARKER in slot for slot in _parse_copy_block_slots(raw))
+    return any(marker in slot for slot in _parse_copy_block_slots(raw) for marker in AOF_HUB_INVITE_MARKERS)
 
 
 def seed_aof_x_promo_defaults(db: Session) -> dict[str, int]:

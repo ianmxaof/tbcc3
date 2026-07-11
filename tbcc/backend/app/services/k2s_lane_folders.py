@@ -17,7 +17,7 @@ from app.services.keep2share_client import (
 
 logger = logging.getLogger(__name__)
 
-# Lanes covered: main group + AI/taboo/voyeur channels + unified pack/loot pools.
+# Lanes covered: commons + AI/taboo/voyeur channels + unified pack/loot pools.
 K2S_LANE_KEYS: tuple[str, ...] = (
     "main",
     "ai",
@@ -37,7 +37,7 @@ _LANE_ENV: dict[str, str] = {
 }
 
 _LANE_FOLDER_NAMES: dict[str, str] = {
-    "main": "AOF Main",
+    "main": "AOF Loot Room",
     "ai": "AOF AI",
     "taboo": "AOF Taboo",
     "voyeur": "AOF Voyeur",
@@ -95,7 +95,7 @@ def infer_lane_from_text(*parts: str | None) -> str:
         return "voyeur"
     if _ai_lane_match(blob):
         return "ai"
-    if "main group" in blob or blob.startswith("main") or "|main" in blob:
+    if "public commons" in blob or blob.startswith("main") or "|main" in blob:
         return "main"
     if "pack" in blob or "aof packs" in blob:
         return "packs"

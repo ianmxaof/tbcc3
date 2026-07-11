@@ -44,7 +44,7 @@ Source: user-provided Erome platform rules (2026). Keep this file updated when E
 
 - **Profile or album description links** promoting Telegram, X, AllMyLinks, gates, or affiliates.
 - **Advertising watermarks** (brand CTAs, URLs, “subscribe @…” burned into media).
-- **Title promos** like `t.me/aofmainhub` (TOS advertising risk — use neutral titles).
+- **Title promos** like Telegram handles or invite URLs (TOS advertising risk — use neutral titles).
 - Full-resolution or ungated content (keep full packs on Telegram / MEGA behind gates).
 
 ### Watermark (current practice vs TOS)

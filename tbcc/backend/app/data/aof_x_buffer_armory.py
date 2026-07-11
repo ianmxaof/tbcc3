@@ -1,26 +1,26 @@
 """Short X captions for TBCC buffer_x_queue — consumed one per Telegram→Buffer mirror trigger.
 
-Linkvertise {gate} is Telegram-only; X uses {hub} / {affiliate} (fill_armory_template for_x=True).
+Linkvertise {gate} is Telegram-only; X uses Loot Bot/Loot Room via {hub} / {loot_room} (fill_armory_template for_x=True).
 """
 
 from __future__ import annotations
 
-# Placeholders: {hub} {allmylinks} {gravatar} {affiliate} {affiliate_drawai}
+# Placeholders: {hub} {loot_bot} {loot_room} {allmylinks} {gravatar} {affiliate} {affiliate_drawai}
 AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
     {
-        "text": "you weren't invited. you clicked anyway. good. {hub} · map {allmylinks} · operator {gravatar}",
+        "text": "you clicked from X. good. free pull starts here {hub} · map {allmylinks} · operator {gravatar}",
         "image": "",
     },
     {
-        "text": "main hub just moved. casuals bounce. you won't. {hub} — rest of the network lives at {allmylinks}",
+        "text": "the commons moved to Loot. casuals bounce. you won't. {hub} — rest of the network lives at {allmylinks}",
         "image": "",
     },
     {
-        "text": "AOF isn't a channel. it's a maze with a face. {gravatar} · enter {hub} · or keep scrolling (you won't)",
+        "text": "AOF isn't a channel. it's a maze with a dealer. {gravatar} · start {hub} · room {loot_room}",
         "image": "gravatar",
     },
     {
-        "text": "TBCC fed another drop. hub stays intentional. {hub} · keys @aofsubscriptions_bot · links {allmylinks}",
+        "text": "TBCC fed another drop. Loot stays intentional. {hub} · keys @aofsubscriptions_bot · links {allmylinks}",
         "image": "",
     },
     {
@@ -32,15 +32,15 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
         "image": "",
     },
     {
-        "text": "LOOT · AI · TABOO · VOYEUR — one network, one arrogant pipeline. {allmylinks} · hub {hub}",
+        "text": "LOOT · AI · TABOO · VOYEUR — one network, one arrogant pipeline. {allmylinks} · start {hub}",
         "image": "",
     },
     {
-        "text": "public face. private hub. you know the drill. {gravatar} · {hub}",
+        "text": "public commons. private upgrades. you know the drill. {gravatar} · {hub}",
         "image": "gravatar",
     },
     {
-        "text": "another relay fired. if you're still outside the hub that's a skill issue. {hub}",
+        "text": "another relay fired. if you're still outside Loot that's a skill issue. {hub}",
         "image": "",
     },
     {
@@ -48,19 +48,19 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
         "image": "",
     },
     {
-        "text": "telegram reward loop: friction → curiosity → commitment. start {hub} · stack {allmylinks}",
+        "text": "telegram reward loop: free pull → room → upgrade. start {hub} · stack {allmylinks}",
         "image": "",
     },
     {
-        "text": "built TBCC so the firehose doesn't rot. you're welcome. {gravatar} · hub {hub} · map {allmylinks}",
+        "text": "built TBCC so the firehose doesn't rot. you're welcome. {gravatar} · loot {hub} · map {allmylinks}",
         "image": "gravatar",
     },
     {
-        "text": "rank ~883 on the undress board. clearnet still acts shocked. free credits: {affiliate} · AOF {hub}",
+        "text": "rank ~883 on the undress board. clearnet still acts shocked. free credits: {affiliate} · AOF Loot {hub}",
         "image": "",
     },
     {
-        "text": "50 refs, $0 USD wallet, 102 coins. the game is volume not virtue. try it {affiliate} · hub {hub}",
+        "text": "50 refs, $0 USD wallet, 102 coins. the game is volume not virtue. try it {affiliate} · loot {hub}",
         "image": "",
     },
     {
@@ -68,7 +68,7 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
         "image": "",
     },
     {
-        "text": "psy-slop pays in coins before it pays in cash. {affiliate} · draw {affiliate_drawai} · AOF {hub}",
+        "text": "psy-slop pays in coins before it pays in cash. {affiliate} · draw {affiliate_drawai} · AOF Loot {hub}",
         "image": "",
     },
     {

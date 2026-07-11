@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 
-from app.data.aof_network import MAINHUB_RAW
+from app.services.aof_social_links import aof_public_cta_url
 from app.services.utm_links import allmylinks_tracked_url
 
 _URL_RE = re.compile(r"https?://\S+")
@@ -22,7 +22,7 @@ def aof_discord_invite_url() -> str:
 
 
 def aof_mainhub_display() -> str:
-    raw = (os.getenv("TBCC_AOF_MAINHUB_DISPLAY") or MAINHUB_RAW).strip()
+    raw = (os.getenv("TBCC_AOF_PUBLIC_CTA_DISPLAY") or aof_public_cta_url()).strip()
     return _display_url(raw) if raw.startswith("http") else raw.lstrip("@")
 
 
@@ -53,7 +53,7 @@ def build_instagram_caption(
     lines = [
         "Archive of Filth — AOF Network",
         "",
-        f"Hub → {hub}",
+        f"Loot entry → {hub}",
         f"Full map (link in bio) → {_display_url(aml) if aml else 'allmylinks.com/aof69'}",
     ]
     hook = teaser_without_urls(teaser)
@@ -85,7 +85,7 @@ def build_discord_caption(
     lines = [
         "**AOF Network**",
         "",
-        f"Main hub: {MAINHUB_RAW}",
+        f"Loot entry: {aof_public_cta_url()}",
     ]
     if aml:
         lines.append(f"Full map: {aml}")

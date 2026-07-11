@@ -60,7 +60,7 @@ def test_create_stars_invoice_link_caches(mock_client_cls):
 
     plan = {
         "id": 6,
-        "name": "AOF Main — 30 days",
+        "name": "AOF VIP — 30 days",
         "description": "30-day access",
         "product_type": "subscription",
         "price_stars": 500,

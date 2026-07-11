@@ -18,10 +18,10 @@ _URL_RE = re.compile(r"https?://[^\s\]\)<>\"']+", re.I)
 
 # Legacy link-center slugs → raw destination (created before LV policy takedown).
 _LEGACY_LV_SLUG_DEST: dict[str, str] = {
-    "irj3uxd3iYV": "https://t.me/+hMQzGsBFjF02MDkx",
+    "irj3uxd3iYV": "https://t.me/+NWathiLSqZ1lMzlh",
     "7XeubkKSFA8j": "https://t.me/addlist/r-7_7CGIkExhMDcx",
     "XeuokKSFA8j": "https://t.me/addlist/r-7_7CGIkExhMDcx",
-    "DgIo85a7oux0": "https://t.me/aofmainhub",
+    "DgIo85a7oux0": "https://t.me/aof_lootgod_bot?start=loot_free",
 }
 
 _WRAP_CACHE: dict[tuple[str, str], str] = {}

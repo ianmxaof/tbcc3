@@ -74,7 +74,7 @@ def test_merge_checkout_buttons_use_invoice(mock_use, mock_link):
     plan = MagicMock()
     plan.is_active = True
     plan.price_stars = 500
-    plan.name = "AOF Main"
+    plan.name = "AOF VIP"
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = plan
 

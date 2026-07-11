@@ -51,7 +51,7 @@ def test_wire_group_access_plan_to_vip_channel_dry_run():
 
     plan = MagicMock()
     plan.id = 6
-    plan.name = "AOF Main — 30 days"
+    plan.name = "AOF VIP — 30 days"
     plan.channel_id = 1
 
     db.query.return_value.filter.return_value.first.side_effect = [vip, plan]

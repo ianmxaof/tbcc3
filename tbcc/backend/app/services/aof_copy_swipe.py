@@ -23,8 +23,8 @@ def swipes_dir() -> Path:
     return _SWIPES_DIR
 
 
-def swipe_file_path(name: str = _DEFAULT_SWIPE_FILE) -> Path:
-    return _SWIPES_DIR / name
+def swipe_file_path(name: str | None = None) -> Path:
+    return _SWIPES_DIR / (name or _DEFAULT_SWIPE_FILE)
 
 
 def _slug_id(text: str, prefix: str = "swipe") -> str:
@@ -32,7 +32,7 @@ def _slug_id(text: str, prefix: str = "swipe") -> str:
     return f"{prefix}-{digest}"
 
 
-def load_swipe_file(name: str = _DEFAULT_SWIPE_FILE) -> dict[str, Any]:
+def load_swipe_file(name: str | None = None) -> dict[str, Any]:
     path = swipe_file_path(name)
     if not path.is_file():
         return {"schema_version": 1, "swipes": []}
@@ -40,13 +40,13 @@ def load_swipe_file(name: str = _DEFAULT_SWIPE_FILE) -> dict[str, Any]:
         return json.load(f)
 
 
-def list_swipes(name: str = _DEFAULT_SWIPE_FILE) -> list[dict[str, Any]]:
+def list_swipes(name: str | None = None) -> list[dict[str, Any]]:
     data = load_swipe_file(name)
     swipes = data.get("swipes")
     return list(swipes) if isinstance(swipes, list) else []
 
 
-def get_swipe(swipe_id: str, name: str = _DEFAULT_SWIPE_FILE) -> dict[str, Any] | None:
+def get_swipe(swipe_id: str, name: str | None = None) -> dict[str, Any] | None:
     for item in list_swipes(name):
         if (item.get("id") or "").strip() == swipe_id:
             return item
@@ -62,7 +62,7 @@ def ingest_swipe_raw(
     tactics: list[str] | None = None,
     notes: str = "",
     swipe_id: str | None = None,
-    file_name: str = _DEFAULT_SWIPE_FILE,
+    file_name: str | None = None,
 ) -> dict[str, Any]:
     """
     Append a new swipe to the JSON repo (idempotent on exact raw_body match).
@@ -107,7 +107,7 @@ def _aof_facts_block(extra_facts: dict[str, Any] | None = None) -> str:
         "network": "AOF — multi-lane adult Telegram network (AI, TABOO, MILF, PACKS, VIP, LOOT, etc.)",
         "bot_mau": "10,000+ monthly active users on the subscription bot (social proof — use when relevant)",
         "positioning": "TBCC pipeline — scraped, gated, curated deposits; not a repost farm",
-        "entry": "addlist for bulk join, Linkvertise gates for public, @aofsubscriptions_bot for VIP",
+        "entry": "@aof_lootgod_bot for first contact, Loot Room Group for public commons, @aofsubscriptions_bot for VIP",
     }
     if extra_facts:
         facts.update(extra_facts)
@@ -123,7 +123,7 @@ def adapt_swipe_sync(
     *,
     extra_facts: dict[str, Any] | None = None,
     required_urls: list[str] | None = None,
-    swipe_file: str = _DEFAULT_SWIPE_FILE,
+    swipe_file: str | None = None,
 ) -> str:
     """
     Rewrite a swipe for an AOF lane using LLM. Preserves tactics, replaces names/numbers with AOF truth.

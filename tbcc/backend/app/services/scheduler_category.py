@@ -33,7 +33,7 @@ def infer_scheduler_category(name: str | None, category: str | None = None) -> s
         or "feed rhythm" in n
     ):
         return "promo_bulletin"
-    if n.endswith(" scheduler") or "main group" in n:
+    if n.endswith(" scheduler") or "loot room" in n or "public commons" in n:
         return "main_lane"
     return "manual"
 

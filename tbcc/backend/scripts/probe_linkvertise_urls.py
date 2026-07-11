@@ -47,7 +47,7 @@ def main() -> None:
         ("dynamic_milf_invite", wrap_linkvertise_url(pub, "https://t.me/+AY0zGwyeAy9jNDIx")),
         ("dynamic_taboo_invite", wrap_linkvertise_url(pub, "https://t.me/+w46b7uJK5eo0MDcx")),
         ("dynamic_addlist", wrap_linkvertise_url(pub, "https://t.me/addlist/r-7_7CGIkExhMDcx")),
-        ("dynamic_main_hub", wrap_linkvertise_url(pub, "https://t.me/+hMQzGsBFjF02MDkx")),
+        ("dynamic_loot_room", wrap_linkvertise_url(pub, "https://t.me/+NWathiLSqZ1lMzlh")),
         (
             "dynamic_link_target_domain",
             wrap_linkvertise_url(

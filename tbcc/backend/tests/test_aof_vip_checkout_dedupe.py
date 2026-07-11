@@ -15,7 +15,7 @@ def test_strip_bare_vip_footer_link():
         '📌 <b>Join the full AOF stack</b> — free lanes via addlist\n'
         '<a href="https://link-target.net/x">addlist all channels</a>'
         ' · ⭐ <a href="https://t.me/+JuO7YRlndFwzYmIx">AOF VIP</a>\n'
-        'hub <a href="https://x">aofmainhub</a>'
+        'loot <a href="https://x">aof_lootgod_bot</a>'
     )
     out = strip_bare_vip_links_from_caption(footer)
     assert "t.me/+" not in out

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 
+DEFAULT_LOOT_BOT_USERNAME = "aof_lootgod_bot"
+DEFAULT_LOOT_ROOM_PUBLIC_URL = "https://t.me/+NWathiLSqZ1lMzlh"
+
 
 def x_linkvertise_enabled() -> bool:
     """When false (default), Buffer/X must not use Linkvertise gates — Telegram only."""
@@ -16,11 +19,40 @@ def x_linkvertise_enabled() -> bool:
 
 
 def aof_hub_invite_url() -> str:
-    return (os.getenv("TBCC_AOF_HUB_INVITE_URL") or "").strip() or "https://t.me/+hMQzGsBFjF02MDkx"
+    return (os.getenv("TBCC_AOF_HUB_INVITE_URL") or "").strip() or loot_room_public_url()
+
+
+def loot_bot_username() -> str:
+    return (
+        (os.getenv("TBCC_LOOT_BOT_USERNAME") or "").strip().lstrip("@")
+        or DEFAULT_LOOT_BOT_USERNAME
+    )
+
+
+def loot_bot_free_pull_url() -> str:
+    return (os.getenv("TBCC_LOOT_BOT_FREE_PULL_URL") or "").strip() or (
+        f"https://t.me/{loot_bot_username()}?start=loot_free"
+    )
+
+
+def loot_room_public_url() -> str:
+    return (
+        (os.getenv("TBCC_LOOT_ROOM_PUBLIC_URL") or "").strip()
+        or (os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "").strip()
+        or DEFAULT_LOOT_ROOM_PUBLIC_URL
+    )
+
+
+def aof_public_cta_url() -> str:
+    """Top-of-funnel public CTA: Loot Bot first, or Loot Room group when explicitly configured."""
+    mode = (os.getenv("TBCC_AOF_PUBLIC_CTA_MODE") or "loot_bot").strip().lower()
+    if mode in {"loot_room", "room", "group"}:
+        return loot_room_public_url()
+    return loot_bot_free_pull_url()
 
 
 def x_outbound_url() -> str:
-    """Primary CTA for Buffer/X — hub invite or non-LV overflow, not Linkvertise by default."""
+    """Primary CTA for Buffer/X — Loot Bot/Loot Room unless a safe override is configured."""
     if x_linkvertise_enabled():
         return aof_gate_url()
     from app.services.link_gate_provider import is_linkvertise_host
@@ -28,7 +60,7 @@ def x_outbound_url() -> str:
     overflow = (os.getenv("TBCC_BUFFER_X_OVERFLOW_URL") or "").strip()
     if overflow and not is_linkvertise_host(overflow):
         return overflow
-    return aof_hub_invite_url()
+    return aof_public_cta_url()
 
 
 def aof_gate_url_alt() -> str:
@@ -131,7 +163,9 @@ def fill_armory_template(
     from app.services.promo_affiliate_rotation import resolve_affiliate_url
 
     gate = x_outbound_url() if for_x else aof_gate_url()
-    hub = aof_hub_invite_url()
+    hub = aof_public_cta_url() if for_x else aof_hub_invite_url()
+    loot_bot = loot_bot_free_pull_url()
+    loot_room = loot_room_public_url()
     aml_base = allmylinks_url()
     if aml_base:
         aml = allmylinks_tracked_url(
@@ -155,6 +189,8 @@ def fill_armory_template(
         (text or "")
         .replace("{gate}", gate)
         .replace("{hub}", hub)
+        .replace("{loot_bot}", loot_bot)
+        .replace("{loot_room}", loot_room)
         .replace("{allmylinks}", aml)
         .replace("{gravatar}", grav)
         .replace("{affiliate}", aff)

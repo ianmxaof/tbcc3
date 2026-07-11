@@ -33,7 +33,7 @@ _CONTEXT_ANCHORS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bVOYEUR\b", re.I), "voyeur feed"),
     (re.compile(r"\bLOOT\b", re.I), "loot room"),
     (re.compile(r"\bADDLIST\b", re.I), "full map"),
-    (re.compile(r"\bMAIN\s+(HUB|GROUP)\b", re.I), "main hub"),
+    (re.compile(r"\bMAIN\s+(HUB|GROUP)\b", re.I), "legacy hub"),
     (re.compile(r"\bMEGA\b", re.I), "mega vault"),
     (re.compile(r"\bPACK\b", re.I), "pack drop"),
     (re.compile(r"\bHUB\b", re.I), "links hub"),

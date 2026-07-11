@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -11,7 +12,7 @@ from app.services.erome_upload_analytics import merge_sidecar_params, read_erome
 
 
 def test_scan_title_tos_detects_tme():
-    issues = policy.scan_title_for_tos("t.me/aofmainhub teaser pack")
+    issues = policy.scan_title_for_tos("t.me/aof_lootgod_bot teaser pack")
     assert "tos_advertising:telegram_link_in_title" in issues
 
 
@@ -27,7 +28,7 @@ def test_policy_blocks_promo_description():
 
 
 def test_scan_title_spam_detects_handles():
-    issues = policy.scan_title_for_spam("20260627 - @AOFMAINHUB")
+    issues = policy.scan_title_for_spam("20260627 - @AOF_LOOT")
     assert any("spam_pattern" in i for i in issues)
 
 
@@ -44,7 +45,7 @@ def test_policy_blocks_duplicate_title(tmp_path, monkeypatch):
         json.dumps(
             {
                 "ok": True,
-                "published_at": "2026-07-04T10:00:00Z",
+                "published_at": datetime.now(timezone.utc).isoformat(),
                 "title": "Same Title",
             }
         )

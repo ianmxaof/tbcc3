@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from app.services.buffer_x_caption import fit_plaintext_for_x
 from app.services.buffer_x_promo_image import pick_promo_image
 
@@ -17,11 +19,11 @@ def build_flywheel_x_caption(
     """
     Top-of-funnel X post: lane tease + Erome gallery (view monetization) + Telegram/hub exits.
     """
-    from app.services.aof_social_links import aof_hub_invite_url, x_outbound_url
+    from app.services.aof_social_links import aof_public_cta_url, x_outbound_url
     from app.services.utm_links import allmylinks_tracked_url, slug_utm_value
 
     name = (lane or "AOF").strip()
-    lines: list[str] = [f"New drop on {name} — preview on Erome, full stack on Telegram."]
+    lines: list[str] = [f"New drop on {name} — preview on Erome, start through the AOF Loot Bot."]
 
     erome = (erome_album_url or "").strip()
     if erome.startswith("https://"):
@@ -31,7 +33,13 @@ def build_flywheel_x_caption(
     if viewer.startswith("https://") and viewer != erome:
         lines.append(viewer)
 
-    tg = (telegram_invite or "").strip()
+    include_lane_invite = (os.getenv("TBCC_BUFFER_FLYWHEEL_INCLUDE_LANE_INVITE") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    tg = (telegram_invite or "").strip() if include_lane_invite else ""
     if tg:
         lines.append(tg)
 
@@ -42,7 +50,9 @@ def build_flywheel_x_caption(
         content=slug_utm_value(name, fallback="pool"),
     )
     if not hub:
-        hub = aof_hub_invite_url()
+        hub = aof_public_cta_url()
+    if hub not in lines:
+        lines.append(hub)
     overflow = x_outbound_url() or hub
     body = "\n".join(x for x in lines if x)
     return fit_plaintext_for_x(body, overflow_url=overflow)

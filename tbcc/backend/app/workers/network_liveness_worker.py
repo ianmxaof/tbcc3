@@ -1,4 +1,4 @@
-"""Periodic network liveness: milestone FOMO posts to main group."""
+"""Periodic network liveness: milestone FOMO posts to Loot Room commons."""
 
 from __future__ import annotations
 

@@ -1046,7 +1046,7 @@ def collect_system_health() -> dict[str, Any]:
                         "warning",
                         (
                             f"@aof_spicybot_bot is not admin in {len(missing)}/{gate_probe.get('channel_count', '?')} "
-                            f"AOF channels ({names}{extra}) — companion membership verify fails outside Main Group. "
+                            f"AOF channels ({names}{extra}) — companion membership verify fails outside Loot Room commons. "
                             "Run scripts/ensure_companion_bot_channel_admin.py --execute or add the bot manually."
                         ),
                         action="companion_gate_channels",

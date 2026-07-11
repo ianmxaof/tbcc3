@@ -7,7 +7,7 @@ sends stop failing with "Cannot find any entity corresponding to -100…".
 
 Usage (from tbcc/backend, with .env loaded):
   python scripts/warm_poster_peers.py
-  python scripts/warm_poster_peers.py --update-invite 1 "https://t.me/+hMQzGsBFjF02MDkx"
+  python scripts/warm_poster_peers.py --update-invite 1 "https://t.me/+NWathiLSqZ1lMzlh"
 """
 from __future__ import annotations
 
