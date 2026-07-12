@@ -1,0 +1,38 @@
+{
+  "name": "perchance-suite",
+  "version": "0.1.0",
+  "header": {
+    "name": "TBCC Perchance Suite",
+    "namespace": "https://github.com/tbcc/userscripts/perchance",
+    "description": "Perchance ops: ads bypass, lazy queue, Gemini-parity job presets, prompt history, TBCC capture bridge.",
+    "match": [
+      "https://perchance.org/*",
+      "https://*.perchance.org/*",
+      "https://image-generation.perchance.org/*"
+    ],
+    "grant": [
+      "GM_getValue",
+      "GM_setValue",
+      "GM_registerMenuCommand",
+      "GM_addStyle"
+    ],
+    "run-at": "document-start",
+    "license": "GPL-3.0-or-later",
+    "updateURL": "http://127.0.0.1:8765/perchance-suite.user.js",
+    "downloadURL": "http://127.0.0.1:8765/perchance-suite.user.js"
+  },
+  "files": [
+    "../shared/ns.js",
+    "../shared/storage.js",
+    "../shared/flags.js",
+    "../shared/ui-panel.js",
+    "data/jobs-data.js",
+    "features/ads-bypass.js",
+    "features/lazy-iframe-queue.js",
+    "features/prompt-bridge.js",
+    "features/jobs-panel.js",
+    "features/prompt-history.js",
+    "features/send-winners.js",
+    "boot.js"
+  ]
+}

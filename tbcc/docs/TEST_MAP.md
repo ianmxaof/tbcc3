@@ -26,7 +26,7 @@ py -3.13 -m pytest <path> -x -q
 | **Scrape transport** | `tests/test_scrape_transport.py` | Cancel/skip/overview phases for Ingest transport |
 | **Scrape tag map / views** | `tests/test_scrape_tag_pool_map.py` | Hashtag→pool suggestions + view sample helpers |
 | **Buffer X link order** | `tests/test_buffer_x_link_order.py` | Affiliate-first preview pin; optional cycle when `AFFILIATE_FIRST=0` |
-| **X promo / Gemini** | `tests/test_gemini_promo_prompt.py`, `tests/test_loot_tier_cards.py` | Promo + loot card prompt builders; API needs GEMINI_API_KEY |
+| **X promo / Gemini** | `tests/test_gemini_promo_prompt.py`, `tests/test_loot_tier_cards.py`, `tests/test_export_perchance_prompt_packs.py` | Promo + loot builders; Perchance pack export; API needs GEMINI_API_KEY |
 | **Keep2share** | `tests/test_keep2share_client.py` | |
 | **Import / mirror** | `tests/test_mirror_after_channel_import.py`, `tests/test_channel_import_timeout.py` | |
 | **Rules / docs only** | skip tests | Lint or file verify instead |

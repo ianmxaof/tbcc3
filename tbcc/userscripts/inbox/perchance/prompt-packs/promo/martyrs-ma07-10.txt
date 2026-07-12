@@ -1,0 +1,41 @@
+# preset=martyrs-ma07-10 format=grid-2x2-9x16 aspect=9:16
+
+OUTPUT: ONE composite image. 2×2 grid of FOUR complete AOF MEGA PACKS posters.
+Each cell: 9:16 portrait. Overall composite: 9:16.
+NOT horizontal strips. NOT one panel. Thin gutter OK.
+Quadrant map:
+  TOP-LEFT | TOP-RIGHT
+  BOTTOM-LEFT | BOTTOM-RIGHT
+
+LAYOUT LOCK — identical in every cell/panel:
+TOP: distressed white "AOF" + red brush-stroke "MEGA PACKS"
+SUBHEAD: "MASSIVE COLLECTIONS • UNLIMITED POSSIBILITIES"
+CENTER: large QR code with Telegram paper-plane logo inside
+LEFT PILLS: NICHE LANES | FULL LENGTH | AI & DEEPFAKES | MEGA PACKS | DAILY DROPS
+RIGHT PILLS: LOOT ROOM | VIP ACCESS | VOYEUR & TABOO | ONE-TAP ADDLIST | 15+ CHANNELS
+BELOW QR: "DAILY DROPS · ARCHIVED LANES" / "UPDATED DAILY · 15+ CURATED LANES"
+LINK BAR: red bar, paper-plane icons, exact text "t.me/aofmainhub"
+BOTTOM: NO LIMITS | DIRECT DOWNLOADS | EXCLUSIVE CONTENT | SECURE & PRIVATE | ENDLESS LIBRARY
+UI priority #1. Text sharp, spelled exactly.
+
+SCENES:
+TOP-LEFT — Family Breakfast / Dining Room Entrance (ma-07):
+Martyrs farmhouse dining room — morning light through lace curtains. Uneaten breakfast on table: cereal bowls, coffee cups, juice glasses. All four family members visible and seated — mother, father, sister, and brother — frozen mid-meal, faces toward the hallway. Emaciated female in long dark trench coat filling the doorway, double-barrel shotgun at low ready, silhouette backlit from the hall. Family portraits on wall slightly crooked. Analog horror freeze-frame instant before violence, desaturated farmhouse palette with cold hallway contrast, handheld 16mm grain, VHS chroma bleed, no gore or bodies depicted, cinematic wide from table POV toward entrance, 8k photoreal still.
+
+TOP-RIGHT — Blinder Helmet Removal (ma-08):
+Martyrs farmhouse bathroom — cramped washroom, cracked mirror, stained sink, fluorescent tube buzzing. Protagonist removing a nailed-in metal blinder helmet from the head of a severely lacerated emaciated female — trauma implied, not explicit gore. Helmet: two flat C-shaped circular stainless steel bands — one wrapping back of head and ears, one across crown — joined by cold steel bolts along the top; one piece being lifted away. Tile grout darkened, water droplets on porcelain. Close-medium or mirror reflection, analog horror intimacy, desaturated green-white cast, VHS softness, Pascal Laugier tone, photoreal cinematic still.
+
+BOTTOM-LEFT — Surgical Preparation / Steel Slab (ma-09):
+Martyrs surgical-prep antechamber — stainless steel operating slab center, gleaming instrument trays, no pharmaceuticals or IV supplies anywhere. Bare concrete walls, floor drain, cold overhead panels. Low angle from behind bald figure in light-blue surgical scrubs over white doctor's coat, black slacks, polished black oxfords — both hands raised, one surgical instrument in each, poised toward empty slab. Operation about to begin, not in progress. Clinical blue-white light, analog surveillance grain, no patient on slab, no blood, tension only, 8k photoreal.
+
+BOTTOM-RIGHT — Victorian Society Assembly (ma-10):
+Martyrs finale assembly — gaudy Victorian two-story interior, late morning (~11:00 AM) sun through tall draped windows, ornate wallpaper, chandelier, curved staircase. Elderly head lady addressing seated room of credential-class elites — businessmen, society women, clinical observers — still and attentive as ceremony. Warm daylight against cold institutional undertone, analog horror in polite domestic grandeur, wide shot from audience rear toward speaker, VHS grain at edges, no gore, unsettling calm, 8k photoreal still.
+
+STYLE: Martyrs / Pascal Laugier French extremity. Analog horror: VHS grain, scan lines, chromatic bleed, gritty photoreal.
+
+Generate now. Same locked UI on every panel/cell. Vary only background per slot.
+
+AVOID: wrong aspect ratio, horizontal filmstrip when 2×2 requested, wrong labels (Movies/Series/Anime/Software/Books), misspelled text, watermark, random URLs, QR without Telegram logo, missing pills, cropped link bar, duplicate identical scenes, scenes bleeding across borders.
+
+# NEGATIVE
+wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text
