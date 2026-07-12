@@ -79,11 +79,14 @@ async function renderModelSearchHistory() {
     historyEl.textContent = "No usernames searched yet.";
     return;
   }
+  const histHelpers =
+    typeof TbccUsernameSearchHistory !== "undefined" ? TbccUsernameSearchHistory : null;
   historyEl.innerHTML = "";
   rows.forEach((r) => {
     const username = String(r && r.username ? r.username : "").trim();
     if (!username) return;
     const ts = Number(r && r.ts ? r.ts : 0);
+    const source = String(r && r.source ? r.source : "unknown");
     const line = document.createElement("div");
     line.className = "tbcc-history-row";
     const rm = document.createElement("button");
@@ -94,6 +97,7 @@ async function renderModelSearchHistory() {
     rm.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!window.confirm(`Remove "${username}" from username search history?`)) return;
       const latest = await new Promise((resolve) => {
         chrome.storage.local.get([STORAGE_MODEL_SEARCH_HISTORY], resolve);
       });
@@ -115,10 +119,45 @@ async function renderModelSearchHistory() {
     const mid = document.createElement("div");
     mid.className = "tbcc-history-main";
     const left = document.createElement("code");
+    left.className = "tbcc-history-username";
     left.textContent = username;
+    left.title = "Click to copy username";
+    left.setAttribute("role", "button");
+    left.tabIndex = 0;
+    const copyUser = async () => {
+      try {
+        await navigator.clipboard.writeText(username);
+        setStatus(`Copied @${username}`);
+      } catch (_) {
+        setStatus("Could not copy username.", true);
+      }
+      setTimeout(() => setStatus(""), 1400);
+    };
+    left.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void copyUser();
+    });
+    left.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        void copyUser();
+      }
+    });
     const right = document.createElement("span");
-    right.className = "cat";
-    right.textContent = formatHistoryTime(Number(r && r.ts ? r.ts : 0));
+    right.className = "tbcc-history-meta cat";
+    if (histHelpers && histHelpers.appendUsernameSearchSourceBadge) {
+      histHelpers.appendUsernameSearchSourceBadge(right, source);
+    } else {
+      const badge = document.createElement("span");
+      badge.className = "tbcc-ush-source";
+      badge.textContent = "?";
+      right.appendChild(badge);
+    }
+    const time = document.createElement("span");
+    time.className = "tbcc-history-time";
+    time.textContent = formatHistoryTime(ts);
+    right.appendChild(time);
     mid.appendChild(left);
     mid.appendChild(right);
     line.appendChild(rm);
@@ -635,6 +674,7 @@ async function refreshModelSearchUi() {
 
 if (btnClearHistory) {
   btnClearHistory.addEventListener("click", async () => {
+    if (!window.confirm("Clear all username search history?")) return;
     await new Promise((resolve) => chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_HISTORY]: [] }, resolve));
     await renderModelSearchHistory();
     setStatus("Username history cleared.");

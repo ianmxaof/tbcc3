@@ -18,6 +18,8 @@
  * A standalone file with a dedicated guard avoids that whole class of bug.
  */
 (function () {
+  if (typeof tbccWaitForModule !== "function") return;
+  tbccWaitForModule("onlyfans_harvest", function () {
   if (window.__tbccOfHarvestLoaded) return;
   window.__tbccOfHarvestLoaded = true;
 
@@ -318,5 +320,6 @@
       }
       return true;
     }
+  });
   });
 })();

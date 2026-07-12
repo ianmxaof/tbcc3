@@ -63,12 +63,115 @@ function buildModelSearchUrl(template, username) {
 
 function guessResultCountFromHtml(html) {
   if (!html || typeof html !== "string") return null;
-  const m = html.match(/(\d[\d,]*)\s*(results?|entries|posts?|items?|found|hits?|videos?|photos?|models?)\b/i);
+  // Prefer counts near "search" / "result" headings — bare "10 videos" in sidebars is noise.
+  const nearSearch = html.match(
+    /(?:search|found|showing|results? for)[^.<]{0,80}?(\d[\d,]*)\s*(?:results?|entries|posts?|items?|videos?|photos?|models?)/i
+  );
+  if (nearSearch) return parseInt(nearSearch[1].replace(/,/g, ""), 10) || null;
+  const m = html.match(/(\d[\d,]*)\s*(results?|entries)\b/i);
   if (m) return parseInt(m[1].replace(/,/g, ""), 10) || null;
-  const m2 = html.match(/(?:total|about|count|results?)\s*[:\s]*\s*(\d[\d,]*)/i);
-  if (m2) return parseInt(m2[1].replace(/,/g, ""), 10) || null;
   const m3 = html.match(/"total(?:Count|_count)?"\s*:\s*(\d+)/i);
   if (m3) return parseInt(m3[1], 10) || null;
+  return null;
+}
+
+function escapeRegExp(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Count links that look like real profile/content hits for username — not the search form/URL echo.
+ */
+function countUsernameResultLinks(html, username, finalUrl) {
+  const user = String(username || "").trim();
+  if (!user || user.length < 2 || !html) return 0;
+  const userLc = user.toLowerCase();
+  const enc = encodeURIComponent(user).toLowerCase();
+  let searchHost = "";
+  let searchPath = "";
+  try {
+    const u = new URL(String(finalUrl || ""));
+    searchHost = u.hostname.toLowerCase();
+    searchPath = (u.pathname || "").toLowerCase();
+  } catch (_) {}
+
+  const hrefRe = /href\s*=\s*["']([^"']+)["']/gi;
+  let n = 0;
+  const seen = new Set();
+  let m;
+  while ((m = hrefRe.exec(html))) {
+    let href = String(m[1] || "").trim();
+    if (!href || href.startsWith("#") || href.startsWith("javascript:")) continue;
+    const low = href.toLowerCase();
+    if (/\.(css|js|png|jpe?g|gif|webp|svg|ico|woff2?)(\?|$)/i.test(low)) continue;
+    if (/[?&](s|q|search|query|keyword)=/.test(low)) continue;
+    if (/\/search\/|\/\?s=|index\.php\?search=/i.test(low) && (low.includes(userLc) || low.includes(enc))) continue;
+    // Must reference username as a path segment (profile/album style), not only in query.
+    const pathOk =
+      new RegExp(`/(?:@)?${escapeRegExp(userLc)}(?:/|$|\\?|#)`, "i").test(low) ||
+      new RegExp(`/(?:@)?${escapeRegExp(enc)}(?:/|$|\\?|#)`, "i").test(low);
+    if (!pathOk) continue;
+    // Skip self-link to the search page
+    try {
+      const abs = new URL(href, finalUrl || "https://example.com/");
+      if (searchHost && abs.hostname.toLowerCase() === searchHost) {
+        const p = (abs.pathname || "").toLowerCase();
+        if (p === searchPath || /\/search\b/.test(p)) continue;
+      }
+      const key = abs.hostname + abs.pathname;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    } catch (_) {
+      if (seen.has(low)) continue;
+      seen.add(low);
+    }
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Site family for source-aware macro probing.
+ * @returns {"livecams"|"onlyfans"|"videos"|"general"}
+ */
+function modelSearchSiteFamily(site) {
+  const blob = `${(site && site.id) || ""} ${(site && site.name) || ""} ${(site && site.url) || ""} ${(site && site.category) || ""}`.toLowerCase();
+  const cat = normalizeModelSearchCategory(site && site.category);
+  if (
+    /onlyfans|fapello|coomer|kemono|leaknude|erothot|whoreshub|thot|fansly|patreon|fanvue|loyalfans|badjojo|porn4fans|fapodrop|fapdungeon|leaks4fap|onlyxfinder|topfap|leakslink|modelsearcher/.test(
+      blob
+    )
+  ) {
+    return "onlyfans";
+  }
+  if (
+    cat === MODEL_SEARCH_CATEGORY_LIVECAMS ||
+    /cam|webcam|stripchat|chaturbate|bonga|recording|private|archivebate|showcam|onscreen|cumcam|cloudbate|bestcam|camwh|webcamrec|girlsinprivates|camlovin|privaterecord|someonesister|xcamlady|xhomealone|pusvid|livecam/.test(
+      blob
+    )
+  ) {
+    return "livecams";
+  }
+  if (cat === MODEL_SEARCH_CATEGORY_VIDEOS || /camwhores|video/.test(blob)) return "videos";
+  if (cat === MODEL_SEARCH_CATEGORY_ONLYFANS) return "onlyfans";
+  return "general";
+}
+
+/** Preferred site families when the username was captured on a given platform. */
+function preferredFamiliesForUsernameSource(source) {
+  const h =
+    typeof TbccUsernameSearchHistory !== "undefined" && TbccUsernameSearchHistory.normalizeUsernameSearchSource
+      ? TbccUsernameSearchHistory.normalizeUsernameSearchSource(source)
+      : String(source || "").toLowerCase();
+  if (["stripchat", "chaturbate", "cambb", "xhamsterlive"].includes(h)) {
+    return ["livecams", "videos"];
+  }
+  if (["onlyfans", "fansly", "instagram"].includes(h)) {
+    return ["onlyfans", "general"];
+  }
+  if (h === "erome" || h === "reddit" || h === "x") {
+    return ["general", "onlyfans", "livecams", "videos"];
+  }
   return null;
 }
 
@@ -118,6 +221,18 @@ const SITE_PROBE_RULES = [
     hosts: ["camwhores.tv", "camwhoresbay.com"],
     denyRegex: [/there\s+is\s+no\s+data\s+in\s+this\s+list/i, /no\s+videos?\s+found/i, /\b0\s+videos\b/i],
   },
+  {
+    hosts: ["erothots.co", "erothots.com"],
+    denyContains: ["parklogic", "redirecting"],
+  },
+  {
+    hosts: ["fapello.com"],
+    denyRegex: [/no\s+models?\s+found/i, /nothing\s+found/i],
+  },
+  {
+    hosts: ["whoreshub.com"],
+    denyRegex: [/no\s+videos?\s+found/i, /nothing\s+found/i, /0\s+videos/i],
+  },
 ];
 
 function extractTitleLower(html) {
@@ -154,7 +269,8 @@ function applySiteProbeRules(html, finalUrl) {
 
 /**
  * Best-effort: does this search/profile page look like it has content?
- * Returns { hasResults, count, reason } where reason is ok | none | blocked | error.
+ * Strict: search boxes always echo the query — that alone is NOT a hit.
+ * Returns { hasResults, count, reason, confidence, signal }.
  */
 function analyzeModelSearchHtml(html, finalUrl, username) {
   if (!html || typeof html !== "string" || html.length < 40) {
@@ -163,7 +279,7 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
   const lower = html.toLowerCase();
   const userLc = String(username || "").trim().toLowerCase();
   const blocked =
-    /just a moment|cf-browser-verification|attention required|enable javascript|ddos protection|checking your browser|cloudflare/i.test(
+    /just a moment|cf-browser-verification|attention required|enable javascript|ddos protection|checking your browser|cloudflare|parklogic|adblockingdetected/i.test(
       html
     );
   if (blocked) return { hasResults: false, count: 0, reason: "blocked", confidence: "none", signal: "blocked" };
@@ -181,8 +297,12 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
   }
 
   const titleLc = extractTitleLower(html);
-  if (titleLc && ["not found", "404", "error"].some((term) => titleLc.includes(term))) {
+  if (titleLc && ["not found", "404", "error", "redirecting"].some((term) => titleLc.includes(term))) {
     return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "title_not_found", finalUrl: finalUrl || "" };
+  }
+  // Homepages / index shells are never hits
+  if (titleLc && /\bindex page\b|\bhome\b\s*$/i.test(titleLc) && !/search results/i.test(titleLc)) {
+    return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "index_shell", finalUrl: finalUrl || "" };
   }
 
   if (/^\s*[\[{]/.test(html.trim())) {
@@ -205,63 +325,57 @@ function analyzeModelSearchHtml(html, finalUrl, username) {
   }
 
   const explicitEmpty =
-    /\bno\s+results?\b|\b0\s+results?\b|nothing\s+found|no\s+matches|not\s+found|no\s+videos?\s+found|\b0\s+videos\b|does\s+not\s+exist|no\s+records\s+found|there\s+is\s+no\s+data\s+in\s+this\s+list|keine\s+ergebnisse|aucun\s+résultat/i.test(
+    /\bno\s+results?\b|\b0\s+results?\b|nothing\s+found|no\s+matches|not\s+found|no\s+videos?\s+found|\b0\s+videos\b|does\s+not\s+exist|no\s+records\s+found|there\s+is\s+no\s+data\s+in\s+this\s+list|keine\s+ergebnisse|aucun\s+résultat|no\s+posts\s+found|sorry,\s*no\s+posts/i.test(
       lower
     );
-  let count = guessResultCountFromHtml(html);
-  let signal = count != null ? "count_regex" : "none";
-  if (explicitEmpty && (count == null || count === 0)) {
+  if (explicitEmpty) {
     return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "explicit_empty" };
   }
 
-  if (count == null) {
-    const patterns = [
-      /class="[^"]*(?:video-card|result-item|post-item|model-card|thumb-card|grid-item|album-item)/gi,
-      /<article\b/gi,
-      /data-post-id=/gi,
-      /class="[^"]*post\b[^"]*"/gi,
-    ];
-    let cards = 0;
-    for (const p of patterns) {
-      const m = html.match(p);
-      if (m) cards = Math.max(cards, m.length);
+  const resultLinks = countUsernameResultLinks(html, username, finalUrl);
+  let count = guessResultCountFromHtml(html);
+  let signal = count != null ? "count_regex" : "none";
+
+  // Card grids without username-bearing result links are almost always template chrome.
+  if (resultLinks <= 0) {
+    if (siteRule && siteRule.action === "confirm") {
+      // Host-specific confirm still requires username somewhere meaningful in body beyond inputs
+      const inputOnly =
+        userLc &&
+        (lower.match(new RegExp(`value=["'][^"']*${escapeRegExp(userLc)}[^"']*["']`, "gi")) || []).length > 0 &&
+        resultLinks === 0;
+      if (inputOnly || !userLc || !lower.includes(userLc)) {
+        return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "confirm_without_links", finalUrl: finalUrl || "" };
+      }
     }
-    if (cards >= 2) {
-      count = cards;
-      signal = "cards";
-    } else if (cards === 1) {
-      count = 1;
-      signal = "cards";
-    }
+    return {
+      hasResults: false,
+      count: 0,
+      reason: "none",
+      confidence: "none",
+      signal: "no_result_links",
+      finalUrl: finalUrl || "",
+    };
   }
 
-  if ((count == null || count === 0) && /404|page not found|doesn't exist|user not found|model not found/i.test(lower)) {
-    return { hasResults: false, count: 0, reason: "none", confidence: "none", signal: "not_found" };
-  }
+  // Prefer link evidence over inflated sidebar counts
+  count = Math.max(resultLinks, count != null && count <= resultLinks * 3 ? count : resultLinks);
+  signal = "result_links";
 
-  let hasResults = count != null && count > 0;
   if (siteRule && siteRule.action === "confirm") {
-    count = Math.max(Number(siteRule.count) || 1, Number(count) || 0);
+    count = Math.max(Number(siteRule.count) || 1, count);
     signal = siteRule.signal || "site_markers";
-    hasResults = true;
-  } else if (hasResults && userLc && !lower.includes(userLc)) {
-    hasResults = false;
-    count = 0;
-    signal = "no_username_in_html";
   }
 
-  let confidence = "none";
-  if (hasResults) {
-    confidence = signal === "json" || signal === "json_total" || signal === "site_markers" || (count || 0) >= 2 ? "high" : "medium";
-  }
-
+  const confidence = resultLinks >= 2 || signal === "json" || signal === "site_markers" ? "high" : "medium";
   return {
-    hasResults,
-    count: hasResults ? count : 0,
-    reason: hasResults ? "ok" : "none",
+    hasResults: true,
+    count,
+    reason: "ok",
     confidence,
     signal,
     finalUrl: finalUrl || "",
+    resultLinks,
   };
 }
 

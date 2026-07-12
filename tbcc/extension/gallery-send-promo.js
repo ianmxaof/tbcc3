@@ -5,6 +5,7 @@
 (function (global) {
   const API_BASE = "http://localhost:8000";
   const STORAGE_SHOW = "tbccShowSendPromoStrip";
+  const STORAGE_BODY_EXPANDED = "tbccSendPromoStripBodyExpanded";
   const STORAGE_ON_SEND = "tbccSendPromoOnSend";
   const STORAGE_ACTIVE = "tbccSendPromoActiveId";
 
@@ -67,16 +68,64 @@
     }
   }
 
+  function applyStripBodyExpanded(expanded) {
+    const wrap = $("sendPromoStripWrap");
+    const body = $("sendPromoStripBody");
+    const chevron = $("btnSendPromoStripExpand");
+    if (!wrap || !body) return;
+    const on = !!expanded;
+    wrap.classList.toggle("is-body-expanded", on);
+    body.hidden = !on;
+    if (chevron) {
+      chevron.setAttribute("aria-expanded", on ? "true" : "false");
+      chevron.title = on ? "Hide promo image tiles" : "Show promo image tiles";
+    }
+  }
+
+  function updateStripCountBadge() {
+    const el = $("sendPromoStripCount");
+    if (!el) return;
+    const p = payloadCache || { images: [] };
+    const n = Array.isArray(p.images) ? p.images.length : 0;
+    if (n > 0) {
+      el.hidden = false;
+      el.textContent = n + (n === 1 ? " image" : " images");
+    } else {
+      el.hidden = true;
+      el.textContent = "";
+    }
+  }
+
+  async function loadStripBodyExpanded() {
+    try {
+      const local = await chrome.storage.local.get([STORAGE_BODY_EXPANDED]);
+      return local[STORAGE_BODY_EXPANDED] === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setStripBodyExpanded(expanded, persist) {
+    applyStripBodyExpanded(expanded);
+    if (persist !== false) {
+      try {
+        chrome.storage.local.set({ [STORAGE_BODY_EXPANDED]: !!expanded });
+      } catch (_) {}
+    }
+  }
+
   function renderStrip() {
     const wrap = $("sendPromoStripWrap");
     const strip = $("sendPromoStrip");
     if (!wrap || !strip) return;
     const p = payloadCache || { enabled: false, images: [] };
+    updateStripCountBadge();
     strip.innerHTML = "";
     if (!p.enabled || !p.images || !p.images.length) {
       const empty = document.createElement("p");
       empty.className = "send-promo-strip-empty";
-      empty.textContent = "Upload a promo tile (logo, profile card) — included in the last album of each batch send.";
+      empty.textContent =
+        "Upload promo tiles (logo, profile card) — pick one for the batch send tail.";
       strip.appendChild(empty);
       return;
     }
@@ -129,6 +178,10 @@
       wrap.hidden = true;
     }
     renderStrip();
+    if (!wrap.hidden) {
+      const expanded = await loadStripBodyExpanded();
+      applyStripBodyExpanded(expanded);
+    }
     syncCheckboxes();
     return payloadCache;
   }
@@ -159,6 +212,15 @@
     bindOnSend("sendPromoOnSend");
     bindOnSend("sendPromoOnSendSheet");
 
+    const chevron = $("btnSendPromoStripExpand");
+    if (chevron) {
+      chevron.addEventListener("click", () => {
+        const wrap = $("sendPromoStripWrap");
+        const expanded = !!(wrap && wrap.classList.contains("is-body-expanded"));
+        setStripBodyExpanded(!expanded);
+      });
+    }
+
     if (toggle) {
       toggle.addEventListener("click", () => {
         chrome.storage.local.get([STORAGE_SHOW], (local) => {
@@ -167,7 +229,14 @@
             const wrap = $("sendPromoStripWrap");
             if (wrap) wrap.hidden = !next;
             toggle.classList.toggle("is-active", next);
-            if (next) void refresh(true);
+            if (next) {
+              void refresh(true).then(async () => {
+                const expanded = await loadStripBodyExpanded();
+                applyStripBodyExpanded(expanded);
+              });
+            } else {
+              applyStripBodyExpanded(false);
+            }
           });
         });
       });
@@ -195,6 +264,7 @@
         chrome.storage.local.set({ [STORAGE_ACTIVE]: data.image.id });
       }
       renderStrip();
+      setStripBodyExpanded(true);
       if (global.showToast) global.showToast("Promo image uploaded.", "info");
     } catch (e) {
       if (global.showToast) global.showToast((e && e.message) || "Upload failed", "error");

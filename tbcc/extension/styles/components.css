@@ -371,6 +371,65 @@ body.tbcc-options-page .tbcc-history-main code {
   min-width: 0;
 }
 
+body.tbcc-options-page .tbcc-history-main code.tbcc-history-username {
+  cursor: pointer;
+  color: var(--tbcc-accent, #89b4fa);
+}
+
+body.tbcc-options-page .tbcc-history-main code.tbcc-history-username:hover {
+  text-decoration: underline;
+}
+
+body.tbcc-options-page .tbcc-history-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  max-width: 55%;
+}
+
+body.tbcc-options-page .tbcc-history-time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.tbcc-options-page .tbcc-ush-source,
+.tbcc-ush-source {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #11111b;
+  flex-shrink: 0;
+}
+
+body.tbcc-options-page .tbcc-ush-source--stripchat { background: #e91e63; }
+body.tbcc-options-page .tbcc-ush-source--chaturbate { background: #f7931e; }
+body.tbcc-options-page .tbcc-ush-source--onlyfans { background: #00aff0; }
+body.tbcc-options-page .tbcc-ush-source--fansly { background: #1d9bf0; }
+body.tbcc-options-page .tbcc-ush-source--instagram {
+  background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
+  color: #fff;
+}
+body.tbcc-options-page .tbcc-ush-source--x { background: #e7e9ea; }
+body.tbcc-options-page .tbcc-ush-source--reddit { background: #ff4500; color: #fff; }
+body.tbcc-options-page .tbcc-ush-source--erome { background: #a6e3a1; }
+body.tbcc-options-page .tbcc-ush-source--cambb { background: #cba6f7; }
+body.tbcc-options-page .tbcc-ush-source--model_search,
+body.tbcc-options-page .tbcc-ush-source--macro,
+body.tbcc-options-page .tbcc-ush-source--overlay,
+body.tbcc-options-page .tbcc-ush-source--unknown {
+  background: #6c7086;
+  color: #cdd6f4;
+}
+
 body.tbcc-options-page button.tbcc-history-remove {
   flex-shrink: 0;
   margin: 0;

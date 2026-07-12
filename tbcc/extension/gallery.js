@@ -1,5 +1,6 @@
-const API_BASE = "http://localhost:8000";
-const TBCC_API_HEALTH_URL = API_BASE + "/health";
+const TBCC_API_BASE_CANDIDATES = ["http://localhost:8000", "http://127.0.0.1:8000"];
+let API_BASE = TBCC_API_BASE_CANDIDATES[0];
+const TBCC_API_HEALTH_URL = () => API_BASE + "/health";
 const TBCC_API_OFFLINE_RETRY_MS = 15000;
 
 /** Cached API reachability — avoids hammering :8000 when backend is down. */
@@ -24,19 +25,24 @@ async function probeTbccApiReachable(force) {
   if (!force && _tbccApiReachableCache.ok != null && now - _tbccApiReachableCache.at < 12000) {
     return _tbccApiReachableCache.ok;
   }
-  const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timer = ac ? setTimeout(() => ac.abort(), 2500) : null;
-  try {
-    const r = await fetch(TBCC_API_HEALTH_URL, { cache: "no-store", signal: ac ? ac.signal : undefined });
-    const ok = r.ok;
-    _tbccApiReachableCache = { ok, at: now };
-    return ok;
-  } catch (_) {
-    _tbccApiReachableCache = { ok: false, at: now };
-    return false;
-  } finally {
-    if (timer) clearTimeout(timer);
+  for (const base of TBCC_API_BASE_CANDIDATES) {
+    const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), 2500) : null;
+    try {
+      const r = await fetch(base + "/health", { cache: "no-store", signal: ac ? ac.signal : undefined });
+      if (r.ok) {
+        API_BASE = base;
+        _tbccApiReachableCache = { ok: true, at: now };
+        return true;
+      }
+    } catch (_) {
+      /* try next base */
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
+  _tbccApiReachableCache = { ok: false, at: now };
+  return false;
 }
 
 function invalidateTbccApiReachableCache() {
@@ -61,11 +67,18 @@ function notifyTbccApiReachabilityTransition(ok) {
   const was = _tbccApiReachablePrev;
   _tbccApiReachablePrev = ok;
   if (ok && was === false) {
-    showToast("TBCC API connected.", "success");
+    try {
+      sessionStorage.removeItem("tbccDismissApiOfflineToast");
+    } catch (_) {}
   } else if (!ok && was !== false) {
+    try {
+      if (sessionStorage.getItem("tbccDismissApiOfflineToast") === "1") return;
+    } catch (_) {}
     showToast(
-      "TBCC API offline — capture still works. Start backend (:8000) or Launch full stack in Capture options.",
-      "error"
+      "TBCC API offline — capture still works. Start backend (:8000) from the extension menu.",
+      "error",
+      null,
+      { urgent: true, key: "api-offline" }
     );
   }
 }
@@ -188,7 +201,9 @@ function thumbProxyIsHardRequirement(url) {
       h.includes("bunkr") ||
       h.includes("bunkrr") ||
       h.endsWith(".scdn.st") ||
-      h.endsWith("scdn.st")
+      h.endsWith("scdn.st") ||
+      h === "erome.com" ||
+      h.endsWith(".erome.com")
     );
   } catch (_) {
     return false;
@@ -297,6 +312,8 @@ let settings = {
   notifyOnSendSavedComplete: true,
   notifyOnSendChannelComplete: true,
   notificationStyle: "full",
+  /** urgent = errors + explicit urgent only; all = every toast; off = no in-panel toasts */
+  toastLevel: "urgent",
   downloadMode: "buffered",
   skipPromoWatermark: false,
 };
@@ -4192,6 +4209,7 @@ async function appendMergedCapture(tabId) {
 }
 
 async function doRefresh() {
+  _galleryRefreshInFlight = true;
   showLoading(true);
   let scanStripHandled = false;
   const prevImageList = Array.isArray(imageList) ? imageList.slice() : [];
@@ -4276,6 +4294,7 @@ async function doRefresh() {
       if (perchanceTab) startPerchancePoll(currentTabId);
       else stopPerchancePoll();
       if (settings.subtabEnabled) snapshotCurrentStateIntoActiveSubtab();
+      await flushQueuedGalleryMergeHarvests();
       return;
     }
     stopPerchancePoll();
@@ -4284,12 +4303,14 @@ async function doRefresh() {
     imageList = prevImageList;
     selectedUrls = prevSelection;
   } finally {
+    _galleryRefreshInFlight = false;
     showLoading(false);
     if (!scanStripHandled) setScanStripVisible(false);
   }
   renderGrid();
   if (settings.subtabEnabled) snapshotCurrentStateIntoActiveSubtab();
   await notifyOverlayRefresh();
+  await flushQueuedGalleryMergeHarvests();
 }
 
 function addLocalFiles(files) {
@@ -4346,7 +4367,13 @@ function crawlerShouldUseCookiesForUrl(url) {
 
 function crawlerItemToGalleryItem(item, sourceUrl, adapter) {
   const url = item && item.url ? String(item.url) : "";
-  const mediaType = item && item.media_type === "video" ? "video" : guessMediaType(url);
+  let mediaType =
+    item && item.media_type === "video"
+      ? "video"
+      : item && item.media_type === "image"
+        ? "photo"
+        : guessMediaType(url);
+  if (tbccUrlIsHlsPlaylist(url)) mediaType = "video";
   const row = {
     url,
     mediaType,
@@ -4766,6 +4793,175 @@ async function mergeCrawlerItemsIntoGallery(items, sourceUrl, adapterUsed) {
     renderGrid();
   }
   return added;
+}
+
+const PENDING_MERGE_SESSION_KEY = "tbccPendingGalleryMerge";
+let _mergeHarvestInbox = [];
+let _galleryRefreshInFlight = false;
+
+function enqueueGalleryMergeHarvest(msg) {
+  if (!msg || !Array.isArray(msg.items) || !msg.items.length) return;
+  _mergeHarvestInbox.push(msg);
+}
+
+async function harvestItemsToGalleryRows(items, sourceUrl, adapter, opts) {
+  const rows = [];
+  const seenInBatch = new Set();
+  for (const item of items) {
+    if (!item || !item.url) continue;
+    if (tbccUrlIsHlsPlaylist(item.url)) continue;
+    let row = imageList.find((r) => r && r.url === item.url);
+    if (!row) {
+      row = crawlerItemToGalleryItem(item, sourceUrl, adapter);
+    }
+    if (!seenInBatch.has(row.url)) {
+      rows.push(row);
+      seenInBatch.add(row.url);
+    }
+  }
+  if (opts && opts.prepend && rows.length) {
+    const batchUrls = new Set(rows.map((r) => r.url));
+    imageList = rows.concat(imageList.filter((r) => r && !batchUrls.has(r.url)));
+  } else {
+    for (const row of rows) {
+      if (!imageList.some((r) => r && r.url === row.url)) imageList.push(row);
+    }
+  }
+  return rows;
+}
+
+async function loadXProfileLoomsSettings() {
+  if (typeof TbccXProfileLooms !== "undefined" && TbccXProfileLooms.loadLoomsSettings) {
+    return TbccXProfileLooms.loadLoomsSettings();
+  }
+  try {
+    const got = await chrome.storage.local.get("tbccXProfileGallerySettings");
+    const raw = got && got.tbccXProfileGallerySettings;
+    return {
+      idleThreads: 2,
+      browseThreads: 4,
+      downloadThreads: 4,
+      timeoutSec: 9,
+      ...(raw && typeof raw === "object" ? raw : {}),
+    };
+  } catch (_) {
+    return { idleThreads: 2, browseThreads: 4, downloadThreads: 4, timeoutSec: 9 };
+  }
+}
+
+function emitLoomsZipProgress(payload) {
+  if (!payload) return;
+  const tabId = payload.sourceTabId != null ? payload.sourceTabId : currentTabId;
+  try {
+    chrome.runtime.sendMessage(
+      Object.assign({ action: "tbcc-looms-zip-progress", sourceTabId: tabId }, payload),
+      () => void chrome.runtime.lastError
+    );
+  } catch (_) {}
+}
+
+function scrollGalleryCellIntoView(url) {
+  if (!gridEl || !url) return;
+  const cells = gridEl.querySelectorAll(".cell");
+  for (const cell of cells) {
+    const idx = parseInt(cell.dataset.cellIndex || "", 10);
+    if (Number.isNaN(idx)) continue;
+    const rows = getDisplayRows();
+    const row = rows[idx];
+    if (!row) continue;
+    if (getUrlForDisplayRow(row) === url) {
+      cell.classList.add("tbcc-looms-reveal");
+      cell.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      break;
+    }
+  }
+}
+
+async function processGalleryMergeHarvest(msg) {
+  const sig =
+    String(msg.mergeId || "") ||
+    String(msg.sourceUrl || "") + "|" + msg.items.length + "|" + (msg.adapter || "") + "|" + (msg.autoZip ? "zip" : "");
+  const now = Date.now();
+  if (
+    !msg.autoZip &&
+    window.__tbccLastMergeHarvestSig === sig &&
+    now - (window.__tbccLastMergeHarvestAt || 0) < 5000
+  ) {
+    return;
+  }
+  window.__tbccLastMergeHarvestSig = sig;
+  window.__tbccLastMergeHarvestAt = now;
+
+  const rows = await harvestItemsToGalleryRows(msg.items, msg.sourceUrl || "", msg.adapter || "harvest", {
+    prepend: !!msg.loomsZip,
+  });
+  if (!rows.length) {
+    if (msg.autoZip) showToast("No harvest items to ZIP (skipped HLS-only or empty).", "info");
+    return;
+  }
+
+  const profileName =
+    typeof TbccZipNaming !== "undefined"
+      ? TbccZipNaming.profileNameFromSourceUrl(msg.sourceUrl || "")
+      : "media";
+  for (const row of rows) {
+    if (row) row.tbccZipProfileName = profileName;
+  }
+
+  if (msg.loomsZip) {
+    settings.gridSortMode = "default";
+    try {
+      chrome.storage.local.set({ [STORAGE_SETTINGS]: settings });
+    } catch (_) {}
+    if (typeof tbccSortSelect !== "undefined" && tbccSortSelect) tbccSortSelect.value = "default";
+  }
+
+  for (const row of rows) {
+    if (row && row.url) selectedUrls.add(row.url);
+  }
+  await persistSelection();
+  renderGrid();
+
+  if (msg.autoZip) {
+    const zipFetchOpts = await buildHarvestZipFetchOpts(
+      {
+        harvestZip: true,
+        loomsZip: !!msg.loomsZip,
+        sourceUrl: msg.sourceUrl || "",
+        stallTimeoutMs: Math.max(2000, (Number((await loadXProfileLoomsSettings()).timeoutSec) || 9) * 1000),
+      },
+      rows
+    );
+    if (msg.loomsZip) {
+      await downloadSelectedAsZip({
+        explicitItems: rows,
+        harvestZip: true,
+        loomsZip: true,
+        mergeId: msg.mergeId || "",
+        sourceTabId: msg.sourceTabId != null ? msg.sourceTabId : currentTabId,
+        zipFetchOpts,
+      });
+    } else {
+      await downloadSelectedAsZip({ explicitItems: rows, harvestZip: true, zipFetchOpts });
+    }
+  } else {
+    showToast("Added " + rows.length + " harvested item(s) to gallery.", "success");
+  }
+}
+
+async function flushQueuedGalleryMergeHarvests() {
+  while (_mergeHarvestInbox.length) {
+    const msg = _mergeHarvestInbox.shift();
+    await processGalleryMergeHarvest(msg);
+  }
+  try {
+    const got = await chrome.storage.session.get(PENDING_MERGE_SESSION_KEY);
+    const pending = got && got[PENDING_MERGE_SESSION_KEY];
+    if (pending && Array.isArray(pending.items) && pending.items.length) {
+      await chrome.storage.session.remove(PENDING_MERGE_SESSION_KEY);
+      await processGalleryMergeHarvest(pending);
+    }
+  } catch (_) {}
 }
 
 async function tryCrawlViaMyjd(url) {
@@ -5615,17 +5811,120 @@ function filenameFromUrl(url) {
   try {
     const u = new URL(url);
     const seg = u.pathname.split("/").filter(Boolean).pop() || "media";
-    const clean = seg.split("?")[0].replace(/[^\w.\-]+/g, "_") || "media";
-    const m = clean.match(/^(.+)-((?:jpe?g|jpg|png|gif|webp|avif|bmp|mp4|webm|mov|m4v|mkv))\.\d+$/i);
+    let clean = seg.split("?")[0].replace(/[^\w.\-]+/g, "_") || "media";
+    const m = clean.match(/^(.+)-((?:jpe?g|jpg|png|gif|webp|avif|bmp|mp4|webm|mov|m4v|mkv|m3u8))\.\d+$/i);
     if (m && m[1] && m[2]) {
       const stem = m[1].replace(/[^\w.\-]+/g, "_") || "media";
       const ext = m[2].toLowerCase() === "jpeg" ? "jpg" : m[2].toLowerCase();
       return `${stem}.${ext}`;
     }
+    if (!/\.\w{2,5}$/i.test(clean)) {
+      const fmt = u.searchParams.get("format");
+      if (fmt && /^[a-z0-9]+$/i.test(fmt)) {
+        const ext = fmt.toLowerCase() === "jpeg" ? "jpg" : fmt.toLowerCase();
+        if (/^(jpg|jpeg|png|gif|webp|avif|bmp)$/i.test(ext)) clean = `${clean}.${ext}`;
+      }
+    }
     return clean;
   } catch (_) {
     return "media";
   }
+}
+
+function zipFilenameHintForItem(it, url) {
+  const fromItem = it && (it.name || it.filename) ? String(it.name || it.filename).trim() : "";
+  if (fromItem && fromItem !== "media") return fromItem.replace(/[^\w.\-]+/g, "_") || "media";
+  return filenameFromUrl(url) || "media";
+}
+
+function ensureZipRasterFilename(name, blob) {
+  let n = String(name || "media").trim() || "media";
+  n = n.replace(/[^\w.\-]+/g, "_");
+  if (/\.\w{2,5}$/i.test(n)) {
+    if (
+      tbccWebpConvertEnabled() &&
+      typeof TbccWebp !== "undefined" &&
+      TbccWebp.tbccReplaceExtToJpg &&
+      /\.webp$/i.test(n)
+    ) {
+      return TbccWebp.tbccReplaceExtToJpg(n);
+    }
+    return n;
+  }
+  const mime = blob && blob.type ? String(blob.type).toLowerCase() : "";
+  if (mime === "image/jpeg" || mime === "image/jpg") return n + ".jpg";
+  if (mime === "image/png") return n + ".png";
+  if (mime === "image/webp") return tbccWebpConvertEnabled() ? n + ".jpg" : n + ".webp";
+  if (mime === "image/gif") return n + ".gif";
+  return n + ".jpg";
+}
+
+function tbccUrlIsHlsPlaylist(url) {
+  const u = String(url || "");
+  return /\.m3u8(\?|#|$)/i.test(u) || /\/manifest\//i.test(u) || /\.mpd(\?|#|$)/i.test(u);
+}
+
+async function tbccAssertUsableVideoBlob(blob) {
+  if (!blob) throw new Error("Empty video blob");
+  if (blob.size < 48 * 1024) {
+    throw new Error("Video file too small (" + blob.size + " B) — likely a thumbnail, not MP4.");
+  }
+  let head = "";
+  try {
+    head = await blob.slice(0, 32).text();
+  } catch (_) {}
+  if (/^#EXTM3U/i.test(head)) {
+    throw new Error("HLS playlist (.m3u8) — use profile harvest MP4 URLs.");
+  }
+  try {
+    const buf = await blob.slice(4, 8).arrayBuffer();
+    const u8 = new Uint8Array(buf);
+    const ftyp = u8[0] === 0x66 && u8[1] === 0x74 && u8[2] === 0x79 && u8[3] === 0x70;
+    if (!ftyp && blob.size < 256 * 1024) {
+      throw new Error("Not a valid MP4 stream — re-harvest profile media.");
+    }
+  } catch (e) {
+    if (e && e.message && /HLS|small|valid MP4|thumbnail/.test(e.message)) throw e;
+  }
+}
+
+async function tbccMaybeWatermarkZipBlob(blob, kind, fetchOpts) {
+  if (fetchOpts && (fetchOpts.skipWatermark || fetchOpts.harvestZip)) return blob;
+  return tbccApplyPromoWatermarkBlob(blob, kind);
+}
+
+function tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts) {
+  const pad = String(idx + 1).padStart(3, "0");
+  const fallback = (pad + "_" + String(baseName || "media")).replace(/[^\w.\-]+/g, "_");
+  if (!fetchOpts || !fetchOpts.harvestZip || typeof TbccZipNaming === "undefined") return fallback;
+  const name =
+    (it && it.tbccZipProfileName) ||
+    fetchOpts.profileName ||
+    TbccZipNaming.profileNameFromSourceUrl((it && it.tbccSourcePageUrl) || "") ||
+    "media";
+  return TbccZipNaming.buildZipFilename(fetchOpts.zipNameTemplate, {
+    name,
+    index: idx + 1,
+    baseName: baseName || "media",
+    mime: blob && blob.type,
+  });
+}
+
+async function buildHarvestZipFetchOpts(opts, rows) {
+  const looms = await loadXProfileLoomsSettings();
+  const sourceUrl =
+    (rows && rows[0] && rows[0].tbccSourcePageUrl) || (opts && opts.sourceUrl) || "";
+  const profileName =
+    typeof TbccZipNaming !== "undefined"
+      ? TbccZipNaming.profileNameFromSourceUrl(sourceUrl)
+      : "media";
+  return {
+    harvestZip: !!(opts && (opts.harvestZip || opts.loomsZip)),
+    skipWatermark: looms.zipSkipWatermark !== false,
+    zipNameTemplate: looms.zipNameTemplate || (typeof TbccZipNaming !== "undefined" ? TbccZipNaming.DEFAULT_TEMPLATE : ""),
+    profileName,
+    stallTimeoutMs: opts && opts.stallTimeoutMs != null ? Number(opts.stallTimeoutMs) : undefined,
+  };
 }
 
 /** Trim pct% off left, right, top, and bottom (each edge), after any manual crop step. */
@@ -5922,6 +6221,7 @@ async function tbccPrepareRasterBlob(blob, url, filenameHint) {
     out = await applyImagePipeline(out, url);
     name = filenameForCropUrl(url);
   }
+  name = ensureZipRasterFilename(name, out);
   return { blob: out, name };
 }
 
@@ -5995,7 +6295,7 @@ function resolveFetchTabIdForItem(it) {
   return null;
 }
 
-async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem) {
+async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) {
   url = normalizeTbccMediaUrlForImport(url);
   const ref = typeof refererPageUrl === "string" ? refererPageUrl : "";
   const tabId =
@@ -6004,19 +6304,30 @@ async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem) {
       : tabIdOrItem != null && Number.isFinite(Number(tabIdOrItem))
         ? Number(tabIdOrItem)
         : currentTabId;
+  const stallTimeoutMs =
+    fetchOpts && fetchOpts.stallTimeoutMs != null ? Number(fetchOpts.stallTimeoutMs) : 0;
   if (url && String(url).startsWith("data:")) {
     try {
       const r = await fetch(url);
       if (r.ok) return await r.blob();
     } catch (_) {}
   }
-  try {
-    const r = await fetch(url, { credentials: "omit", mode: "cors" });
-    if (r.ok) return await r.blob();
-  } catch (_) {}
+  const preferSession = hostNeedsSessionFetch(url) || hostNeedsGalleryThumbProxy(url);
+  if (!preferSession) {
+    try {
+      const r = await fetch(url, { credentials: "omit", mode: "cors" });
+      if (r.ok) return await r.blob();
+    } catch (_) {}
+  }
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
-      { action: "tbcc-content-fetch-bytes", url, refererPageUrl: ref, tabId },
+      {
+        action: "tbcc-content-fetch-bytes",
+        url,
+        refererPageUrl: ref,
+        tabId,
+        stallTimeoutMs: stallTimeoutMs > 0 ? stallTimeoutMs : undefined,
+      },
       (res) => {
         if (chrome.runtime.lastError) {
           resolve(null);
@@ -6033,9 +6344,7 @@ async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem) {
 /**
  * One gallery item → blob + entry name for ZIP (reuses fetchUrlBytesToBlob for http(s) CORS fallback).
  */
-async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
-  const n = idx + 1;
-  const pad = String(n).padStart(3, "0");
+async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry, fetchOpts) {
   if (it.file) {
     const raw = (it.name || "file").replace(/[^\w.\-]+/g, "_");
     const safe = raw || "file";
@@ -6045,10 +6354,15 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
         it.url,
         safe
       );
-      const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
-      return { filename: pad + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), blob: wm };
+      const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
+      return {
+        filename: tbccZipEntryFilename(it, idx, prep.name.replace(/[^\w.\-]+/g, "_"), wm, fetchOpts),
+        blob: wm,
+      };
     }
-    return { filename: pad + "_" + safe, blob: await tbccApplyPromoWatermarkBlob(it.file, isImageItem(it) ? "photo" : "video") };
+    const outBlob = await tbccMaybeWatermarkZipBlob(it.file, isImageItem(it) ? "photo" : "video", fetchOpts);
+    if (!isImageItem(it)) await tbccAssertUsableVideoBlob(outBlob);
+    return { filename: tbccZipEntryFilename(it, idx, safe, outBlob, fetchOpts), blob: outBlob };
   }
   if (it.url && String(it.url).startsWith("data:image/")) {
     try {
@@ -6056,14 +6370,14 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
       const blob = await r.blob();
       if (isImageItem(it)) {
         const prep = await tbccPrepareRasterBlob(blob, it.url, filenameForCropUrl(it.url));
-        const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
+        const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
         return {
-          filename: (pad + "_" + prep.name).replace(/[^\w.\-]+/g, "_"),
+          filename: tbccZipEntryFilename(it, idx, prep.name, wm, fetchOpts),
           blob: wm,
         };
       }
       return {
-        filename: (pad + "_" + filenameFromUrl(it.url)).replace(/[^\w.\-]+/g, "_"),
+        filename: tbccZipEntryFilename(it, idx, filenameFromUrl(it.url), blob, fetchOpts),
         blob,
       };
     } catch (e) {
@@ -6077,20 +6391,25 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
         it.url = tw;
         it.mediaType = "video";
         it.tagName = "video";
-        return getBlobAndNameForZipItem(it, idx, true);
+        return getBlobAndNameForZipItem(it, idx, true, fetchOpts);
       }
     }
     const r = await fetch(it.url);
     const blob = await r.blob();
     if (isImageItem(it)) {
-      const prep = await tbccPrepareRasterBlob(blob, it.url, "media.webp");
-      const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
-      return { filename: pad + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), blob: wm };
+      const prep = await tbccPrepareRasterBlob(blob, it.url, zipFilenameHintForItem(it, it.url) || "media.jpg");
+      const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
+      return { filename: tbccZipEntryFilename(it, idx, prep.name, wm, fetchOpts), blob: wm };
     }
-    return { filename: pad + "_media", blob: await tbccApplyPromoWatermarkBlob(blob, "video") };
+    await tbccAssertUsableVideoBlob(blob);
+    const base = (zipFilenameHintForItem(it, it.url) || "media") + ".mp4";
+    return { filename: tbccZipEntryFilename(it, idx, base, blob, fetchOpts), blob };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
     const httpFetchUrl = bestHttpMediaUrlForItem(it) || it.url;
+    if (tbccUrlIsHlsPlaylist(httpFetchUrl)) {
+      throw new Error("HLS playlist (.m3u8) — not a video file; use profile harvest MP4 URLs.");
+    }
     if (
       typeof tbccIsLikelyHtmlPageUrl === "function" &&
       (it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video") &&
@@ -6102,22 +6421,26 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry) {
     }
     const url = normalizeTbccMediaUrlForImport(httpFetchUrl);
     const refPage = await tbccRefererPageForItem(it);
-    let blob = await fetchUrlBytesToBlob(url, refPage, it);
+    let blob = await fetchUrlBytesToBlob(url, refPage, it, fetchOpts);
     if (!blob) throw new Error("Could not fetch: " + String(httpFetchUrl).slice(0, 96));
     if (isImageItem(it)) {
-      const prep = await tbccPrepareRasterBlob(blob, it.url, filenameFromUrl(httpFetchUrl));
-      const wm = await tbccApplyPromoWatermarkBlob(prep.blob, "photo");
+      const prep = await tbccPrepareRasterBlob(blob, it.url, zipFilenameHintForItem(it, httpFetchUrl));
+      const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
       return {
-        filename: (pad + "_" + prep.name).replace(/[^\w.\-]+/g, "_"),
+        filename: tbccZipEntryFilename(it, idx, prep.name, wm, fetchOpts),
         blob: wm,
       };
     }
-    const base = filenameFromUrl(httpFetchUrl);
-    const ext = it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
+    await tbccAssertUsableVideoBlob(blob);
+    const base = zipFilenameHintForItem(it, httpFetchUrl);
+    const ext = /\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(base)
+      ? ""
+      : it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video"
+        ? ".mp4"
+        : "";
     const hasExt = /\.\w{2,5}$/i.test(base);
-    const filename = pad + "_" + (hasExt ? base : base + ext);
-    const wmBlob = await tbccApplyPromoWatermarkBlob(blob, "video");
-    return { filename: filename.replace(/[^\w.\-]+/g, "_"), blob: wmBlob };
+    const filename = tbccZipEntryFilename(it, idx, hasExt ? base : base + ext, blob, fetchOpts);
+    return { filename, blob };
   }
   throw new Error("Unsupported item for ZIP");
 }
@@ -6560,26 +6883,90 @@ function formatToastDisplayMessage(message, clickAction) {
   return text;
 }
 
-function showToast(message, type, clickAction) {
+function showToast(message, type, clickAction, opts) {
   if (!toastContainer || !message) return;
   const t = type || "info";
+  const o = opts && typeof opts === "object" ? opts : {};
+  const level = settings.toastLevel || "urgent";
+  if (level === "off") return;
+  if (level === "urgent" && t !== "error" && !o.urgent) return;
+
+  const MAX_TOASTS = 2;
+  while (toastContainer.children.length >= MAX_TOASTS) {
+    try {
+      toastContainer.firstChild.remove();
+    } catch (_) {
+      break;
+    }
+  }
+
+  const sevApi = typeof TBCC_SEVERITY_TOAST !== "undefined" ? TBCC_SEVERITY_TOAST : null;
+  const kind = sevApi
+    ? sevApi.toastKindFromType(t, o)
+    : t === "success"
+      ? "success"
+      : t === "error"
+        ? "error"
+        : "info";
+  const calm = sevApi ? sevApi.calmToastStyle(kind) : null;
+
   const el = document.createElement("div");
   el.className = "toast " + (t === "success" ? "success" : t === "error" ? "error" : "info");
-  el.textContent = formatToastDisplayMessage(message, clickAction);
+  if (calm && calm.accentBorder) {
+    el.style.borderColor = calm.accentBorder;
+    el.style.boxShadow = `inset 3px 0 0 0 ${calm.accentBorder}, 0 6px 18px rgba(0, 0, 0, 0.28)`;
+  }
   if (clickAction) {
     el.classList.add("toast--clickable");
     el.title = "Click to open";
-    el.addEventListener("click", () => {
+  }
+
+  if (calm && calm.emoji) {
+    const grade = document.createElement("span");
+    grade.className = "toast__grade";
+    grade.setAttribute("aria-hidden", "true");
+    grade.textContent = calm.emoji;
+    el.appendChild(grade);
+  }
+
+  const body = document.createElement("div");
+  body.className = "toast__body";
+  body.textContent = formatToastDisplayMessage(message, clickAction);
+  el.appendChild(body);
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "toast-close";
+  closeBtn.setAttribute("aria-label", "Dismiss");
+  closeBtn.textContent = "\u00d7";
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (o.key === "api-offline") {
+      try {
+        sessionStorage.setItem("tbccDismissApiOfflineToast", "1");
+      } catch (_) {}
+    }
+    try {
+      el.remove();
+    } catch (_) {}
+  });
+  el.appendChild(closeBtn);
+
+  if (clickAction) {
+    el.addEventListener("click", (e) => {
+      if (e.target === closeBtn || closeBtn.contains(e.target)) return;
       chrome.runtime.sendMessage({ action: "tbcc-notification-open", clickAction });
     });
   }
+
   toastContainer.appendChild(el);
-  const ms = t === "error" ? 10000 : clickAction ? 12000 : 4000;
-  setTimeout(() => {
+  const ms = t === "error" ? 12000 : clickAction ? 10000 : o.urgent ? 8000 : 4000;
+  const timer = window.setTimeout(() => {
     try {
       el.remove();
     } catch (_) {}
   }, ms);
+  closeBtn.addEventListener("click", () => clearTimeout(timer));
 }
 
 function showSystemNotification(title, message, clickAction) {
@@ -6595,7 +6982,10 @@ function showSystemNotification(title, message, clickAction) {
 }
 
 function notifyCompletion(message, type, settingsKey, title, clickAction) {
-  showToast(message, type || "info", clickAction);
+  const t = type || "info";
+  if (t === "error" || (settings.toastLevel || "urgent") === "all") {
+    showToast(message, t, clickAction, t === "error" ? { urgent: true } : null);
+  }
   const useSystem = settings && settings.notifyUseSystem !== false;
   const allowed = !settingsKey || settings[settingsKey] !== false;
   if (useSystem && allowed) {
@@ -6628,8 +7018,15 @@ function endGalleryJob(id, outcome) {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.action === "tbcc-ops-alert-toast" && msg.alert) {
     const a = msg.alert;
-    const critical = String(a.severity || "").toLowerCase() === "critical";
-    showToast(a.message || a.title || "TBCC alert", critical ? "error" : "info");
+    const sevApi = typeof TBCC_SEVERITY_TOAST !== "undefined" ? TBCC_SEVERITY_TOAST : null;
+    const kind = sevApi ? sevApi.classifyOpsAlertKind(a) : "warning";
+    const critical = kind === "critical" || kind === "error";
+    if (critical || kind === "warning" || kind === "pending" || kind === "payment") {
+      showToast(a.message || a.title || "TBCC alert", critical ? "error" : "info", null, {
+        urgent: true,
+        kind,
+      });
+    }
     return;
   }
   if (msg && msg.action === "tbcc-gallery-open-inbox") {
@@ -6655,42 +7052,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     return;
   }
   if (msg && msg.action === "tbcc-gallery-merge-harvest" && Array.isArray(msg.items)) {
-    const sig =
-      String(msg.sourceUrl || "") +
-      "|" +
-      msg.items.length +
-      "|" +
-      (msg.adapter || "") +
-      "|" +
-      (msg.autoZip ? "zip" : "");
-    const now = Date.now();
-    if (
-      window.__tbccLastMergeHarvestSig === sig &&
-      now - (window.__tbccLastMergeHarvestAt || 0) < 5000
-    ) {
-      return;
-    }
-    window.__tbccLastMergeHarvestSig = sig;
-    window.__tbccLastMergeHarvestAt = now;
-    void (async () => {
-      const added = await mergeCrawlerItemsIntoGallery(
-        msg.items,
-        msg.sourceUrl || "",
-        msg.adapter || "harvest"
-      );
-      if (msg.selectAll !== false) {
-        for (const row of added) {
-          if (row && row.url) selectedUrls.add(row.url);
-        }
-        await persistSelection();
-        renderGrid();
-      }
-      if (msg.autoZip && added.length) {
-        await downloadSelectedAsZip();
-      } else if (added.length) {
-        showToast("Added " + added.length + " harvested item(s) to gallery.", "success");
-      }
-    })();
+    enqueueGalleryMergeHarvest(msg);
+    if (!_galleryRefreshInFlight) void flushQueuedGalleryMergeHarvests();
     return;
   }
   if (msg && msg.type === "tbcc-progress") {
@@ -7888,11 +8251,159 @@ async function appendZipPromoFiles(zip, opts) {
   return n;
 }
 
-async function downloadSelectedAsZip() {
-  const list = getFilteredList();
-  const selected = list.filter((i) => selectedUrls.has(i.url));
+/** Comic Looms–style parallel ZIP: fetch pool, ordered mirror select + overlay progress, then pack. */
+async function downloadSelectedAsZipLooms(opts) {
+  const selected = Array.isArray(opts.explicitItems) ? opts.explicitItems.slice() : [];
+  if (!selected.length || !chrome.downloads) return;
+  const looms = await loadXProfileLoomsSettings();
+  const mergeId = String(opts.mergeId || "");
+  const sourceTabId = opts.sourceTabId != null ? opts.sourceTabId : currentTabId;
+  const stallMs = Math.max(2000, (Number(looms.timeoutSec) || 9) * 1000);
+  const zipFetchOpts =
+    opts.zipFetchOpts ||
+    (await buildHarvestZipFetchOpts({ harvestZip: true, loomsZip: true, stallTimeoutMs: stallMs }, selected));
+  const fetchOpts = Object.assign({}, zipFetchOpts, { stallTimeoutMs: stallMs });
+  const jobId = await beginGalleryJob("zip-export", "ZIP export");
+  emitLoomsZipProgress({ mergeId, phase: "zip-start", total: selected.length, sourceTabId });
+
+  try {
+    if (typeof JSZip === "undefined") {
+      emitLoomsZipProgress({ mergeId, phase: "error", error: "JSZip missing" });
+      showToast("JSZip library missing — reload the side panel.", "info");
+      return;
+    }
+    btnDownloadZip && (btnDownloadZip.disabled = true);
+    if (btnDownload) btnDownload.disabled = true;
+    if (btnCopyJd) btnCopyJd.disabled = true;
+    if (progressError) progressError.textContent = "";
+    if (progressEl) progressEl.classList.add("visible");
+    if (progressTitle) progressTitle.textContent = "ZIP bundle (Comic Looms)";
+    if (progressFill) progressFill.style.width = "0%";
+
+    const total = selected.length;
+    const packed = new Array(total);
+
+    const poolFn =
+      typeof TbccXProfileLooms !== "undefined" && TbccXProfileLooms.runConcurrentPool
+        ? TbccXProfileLooms.runConcurrentPool.bind(TbccXProfileLooms)
+        : async function fallbackPool(items, workerFn, cap) {
+            const out = [];
+            let i = 0;
+            async function w() {
+              while (i < items.length) {
+                const ix = i++;
+                out[ix] = await workerFn(items[ix], ix);
+              }
+            }
+            const n = Math.min(Math.max(1, cap || 1), items.length);
+            await Promise.all(Array.from({ length: n }, () => w()));
+            return out;
+          };
+
+    const results = await poolFn(
+      selected,
+      async (it, i) => {
+        try {
+          const result = await getBlobAndNameForZipItem(it, i, false, fetchOpts);
+          const entry = { ok: true, filename: result.filename, blob: result.blob };
+          packed[i] = entry;
+          if (selected[i] && selected[i].url) selectedUrls.add(selected[i].url);
+          emitLoomsZipProgress({ mergeId, phase: "fetched", index: i, url: it.url, total, sourceTabId });
+          const pct = Math.round(((i + 1) / total) * 70);
+          if (progressStatus) progressStatus.textContent = "Fetching " + (i + 1) + " / " + total + "…";
+          if (progressFill) progressFill.style.width = pct + "%";
+          return entry;
+        } catch (e) {
+          const entry = { ok: false, error: e.message || String(e) };
+          packed[i] = entry;
+          emitLoomsZipProgress({ mergeId, phase: "fetched", index: i, url: it.url, total, sourceTabId });
+          if (progressError)
+            progressError.textContent = (progressError.textContent || "") + (e.message || "error") + "; ";
+          return entry;
+        }
+      },
+      looms.downloadThreads || 4
+    );
+
+    await persistSelection();
+    renderGrid();
+    updateActionBarVisibility();
+
+    emitLoomsZipProgress({ mergeId, phase: "packing", total, sourceTabId });
+    if (progressStatus) progressStatus.textContent = "Packing ZIP…";
+
+    const zip = new JSZip();
+    let ok = 0;
+    for (let i = 0; i < total; i++) {
+      const slot = packed[i] || (results && results[i]);
+      if (!slot || !slot.ok || !slot.blob) continue;
+      try {
+        zip.file(slot.filename, slot.blob);
+        ok++;
+      } catch (e) {
+        if (progressError)
+          progressError.textContent = (progressError.textContent || "") + (e.message || "pack error") + "; ";
+      }
+    }
+
+    if (ok === 0) {
+      emitLoomsZipProgress({ mergeId, phase: "error", error: "No files fetched", sourceTabId });
+      if (progressStatus) progressStatus.textContent = "No files added to ZIP.";
+      return;
+    }
+
+    if (progressStatus) progressStatus.textContent = "Compressing…";
+    const out = await zip.generateAsync(
+      { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
+      (meta) => {
+        if (progressFill && meta && meta.percent != null) {
+          progressFill.style.width = 70 + Math.round(meta.percent * 0.3) + "%";
+        }
+        if (progressStatus) progressStatus.textContent = "Compressing… " + Math.round(meta.percent || 0) + "%";
+      }
+    );
+    const blobUrl = URL.createObjectURL(out);
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+    await new Promise((resolve) => {
+      chrome.downloads.download({ url: blobUrl, filename: "tbcc/tbcc_bundle_" + stamp + ".zip", saveAs: false }, () => {
+        URL.revokeObjectURL(blobUrl);
+        resolve();
+      });
+    });
+    const msg = "Saved ZIP with " + ok + " file(s) to Downloads/tbcc/.";
+    if (progressStatus) progressStatus.textContent = msg;
+    notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete", {
+      type: "gallery_sidepanel",
+    });
+    emitLoomsZipProgress({ mergeId, phase: "done", total, ok, sourceTabId });
+  } catch (e) {
+    emitLoomsZipProgress({ mergeId, phase: "error", error: String(e.message || e), sourceTabId });
+    if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
+  } finally {
+    btnDownloadZip && (btnDownloadZip.disabled = false);
+    if (btnDownload) btnDownload.disabled = selectedCountInFilteredList() === 0;
+    if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
+    endGalleryJob(jobId);
+  }
+}
+
+async function downloadSelectedAsZip(opts) {
+  if (opts && opts.loomsZip) return downloadSelectedAsZipLooms(opts);
+  let selected;
+  if (opts && Array.isArray(opts.explicitItems) && opts.explicitItems.length) {
+    selected = opts.explicitItems.slice();
+  } else {
+    const list = getFilteredList();
+    selected = list.filter((i) => selectedUrls.has(i.url));
+  }
   if (selected.length === 0 || !chrome.downloads) return;
   const jobId = await beginGalleryJob("zip-export", "ZIP export");
+  const zipFetchOpts =
+    opts && opts.zipFetchOpts
+      ? opts.zipFetchOpts
+      : opts && opts.harvestZip
+        ? await buildHarvestZipFetchOpts(opts, opts.explicitItems || [])
+        : null;
   try {
   if (typeof JSZip === "undefined") {
     if (progressEl) progressEl.classList.add("visible");
@@ -7916,7 +8427,7 @@ async function downloadSelectedAsZip() {
   const total = selected.length;
   for (let i = 0; i < total; i++) {
     try {
-      const { filename, blob } = await getBlobAndNameForZipItem(selected[i], i);
+      const { filename, blob } = await getBlobAndNameForZipItem(selected[i], i, false, zipFetchOpts);
       zip.file(filename, blob);
       ok++;
     } catch (e) {
@@ -7936,7 +8447,7 @@ async function downloadSelectedAsZip() {
   }
 
   try {
-    const includePromo = await resolveZipPromoForSelection(selected);
+    const includePromo = opts && opts.harvestZip ? false : await resolveZipPromoForSelection(selected);
     const promoAdded = await appendZipPromoFiles(zip, { force: includePromo, skip: !includePromo });
     if (promoAdded > 0 && progressStatus) {
       progressStatus.textContent = "Added " + promoAdded + " promo file(s) to ZIP…";

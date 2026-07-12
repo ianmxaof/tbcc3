@@ -3,6 +3,8 @@
  * Selection syncs with sidebar via tbccSelectionUrls in chrome.storage.local.
  */
 (function () {
+  if (typeof tbccWaitForModule !== "function") return;
+  tbccWaitForModule("page_overlay", function () {
   if (window.__tbccPageOverlayLoaded) return;
   window.__tbccPageOverlayLoaded = true;
 
@@ -1465,4 +1467,20 @@
     void applyModeFromStorage().catch(() => tearDown());
   }
   boot();
+  if (typeof tbccBindModuleDisableListener === "function") {
+    tbccBindModuleDisableListener("page_overlay", function () {
+      try {
+        tearDown();
+      } catch (_) {}
+    });
+  }
+  /* Bootstrap macrosearch FAB on approved / builtin hosts (dynamic inject). */
+  try {
+    if (isExtensionContextAlive()) {
+      chrome.runtime.sendMessage({ action: "tbcc-maybe-inject-username-search" }, function () {
+        void chrome.runtime.lastError;
+      });
+    }
+  } catch (_) {}
+  });
 })();

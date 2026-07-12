@@ -1,11 +1,15 @@
 importScripts(
   "tbcc-username-filter.js",
   "model-search-shared.js",
+  "username-search-history-shared.js",
   "auto-tag-utils.js",
   "media-url-guards.js",
   "tbcc-master-archive.js",
   "tbcc-import-pipeline.js",
-  "tbcc-webp-convert.js"
+  "tbcc-webp-convert.js",
+  "tbcc-extension-modules.js",
+  "launch-full-stack.js",
+  "severity-toast-colors.js"
 );
 
 const API_URL = "http://localhost:8000/import/url";
@@ -59,6 +63,10 @@ const STORAGE_PAGE_MENU_ITEMS = "tbccPageMenuItems";
 const TBCC_CTX_MENU_SYNC_ALARM = "tbcc-ctx-menu-sync";
 const STORAGE_AOF_POOLS = "tbccAofPoolsCache";
 const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
+/** Per-source hit/miss tallies from macro probes. */
+const STORAGE_MODEL_SEARCH_SITE_STATS = "tbccModelSearchSiteStats";
+/** Session: tbccLazyTabUrl_<tabId> → URL loaded on first focus. */
+const LAZY_TAB_URL_PREFIX = "tbccLazyTabUrl_";
 const STORAGE_PAYMENT_BOT_USERNAME = "tbccPaymentBotUsername";
 const STORAGE_MACRO_SEARCH_BOT_USERNAME = "tbccMacroSearchBotUsername";
 const STORAGE_REVERSE_IMAGE_ENABLED = "tbccReverseImageEnabledSites";
@@ -254,7 +262,140 @@ async function recordModelSearchSummary(username, sites, onlySiteId) {
   await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: summary });
 }
 
-async function recordModelSearchHistory(username) {
+function resolveUsernameSearchSource(meta) {
+  const h = typeof TbccUsernameSearchHistory !== "undefined" ? TbccUsernameSearchHistory : null;
+  if (!h) return "unknown";
+  const m = meta && typeof meta === "object" ? meta : {};
+  if (m.source) return h.normalizeUsernameSearchSource(m.source);
+  if (m.pageUrl) return h.inferUsernameSearchSourceFromUrl(m.pageUrl);
+  return "unknown";
+}
+
+async function recordModelSearchSiteStats(rows) {
+  if (!Array.isArray(rows) || !rows.length) return;
+  let stats = {};
+  try {
+    const data = await chrome.storage.local.get(STORAGE_MODEL_SEARCH_SITE_STATS);
+    stats =
+      data[STORAGE_MODEL_SEARCH_SITE_STATS] && typeof data[STORAGE_MODEL_SEARCH_SITE_STATS] === "object"
+        ? { ...data[STORAGE_MODEL_SEARCH_SITE_STATS] }
+        : {};
+  } catch (_) {}
+  const now = Date.now();
+  for (const row of rows) {
+    const id = String((row && row.siteId) || "").trim();
+    if (!id) continue;
+    const prev = stats[id] && typeof stats[id] === "object" ? stats[id] : { hits: 0, misses: 0, name: "", lastAt: 0 };
+    const hit = !!(row && row.hasResults && Number(row.count) > 0);
+    stats[id] = {
+      hits: Number(prev.hits || 0) + (hit ? 1 : 0),
+      misses: Number(prev.misses || 0) + (hit ? 0 : 1),
+      name: String((row && row.name) || prev.name || id),
+      lastAt: now,
+    };
+  }
+  await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_SITE_STATS]: stats });
+}
+
+function siteStatsRankScore(entry) {
+  if (!entry || typeof entry !== "object") return -1;
+  const hits = Number(entry.hits || 0);
+  const misses = Number(entry.misses || 0);
+  const total = hits + misses;
+  if (total <= 0) return -1;
+  return hits / total + Math.min(hits, 50) / 1000;
+}
+
+async function openModelSearchUrlLazy(url, opts) {
+  const u = String(url || "").trim();
+  if (!/^https?:\/\//i.test(u)) return { ok: false, error: "invalid_url" };
+  const active = !!(opts && opts.active);
+  const lazy = !opts || opts.lazy !== false;
+  if (!lazy) {
+    const tab = await chrome.tabs.create({ url: u, active });
+    return { ok: true, tabId: tab && tab.id, lazy: false };
+  }
+  const tab = await chrome.tabs.create({ url: "about:blank", active: false });
+  const tabId = tab && tab.id;
+  if (tabId == null) return { ok: false, error: "no_tab" };
+  try {
+    await chrome.storage.session.set({ [LAZY_TAB_URL_PREFIX + tabId]: u });
+  } catch (_) {
+    await chrome.tabs.update(tabId, { url: u, active });
+    return { ok: true, tabId, lazy: false };
+  }
+  if (active) {
+    await chrome.tabs.update(tabId, { active: true });
+    await hydrateLazyModelSearchTab(tabId);
+  }
+  return { ok: true, tabId, lazy: true };
+}
+
+async function hydrateLazyModelSearchTab(tabId) {
+  if (tabId == null) return false;
+  const key = LAZY_TAB_URL_PREFIX + tabId;
+  let pending = "";
+  try {
+    const data = await chrome.storage.session.get(key);
+    pending = String(data[key] || "").trim();
+  } catch (_) {
+    return false;
+  }
+  if (!pending || !/^https?:\/\//i.test(pending)) return false;
+  try {
+    await chrome.storage.session.remove(key);
+  } catch (_) {}
+  try {
+    await chrome.tabs.update(tabId, { url: pending });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function listMacroSourcesWithStats() {
+  let cfg;
+  try {
+    cfg = await getMergedModelSearchSites();
+  } catch (_) {
+    return { ok: false, error: "config", sites: [] };
+  }
+  const data = await chrome.storage.local.get([STORAGE_MODEL_SEARCH_ENABLED, STORAGE_MODEL_SEARCH_SITE_STATS]);
+  const enabled = data[STORAGE_MODEL_SEARCH_ENABLED] || {};
+  const stats =
+    data[STORAGE_MODEL_SEARCH_SITE_STATS] && typeof data[STORAGE_MODEL_SEARCH_SITE_STATS] === "object"
+      ? data[STORAGE_MODEL_SEARCH_SITE_STATS]
+      : {};
+  const sites = (cfg.sites || [])
+    .filter((s) => enabled[s.id] !== false && normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_MACRO)
+    .map((s) => {
+      const st = stats[s.id] && typeof stats[s.id] === "object" ? stats[s.id] : null;
+      const hits = Number((st && st.hits) || 0);
+      const misses = Number((st && st.misses) || 0);
+      const total = hits + misses;
+      return {
+        id: s.id,
+        name: s.name || s.id,
+        url: s.url,
+        category: normalizeModelSearchCategory(s.category),
+        hits,
+        misses,
+        total,
+        hitRate: total ? hits / total : null,
+        rankScore: siteStatsRankScore(st),
+        lastAt: Number((st && st.lastAt) || 0),
+      };
+    });
+  sites.sort(
+    (a, b) =>
+      b.rankScore - a.rankScore ||
+      b.hits - a.hits ||
+      String(a.name).localeCompare(String(b.name))
+  );
+  return { ok: true, sites };
+}
+
+async function recordModelSearchHistory(username, meta) {
   const clean = normalizeUsernameCandidate(username);
   if (!clean) return;
   let arr = [];
@@ -263,15 +404,16 @@ async function recordModelSearchHistory(username) {
     arr = Array.isArray(data[STORAGE_MODEL_SEARCH_HISTORY]) ? data[STORAGE_MODEL_SEARCH_HISTORY] : [];
   } catch (_) {}
   const now = Date.now();
+  const source = resolveUsernameSearchSource(meta) || "model_search";
   const deduped = arr.filter((x) => x && x.username && String(x.username).toLowerCase() !== clean.toLowerCase());
-  const next = [{ username: clean, ts: now }, ...deduped].slice(0, 200);
+  const next = [{ username: clean, ts: now, source }, ...deduped].slice(0, 200);
   await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_HISTORY]: next });
   if (typeof TbccMasterArchive !== "undefined") {
     const archived =
       typeof TbccUsernameFilter !== "undefined" && TbccUsernameFilter.acceptUsernameForArchive
-        ? TbccUsernameFilter.acceptUsernameForArchive(clean, { source: "model_search" })
+        ? TbccUsernameFilter.acceptUsernameForArchive(clean, { source: source || "model_search" })
         : clean;
-    if (archived) void TbccMasterArchive.recordUsername(archived, { source: "model_search" });
+    if (archived) void TbccMasterArchive.recordUsername(archived, { source: source || "model_search" });
   }
 }
 
@@ -303,6 +445,9 @@ async function probeModelSearchSite(site, username) {
     hasResults: !!analysis.hasResults,
     fetchStatus,
     reason: analysis.reason || "none",
+    confidence: analysis.confidence || "none",
+    signal: analysis.signal || "none",
+    resultLinks: analysis.resultLinks || 0,
   };
 }
 
@@ -327,12 +472,14 @@ async function fetchUrlsWithConcurrencyItems(items, workerFn, maxConcurrency) {
  * Native macro search: probe all enabled macro-category sources; store hits-only report.
  * Does not open browser tabs (use launchModelSearch for tab fan-out).
  */
-async function launchMacroModelSearch(username) {
+async function launchMacroModelSearch(username, meta) {
   const cleanUsername = normalizeUsernameCandidate(username);
   if (!cleanUsername) {
     notify("TBCC", "Macro search expects a username.");
     return { ok: false, error: "invalid_username" };
   }
+  const historyMeta = Object.assign({}, meta && typeof meta === "object" ? meta : {});
+  if (!historyMeta.source && !historyMeta.pageUrl) historyMeta.source = "macro";
   let cfg;
   try {
     cfg = await getMergedModelSearchSites();
@@ -342,9 +489,25 @@ async function launchMacroModelSearch(username) {
   }
   const data = await chrome.storage.local.get(STORAGE_MODEL_SEARCH_ENABLED);
   const enabled = data[STORAGE_MODEL_SEARCH_ENABLED] || {};
-  let sites = (cfg.sites || []).filter(
-    (s) => enabled[s.id] !== false && normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_MACRO
-  );
+  const sourceHint = resolveUsernameSearchSource(historyMeta);
+  const preferredFamilies = preferredFamiliesForUsernameSource(sourceHint);
+
+  let sites = (cfg.sites || []).filter((s) => enabled[s.id] !== false);
+  // Default macro engine: macro-category sites. Source-aware: also allow matching family from other cats.
+  if (preferredFamilies && preferredFamilies.length) {
+    sites = sites.filter((s) => {
+      const fam = modelSearchSiteFamily(s);
+      const cat = normalizeModelSearchCategory(s.category);
+      if (preferredFamilies.includes(fam)) return true;
+      // Keep explicit livecams/videos category rows when those families are preferred
+      if (preferredFamilies.includes("livecams") && cat === MODEL_SEARCH_CATEGORY_LIVECAMS) return true;
+      if (preferredFamilies.includes("videos") && cat === MODEL_SEARCH_CATEGORY_VIDEOS) return true;
+      return false;
+    });
+  } else {
+    sites = sites.filter((s) => normalizeModelSearchCategory(s.category) === MODEL_SEARCH_CATEGORY_MACRO);
+  }
+
   const badSites = [];
   sites = sites.filter((s) => {
     try {
@@ -358,13 +521,16 @@ async function launchMacroModelSearch(username) {
     }
   });
   if (!sites.length) {
+    const srcLabel = sourceHint && sourceHint !== "unknown" ? ` for ${sourceHint}` : "";
     notify(
       "TBCC",
       badSites.length
-        ? "No valid macro sources — fix URLs in Lookup tab → Manage sources."
-        : "No macro sources enabled — enable sites under Macro search in extension options."
+        ? "No valid sources — fix URLs in Lookup tab → Manage sources."
+        : preferredFamilies
+          ? `No matching sources enabled${srcLabel} (webcam/archive sites). Enable livecams/macro cam sources in Options.`
+          : "No macro sources enabled — enable sites under Macro search in extension options."
     );
-    return { ok: false, error: "no_sites" };
+    return { ok: false, error: "no_sites", source: sourceHint, families: preferredFamilies };
   }
 
   const pendingSummary = {
@@ -391,12 +557,21 @@ async function launchMacroModelSearch(username) {
   let totalCount = 0;
   for (const row of rows) {
     scanned++;
-    if (row.hasResults && row.count > 0) {
+    // Drop low-confidence / template false positives (search box echo, sidebar cards).
+    const conf = String(row.confidence || "").toLowerCase();
+    const okHit =
+      row.hasResults &&
+      row.count > 0 &&
+      (conf === "high" || conf === "medium" || row.signal === "result_links" || row.signal === "json" || row.signal === "json_total");
+    if (okHit) {
       hits.push({
         siteId: row.siteId,
         name: row.name,
         url: row.url,
         count: row.count,
+        confidence: row.confidence || "medium",
+        signal: row.signal || "",
+        family: modelSearchSiteFamily({ id: row.siteId, name: row.name, url: row.url }),
       });
       totalCount += row.count;
     }
@@ -413,16 +588,22 @@ async function launchMacroModelSearch(username) {
     hits,
     totalCount,
     rows,
+    source: sourceHint,
+    families: preferredFamilies,
   };
   await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: summary });
-  await recordModelSearchHistory(cleanUsername);
+  await recordModelSearchHistory(cleanUsername, historyMeta);
+  await recordModelSearchSiteStats(rows);
 
   const hitN = hits.length;
+  const srcNote = sourceHint && sourceHint !== "unknown" && sourceHint !== "macro" ? ` [${sourceHint}]` : "";
   notify(
     "TBCC",
     hitN
-      ? `Macro search: ${hitN} site(s), ~${totalCount} result(s) for ${cleanUsername}`
-      : `Macro search: no hits on ${scanned} site(s) for ${cleanUsername}`
+      ? `Macro search${srcNote}: ${hitN} site(s), ~${totalCount} result(s) for ${cleanUsername}`
+      : preferredFamilies
+        ? `Macro search${srcNote}: no real hits on ${scanned} webcam/archive source(s) for ${cleanUsername}`
+        : `Macro search: no hits on ${scanned} site(s) for ${cleanUsername}`
   );
   if (badSites.length) {
     notifyThrottled(
@@ -454,12 +635,14 @@ async function fetchCountsForSites(username, sites) {
   await chrome.storage.local.set({ [STORAGE_MODEL_SEARCH_LAST_SUMMARY]: sum });
 }
 
-async function launchModelSearch(username, onlySiteId = null, onlyCategory = null) {
+async function launchModelSearch(username, onlySiteId = null, onlyCategory = null, meta = null) {
   const cleanUsername = normalizeUsernameCandidate(username);
   if (!cleanUsername) {
     notify("TBCC", "Model search expects a username.");
     return;
   }
+  const historyMeta = Object.assign({}, meta && typeof meta === "object" ? meta : {});
+  if (!historyMeta.source && !historyMeta.pageUrl) historyMeta.source = "model_search";
   let cfg;
   try {
     cfg = await getMergedModelSearchSites();
@@ -486,6 +669,7 @@ async function launchModelSearch(username, onlySiteId = null, onlyCategory = nul
   const wantActive = mode === "foreground";
   const badSites = [];
   let first = true;
+  let opened = 0;
   for (const s of sites) {
     let u;
     try {
@@ -500,7 +684,9 @@ async function launchModelSearch(username, onlySiteId = null, onlyCategory = nul
       continue;
     }
     try {
-      await chrome.tabs.create({ url: u, active: wantActive && first });
+      // Lazy tabs: about:blank until focused — avoids loading dozens of sites at once.
+      const r = await openModelSearchUrlLazy(u, { lazy: true, active: wantActive && first });
+      if (r && r.ok) opened++;
     } catch (e) {
       notify("TBCC", `Could not open ${s.name || s.id}: ${String(e.message || e).slice(0, 120)}`);
       badSites.push(s.name || s.id);
@@ -522,8 +708,16 @@ async function launchModelSearch(username, onlySiteId = null, onlyCategory = nul
       15000
     );
   }
+  if (opened > 1) {
+    notifyThrottled(
+      "model-search-lazy",
+      "TBCC",
+      `Opened ${opened} unloaded tab(s) for ${cleanUsername} — pages load only when you switch to them.`,
+      10000
+    );
+  }
   await recordModelSearchSummary(cleanUsername, sites, onlySiteId);
-  await recordModelSearchHistory(cleanUsername);
+  await recordModelSearchHistory(cleanUsername, historyMeta);
   void fetchCountsForSites(cleanUsername, sites);
 }
 
@@ -747,6 +941,43 @@ function tbccFetchTimeoutMs(url) {
     if (/\.(mp4|webm|m4v|mov|mkv)(\?|$)/i.test(path)) return 180000;
   } catch (_) {}
   return 45000;
+}
+
+/** Comic Looms stall timeout — abort if no bytes arrive for stallMs (resets per chunk). */
+async function readResponseArrayBufferWithStall(res, stallMs) {
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.body || typeof res.body.getReader !== "function") return await res.arrayBuffer();
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  let stallTimer;
+  const bump = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      try {
+        reader.cancel("stall");
+      } catch (_) {}
+    }, stallMs);
+  };
+  bump();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bump();
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    clearTimeout(stallTimer);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out.buffer;
 }
 
 async function mergeCookiesForUrls(urlList) {
@@ -1240,7 +1471,10 @@ async function fetchEromeCdnWithRetries(url, eromeChain, cookieHeader, refererPa
   );
 }
 
-async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId) {
+async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId, opts) {
+  const stallMs = opts && opts.stallTimeoutMs ? Math.max(2000, Number(opts.stallTimeoutMs)) : 0;
+  const readBody = async (res) =>
+    stallMs > 0 ? readResponseArrayBufferWithStall(res, stallMs) : await res.arrayBuffer();
   const eromeChain = eromeReferrerChain(url, refererPageUrl);
   let cookieHeader = "";
   if (eromeChain) {
@@ -1308,7 +1542,7 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId) {
       }
     }
     /** Twitter / X: CDN rejects Referer https://video.twimg.com/ — must look like navigation from x.com. */
-    if (h === "video.twimg.com") {
+    if (h === "video.twimg.com" || h === "pbs.twimg.com") {
       const refs = [];
       const pushRef = (s) => {
         const t = String(s || "").trim().split("#")[0];
@@ -1325,7 +1559,7 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId) {
             credentials: "omit",
             headers: { ...base, Referer: ref, Origin: origin },
           });
-          if (res.ok) return await res.arrayBuffer();
+          if (res.ok) return await readBody(res);
         } catch (_) {}
       }
       throw new Error(
@@ -1345,8 +1579,7 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId) {
     base.Referer = "https://www.erome.com/";
   }
   const res = await fetch(url, { method: "GET", credentials: "omit", headers: base });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.arrayBuffer();
+  return await readBody(res);
 }
 
 function decodeHtmlAttr(s) {
@@ -1880,6 +2113,107 @@ function tbccIsInjectableHttpUrl(url) {
   return url && typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+const STORAGE_USH_APPROVED_HOSTS = "tbccUsernameSearchApprovedHosts";
+const STORAGE_USH_FAB_DENIED_HOSTS = "tbccUsernameSearchFabDeniedHosts";
+
+function tbccNormalizeUshHost(hostname) {
+  return String(hostname || "")
+    .toLowerCase()
+    .replace(/^www\./, "")
+    .trim();
+}
+
+function tbccIsBuiltinUsernameSearchHost(hostname) {
+  const h = tbccNormalizeUshHost(hostname);
+  if (!h) return false;
+  const roots = [
+    "stripchat.com",
+    "chaturbate.com",
+    "onlyfans.com",
+    "fansly.com",
+    "instagram.com",
+    "x.com",
+    "twitter.com",
+    "xhamsterlive.com",
+    "cambb.xxx",
+    "nudecams.xxx",
+  ];
+  return roots.some((r) => h === r || h.endsWith("." + r));
+}
+
+async function tbccUsernameSearchHostAllowed(url) {
+  try {
+    const host = tbccNormalizeUshHost(new URL(url).hostname);
+    if (!host) return false;
+    if (tbccIsBuiltinUsernameSearchHost(host)) return true;
+    const d = await chrome.storage.local.get(STORAGE_USH_APPROVED_HOSTS);
+    const arr = Array.isArray(d[STORAGE_USH_APPROVED_HOSTS]) ? d[STORAGE_USH_APPROVED_HOSTS] : [];
+    return arr.map(tbccNormalizeUshHost).includes(host);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function tbccInjectUsernameSearchOverlay(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["tbcc-module-gate.js", "username-search-history-shared.js", "username-search-overlay.js"],
+    });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
+async function tbccMaybeInjectUsernameSearchOverlay(tabId, url) {
+  if (tabId == null || !tbccIsInjectableHttpUrl(url)) return { ok: false, skipped: true };
+  if (!(await tbccUsernameSearchHostAllowed(url))) return { ok: false, skipped: true };
+  try {
+    if (typeof TBCC_EXT_MODULES !== "undefined") {
+      const map = await TBCC_EXT_MODULES.getEnabledMap();
+      if (!TBCC_EXT_MODULES.isEnabled(map, "username_search_overlay")) {
+        return { ok: false, skipped: true, reason: "module_off" };
+      }
+    }
+  } catch (_) {}
+  return tbccInjectUsernameSearchOverlay(tabId);
+}
+
+async function tbccApproveUsernameSearchHost(hostname) {
+  const host = tbccNormalizeUshHost(hostname);
+  if (!host) return { ok: false, error: "bad_host" };
+  const d = await chrome.storage.local.get([STORAGE_USH_APPROVED_HOSTS, STORAGE_USH_FAB_DENIED_HOSTS]);
+  const arr = Array.isArray(d[STORAGE_USH_APPROVED_HOSTS]) ? d[STORAGE_USH_APPROVED_HOSTS].slice() : [];
+  const norm = arr.map(tbccNormalizeUshHost);
+  if (!norm.includes(host)) arr.push(host);
+  const denied = Array.isArray(d[STORAGE_USH_FAB_DENIED_HOSTS])
+    ? d[STORAGE_USH_FAB_DENIED_HOSTS].filter((h) => tbccNormalizeUshHost(h) !== host)
+    : [];
+  await chrome.storage.local.set({
+    [STORAGE_USH_APPROVED_HOSTS]: arr,
+    [STORAGE_USH_FAB_DENIED_HOSTS]: denied,
+  });
+  return { ok: true, host };
+}
+
+async function tbccRevokeUsernameSearchHost(hostname) {
+  const host = tbccNormalizeUshHost(hostname);
+  const d = await chrome.storage.local.get([STORAGE_USH_APPROVED_HOSTS, STORAGE_USH_FAB_DENIED_HOSTS]);
+  const arr = (Array.isArray(d[STORAGE_USH_APPROVED_HOSTS]) ? d[STORAGE_USH_APPROVED_HOSTS] : []).filter(
+    (h) => tbccNormalizeUshHost(h) !== host
+  );
+  let denied = Array.isArray(d[STORAGE_USH_FAB_DENIED_HOSTS]) ? d[STORAGE_USH_FAB_DENIED_HOSTS].slice() : [];
+  if (tbccIsBuiltinUsernameSearchHost(host) && !denied.map(tbccNormalizeUshHost).includes(host)) {
+    denied.push(host);
+  }
+  await chrome.storage.local.set({
+    [STORAGE_USH_APPROVED_HOSTS]: arr,
+    [STORAGE_USH_FAB_DENIED_HOSTS]: denied,
+  });
+  return { ok: true, host };
+}
+
 async function tbccReadGalleryJobs() {
   const data = await chrome.storage.local.get(STORAGE_GALLERY_JOBS);
   let jobs = Array.isArray(data[STORAGE_GALLERY_JOBS]) ? data[STORAGE_GALLERY_JOBS] : [];
@@ -2058,9 +2392,97 @@ async function tbccBootstrapImportJobRecovery() {
   await tbccReattachImportPollAlarms();
 }
 
+/** In-memory mirror so side-panel open can run synchronously on user gesture (no await before open). */
+let _tbccDockLockMemory = null;
+
+function tbccRefreshDockLockMemoryFromStorage() {
+  try {
+    chrome.storage.local.get(STORAGE_GALLERY_DOCK_LOCK, (data) => {
+      _tbccDockLockMemory = data[STORAGE_GALLERY_DOCK_LOCK] || null;
+    });
+  } catch (_) {}
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[STORAGE_GALLERY_DOCK_LOCK]) return;
+  _tbccDockLockMemory = changes[STORAGE_GALLERY_DOCK_LOCK].newValue || null;
+});
+
+tbccRefreshDockLockMemoryFromStorage();
+
+function tbccIsGalleryToolbarLockedSync() {
+  const lock = _tbccDockLockMemory;
+  return !!(lock && lock.locked && (lock.jobCount || 0) > 0);
+}
+
+/**
+ * Must run synchronously in the user-gesture stack (context menu / click).
+ * Do not await before calling chrome.sidePanel.open().
+ */
+function tbccTryOpenGallerySidePanelSync(tab) {
+  const windowId = tab && tab.windowId != null ? tab.windowId : null;
+  const tabId = tab && tab.id != null ? tab.id : null;
+  if (windowId == null) return { ok: false, reason: "no-window-id" };
+  try {
+    void chrome.sidePanel.open({ windowId });
+  } catch (e) {
+    return { ok: false, reason: "open-failed", error: e };
+  }
+  try {
+    if (chrome.sidePanel.setOptions && tabId != null) {
+      void chrome.sidePanel.setOptions({ tabId, path: "gallery.html", enabled: true });
+    }
+  } catch (_) {}
+  return { ok: true, windowId, tabId };
+}
+
+function tbccFallbackOpenGalleryAfterGesture(tab) {
+  void (async () => {
+    try {
+      let windowId = tab && tab.windowId != null ? tab.windowId : null;
+      if (windowId == null) {
+        const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        windowId = active && active.windowId != null ? active.windowId : null;
+        tab = active || tab;
+      }
+      if (windowId != null) {
+        try {
+          await chrome.sidePanel.open({ windowId });
+          if (chrome.sidePanel.setOptions && tab && tab.id != null) {
+            await chrome.sidePanel.setOptions({ tabId: tab.id, path: "gallery.html", enabled: true });
+          }
+          return;
+        } catch (_) {}
+      }
+      await chrome.tabs.create({ url: chrome.runtime.getURL("gallery.html") });
+    } catch (e) {
+      notifyThrottled("open-fail", "TBCC", String((e && e.message) || e), 8000);
+    }
+  })();
+}
+
+function tbccHandleActionOpenGalleryClick(tab) {
+  if (tbccIsGalleryToolbarLockedSync()) {
+    const lock = _tbccDockLockMemory;
+    notifyThrottled(
+      "dock-lock",
+      "TBCC",
+      `${lock?.jobCount || 0} task(s) still running on ${lock?.hostname || lock?.title || "docked tab"}. Wait for the finished notification.`,
+      15000
+    );
+    return;
+  }
+  const opened = tbccTryOpenGallerySidePanelSync(tab);
+  if (!opened.ok) {
+    tbccFallbackOpenGalleryAfterGesture(tab);
+  }
+}
+
 async function tbccGetDockPanelLock() {
   const data = await chrome.storage.local.get(STORAGE_GALLERY_DOCK_LOCK);
-  return data[STORAGE_GALLERY_DOCK_LOCK] || null;
+  const lock = data[STORAGE_GALLERY_DOCK_LOCK] || null;
+  _tbccDockLockMemory = lock;
+  return lock;
 }
 
 async function tbccSyncDockPanelLockFromJobs(jobs) {
@@ -2138,6 +2560,7 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
       chrome.storage.local.set({ [STORAGE_LAST_TAB]: tabId });
     }
   }).catch(() => {});
+  void hydrateLazyModelSearchTab(tabId);
   void (async () => {
     try {
       const data = await chrome.storage.local.get(STORAGE_GALLERY_DOCKED_TAB);
@@ -2286,6 +2709,7 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   }
   if (info.status === "complete" && tab && tab.active && tab.id && tbccIsInjectableHttpUrl(tab.url)) {
     chrome.storage.local.set({ [STORAGE_LAST_TAB]: tab.id });
+    void tbccMaybeInjectUsernameSearchOverlay(tab.id, tab.url);
   }
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -2412,6 +2836,57 @@ function tbccArrayBufferToDataUrl(ab) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.action === "tbcc-get-sender-tab-id") {
+    const tabId = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
+    sendResponse({ ok: true, tabId });
+    return true;
+  }
+  if (msg.action === "tbcc-playwright-record") {
+    void (async () => {
+      const bases = ["http://127.0.0.1:8000", "http://localhost:8000"];
+      let key = "";
+      try {
+        const d = await chrome.storage.local.get("tbccInternalApiKey");
+        key = String(d.tbccInternalApiKey || "").trim();
+      } catch (_) {}
+      if (!key) {
+        sendResponse({
+          ok: false,
+          error: "Set Internal API key in extension options (same as launch stack).",
+        });
+        return;
+      }
+      const body = {
+        url: String(msg.url || "https://www.erome.com/").trim(),
+        name: String(msg.name || "erome-session").trim() || "erome-session",
+        load_auth: true,
+        use_erome_auth: true,
+      };
+      let lastErr = "unreachable";
+      for (const base of bases) {
+        try {
+          const res = await fetch(`${base}/internal/playwright/record`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-TBCC-Internal-Key": key,
+            },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.ok) {
+            sendResponse(data);
+            return;
+          }
+          lastErr = data.error || data.detail || `HTTP ${res.status}`;
+        } catch (e) {
+          lastErr = String(e.message || e);
+        }
+      }
+      sendResponse({ ok: false, error: lastErr });
+    })();
+    return true;
+  }
   if (msg.action === "tbcc-notify") {
     notify(String(msg.title || "TBCC"), String(msg.message || ""), msg.clickAction || null);
     sendResponse({ ok: true });
@@ -2443,34 +2918,68 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.action === "tbcc-x-open-side-panel-sync") {
+    try {
+      const tabId = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
+      let windowId = _sender && _sender.tab && _sender.tab.windowId != null ? _sender.tab.windowId : null;
+      if (windowId != null) {
+        try {
+          chrome.sidePanel.open({ windowId });
+        } catch (_) {}
+        if (chrome.sidePanel.setOptions && tabId != null) {
+          void chrome.sidePanel.setOptions({ tabId, path: "gallery.html", enabled: true });
+        }
+      }
+      sendResponse({ ok: true });
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e.message || e) });
+    }
+    return true;
+  }
   if (msg.action === "tbcc-x-profile-merge-to-gallery") {
+    let panelOpenErr = null;
+    if (msg.openPanel !== false) {
+      const tabIdSync = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
+      let windowIdSync = _sender && _sender.tab && _sender.tab.windowId != null ? _sender.tab.windowId : null;
+      if (windowIdSync != null) {
+        try {
+          chrome.sidePanel.open({ windowId: windowIdSync });
+        } catch (e) {
+          panelOpenErr = e;
+        }
+        if (chrome.sidePanel.setOptions && tabIdSync != null) {
+          try {
+            void chrome.sidePanel.setOptions({ tabId: tabIdSync, path: "gallery.html", enabled: true });
+          } catch (_) {}
+        }
+      }
+    }
     void (async () => {
       try {
-        if (msg.openPanel !== false) {
-          const tabId = _sender && _sender.tab && _sender.tab.id != null ? _sender.tab.id : null;
-          let windowId = _sender && _sender.tab && _sender.tab.windowId != null ? _sender.tab.windowId : null;
-          if (windowId == null) {
-            const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-            windowId = active && active.windowId != null ? active.windowId : null;
-          }
-          if (windowId != null) {
-            await chrome.sidePanel.open({ windowId });
-            if (chrome.sidePanel.setOptions && tabId != null) {
-              await chrome.sidePanel.setOptions({ tabId, path: "gallery.html", enabled: true });
-            }
-          } else {
-            await tbccEnsureGallerySidePanelOpen();
-          }
-        }
-        tbccPostGalleryPanelMessage({
+        const mergePayload = {
           action: "tbcc-gallery-merge-harvest",
           items: Array.isArray(msg.items) ? msg.items : [],
           sourceUrl: msg.sourceUrl || "",
           adapter: msg.adapter || "x-profile",
           autoZip: !!msg.autoZip,
+          loomsZip: !!msg.loomsZip,
+          mergeId: msg.mergeId || "mh-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
           selectAll: msg.selectAll !== false,
+          sourceTabId:
+            _sender && _sender.tab && _sender.tab.id != null
+              ? _sender.tab.id
+              : msg.tabId != null
+                ? msg.tabId
+                : null,
+        };
+        try {
+          await chrome.storage.session.set({ tbccPendingGalleryMerge: mergePayload });
+        } catch (_) {}
+        tbccPostGalleryPanelMessage(mergePayload);
+        sendResponse({
+          ok: true,
+          panelWarning: panelOpenErr ? String(panelOpenErr.message || panelOpenErr) : undefined,
         });
-        sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
       }
@@ -2690,10 +3199,109 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  if (msg.action === "tbcc-maybe-inject-username-search") {
+    void (async () => {
+      const tab = _sender && _sender.tab;
+      if (!tab || tab.id == null) {
+        sendResponse({ ok: false, error: "no_tab" });
+        return;
+      }
+      sendResponse(await tbccMaybeInjectUsernameSearchOverlay(tab.id, tab.url || msg.url || ""));
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-approve-username-search-host") {
+    void (async () => {
+      const host =
+        msg.host ||
+        (_sender && _sender.tab && _sender.tab.url
+          ? tbccNormalizeUshHost(new URL(_sender.tab.url).hostname)
+          : "");
+      const r = await tbccApproveUsernameSearchHost(host);
+      if (r.ok && _sender && _sender.tab && _sender.tab.id != null) {
+        await tbccInjectUsernameSearchOverlay(_sender.tab.id);
+      }
+      sendResponse(r);
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-revoke-username-search-host") {
+    void (async () => {
+      const host =
+        msg.host ||
+        (_sender && _sender.tab && _sender.tab.url
+          ? tbccNormalizeUshHost(new URL(_sender.tab.url).hostname)
+          : "");
+      sendResponse(await tbccRevokeUsernameSearchHost(host));
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-username-search-host-status") {
+    void (async () => {
+      try {
+        const url = String((_sender && _sender.tab && _sender.tab.url) || msg.url || "");
+        const host = tbccNormalizeUshHost(new URL(url).hostname);
+        const d = await chrome.storage.local.get([STORAGE_USH_APPROVED_HOSTS, STORAGE_USH_FAB_DENIED_HOSTS]);
+        const approved = (Array.isArray(d[STORAGE_USH_APPROVED_HOSTS]) ? d[STORAGE_USH_APPROVED_HOSTS] : []).map(
+          tbccNormalizeUshHost
+        );
+        const denied = (Array.isArray(d[STORAGE_USH_FAB_DENIED_HOSTS]) ? d[STORAGE_USH_FAB_DENIED_HOSTS] : []).map(
+          tbccNormalizeUshHost
+        );
+        sendResponse({
+          ok: true,
+          host,
+          builtin: tbccIsBuiltinUsernameSearchHost(host),
+          approved: approved.includes(host),
+          fabDenied: denied.includes(host),
+          allowed: await tbccUsernameSearchHostAllowed(url),
+        });
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
   if (msg.action === "tbcc-macro-model-search") {
     (async () => {
       try {
-        const r = await launchMacroModelSearch(msg.username || "");
+        const pageUrl = String((_sender && _sender.tab && _sender.tab.url) || msg.pageUrl || "");
+        const r = await launchMacroModelSearch(msg.username || "", {
+          source: msg.source || undefined,
+          pageUrl,
+        });
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-list-macro-sources") {
+    (async () => {
+      try {
+        sendResponse(await listMacroSourcesWithStats());
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e), sites: [] });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-open-model-search-url") {
+    (async () => {
+      try {
+        const url = String(msg.url || "").trim();
+        const username = normalizeUsernameCandidate(msg.username || "");
+        let finalUrl = url;
+        if ((!finalUrl || !/^https?:\/\//i.test(finalUrl)) && username && msg.siteId) {
+          const cfg = await getMergedModelSearchSites();
+          const site = (cfg.sites || []).find((s) => s.id === msg.siteId);
+          if (site) finalUrl = buildModelSearchUrl(site.url, username);
+        }
+        const r = await openModelSearchUrlLazy(finalUrl, {
+          lazy: msg.lazy !== false,
+          active: msg.active !== false,
+        });
         sendResponse(r);
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
@@ -2704,7 +3312,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-launch-model-search-tabs") {
     (async () => {
       try {
-        await launchModelSearch(msg.username || "", null, msg.category || null);
+        const pageUrl = String((_sender && _sender.tab && _sender.tab.url) || msg.pageUrl || "");
+        await launchModelSearch(msg.username || "", null, msg.category || null, {
+          source: msg.source || undefined,
+          pageUrl,
+        });
         sendResponse({ ok: true });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
@@ -3100,17 +3712,73 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
-  /** Content script in-tab upload path: same cookie/Referer logic as context menu, CSP-safe. */
+  if (msg.action === "tbcc-looms-zip-progress") {
+    const tabId = msg.sourceTabId != null ? msg.sourceTabId : _sender && _sender.tab && _sender.tab.id;
+    if (tabId != null) {
+      chrome.tabs.sendMessage(tabId, msg).catch(() => {});
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg.action === "tbcc-content-fetch-bytes") {
     (async () => {
       try {
         const tabId = await tbccResolveSessionTabId(_sender, msg);
+        const fetchOpts =
+          msg.stallTimeoutMs != null && Number(msg.stallTimeoutMs) > 0
+            ? { stallTimeoutMs: Number(msg.stallTimeoutMs) }
+            : undefined;
         const buffer = await fetchUrlWithBrowserSession(
           normalizeTbccMediaUrlForImport(msg.url),
           msg.refererPageUrl || "",
-          tabId
+          tabId,
+          fetchOpts
         );
         sendResponse({ ok: true, buffer });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-x-media-download") {
+    (async () => {
+      try {
+        const tabId = await tbccResolveSessionTabId(_sender, msg);
+        const rawUrl = String(msg.url || "").trim();
+        if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+          sendResponse({ ok: false, error: "Invalid media URL" });
+          return;
+        }
+        const url = normalizeTbccMediaUrlForImport(rawUrl);
+        const referer =
+          String(msg.refererPageUrl || "").trim() ||
+          (_sender && _sender.tab && _sender.tab.url) ||
+          "https://x.com/";
+        const ab = await fetchUrlWithBrowserSession(url, referer, tabId, { stallTimeoutMs: 45000 });
+        const prep = await tbccPrepareImportArrayBuffer(ab, url);
+        const blob = new Blob([prep.buffer], { type: prep.type || "application/octet-stream" });
+        const blobUrl = URL.createObjectURL(blob);
+        const fn = String(msg.filename || "media")
+          .replace(/[\\/:*?"<>|\r\n]/g, "_")
+          .slice(0, 120);
+        const filename = fn.indexOf("tbcc/") === 0 ? fn : `tbcc/${fn}`;
+        chrome.downloads.download(
+          { url: blobUrl, filename, saveAs: false, conflictAction: "uniquify" },
+          (id) => {
+            setTimeout(() => {
+              try {
+                URL.revokeObjectURL(blobUrl);
+              } catch (_) {}
+            }, 120000);
+            const err = chrome.runtime.lastError;
+            if (err || !id) {
+              sendResponse({ ok: false, error: err ? err.message : "Download failed" });
+              return;
+            }
+            sendResponse({ ok: true, downloadId: id });
+          }
+        );
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
       }
@@ -3311,6 +3979,11 @@ function installContextMenus() {
     mac({ id: "sendSelectionToTBCC", title: "TBCC: Save to pool (selected URL)", contexts: ["selection"] });
     mac({ id: "sendSelectionToSaved", title: "TBCC: Saved Messages (selected URL)", contexts: ["selection"] });
     mac({
+      id: "tbccCaptureSecretSelection",
+      title: "TBCC: Save selection as API key to .env (browser)",
+      contexts: ["selection"],
+    });
+    mac({
       id: "tbccAddVideoUrlToList",
       title: "TBCC: Save URL to master archive",
       contexts: ["selection", "link", "page", "frame", "video"],
@@ -3341,6 +4014,15 @@ function installContextMenus() {
       title: "TBCC: Open gallery (docked to this tab)",
       contexts: ["action"],
     });
+    mac({
+      id: "tbccActionStartApi",
+      title: "TBCC: Launch full stack (daemon/API)",
+      contexts: ["action"],
+    });
+    if (typeof TBCC_EXT_MODULES !== "undefined" && TBCC_EXT_MODULES.installActionMenus) {
+      TBCC_EXT_MODULES.installActionMenus(mac);
+      void TBCC_EXT_MODULES.refreshMenuLabels();
+    }
     void (async () => {
       try {
         await addModelSearchContextMenus(mac);
@@ -3394,6 +4076,12 @@ async function addModelSearchContextMenus(mac) {
     parentId: "tbccModelSearchRoot",
     title: "Macro search (native report, all macro sources)",
     contexts: CTX_MS,
+  });
+  mac({
+    id: "tbccms_approve_overlay_host",
+    parentId: "tbccModelSearchRoot",
+    title: "Enable macrosearch overlay on this site",
+    contexts: ["page", "action"],
   });
   mac({
     id: "tbccms_sep_clip",
@@ -3569,7 +4257,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   })();
 });
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   installContextMenus();
   tbccEnsureOpsAlertsAlarm();
   tbccEnsureContextMenuSyncAlarm();
@@ -3577,6 +4265,26 @@ chrome.runtime.onInstalled.addListener(() => {
   void tbccSyncAofPools();
   void tbccPollOpsAlerts();
   void tbccBootstrapImportJobRecovery();
+  if (details && details.reason === "update") {
+    void (async () => {
+      try {
+        const tabs = await chrome.tabs.query({
+          url: [
+            "*://erome.com/*",
+            "*://www.erome.com/*",
+            "*://x.com/*",
+            "*://twitter.com/*",
+          ],
+        });
+        if (tabs.length) {
+          notify(
+            "TBCC updated",
+            "Reload open X / Erome tabs (Ctrl+R) so enhancer & overlay scripts run."
+          );
+        }
+      } catch (_) {}
+    })();
+  }
   void (async () => {
     try {
       if (typeof TbccMasterArchive !== "undefined") {
@@ -3870,11 +4578,30 @@ async function tbccHandleNotificationClickAction(clickAction) {
   }
 }
 
+function tbccGradePrefixForOsNotify(title, message) {
+  try {
+    const sev = typeof TBCC_SEVERITY_TOAST !== "undefined" ? TBCC_SEVERITY_TOAST : null;
+    if (!sev) return "";
+    const blob = `${title || ""} ${message || ""}`.toLowerCase();
+    let kind = "info";
+    if (/sale|payment|💰/.test(blob)) kind = "payment";
+    else if (/pending|invoice|checkout/.test(blob)) kind = "pending";
+    else if (/critical|urgent|unreachable|fail/.test(blob)) kind = "critical";
+    else if (/overdue|stall|warn|circuit/.test(blob)) kind = "warning";
+    else if (/success|saved|imported|done/.test(blob)) kind = "success";
+    const calm = sev.calmToastStyle(kind);
+    return calm && calm.emoji ? `${calm.emoji} ` : "";
+  } catch (_) {
+    return "";
+  }
+}
+
 function notify(title, message, clickAction) {
   void (async () => {
     try {
       const style = await tbccGetNotificationStyle();
       const formatted = tbccFormatNotificationText(title, message, style);
+      const grade = tbccGradePrefixForOsNotify(formatted.title, formatted.message);
       const iconUrl = chrome.runtime.getURL(TBCC_NOTIFY_ICON);
       const id = "tbcc-" + Date.now();
       if (clickAction) await tbccStoreNotificationAction(id, clickAction);
@@ -3883,7 +4610,7 @@ function notify(title, message, clickAction) {
         {
           type: "basic",
           iconUrl,
-          title: formatted.title,
+          title: grade + formatted.title,
           message: formatted.message,
         },
         () => {
@@ -3909,6 +4636,29 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 
 function isSavedMenuId(id) {
   return id === "sendToSaved" || id === "sendPageToSaved" || id === "sendSelectionToSaved";
+}
+
+async function tbccExtensionPageMenuBlocked(id) {
+  if (typeof TBCC_EXT_MODULES === "undefined") return false;
+  const pageIds =
+    id === "sendToTBCC" ||
+    isSavedMenuId(id) ||
+    id === "sendPageToTBCC" ||
+    id === "sendSelectionToTBCC" ||
+    id === "tbccAddVideoUrlToList" ||
+    id === "tbccAddVideoUrlToListNested" ||
+    id === "tbccAddAllVideoUrlsToList" ||
+    id === "tbccAddAllVideoUrlsToListNested" ||
+    id === "tbccReverseImageFanout" ||
+    id === "tbccCaptureTabReverse" ||
+    id === "tbccDockGallery" ||
+    String(id).startsWith("tbccAofPool_") ||
+    String(id).startsWith("tbccms_");
+  if (!pageIds) return false;
+  const map = await TBCC_EXT_MODULES.getEnabledMap();
+  if (!TBCC_EXT_MODULES.isEnabled(map, "context_menus")) return true;
+  if (isSavedMenuId(id) && !TBCC_EXT_MODULES.isEnabled(map, "send_saved")) return true;
+  return false;
 }
 
 function tbccNormalizeAutoTagToken(raw) {
@@ -4512,58 +5262,168 @@ async function tbccSetGalleryDockedTab(tab, opts) {
     title: (tab.title || hostname || "Tab").slice(0, 120),
     dockedAt: Date.now(),
   };
-  await chrome.storage.local.set({ [STORAGE_GALLERY_DOCKED_TAB]: payload });
   if (openPanel) {
-    try {
-      const sp = chrome.sidePanel;
-      if (sp && tab.windowId != null) {
-        await sp.open({ windowId: tab.windowId });
-        if (sp.setOptions) {
-          await sp.setOptions({ tabId: tab.id, path: "gallery.html", enabled: true });
-        }
-      }
-    } catch (_) {}
+    tbccTryOpenGallerySidePanelSync(tab);
   }
+  await chrome.storage.local.set({ [STORAGE_GALLERY_DOCKED_TAB]: payload });
   return { ok: true, dock: payload };
 }
 
-chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  const id = String(info.menuItemId || "");
+const TBCC_CAPTURE_SECRET_BASES = ["http://127.0.0.1:8000", "http://localhost:8000"];
 
-  if (id === "tbccActionOpenGallery") {
-    if (await tbccIsGalleryToolbarLocked()) {
-      const lock = await tbccGetDockPanelLock();
+async function tbccFetchCaptureSecret(path, options) {
+  let lastErr = null;
+  for (const base of TBCC_CAPTURE_SECRET_BASES) {
+    try {
+      const r = await fetch(base + path, options);
+      return r;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("capture-secret unreachable");
+}
+
+async function tbccOpenCaptureSecretPrompt(value, pageUrl) {
+  const q = new URLSearchParams({
+    value: String(value || ""),
+    page_url: String(pageUrl || ""),
+  });
+  await chrome.windows.create({
+    url: chrome.runtime.getURL(`capture-secret-prompt.html?${q.toString()}`),
+    type: "popup",
+    width: 420,
+    height: 320,
+    focused: true,
+  });
+}
+
+async function tbccCaptureSecretFromSelection(info, tab) {
+  const value = String((info && info.selectionText) || "").trim();
+  if (!value) {
+    notifyThrottled("cap-secret-empty", "TBCC", "Highlight the API key text first, then right-click.", 6000);
+    return;
+  }
+  const pageUrl = (tab && tab.url) || "";
+  try {
+    const r = await tbccFetchCaptureSecret("/extension/capture-secret", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value, page_url: pageUrl }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data && data.ok) {
       notifyThrottled(
-        "dock-lock",
+        "cap-secret-ok",
         "TBCC",
-        `${lock?.jobCount || 0} task(s) still running on ${lock?.hostname || lock?.title || "docked tab"}. Wait for the finished notification.`,
-        15000
+        `Saved ${data.key} to .env` + (data.backed_up_credential_manager ? " (+ Credential Manager)" : ""),
+        6000
       );
       return;
     }
-    try {
-      const windowId = tab && tab.windowId != null ? tab.windowId : undefined;
-      if (windowId == null) {
-        const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        if (active && active.windowId != null) {
-          await chrome.sidePanel.open({ windowId: active.windowId });
-          return;
-        }
-        notifyThrottled("open-fail", "TBCC", "No browser window to open the gallery.", 8000);
-        return;
-      }
-      await chrome.sidePanel.open({ windowId });
-    } catch (e) {
-      notifyThrottled("open-fail", "TBCC", String((e && e.message) || e), 8000);
+    if (r.status === 422 || (data && data.detail && data.detail.error === "key_required") || !data || !data.key) {
+      await tbccOpenCaptureSecretPrompt(value, pageUrl);
+      return;
     }
+    const detail =
+      (data && data.detail && (data.detail.message || data.detail.error || data.detail)) ||
+      data.detail ||
+      r.statusText ||
+      "capture failed";
+    notifyThrottled("cap-secret-fail", "TBCC", String(detail), 8000);
+  } catch (e) {
+    try {
+      await tbccOpenCaptureSecretPrompt(value, pageUrl);
+      notifyThrottled(
+        "cap-secret-offline",
+        "TBCC",
+        "API unreachable — picker opened; start TBCC API if save fails.",
+        8000
+      );
+    } catch (_) {
+      notifyThrottled(
+        "cap-secret-offline",
+        "TBCC",
+        "Backend offline — start TBCC API, or use Windows desktop menu.",
+        8000
+      );
+    }
+  }
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  const id = String(info.menuItemId || "");
+
+  if (id === "tbccActionOpenGallery") {
+    tbccHandleActionOpenGalleryClick(tab);
+    return;
+  }
+
+  void tbccContextMenuClickedAsync(info, tab);
+});
+
+async function tbccContextMenuClickedAsync(info, tab) {
+  const id = String(info.menuItemId || "");
+
+  if (id === "tbccCaptureSecretSelection") {
+    void tbccCaptureSecretFromSelection(info, tab);
+    return;
+  }
+
+  if (id.startsWith("tbccExtMod__") && typeof TBCC_EXT_MODULES !== "undefined") {
+    try {
+      const r = await TBCC_EXT_MODULES.handleActionClick(info);
+      if (r && r.ok) {
+        if (r.action === "restart") {
+          notifyThrottled(
+            "ext-mod-restart",
+            "TBCC",
+            `${r.title}: restarted${r.count != null ? ` (${r.count} tab(s))` : ""}.`,
+            5000
+          );
+        } else if (r.action === "toggle") {
+          notifyThrottled(
+            "ext-mod-toggle",
+            "TBCC",
+            `${r.title}: ${r.enabled ? "enabled" : "disabled"}.`,
+            5000
+          );
+        }
+      }
+    } catch (e) {
+      notifyThrottled("ext-mod-fail", "TBCC", String((e && e.message) || e), 6000);
+    }
+    return;
+  }
+
+  if (id === "tbccActionStartApi") {
+    void (async () => {
+      try {
+        if (typeof tbccLaunchFullStack === "function") {
+          await tbccLaunchFullStack();
+        } else {
+          notify("TBCC", "Launch helper missing — reload the extension.");
+        }
+      } catch (e) {
+        notifyThrottled("api-start-fail", "TBCC", String((e && e.message) || e), 8000);
+      }
+    })();
     return;
   }
 
   if (id === "tbccActionDockGallery" || id === "tbccDockGallery") {
     let dockTab = tab;
+    let openedPanelSync = false;
+    if (dockTab && dockTab.id != null && tbccIsInjectableHttpUrl(dockTab.url)) {
+      tbccTryOpenGallerySidePanelSync(dockTab);
+      openedPanelSync = true;
+    }
     if ((!dockTab || dockTab.id == null) && id === "tbccActionDockGallery") {
       const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
       dockTab = active;
+      if (!openedPanelSync && dockTab && dockTab.id != null && tbccIsInjectableHttpUrl(dockTab.url)) {
+        tbccTryOpenGallerySidePanelSync(dockTab);
+      }
     }
     if (!dockTab || dockTab.id == null) {
       notifyThrottled("dock-fail", "TBCC", "No tab to dock — focus an http(s) page first.", 8000);
@@ -4579,7 +5439,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       return;
     }
     try {
-      const r = await tbccSetGalleryDockedTab(dockTab, { openPanel: true });
+      const r = await tbccSetGalleryDockedTab(dockTab, { openPanel: false });
       if (!r.ok) {
         notifyThrottled("dock-fail", "TBCC", r.error || "Could not dock.", 8000);
         return;
@@ -4587,6 +5447,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     } catch (e) {
       notifyThrottled("dock-fail", "TBCC", String(e && e.message ? e.message : e), 8000);
     }
+    return;
+  }
+
+  if (await tbccExtensionPageMenuBlocked(id)) {
+    notifyThrottled(
+      "ext-mod-block",
+      "TBCC",
+      "That TBCC action is disabled — right-click extension icon → Site tools.",
+      6000
+    );
     return;
   }
 
@@ -4675,6 +5545,22 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       return;
     }
     await launchMacroModelSearch(username);
+    return;
+  }
+
+  if (id === "tbccms_approve_overlay_host") {
+    try {
+      if (!tab || !tab.url || !tbccIsInjectableHttpUrl(tab.url)) {
+        notify("TBCC", "Open a normal http(s) page first.");
+        return;
+      }
+      const host = tbccNormalizeUshHost(new URL(tab.url).hostname);
+      await tbccApproveUsernameSearchHost(host);
+      await tbccInjectUsernameSearchOverlay(tab.id);
+      notify("TBCC", `Macrosearch overlay enabled on ${host}`);
+    } catch (e) {
+      notify("TBCC", String((e && e.message) || e));
+    }
     return;
   }
 
@@ -4864,7 +5750,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       tbccFormatImportError(msg)
     );
   }
-});
+}
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-download-url-from-page-menu") {
