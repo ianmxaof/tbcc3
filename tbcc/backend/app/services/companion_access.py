@@ -62,7 +62,8 @@ def gate_lv_url() -> str:
     explicit = (os.getenv("TBCC_COMPANION_GATE_LV_URL") or "").strip()
     if explicit:
         return explicit
-    return manual_gate_url("main_group") or manual_gate_url("addlist") or ""
+    # Prefer loot / addlist gates — main_group LV still targets banned Main invite.
+    return manual_gate_url("loot") or manual_gate_url("addlist") or manual_gate_url("main_group") or ""
 
 
 def affiliate_undress_url() -> str:
@@ -105,26 +106,23 @@ def refresh_vip_subscriber_flag(user_id: int) -> CompanionAccess:
 
 
 def admin_telegram_ids() -> frozenset[int]:
-    raw = (os.getenv("ADMIN_TELEGRAM_ID") or "").strip()
-    ids: set[int] = set()
-    for part in raw.replace(";", ",").split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.add(int(part))
-    extra = (os.getenv("TBCC_COMPANION_ADMIN_IDS") or "").strip()
-    for part in extra.replace(";", ",").split(","):
-        part = part.strip()
-        if part.isdigit():
-            ids.add(int(part))
-    return frozenset(ids)
+    """Owner/operator ids — gate bypass, unlimited companion API spend, etc."""
+    from app.services.tbcc_operator_ids import tbcc_operator_ids
+
+    return tbcc_operator_ids()
 
 
 def network_channel_idents() -> list[tuple[str, str, str]]:
-    """(key, chat_id, display_name) for membership checks — deduped by chat id."""
-    rows: list[tuple[str, str, str]] = [("main_group", MAIN_GROUP_IDENT, "AOF Main Group")]
-    seen = {MAIN_GROUP_IDENT}
+    """(key, chat_id, display_name) for membership checks — deduped by chat id.
+
+    AOF Main (-1003206350461) is banned — omit from verify list so companion
+    does not waste getChatMember calls on a dead peer.
+    """
+    rows: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    banned = {MAIN_GROUP_IDENT}
     for ch in AOF_NETWORK_CHANNELS:
-        if ch.identifier in seen:
+        if ch.identifier in seen or ch.identifier in banned:
             continue
         seen.add(ch.identifier)
         rows.append((ch.key, ch.identifier, ch.display_name))
@@ -343,4 +341,13 @@ def addlist_url() -> str:
 
 
 def main_group_invite_url() -> str:
-    return (os.getenv("TBCC_AOF_MAIN_GROUP_INVITE") or MAIN_GROUP_INVITE).strip()
+    """
+    Companion verify fallback join URL.
+    After Main ban: default to loot overseer CTA (override with TBCC_AOF_MAIN_GROUP_INVITE).
+    """
+    explicit = (os.getenv("TBCC_AOF_MAIN_GROUP_INVITE") or "").strip()
+    if explicit:
+        return explicit
+    from app.services.aof_social_links import loot_public_cta_url
+
+    return loot_public_cta_url() or MAIN_GROUP_INVITE

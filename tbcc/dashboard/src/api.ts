@@ -1388,6 +1388,31 @@ export const api = {
         top_conversion_hours_local: Array<{ hour: number; count: number }>;
       }>(`/analytics/growth-attribution/summary${q}`);
     },
+    botsFunnel: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        range_days: number;
+        attribution: {
+          range_days: number;
+          timezone: string;
+          totals_by_type: Record<string, number>;
+          subscription_stars_total: number;
+          top_conversion_hours_local: Array<{ hour: number; count: number }>;
+        };
+        loot_players: {
+          unique_players: number;
+          total_rolls: number;
+          free_pulls_used: number;
+          active_players_7d: number;
+        };
+        deep_links: {
+          loot_free_pull: string;
+          loot_paid_checkout: string;
+          payment_bot_menu_loot: string;
+        };
+        bots: { loot_overseer: string; payment: string };
+      }>(`/analytics/bots/funnel${q}`);
+    },
     signalsStatus: () =>
       fetchApi<{
         enabled: boolean;
@@ -1426,6 +1451,33 @@ export const api = {
         report?: { signals: unknown[] };
       }>(q ? `/analytics/signals/tick?${q}` : "/analytics/signals/tick", { method: "POST" });
     },
+    eromeUploadGovernance: () =>
+      fetchApi<{
+        ok: boolean;
+        default_visibility: string;
+        pending_review: number;
+        private_count: number;
+        public_count: number;
+        pending: Array<{
+          album_url?: string;
+          title?: string;
+          tags?: string[];
+          visibility?: string;
+          governance_status?: string;
+          recorded_at?: string;
+        }>;
+      }>("/analytics/erome-upload/governance"),
+    eromeGovernanceMark: (body: {
+      album_url: string;
+      status: string;
+      notes?: string;
+      title?: string;
+      tags?: string[];
+    }) =>
+      fetchApi<{ ok: boolean; album_url?: string; governance_status?: string }>(
+        "/analytics/erome-upload/governance/mark",
+        { method: "POST", body: JSON.stringify(body) }
+      ),
     tbccFlywheelTick: (opsLimit?: number) => {
       const q = opsLimit != null ? `?ops_limit=${opsLimit}` : "";
       return fetchApi<{ ok: boolean; ops?: unknown; growth?: unknown }>(
@@ -2397,6 +2449,36 @@ export const api = {
       ),
   },
   jobs: {
+    scrapeTransport: () =>
+      fetchApi<{
+        lock_holder_run_id?: number | null;
+        active_runs?: Array<Record<string, unknown>>;
+        counts: {
+          total: number;
+          running: number;
+          queued: number;
+          stalled: number;
+          error: number;
+          paused: number;
+          idle: number;
+          autonomous: number;
+        };
+        sources: Array<Record<string, unknown>>;
+      }>("/jobs/scrape/transport"),
+    skipScrape: (queueNext = true) =>
+      fetchApi<{
+        ok: boolean;
+        cancelled?: Record<string, unknown> | null;
+        queued_next?: { source_id: number; source_name?: string; run_id: number; celery_task_id?: string } | null;
+      }>("/jobs/scrape/skip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ queue_next: queueNext }),
+      }),
+    cancelScrapeRun: (runId: number) =>
+      fetchApi<{ ok: boolean; run_id: number; status: string }>(`/jobs/scrape-runs/${runId}/cancel`, {
+        method: "POST",
+      }),
     triggerScrape: (sourceId: number) =>
       fetchApi<{ status: string; run_id: number; celery_task_id?: string }>(`/jobs/scrape/${sourceId}`, {
         method: "POST",

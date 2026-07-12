@@ -53,6 +53,7 @@ linkvertise_dashboard_flow.local.json
 erome_upload_flow.local.json
 erome_recording.py
 lv_recording.py
+playwright-recordings/
 lv_page_snapshot.json
 lv_dashboard_probe.json
 *.session-journal

@@ -1,35 +1,38 @@
-# TBCC Launch Script (Windows PowerShell 5.1+ and pwsh 7+). Cmd lines use single & between commands (cmd.exe).
-#   .\start.ps1              — backend + dashboard; opens http://127.0.0.1:5173 in Brave if installed, else default browser
-#   .\start.ps1 -NoOpen      — do not open a browser
-#   .\start.ps1 -Open        — also open http://127.0.0.1:8000/docs (Swagger) in the same browser
-#   .\start.ps1 -Full        — backend + dashboard + Redis + Celery + Beat + payment bot + secretary + loot + album composer
+﻿# TBCC Launch Script (Windows PowerShell 5.1+ and pwsh 7+). Cmd lines use single & between commands (cmd.exe).
+#   .\start.ps1              - backend + dashboard; opens http://127.0.0.1:5173 in Brave if installed, else default browser
+#   .\start.ps1 -NoOpen      - do not open a browser
+#   .\start.ps1 -Open        - also open http://127.0.0.1:8000/docs (Swagger) in the same browser
+#   .\start.ps1 -Full        - backend + dashboard + Redis + Celery + Beat + payment bot + secretary + loot + album composer
 #                            (+ NSFW Detect + Lustpress when .env URLs are localhost and repos exist under services/)
-#                            (Last.fm “listening relay” has no extra exe: TBCC-Beat schedules it, TBCC-Celery post queue runs it)
-#   .\start.ps1 -SkipDocker     — skip Postgres/Redis step (use when Docker DBs already running)
-#   .\start.ps1 -SkipNgrok      — skip ngrok tunnel check (companion webhooks / promo / NOWPayments IPN)
-#   .\start.ps1 -SkipEnrichment — skip NSFW Detection API / Lustpress sidecars
-#   .\start.ps1 -SkipDeps        — skip pip/npm/bun install checks (faster if you know deps are current)
-#   .\start.ps1 -SkipPriorStackStop — skip in-script stop (tbcc-cold-start.ps1 already stopped the prior stack)
-#   .\start.ps1 -SkipMigrations — skip alembic upgrade (rare; without it, Misc → Promo affiliate links bulk import
+#                            (Last.fm "listening relay" has no extra exe: TBCC-Beat schedules it, TBCC-Celery post queue runs it)
+#   .\start.ps1 -SkipDocker     - skip Postgres/Redis step (use when Docker DBs already running)
+#   .\start.ps1 -SkipTailscale  - skip Tailscale mesh check (when TBCC_REMOTE_STACK_HOST is set in .env)
+#   .\start.ps1 -SkipNgrok      - skip ngrok tunnel check (companion webhooks / promo / NOWPayments IPN)
+#   .\start.ps1 -SkipEnrichment - skip NSFW Detection API / Lustpress sidecars
+#   .\start.ps1 -SkipDeps        - skip pip/npm/bun install checks (faster if you know deps are current)
+#   .\start.ps1 -SkipPriorStackStop - skip in-script stop (tbcc-cold-start.ps1 already stopped the prior stack)
+#   .\start.ps1 -SkipMigrations - skip alembic upgrade (rare; without it, Misc -> Promo affiliate links bulk import
 #                            and similar features may 500 until you run: cd backend ; python -m alembic upgrade head)
 #
 # Console layout (many windows are easier if smaller, or use one Terminal with tabs):
-#   .\start.ps1 -CompactConsole  — smaller cmd windows (72×20 buffer) so they tile more easily
-#   .\start.ps1 -WideConsole     — larger windows (140×40)
+#   .\start.ps1 -CompactConsole  - smaller cmd windows (72x20 buffer) so they tile more easily
+#   .\start.ps1 -WideConsole     - larger windows (140x40)
 #   Default tabbed window size: TBCC_WT_WINDOW_SIZE=820,460 in .env (pixels). Console: TBCC_CONSOLE_COLS/LINES.
-#   .\start.ps1 -WtTabs          — one Windows Terminal window, one tab per service (needs wt.exe / Windows Terminal)
-#   .\start.ps1 -WtTabs -Full    — tabs: TBCC-Errors (unified log), backend, dashboard, AOF Forum (:3001), workers
-#   .\start.ps1 -WtTabs -WtHostPid N — add service tabs to existing Windows Terminal window (orchestrator reuse)
-#   .\start.ps1 -WtTabs -CloseAfterWtTabs — exit after opening tabs (orchestrator self-closes)
-#   .\start.ps1 -WtTabs -LlmChat — add tab TBCC-LlmChatBot (Ollama/OpenAI bridge; see TBCC_LLM_CHAT_BOT_TOKEN in .env)
-#   .\start.ps1 -NoErrorHub      — disable TBCC-Errors tab / unified error log (services run directly in tabs)
+#   .\start.ps1 -WtTabs          - one Windows Terminal window, one tab per service (needs wt.exe / Windows Terminal)
+#   .\start.ps1 -WtTabs -Full    - tabs: TBCC-Errors (unified log), backend, dashboard, AOF Forum (:3001), workers
+#   .\start.ps1 -WtTabs -WtHostPid N - add service tabs to existing Windows Terminal window (orchestrator reuse)
+#   .\start.ps1 -WtTabs -CloseAfterWtTabs - exit after opening tabs (orchestrator self-closes)
+#   .\start.ps1 -WtTabs -LlmChat - add tab TBCC-LlmChatBot (Ollama/OpenAI bridge; see TBCC_LLM_CHAT_BOT_TOKEN in .env)
+#   .\start.ps1 -NoErrorHub      - disable TBCC-Errors tab / unified error log (services run directly in tabs)
 #
 # Tray supervisor (one-click cold start / per-service restart):
 #   cd tbcc\tools ; .\tbcc-supervisor.ps1
 # Extension cold start: tbcc-launch-daemon.ps1 on :8765 (POST /launch-full)
-#   .\start.ps1 -NoReload        — uvicorn without --reload (less subprocess/socket churn; helps if Windows reports WinError 10055)
+#   .\start.ps1 -NoReload        - uvicorn without --reload (less subprocess/socket churn; helps if Windows reports WinError 10055)
 #
 # When Docker is needed, the script starts Docker Desktop if the engine is not up yet (Windows).
+# When TBCC_REMOTE_STACK_HOST is set, Tailscale service is started and the VM is pinged on the tailnet.
+# Step [0c] ensures the remote scrape worker (GHCR pull) and opens TBCC-RemoteWorker WT tab with -WtTabs.
 # New windows use cmd.exe /k so they show reliably when run from Cursor / VS Code / ISE.
 
 $ErrorActionPreference = "Continue"
@@ -48,6 +51,7 @@ function Get-TbccPythonCmd {
 $tbccPython = Get-TbccPythonCmd
 $fullStack = $args -contains "-Full"
 $skipDocker = $args -contains "-SkipDocker"
+$skipTailscale = $args -contains "-SkipTailscale"
 $skipNgrok = $args -contains "-SkipNgrok"
 $skipEnrichment = $args -contains "-SkipEnrichment"
 $skipDeps = $args -contains "-SkipDeps"
@@ -482,7 +486,7 @@ Write-Host ('  Python: ' + $tbccPython + ' (TBCC backend / bots / Celery)') -For
 Write-Host '  Backend: http://localhost:8000 | Dashboard: http://127.0.0.1:5173 | AOF Forum: http://127.0.0.1:3001 (repo sibling ..\aof-forum)' -ForegroundColor Gray
 if ($fullStack) {
   Write-Host '  Full stack: Postgres+Redis (Docker) + workers + optional enrichment (NSFW API, Lustpress)' -ForegroundColor Gray
-  Write-Host '  Listening relay (Dashboard > Misc): uses TBCC-Celery + TBCC-Beat only — same -Full tabs, no separate Last.fm service.' -ForegroundColor Gray
+  Write-Host '  Listening relay (Dashboard > Misc): uses TBCC-Celery + TBCC-Beat only - same -Full tabs, no separate Last.fm service.' -ForegroundColor Gray
 }
 Write-Host ('  Console: ' + $consoleCols + 'x' + $consoleLines + ' | WT window: ' + $wtWindowWidth + 'x' + $wtWindowHeight + ' px (TBCC_WT_WINDOW_SIZE in .env; -CompactConsole / -WideConsole override cols)') -ForegroundColor Gray
 Write-Host ""
@@ -507,6 +511,46 @@ if ($needsDockerEngine) {
   Write-Host ""
 }
 
+# 0b. Tailscale mesh - required when remote scrape worker consumes home Redis/Postgres over tailnet.
+$envFile = Join-Path $tbccDir ".env"
+$remoteStackHost = ""
+if (Test-Path -LiteralPath $envFile) {
+  if (Test-Path -LiteralPath $controlScriptForPrefs) {
+    $envMap = Read-TbccControlDotEnv -Path $envFile
+    $remoteStackHost = ($envMap['TBCC_REMOTE_STACK_HOST'] -as [string]).Trim()
+  } else {
+    foreach ($line in Get-Content -LiteralPath $envFile -ErrorAction SilentlyContinue) {
+      if ($line -match '^\s*TBCC_REMOTE_STACK_HOST\s*=\s*(.+)\s*$') {
+        $remoteStackHost = $Matches[1].Trim().Trim('"')
+        break
+      }
+    }
+  }
+}
+$tailscaleBindFile = Join-Path $tbccDir "infra\docker-compose.tailscale-bind.yml"
+$useRemoteWorkerMesh = (-not $skipTailscale) -and $remoteStackHost
+if ($useRemoteWorkerMesh) {
+  Write-Host "[0b] Tailscale: remote worker mesh (VM $remoteStackHost)..." -ForegroundColor Yellow
+  $ensureTsScript = Join-Path $tbccDir "scripts\remote-worker\ensure-tailscale-home.ps1"
+  if (Test-Path -LiteralPath $ensureTsScript) {
+    . $ensureTsScript
+    $null = Ensure-TbccTailscaleMesh -RemoteHost $remoteStackHost
+  } else {
+    Write-Host "  Missing $ensureTsScript - open Tailscale manually." -ForegroundColor Yellow
+  }
+  Write-Host ""
+}
+
+# 0c. Remote scrape worker - routine ensure (GHCR pull + worker up) when offload enabled.
+if ($useRemoteWorkerMesh) {
+  $launchRw = Join-Path $tbccDir "scripts\remote-worker\launch-remote-worker.ps1"
+  if (Test-Path -LiteralPath $launchRw) {
+    Write-Host "[0c] Remote worker: ensure VM scrape consumer (GHCR)..." -ForegroundColor Yellow
+    & $launchRw -EnsureWorker
+  }
+  Write-Host ""
+}
+
 if ($skipDocker) {
   Write-Host '[0] Skipping Docker (-SkipDocker). Ensure Postgres :5432 and Redis :6379 are up if your .env needs them.' -ForegroundColor DarkYellow
 } elseif ($composeFile) {
@@ -517,9 +561,18 @@ if ($skipDocker) {
   try {
     $composeName = [IO.Path]::GetFileName($composeFile)
     $envFile = Join-Path $tbccDir ".env"
+    $tsBindName = "docker-compose.tailscale-bind.yml"
+    $useTsBind = $useRemoteWorkerMesh -and (Test-Path -LiteralPath (Join-Path $tbccDir "infra\$tsBindName"))
+    if ($useTsBind) {
+      Write-Host "  Using Tailscale bind overlay ($tsBindName) for Postgres/Redis." -ForegroundColor Gray
+    }
     # Use cmd /c so Docker writing status to stderr does not become PowerShell "NativeCommandError" (red text).
     if ($composeName -eq "docker-compose.infra.yml") {
-      cmd /c "docker compose -f docker-compose.infra.yml up -d postgres redis"
+      if ($useTsBind) {
+        cmd /c "docker compose -f docker-compose.infra.yml -f docker-compose.tailscale-bind.yml up -d postgres redis"
+      } else {
+        cmd /c "docker compose -f docker-compose.infra.yml up -d postgres redis"
+      }
     } elseif (Test-Path $envFile) {
       $ef = (Resolve-Path $envFile).Path
       cmd /c ('docker compose --env-file "' + $ef + '" -f "' + $composeName + '" up -d postgres redis')
@@ -533,7 +586,11 @@ if ($skipDocker) {
     Pop-Location
   }
   Start-Sleep -Seconds 3
-  Write-Host "  Postgres: localhost:5432  Redis: localhost:6379" -ForegroundColor Green
+  if ($useTsBind) {
+    Write-Host "  Postgres/Redis bound to Tailscale IP (see infra/docker-compose.tailscale-bind.yml)" -ForegroundColor Green
+  } else {
+    Write-Host "  Postgres: localhost:5432  Redis: localhost:6379" -ForegroundColor Green
+  }
 } else {
   Write-Host "[0] No infra/docker-compose*.yml - ensure Postgres/Redis yourself." -ForegroundColor DarkYellow
 }
@@ -543,7 +600,7 @@ $dashboardDir = Join-Path $tbccDir "dashboard"
 $aofForumDir = Join-Path (Split-Path $tbccDir -Parent) "aof-forum"
 $hasAofForum = Test-Path (Join-Path $aofForumDir "package.json")
 
-# 0.5 Alembic — Postgres: apply migrations before API starts (SQLite gets many tables via create_all + patches).
+# 0.5 Alembic - Postgres: apply migrations before API starts (SQLite gets many tables via create_all + patches).
 #    Includes newer tables/columns (e.g. promo_affiliate_links for Misc promo picker / bulk JSON import).
 if (-not $skipMigrations) {
   Write-Host "[0.5] Database migrations: alembic upgrade head..." -ForegroundColor Yellow
@@ -610,7 +667,9 @@ $uvicornReload = if ($noReload) { '' } else { ' --reload --reload-exclude script
 $cmdBackend = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m uvicorn app.main:app --host 127.0.0.1 --port 8000' + $uvicornReload
 $cmdDashboard = 'cd /d "' + $dashboardDir + '" & npm run dev'
 $cmdAofForum = if ($hasAofForum) { 'cd /d "' + $aofForumDir + '" & npm run dev' } else { '' }
-$cmdCelery = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q celery,scrape,subscription,telegram'
+$celeryHomeQueues = ($dotEnv['TBCC_CELERY_HOME_QUEUES'] -as [string]).Trim()
+if (-not $celeryHomeQueues) { $celeryHomeQueues = 'celery,scrape,subscription,telegram' }
+$cmdCelery = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q ' + $celeryHomeQueues
 $cmdCeleryPost = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post -n post@%h'
 $cmdCeleryPostScheduler = 'cd /d "' + $backendDir + '" & ' + $tbccPython + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post_scheduler -n scheduler@%h'
 $celeryOpsQueues = ($dotEnv['TBCC_CELERY_OPS_QUEUES'] -as [string]).Trim()
@@ -638,7 +697,7 @@ $stackProfile = ($dotEnv['TBCC_STACK_PROFILE'] -as [string]).Trim().ToLower()
 $leanStack = $stackProfile -eq 'lean'
 if ($leanStack) {
   $skipEnrichment = $true
-  Write-Host '[stack] TBCC_STACK_PROFILE=lean — core stack + Album Composer; skipping forum, macro search, admin/companion, enrichment (enable in tray Services).' -ForegroundColor DarkCyan
+  Write-Host '[stack] TBCC_STACK_PROFILE=lean - core stack + Album Composer; skipping forum, macro search, admin/companion, enrichment (enable in tray Services).' -ForegroundColor DarkCyan
 }
 $enrichment = @{ Titles = @(); Commands = @(); Notes = @() }
 if (-not $skipEnrichment) {
@@ -691,7 +750,7 @@ if ($wtTabs) {
       Write-Host '[stop] Closing prior TBCC stack (services + Windows Terminal tabs)...' -ForegroundColor Yellow
       $gone = Stop-TbccPriorStackWindows -TbccRoot $tbccDir -FullStack:$fullStack -ExcludeProcessIds @($PID) -Wait -MaxWaitSeconds 60
       if ($gone) {
-        Write-Host '[stop] Prior stack fully stopped — starting fresh WT window.' -ForegroundColor Green
+        Write-Host '[stop] Prior stack fully stopped - starting fresh WT window.' -ForegroundColor Green
       } else {
         Write-Host '[stop] WARNING: Prior stack may still be up (extra tabs or ports in use). Close old TBCC Windows Terminal windows manually if needed.' -ForegroundColor Red
       }
@@ -711,7 +770,7 @@ if ($wtTabs) {
     $titles = @('TBCC-Backend', 'OpenClaw-Gateway', 'TBCC-Dashboard')
     $cmds = @($cmdBackend, $cmdOpenClaw, $cmdDashboard)
     if (-not (Test-TbccOpenClawConfigured)) {
-      Write-Host '[openclaw] CLI found — gateway tab will start (run tbcc\scripts\setup-openclaw-tbcc.ps1 for MCP + skills).' -ForegroundColor DarkCyan
+      Write-Host '[openclaw] CLI found - gateway tab will start (run tbcc\scripts\setup-openclaw-tbcc.ps1 for MCP + skills).' -ForegroundColor DarkCyan
     }
   }
   if ($hasAofForum -and -not $leanStack) {
@@ -728,7 +787,7 @@ if ($wtTabs) {
   } elseif ($fullStack -and -not $redisOk) {
     $titles += 'TBCC-LootBot', 'TBCC-AlbumComposer'
     $cmds += $cmdLoot, $cmdAlbumComposer
-    Write-Host '  (-WtTabs) Redis unavailable — Backend + Dashboard + Loot (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
+    Write-Host '  (-WtTabs) Redis unavailable - Backend + Dashboard + Loot (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
   }
   if ($enrichment.Titles.Length -gt 0) {
     $titles += $enrichment.Titles
@@ -768,6 +827,12 @@ if ($wtTabs) {
       $titles += 'TBCC-StackWatch'
       $cmds += Get-TbccServiceWrapperCmd -TbccRoot $tbccDir -ServiceName 'TBCC-StackWatch'
     }
+    if ($useRemoteWorkerMesh -and (Get-Command Get-TbccRemoteWorkerMonitorCmd -ErrorAction SilentlyContinue)) {
+      $rwCmd = Get-TbccRemoteWorkerMonitorCmd -TbccRoot $tbccDir
+      $null = Register-TbccServiceLauncher -TbccRoot $tbccDir -ServiceName 'TBCC-RemoteWorker' -Command $rwCmd
+      $titles += 'TBCC-RemoteWorker'
+      $cmds += Get-TbccServiceWrapperCmd -TbccRoot $tbccDir -ServiceName 'TBCC-RemoteWorker'
+    }
   }
   $wtLaunched = Start-TbccWtTabs -TbccRoot $tbccDir -Titles $titles -Commands $cmds -Cols $consoleCols -Lines $consoleLines -WtWidth $wtWindowWidth -WtHeight $wtWindowHeight -WtHostPid $wtHostPidArg
   if ($wtLaunched -and $closeAfterWtTabs) {
@@ -790,7 +855,7 @@ function Start-TbccServiceWindow {
   Start-TbccCmdWindow -Title $Title -Command $run -Cols $consoleCols -Lines $consoleLines
 }
 
-# 1. Backend (port 8000) — and 2. Dashboard when not using wt tabs
+# 1. Backend (port 8000) - and 2. Dashboard when not using wt tabs
 if (-not $wtLaunched) {
   if ($useErrorHub -and -not $errorHubReady) {
     $null = Initialize-TbccErrorHubSession
@@ -831,7 +896,7 @@ for ($i = 0; $i -lt 35; $i++) {
       break
     }
   } catch {
-    # Backend still starting or failed — keep trying
+    # Backend still starting or failed - keep trying
   }
   Start-Sleep -Seconds 2
 }
@@ -855,19 +920,19 @@ if (-not $wtLaunched) {
   Write-Host '[2/3+] Dashboard tab already running (Windows Terminal).' -ForegroundColor Gray
 }
 
-# 2b. AOF Forum — Next.js front (port 3001); sibling folder ..\aof-forum (full stack only)
+# 2b. AOF Forum - Next.js front (port 3001); sibling folder ..\aof-forum (full stack only)
 if ($hasAofForum -and -not $leanStack -and -not $wtLaunched) {
-  Write-Host '[3/3] Starting AOF Forum — Next.js (new window)...' -ForegroundColor Yellow
+  Write-Host '[3/3] Starting AOF Forum - Next.js (new window)...' -ForegroundColor Yellow
   Start-TbccServiceWindow -Title "AOF-Forum" -Command $cmdAofForum
 } elseif (-not $hasAofForum) {
-  Write-Host '  (No ..\aof-forum\package.json — skipping AOF Forum dev server.)' -ForegroundColor DarkGray
+  Write-Host '  (No ..\aof-forum\package.json - skipping AOF Forum dev server.)' -ForegroundColor DarkGray
 } elseif ($leanStack) {
   Write-Host '  [lean] Skipping AOF Forum (use full stack or tray Services to start manually).' -ForegroundColor DarkGray
 }
 
 if ($fullStack) {
   if ($wtLaunched) {
-    Write-Host '[3/9]–[9/9] Full stack already in Windows Terminal tabs (or Backend+Dashboard+Loot+AlbumComposer if Redis was down).' -ForegroundColor Gray
+    Write-Host '[3/9]-[9/9] Full stack already in Windows Terminal tabs (or Backend+Dashboard+Loot+AlbumComposer if Redis was down).' -ForegroundColor Gray
   } elseif ($redisOk) {
     Start-Sleep -Seconds 1
     Write-Host '[4/8] Starting Celery worker (new window)...' -ForegroundColor Yellow
@@ -910,7 +975,7 @@ if ($fullStack) {
       Write-Host ('  ' + $t + ' started.') -ForegroundColor Green
     }
   } elseif (-not $redisOk) {
-    Write-Host '[3/5] Redis down — starting loot + album composer (needs API, not Redis)...' -ForegroundColor Yellow
+    Write-Host '[3/5] Redis down - starting loot + album composer (needs API, not Redis)...' -ForegroundColor Yellow
     Start-TbccServiceWindow -Title "TBCC-LootBot" -Command $cmdLoot
     Write-Host "  Loot overseer bot started." -ForegroundColor Green
     Start-TbccServiceWindow -Title "TBCC-AlbumComposer" -Command $cmdAlbumComposer
@@ -952,7 +1017,7 @@ if (-not $noOpenBrowser) {
   Write-Host 'Opening dashboard (http://127.0.0.1:5173) in Brave if installed, otherwise your default browser...' -ForegroundColor Yellow
   $dashReady = Wait-HttpOk -Uri "http://127.0.0.1:5173/"
   if (-not $dashReady) {
-    Write-Host '  Dashboard not responding yet — opening URL anyway; refresh if the page is blank.' -ForegroundColor DarkYellow
+    Write-Host '  Dashboard not responding yet - opening URL anyway; refresh if the page is blank.' -ForegroundColor DarkYellow
   }
   Open-UrlInPreferredBrowser -Url "http://127.0.0.1:5173/"
   if ($hasAofForum) {
@@ -960,7 +1025,7 @@ if (-not $noOpenBrowser) {
     Start-Sleep -Seconds 2
     $forumReady = Wait-HttpOk -Uri "http://127.0.0.1:3001/" -MaxSeconds 45
     if (-not $forumReady) {
-      Write-Host '  AOF Forum not responding yet (npm install / first compile?) — opened URL anyway; refresh if blank.' -ForegroundColor DarkYellow
+      Write-Host '  AOF Forum not responding yet (npm install / first compile?) - opened URL anyway; refresh if blank.' -ForegroundColor DarkYellow
     }
     Open-UrlInPreferredBrowser -Url "http://127.0.0.1:3001/"
   }

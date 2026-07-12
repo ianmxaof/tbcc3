@@ -12,12 +12,20 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.api.external_payment_orders import _require_internal
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class PlaywrightRecordBody(BaseModel):
+    url: str = Field(default="https://www.erome.com/", max_length=500)
+    name: str | None = Field(default=None, max_length=64)
+    load_auth: bool = True
+    use_erome_auth: bool = True
 
 
 def _tbcc_root() -> Path:
@@ -145,4 +153,46 @@ def launch_supervisor(_: None = Depends(_require_internal)):
     logger.info("Launched tray supervisor via API: %s", supervisor)
     return JSONResponse(
         content={"ok": True, "via": "api", "already_running": False, "path": str(supervisor)}
+    )
+
+
+@router.post("/playwright/record")
+def playwright_record(body: PlaywrightRecordBody, _: None = Depends(_require_internal)):
+    """Spawn Playwright Codegen (Record/Stop) in a new console for everyday click-path capture."""
+    root = _tbcc_root()
+    backend = root / "backend"
+    script = backend / "scripts" / "playwright_record.py"
+    if not script.is_file():
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": "playwright_record.py not found", "path": str(script)},
+        )
+
+    url = (body.url or "https://www.erome.com/").strip() or "https://www.erome.com/"
+    name = (body.name or "").strip() or "erome-session"
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in name)[:48] or "session"
+
+    py = sys.executable
+    args = [py, str(script), url, "--name", safe]
+    auth = backend / ".erome-auth.json"
+    if body.load_auth and body.use_erome_auth and auth.is_file():
+        args.extend(["--load-auth", str(auth), "--save-auth", str(auth)])
+
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
+        subprocess.Popen(args, cwd=str(backend), creationflags=creationflags)
+    else:
+        subprocess.Popen(args, cwd=str(backend), start_new_session=True)
+
+    logger.info("Launched Playwright record via API: url=%s name=%s", url, safe)
+    return JSONResponse(
+        content={
+            "ok": True,
+            "via": "api",
+            "url": url,
+            "name": safe,
+            "cwd": str(backend),
+            "output_hint": str(backend / "playwright-recordings" / f"{safe}.py"),
+            "detail": "Codegen window opening — use Record/Stop in the Playwright panel.",
+        }
     )

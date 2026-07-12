@@ -112,3 +112,17 @@ def fit_buffer_mirror_plaintext(
         return plain
     url = resolve_overflow_url(post=post, db=db)
     return fit_plaintext_for_x(plain, overflow_url=url or None)
+
+
+def finalize_buffer_x_caption(
+    plain: str,
+    *,
+    db: Session | None = None,
+    overflow_url: str | None = None,
+    advance_link_cycle: bool = False,
+) -> str:
+    """Apply link-order cycling then X length limit."""
+    from app.services.buffer_x_link_order import apply_buffer_x_link_cycle
+
+    body = apply_buffer_x_link_cycle(plain, db=db, advance=advance_link_cycle)
+    return fit_plaintext_for_x(body, overflow_url=overflow_url)

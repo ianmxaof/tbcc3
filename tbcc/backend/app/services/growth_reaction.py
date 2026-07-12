@@ -39,6 +39,8 @@ _ACTIONABLE = {
     "pool_backlog_pressure",
     "cache_stale_risk",
     "surface_roi",
+    "erome_market_anomaly",
+    "market_intel_weekly_cycle",
 }
 
 
@@ -63,6 +65,10 @@ def _identity(signal: dict[str, Any]) -> str:
         return f"{st}:{signal.get('network_key')}:{','.join(signal.get('surfaces') or [])}"
     if st == "lane_conversion_leader":
         return f"lane_conversion_leader:{signal.get('network_key')}"
+    if st == "erome_market_anomaly":
+        return f"erome_market_anomaly:{signal.get('tag')}"
+    if st == "market_intel_weekly_cycle":
+        return f"market_intel_weekly_cycle:{signal.get('week_id') or signal.get('tag')}"
     return f"{st}:{signal.get('hour_local') or signal.get('channel_id') or signal.get('network_key') or ''}"
 
 
@@ -144,6 +150,23 @@ def _build_action(signal: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "surfaces": ["telegram"],
             "suggested_note": signal.get("recommendation"),
             "mcp_followup": "VIP/loot CTAs on hot lane",
+        }
+    if st == "erome_market_anomaly":
+        return "intel_tag_boost", {
+            "tag": signal.get("tag"),
+            "ratio": signal.get("ratio"),
+            "surfaces": ["telegram", "buffer_x", "erome"],
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "GET /analytics/market-intel/upload-hints",
+        }
+    if st == "market_intel_weekly_cycle":
+        return "intel_cycle_post", {
+            "tag": signal.get("tag"),
+            "week_id": signal.get("week_id"),
+            "top_tags": signal.get("top_tags") or [],
+            "surfaces": ["telegram", "buffer_x", "reddit"],
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "POST /analytics/market-intel/cycle/run",
         }
     return "review", {"suggested_note": signal.get("recommendation")}
 

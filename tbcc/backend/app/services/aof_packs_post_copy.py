@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.loot import LootModifier
 from app.models.media import Media
+from app.services.aof_packs_vocabulary import sanitize_pack_copy
 
 PACK_MOD_TAG_PREFIX = "pack_mod:"
 PACK_LABEL_TAG_PREFIX = "pack_label:"
@@ -63,7 +64,9 @@ def parse_pack_source_note(note: str | None) -> PackPostMeta:
         meta.preview_media_ids = tuple(ids)
     m = _THEME_RE.search(raw)
     if m:
-        meta.theme = m.group(1).strip()[:120] or None
+        raw_theme = m.group(1).strip()
+        cleaned = sanitize_pack_copy(raw_theme, seed=raw_theme)
+        meta.theme = cleaned[:120] or None
     m = _CONTENTS_RE.search(raw)
     if m:
         parts = [p.strip() for p in m.group(1).split(";") if p.strip()]
@@ -113,13 +116,13 @@ def merge_pack_source_note(
         if uniq:
             base = f"{base}|preview_ids={','.join(uniq)}"
     if theme:
-        safe = re.sub(r"[|]", "", theme.strip())[:120]
+        safe = sanitize_pack_copy(re.sub(r"[|]", "", theme.strip())[:120], seed=theme)
         if safe:
             base = f"{base}|theme={safe}"
     if contents:
         safe_items = []
         for item in contents:
-            s = re.sub(r"[|;]", "", (item or "").strip())[:80]
+            s = sanitize_pack_copy(re.sub(r"[|;]", "", (item or "").strip())[:80], seed=item)
             if s:
                 safe_items.append(s)
         if safe_items:
@@ -165,7 +168,7 @@ def display_pack_name(label: str | None) -> str:
                 break
     if raw.startswith("http") or "://" in raw:
         return "AOF Pack"
-    cleaned = re.sub(r"\s+", " ", raw).strip()
+    cleaned = sanitize_pack_copy(re.sub(r"\s+", " ", raw).strip(), seed=raw)
     if cleaned.lower() in ("aof pack", "pack", "aof pack drop"):
         return "AOF Pack"
     return cleaned[:120] or "AOF Pack"
@@ -276,7 +279,8 @@ def build_pack_drop_caption(
         + "\n\n<i>One ad step per gate · VIP skips ads</i>"
     )
     foot = (footer or "").strip()
-    return f"{body}{foot}" if foot else body
+    caption = f"{body}{foot}" if foot else body
+    return sanitize_pack_copy(caption, seed=name)
 
 
 def _slug_label(label: str) -> str:

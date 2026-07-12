@@ -48,8 +48,8 @@ ANCHOR_TEXT_TO_GATE_KEY: tuple[tuple[str, str], ...] = (
     ("addlist", "addlist"),
     ("aofmainhub", "mainhub"),
     ("t.me/aofmainhub", "mainhub"),
-    ("main group", "main_group"),
-    ("main hub", "main_group"),
+    ("main group", "loot"),
+    ("main hub", "loot"),
     ("aof blowjob", "blowjob"),
     ("blowjob", "blowjob"),
     ("aof big tits", "big_tits"),
@@ -71,7 +71,7 @@ ANCHOR_TEXT_TO_GATE_KEY: tuple[tuple[str, str], ...] = (
     ("taboo", "taboo"),
     ("aof ass", "ass"),
     ("aof ai", "ai"),
-    ("join", "main_group"),
+    ("join", "loot"),
 )
 
 

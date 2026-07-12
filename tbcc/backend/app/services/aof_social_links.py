@@ -15,8 +15,38 @@ def x_linkvertise_enabled() -> bool:
     )
 
 
+def loot_bot_username() -> str:
+    return (os.getenv("TBCC_LOOT_BOT_USERNAME") or "aof_lootgod_bot").strip().lstrip("@")
+
+
+def payment_bot_username() -> str:
+    return (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+
+
+def loot_public_cta_url() -> str:
+    """
+    Public top-of-funnel after AOF Main ban — loot overseer free-pull deep link.
+    Prefer bot start over bare Loot Room invite so keys stay behind checkout.
+    """
+    explicit = (os.getenv("TBCC_LOOT_PUBLIC_CTA_URL") or "").strip()
+    if explicit:
+        return explicit
+    un = loot_bot_username()
+    return f"https://t.me/{un}?start=loot_free" if un else ""
+
+
+def loot_paid_checkout_url() -> str:
+    """Payment-bot Loot Room key checkout (24h access)."""
+    un = payment_bot_username()
+    return f"https://t.me/{un}?start=loot" if un else ""
+
+
 def aof_hub_invite_url() -> str:
-    return (os.getenv("TBCC_AOF_HUB_INVITE_URL") or "").strip() or "https://t.me/+hMQzGsBFjF02MDkx"
+    """
+    Primary public hub CTA for Buffer/X/{hub} templates.
+    Defaults to loot overseer (not banned Main invite, not bare Loot Room invite).
+    """
+    return (os.getenv("TBCC_AOF_HUB_INVITE_URL") or "").strip() or loot_public_cta_url()
 
 
 def x_outbound_url() -> str:
@@ -44,7 +74,6 @@ def aof_gate_url() -> str:
     if alt:
         return alt
     return aof_hub_invite_url()
-
 
 def allmylinks_url() -> str:
     return (os.getenv("TBCC_ALLMYLINKS_URL") or "").strip()

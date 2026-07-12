@@ -157,8 +157,10 @@ def parse_admin_telegram_id(raw: str | None = None) -> int | None:
 
 
 def admin_telegram_ids() -> set[int]:
-    """Primary admin plus optional comma-separated extras (album composer, inbox overrides)."""
-    ids: set[int] = set()
+    """Primary admin plus optional extras + hardcoded TBCC operators (owner + alt)."""
+    from app.services.tbcc_operator_ids import tbcc_operator_ids
+
+    ids: set[int] = set(tbcc_operator_ids())
     primary = parse_admin_telegram_id()
     if primary is not None:
         ids.add(primary)

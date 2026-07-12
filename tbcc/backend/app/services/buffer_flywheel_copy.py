@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from app.services.buffer_x_caption import fit_plaintext_for_x
+from sqlalchemy.orm import Session
+
+from app.services.buffer_x_caption import finalize_buffer_x_caption
 from app.services.buffer_x_promo_image import pick_promo_image
 
 
@@ -13,6 +15,8 @@ def build_flywheel_x_caption(
     telegram_invite: str | None = None,
     hub_url: str | None = None,
     promo_viewer_url: str | None = None,
+    db: Session | None = None,
+    advance_link_cycle: bool = False,
 ) -> str:
     """
     Top-of-funnel X post: lane tease + Erome gallery (view monetization) + Telegram/hub exits.
@@ -45,7 +49,12 @@ def build_flywheel_x_caption(
         hub = aof_hub_invite_url()
     overflow = x_outbound_url() or hub
     body = "\n".join(x for x in lines if x)
-    return fit_plaintext_for_x(body, overflow_url=overflow)
+    return finalize_buffer_x_caption(
+        body,
+        db=db,
+        overflow_url=overflow,
+        advance_link_cycle=advance_link_cycle,
+    )
 
 
 def pick_flywheel_promo_image() -> tuple[str | None, str | None]:

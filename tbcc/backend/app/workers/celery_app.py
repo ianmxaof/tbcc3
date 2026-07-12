@@ -261,6 +261,20 @@ if (os.getenv("TBCC_MARKET_INTEL_PROBE_ENABLED") or "1").strip().lower() not in 
         "schedule": crontab(minute=20, hour="*/6"),
     }
 
+if (os.getenv("TBCC_MARKET_INTEL_CYCLE_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    _cycle_minute = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_MINUTE") or "5").strip() or "5")
+    _cycle_hour = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_HOUR") or "9").strip() or "9")
+    _cycle_dow = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_WEEKDAY") or "1").strip() or "1")
+    celery.conf.beat_schedule["market-intel-weekly-cycle"] = {
+        "task": "app.workers.market_intel_worker.run_weekly_market_intel_cycle",
+        "schedule": crontab(minute=_cycle_minute, hour=_cycle_hour, day_of_week=_cycle_dow),
+    }
+
 
 def _export_flywheel_crontab_minutes() -> str:
     raw = (os.getenv("TBCC_EXPORT_FLYWHEEL_TICK_MINUTES") or "15").strip()

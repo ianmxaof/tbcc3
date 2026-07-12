@@ -99,6 +99,8 @@ def mirror_pool_delivery_to_buffer(
         erome_album_url=erome_album_url,
         telegram_invite=invite or None,
         promo_viewer_url=viewer_url,
+        db=db,
+        advance_link_cycle=True,
     )
     share_mode = scheduled_buffer_share_mode(buffer_publish_now=False)
     res = create_post(ids[0], text, mode=share_mode, image_url=image_url)

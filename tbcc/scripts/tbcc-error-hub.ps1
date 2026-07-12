@@ -66,7 +66,7 @@ function Initialize-TbccServiceConsole {
 
 function Test-TbccWtPowershellHubCommand {
   param([Parameter(Mandatory = $true)][string]$Command)
-  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|run-tbcc-orchestrator\.ps1|run-tbcc-stackwatch\.ps1|run-openclaw-gateway\.ps1')
+  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|show-tbcc-remote-worker\.ps1|run-tbcc-orchestrator\.ps1|run-tbcc-stackwatch\.ps1|run-openclaw-gateway\.ps1')
 }
 
 function Register-TbccSelfClosingServiceTab {
@@ -661,6 +661,18 @@ function Get-TbccErrorMonitorCmd {
   $tbccQ = '"' + $TbccRoot + '"'
   $monQ = '"' + $monitor + '"'
   return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $monQ + ' -TbccRoot ' + $tbccQ)
+}
+
+function Get-TbccRemoteWorkerMonitorCmd {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int]$TickSec = 0
+  )
+  $monitor = Join-Path $TbccRoot "scripts\show-tbcc-remote-worker.ps1"
+  $tbccQ = '"' + $TbccRoot + '"'
+  $monQ = '"' + $monitor + '"'
+  $tickArg = if ($TickSec -gt 0) { " -TickSec $TickSec" } else { "" }
+  return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $monQ + ' -TbccRoot ' + $tbccQ + $tickArg)
 }
 
 function Get-TbccStackWatchCmd {

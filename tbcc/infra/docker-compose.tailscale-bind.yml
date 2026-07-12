@@ -1,5 +1,8 @@
-# Bind Postgres + Redis to your home Tailscale IP so the remote worker VM can reach them.
-# Replace 100.64.0.1 with: tailscale ip -4  (on home PC)
+# Extra publish of Postgres + Redis on the home Tailscale IP for the remote scrape VM.
+# Base docker-compose.infra.yml already binds 0.0.0.0:5432/6379 for the home stack.
+# Do NOT also bind 127.0.0.1 here — that conflicts with the 0.0.0.0 publish.
+#
+# Replace 100.120.157.60 with: tailscale ip -4  (on home PC)
 #
 # Usage (home):
 #   cd tbcc/infra
@@ -8,8 +11,8 @@
 services:
   postgres:
     ports:
-      - "100.64.0.1:5432:5432"
+      - "100.120.157.60:5432:5432"
 
   redis:
     ports:
-      - "100.64.0.1:6379:6379"
+      - "100.120.157.60:6379:6379"

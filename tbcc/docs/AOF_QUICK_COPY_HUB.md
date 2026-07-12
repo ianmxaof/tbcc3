@@ -24,10 +24,19 @@
 > https://link-center.net/1367336/7XeubkKSFA8j
 > ```
 >
-> **Direct hub (members / emergency only — burns fast if spam-reported)**
+> **Public entry (Loot Room via overseer — Main *group* banned 2026-07-09)**
 > ```
-> https://t.me/+hMQzGsBFjF02MDkx
+> https://t.me/aof_lootgod_bot?start=loot_free
 > ```
+>
+> **Paid Loot Room key**
+> ```
+> https://t.me/aofsubscriptions_bot?start=loot
+> ```
+>
+> **`t.me/aofmainhub`** — still valid: public **bulletin / signboard** for affiliate + Linkvertise posts (not the banned Main *group*). Prefer **lootgod** as top-of-funnel CTA on cards/X; keep mainhub as the LV/affiliate crossing.
+>
+> ~~Direct Main *group* invite~~ — **banned**; do not share.
 >
 > **Pixeldrain paste (inner layer behind Linkvertise)** — *host t.me/aofmainhub text via Dashboard → Misc → pixeldrain shorten*
 > ```

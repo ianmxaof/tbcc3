@@ -4,7 +4,12 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.models.source import Source
-from app.services.scrape_run_service import create_scrape_run
+from app.services.scrape_run_service import (
+    cancel_scrape_run,
+    create_scrape_run,
+    scrape_transport_overview,
+    skip_active_scrape,
+)
 from app.workers.mega_scraper_worker import create_link_scrape_run, run_mega_scrape_job
 from app.workers.scraper_worker import run_scrape
 
@@ -19,9 +24,34 @@ class MegaScrapeBody(BaseModel):
     use_admin_session: bool = Field(False, description="Reserved — worker uses scraper.session")
 
 
+class SkipScrapeBody(BaseModel):
+    queue_next: bool = Field(True, description="After cancel, enqueue next scheduled/active source")
+
+
 @router.get("/")
 def list_jobs(db: Session = Depends(get_db)):
     return []
+
+
+@router.get("/scrape/transport")
+def scrape_transport(db: Session = Depends(get_db)):
+    """Ingest transport overview: per-source phase + active runs + lock holder."""
+    return scrape_transport_overview(db)
+
+
+@router.post("/scrape/skip")
+def scrape_skip(body: SkipScrapeBody | None = None, db: Session = Depends(get_db)):
+    """Cancel current active scrape and optionally fast-forward to the next source."""
+    opts = body or SkipScrapeBody()
+    return skip_active_scrape(db, queue_next=bool(opts.queue_next))
+
+
+@router.post("/scrape-runs/{run_id}/cancel")
+def scrape_run_cancel(run_id: int, db: Session = Depends(get_db)):
+    try:
+        return cancel_scrape_run(db, run_id, code="user_cancelled")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/scrape/{source_id}")

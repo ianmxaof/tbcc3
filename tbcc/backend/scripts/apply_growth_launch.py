@@ -202,11 +202,14 @@ def _build_packs_captions(lv_urls: list[str], footer: str) -> list[str]:
 
 
 def _ensure_growth_settings(db, execute: bool) -> dict:
+    from app.services.aof_social_links import loot_public_cta_url
+
+    loot_cta = loot_public_cta_url() or "https://t.me/aof_lootgod_bot?start=loot_free"
     intro = (
         "🔥 AOF — referrals & milestones\n\n"
-        "Flagship hub: t.me/aofmainhub — join the full stack via addlist.\n"
+        "Entry: @aof_lootgod_bot (Loot Room) · Flagship hub: t.me/aofmainhub\n"
         "• Referrals: @aofsubscriptions_bot → /referral\n"
-        "• Loot Room keys: /loot · Premium: /subscribe"
+        "• Loot Room keys: /loot · Premium VIP: /subscribe"
     )
     patch = {
         "landing_bulletin_chat_id": MAIN_GROUP_IDENT,
@@ -214,8 +217,8 @@ def _ensure_growth_settings(db, execute: bool) -> dict:
         "landing_bulletin_hour_utc": 14,
         "landing_bulletin_bot_username": "aofsubscriptions_bot",
         "landing_bulletin_intro": intro,
-        "referral_group_invite_link": MAIN_GROUP_INVITE,
-        "referral_group_name": "AOF Main Hub",
+        "referral_group_invite_link": loot_cta,
+        "referral_group_name": "AOF Loot Room",
         "referral_reward_days": 7,
         "referral_mode": "community",
     }

@@ -10,6 +10,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 | Item | Owner | Notes |
 |------|-------|-------|
+| Celery home backlog + import priority | agent | **2026-07-12:** resume + seed + watchdog dedupe/import priority. **Tray Services labels/tooltips** rewritten plain-English (Backend API ≠ Beat ≠ workers). Reload tray to see. |
 | Userscript monorepo + FetLife suite v1 | agent | `tbcc/userscripts` scaffold + CI; dist `fetlife-suite.user.js` (masonry, story filter, mute, newest discussions) |
 | Perchance Gemini-parity suite | agent | Prompt packs + `perchance-suite.user.js`; fork paste `tbcc-aof-gen.modelText.txt`; Gemini CLI fallback |
 | Loot key → full `/roll` | agent | Operators **7787282561** + **8630278848** via `tbcc_operator_ids` (VIP/loot/companion/secretary/album). Avatars: `tbcc/assets/botfather/lootgod-avatar-v{1,2}-*.png` (640²). Prefer v2 for contrast. |

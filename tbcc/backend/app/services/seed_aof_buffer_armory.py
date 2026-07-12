@@ -10,7 +10,7 @@ from app.data.aof_x_buffer_armory import AOF_X_BUFFER_ARMORY_TEMPLATES
 from app.models.listening_relay_settings import ListeningRelaySettings
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.services.aof_social_links import fill_armory_template, gravatar_avatar_image_url, buffer_ig_default_image_url
-from app.services.buffer_x_caption import fit_plaintext_for_x, should_fit_for_x
+from app.services.buffer_x_caption import finalize_buffer_x_caption, should_fit_for_x
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ RELAY_ROW_ID = 1
 MAX_QUEUE = 16
 
 
-def build_armory_queue_items() -> list[dict]:
+def build_armory_queue_items(*, db=None) -> list[dict]:
     grav_img = gravatar_avatar_image_url()
     ig_img = buffer_ig_default_image_url()
     default_img = grav_img or ig_img
@@ -30,10 +30,12 @@ def build_armory_queue_items() -> list[dict]:
             utm_medium="x",
             utm_campaign=str(tpl.get("utm_campaign") or tpl.get("id") or f"armory_{i}"),
             for_x=True,
+            db=db,
+            advance_affiliate=True,
         )
         if not raw:
             continue
-        text = fit_plaintext_for_x(raw) if should_fit_for_x() else raw
+        text = finalize_buffer_x_caption(raw, db=db, advance_link_cycle=True) if should_fit_for_x() else raw
         if len(text) > 280:
             text = text[:277].rstrip() + "…"
         entry: dict = {"text": text}
@@ -53,7 +55,7 @@ def seed_relay_buffer_armory(db: Session, *, replace: bool = True) -> int:
         row = ListeningRelaySettings(id=RELAY_ROW_ID)
         db.add(row)
         db.flush()
-    items = build_armory_queue_items()
+    items = build_armory_queue_items(db=db)
     if not items:
         return 0
     if replace or not row.get_buffer_x_queue():
@@ -73,7 +75,7 @@ def seed_scheduled_buffer_armory(
     replace: bool = True,
     only_mirror_enabled: bool = True,
 ) -> int:
-    items = build_armory_queue_items()
+    items = build_armory_queue_items(db=db)
     if not items:
         return 0
     q = db.query(ScheduledTextPost)

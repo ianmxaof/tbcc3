@@ -20,6 +20,7 @@ def test_ops_growth_tasks_route_off_home_queue():
         "app.workers.export_flywheel_worker.export_flywheel_tick",
         "app.workers.income_poll_worker.poll_income_sources",
         "app.workers.market_intel_worker.run_market_intel_probe",
+        "app.workers.market_intel_worker.run_weekly_market_intel_cycle",
         "app.workers.storage_pool_seed_worker.seed_pools_from_storage_hub",
     ):
         assert _queue_for(task) == "ops_growth", task

@@ -59,6 +59,18 @@ from telegram.ext import (
 )
 
 from bots.error_reporter import report_bot_error
+from bots.zeus_menu import (
+    admin_inbox_submenu_keyboard as _admin_inbox_submenu_keyboard,
+    admin_main_menu_keyboard as _admin_main_menu_keyboard,
+    admin_more_submenu_keyboard as _admin_more_submenu_keyboard,
+    admin_ops_submenu_keyboard as _admin_ops_submenu_keyboard,
+    format_stack_status_html,
+    network_submenu_keyboard as _network_submenu_keyboard,
+    normalize_menu_callback,
+    payment_bot_username as _payment_bot_username,
+    payment_inline_keyboard as _payment_inline_keyboard,
+    user_main_menu_keyboard as _user_main_menu_keyboard,
+)
 
 from app.services.format_engine import (
     finalize_assistant_turn,
@@ -125,22 +137,6 @@ _business_msg_seen: dict[str, float] = {}
 
 def _secretary_token() -> str:
     return (os.getenv("TBCC_SECRETARY_BOT_TOKEN") or os.getenv("SECRETARY_BOT_TOKEN") or "").strip()
-
-
-_DEFAULT_PAYMENT_BOT_USERNAME = "aofsubscriptions_bot"
-
-
-def _payment_bot_username() -> str:
-    """Checkout links must never resolve to this secretary bot (common misconfig: BOT_USERNAME = secretary)."""
-    sec = (os.getenv("TBCC_SECRETARY_BOT_USERNAME") or "").strip().lstrip("@")
-    u = (
-        os.getenv("TBCC_PAYMENT_BOT_USERNAME")
-        or os.getenv("BOT_USERNAME")
-        or _DEFAULT_PAYMENT_BOT_USERNAME
-    ).strip().lstrip("@")
-    if sec and u.lower() == sec.lower():
-        return _DEFAULT_PAYMENT_BOT_USERNAME
-    return u
 
 
 def _rate_limit_per_minute() -> int:
@@ -237,89 +233,6 @@ def _faq_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
-def _user_main_menu_keyboard() -> InlineKeyboardMarkup:
-    pay = _payment_bot_username()
-    pay_safe = html.escape(pay) if pay else ""
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton("⭐ Subscribe", callback_data="sec:menu:subscribe"),
-            InlineKeyboardButton("🛒 Shop", callback_data="sec:menu:shop"),
-        ],
-        [
-            InlineKeyboardButton("ℹ️ My status", callback_data="sec:menu:mystatus"),
-            InlineKeyboardButton("🔄 Reset context", callback_data="sec:menu:reset"),
-        ],
-    ]
-    if pay_safe:
-        rows.append([InlineKeyboardButton("💳 Payment bot", url=f"https://t.me/{pay_safe}")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _admin_main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("📬 Inbox", callback_data="sec:menu:cat:inbox"),
-                InlineKeyboardButton("🔧 Ops & triage", callback_data="sec:menu:cat:ops"),
-            ],
-            [
-                InlineKeyboardButton("⭐ FAQ shortcuts", callback_data="sec:menu:cat:faq"),
-                InlineKeyboardButton("💳 Payment links", callback_data="sec:menu:cat:pay"),
-            ],
-            [InlineKeyboardButton("📋 Copy hub tail", callback_data="sec:menu:hubcopy")],
-            [
-                InlineKeyboardButton("🤖 LLM config", callback_data="sec:menu:run:config"),
-                InlineKeyboardButton("📖 All commands", callback_data="sec:menu:run:commands"),
-            ],
-        ]
-    )
-
-
-def _admin_inbox_submenu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("📥 Full inbox", callback_data="sec:menu:run:inbox"),
-                InlineKeyboardButton("🔔 Unread", callback_data="sec:menu:run:now"),
-            ],
-            [
-                InlineKeyboardButton("💰 Payment", callback_data="sec:menu:run:payment"),
-                InlineKeyboardButton("🎮 Loot", callback_data="sec:menu:run:loot"),
-            ],
-            [
-                InlineKeyboardButton("🔴 Critical", callback_data="sec:menu:run:critical"),
-                InlineKeyboardButton("✅ Mark read", callback_data="sec:menu:run:read"),
-            ],
-            [InlineKeyboardButton("📊 Status", callback_data="sec:menu:run:status")],
-            [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
-        ]
-    )
-
-
-def _admin_ops_submenu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("⚡ Telegram relief", callback_data="sec:menu:run:relief"),
-                InlineKeyboardButton("🎯 Focus state", callback_data="sec:menu:run:focus"),
-            ],
-            [
-                InlineKeyboardButton("🧰 Triage bundle", callback_data="sec:menu:run:triage"),
-                InlineKeyboardButton("🔄 Flywheel", callback_data="sec:menu:run:flywheel"),
-            ],
-            [
-                InlineKeyboardButton("📋 Ops feed", callback_data="sec:menu:run:ops"),
-                InlineKeyboardButton("📋 Copy hub tail", callback_data="sec:menu:hubcopy"),
-            ],
-            [
-                InlineKeyboardButton("🔔 Toast budget", callback_data="sec:menu:cat:toasts"),
-                InlineKeyboardButton("🔕 Skip backlog", callback_data="sec:menu:run:skipbacklog"),
-            ],
-            [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
-        ]
-    )
-
-
 def _format_toast_budget_text(settings: dict) -> str:
     cap = int(settings.get("max_toasts_per_2min") or 0)
     window = int(settings.get("window_seconds") or 120)
@@ -357,25 +270,7 @@ def _admin_toast_submenu_keyboard(cap: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Busy (5)", callback_data="sec:menu:toast:set:5"),
             ],
             [InlineKeyboardButton("🔕 Skip backlog", callback_data="sec:menu:run:skipbacklog")],
-            [InlineKeyboardButton("◀ Ops menu", callback_data="sec:menu:cat:ops")],
-        ]
-    )
-
-
-def _payment_inline_keyboard() -> InlineKeyboardMarkup | None:
-    pay = _payment_bot_username()
-    if not pay:
-        return None
-    pay_safe = html.escape(pay)
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("⭐ Subscribe", url=f"https://t.me/{pay_safe}?start=subscribe"),
-                InlineKeyboardButton("🛒 Shop", url=f"https://t.me/{pay_safe}?start=shop"),
-            ],
-            [
-                InlineKeyboardButton("📋 Payment bot chat", url=f"https://t.me/{pay_safe}"),
-            ],
+            [InlineKeyboardButton("◀ Ops menu", callback_data="zeus:ops:home")],
         ]
     )
 
@@ -787,15 +682,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Universal inline menu — admin gets inbox/ops tree; everyone else FAQ shortcuts."""
+    """Zeus Phase 1 hub — Network | Inbox | Ops | More (admin); deep links for users."""
     msg = update.effective_message
     if not msg:
         return
     if _can_manage_drafts(update):
         await _reply(
             msg,
-            "🏠 <b>TBCC Secretary — main menu</b>\n\n"
-            "Choose a section below. Use <b>Main menu</b> on any submenu to return here.",
+            "⚡ <b>TBCC Zeus — main menu</b>\n\n"
+            "<b>Network</b> — shop, loot, companion deep links\n"
+            "<b>Inbox</b> — payment / loot / ops digests\n"
+            "<b>Ops</b> — stack status, relief, flywheel, toasts\n"
+            "<b>More</b> — FAQ, LLM config, commands\n\n"
+            "<i>Legacy <code>sec:menu:</code> callbacks still work.</i>",
             context,
             parse_mode="HTML",
             reply_markup=_admin_main_menu_keyboard(),
@@ -804,7 +703,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(
         msg,
         "🏠 <b>Menu</b>\n"
-        "FAQ shortcuts and payment bot links.",
+        "Shop, Loot Room, and FAQ shortcuts.",
         context,
         parse_mode="HTML",
         reply_markup=_user_main_menu_keyboard(),
@@ -1041,6 +940,7 @@ def _admin_commands_reference() -> str:
         "/clear_sysprompt — drop dashboard override\n"
         "/cancel — cancel pending prompt edit\n\n"
         "<b>Ops</b>\n"
+        "/stack — tray stack status (N/M enabled)\n"
         "/relief — telegram_relief focus profile\n"
         "/toasts — desktop toast budget (non-payment)\n"
         "/skipbacklog — clear pending alert catch-up\n"
@@ -1842,12 +1742,47 @@ async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
 
 
+async def cmd_stack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: tray-aligned stack status (same as Zeus Ops → Stack status)."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    from app.services.tbcc_stack_control import get_stack_status, stack_control_available
+
+    def _load() -> dict:
+        if not stack_control_available():
+            return {
+                "ok": False,
+                "available": False,
+                "error": "stack status requires Windows tray supervisor (tbcc-stack-cli.ps1)",
+            }
+        data = get_stack_status()
+        data["available"] = True
+        return data
+
+    data = await asyncio.to_thread(_load)
+    await _reply(
+        msg,
+        format_stack_status_html(data),
+        context,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("◀ Ops menu", callback_data="zeus:ops:home")]]
+        ),
+    )
+
+
 async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    if not query or not query.data or not query.data.startswith("sec:menu:"):
+    if not query or not query.data:
+        return
+    normalized = normalize_menu_callback(query.data)
+    if not normalized or not normalized.startswith("sec:menu:"):
         return
 
-    parts = query.data.split(":")
+    parts = normalized.split(":")
     if len(parts) < 3:
         await query.answer()
         return
@@ -1908,7 +1843,15 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     if kind == "cat":
-        if arg == "inbox":
+        if arg == "net":
+            if query.message:
+                await query.message.reply_text(
+                    "🌐 <b>Network</b>\n\n"
+                    "Deep links into AOF bots. Stars checkout stays on the payment bot token.",
+                    parse_mode="HTML",
+                    reply_markup=_network_submenu_keyboard(),
+                )
+        elif arg == "inbox":
             if query.message:
                 await query.message.reply_text(
                     "📬 <b>Inbox</b>\n\n"
@@ -1920,14 +1863,22 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         elif arg == "ops":
             if query.message:
                 await query.message.reply_text(
-                    "🔧 <b>Ops and triage</b>\n\n"
+                    "🔧 <b>Ops</b>\n\n"
+                    "<b>Stack status</b> — tray-aligned N/M (same as <code>/stack</code>).\n"
                     "<b>Relief</b> — pauses optional bots to reduce Telethon session contention.\n"
                     "<b>Triage</b> — bundles the latest alert plus error-hub tail for Cursor.\n"
                     "<b>Toast budget</b> — cap non-payment desktop notifications (/toasts).\n"
-                    "<b>Agent</b> — Cursor run (needs <code>CURSOR_API_KEY</code> in tbcc/.env).\n"
-                    "API status: <code>/config</code>",
+                    "Restarts: tray / <code>tbcc-stack-cli.ps1</code> — not this bot.",
                     parse_mode="HTML",
                     reply_markup=_admin_ops_submenu_keyboard(),
+                )
+        elif arg == "more":
+            if query.message:
+                await query.message.reply_text(
+                    "⋯ <b>More</b>\n\n"
+                    "FAQ previews, payment link hints, LLM config, and the full command list.",
+                    parse_mode="HTML",
+                    reply_markup=_admin_more_submenu_keyboard(),
                 )
         elif arg == "toasts":
             from app.services.ops_alerts import get_alert_toast_settings
@@ -1956,7 +1907,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                                 InlineKeyboardButton("My status", callback_data="sec:menu:mystatus"),
                                 InlineKeyboardButton("Reset", callback_data="sec:menu:reset"),
                             ],
-                            [InlineKeyboardButton("◀ Main menu", callback_data="sec:menu:home")],
+                            [InlineKeyboardButton("◀ Main menu", callback_data="zeus:home")],
                         ]
                     ),
                 )
@@ -2024,6 +1975,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "commands": cmd_commands,
             "skipbacklog": cmd_skip_backlog,
             "toasts": cmd_toasts,
+            "stack": cmd_stack,
         }
         fn = runners.get(arg)
         if fn:
@@ -2528,6 +2480,7 @@ async def post_init(app: Application) -> None:
         BotCommand("reject", "Discard draft"),
         BotCommand("redo", "Regenerate draft (pro/casual/short)"),
         BotCommand("relief", "Apply telegram_relief focus"),
+        BotCommand("stack", "Tray stack status (N/M)"),
         BotCommand("focus", "Focus profile status"),
         BotCommand("triage", "Ops triage bundle for Cursor"),
         BotCommand("flywheel", "Ops flywheel status"),
@@ -2641,6 +2594,7 @@ def main() -> None:
     app.add_handler(CommandHandler("read", cmd_inbox_read))
     app.add_handler(CommandHandler("status", cmd_inbox_status))
     app.add_handler(CommandHandler("relief", cmd_relief))
+    app.add_handler(CommandHandler("stack", cmd_stack))
     app.add_handler(CommandHandler("focus", cmd_focus))
     app.add_handler(CommandHandler("triage", cmd_triage))
     app.add_handler(CommandHandler("flywheel", cmd_flywheel))
@@ -2653,7 +2607,7 @@ def main() -> None:
         await _storage_deposit(update, context, is_admin=_can_manage_drafts(update))
 
     app.add_handler(CommandHandler("deposit", _cmd_deposit))
-    app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^sec:menu:"))
+    app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^(sec:menu:|zeus:)"))
     app.add_handler(CallbackQueryHandler(on_llm_config_callback, pattern=r"^sec:llm:"))
     app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:(ap|rj|rd):"))
     app.add_handler(CallbackQueryHandler(on_ops_inbox_callback, pattern=r"^ops:"))
@@ -2670,7 +2624,7 @@ def main() -> None:
 
     print(
         "Secretary bot running. FAQ: /start /help /subscribe /shop /reset | "
-        "Admin inbox: /inbox /now /payment /loot /ops /critical /read /status /relief /focus /triage /flywheel /toasts /skipbacklog /deposit | "
+        "Admin inbox: /inbox /now /payment /loot /ops /critical /read /status /stack /relief /focus /triage /flywheel /toasts /skipbacklog /deposit | "
         "Drafts: /approve /reject /drafts"
     )
     app.run_polling(allowed_updates=Update.ALL_TYPES, bootstrap_retries=br)
