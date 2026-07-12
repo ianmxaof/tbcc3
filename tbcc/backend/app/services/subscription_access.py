@@ -60,6 +60,16 @@ def is_aof_vip_subscriber(db: Session, telegram_user_id: int) -> bool:
     )
 
 
+def is_loot_key_holder(db: Session, telegram_user_id: int) -> bool:
+    """Active loot-section subscription (24h Loot Room key / paid loot access)."""
+    return user_has_active_subscription(
+        db,
+        int(telegram_user_id),
+        subscriptions_only=True,
+        bot_section="loot",
+    )
+
+
 def effective_link_resolver_tier(db: Session, telegram_user_id: int) -> str:
     """premium: any non-expired active subscription or bundle; free otherwise."""
     if _active_rows(db, int(telegram_user_id)):

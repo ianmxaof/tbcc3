@@ -18,7 +18,7 @@ from app.database.session import get_db
 from app.models.loot import LootModifier, LootPoolEligibility
 from app.schemas.common import orm_to_dict
 from app.services.bundle_storage import MAX_BUNDLE_ZIP_BYTES, bundle_root, is_zip_magic
-from app.services.loot_free_pull import build_free_pull_preview, commit_free_pull
+from app.services.loot_free_pull import build_free_pull_preview, commit_free_pull, mark_free_pull_media_seen
 from app.services.loot_vip_daily_pull import (
     build_vip_daily_pull_preview,
     commit_vip_daily_pull,
@@ -26,9 +26,11 @@ from app.services.loot_vip_daily_pull import (
     vip_daily_pull_used_today,
 )
 from app.services.loot_roll_preview import build_roll_preview
+from app.services.loot_preview_delivery import send_loot_free_pull_to_chat, send_loot_preview_to_chat
 from app.services.loot_creator_submit import submit_creator_profile
 from app.services.loot_player_modifiers import record_modifiers_seen
-from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining
+from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining, record_roll
+from app.services.subscription_access import is_loot_key_holder
 from app.services.loot_referral import (
     bonus_free_pulls_for,
     ensure_loot_referral_code,
@@ -38,8 +40,6 @@ from app.services.loot_referral import (
     resolve_loot_referral_code,
 )
 from app.services.loot_bot_settings_effective import get_effective_loot_bot_settings, resolve_bot_token_raw
-from app.services.loot_player_stats import record_roll
-from app.services.loot_preview_delivery import send_loot_free_pull_to_chat, send_loot_preview_to_chat
 
 router = APIRouter()
 
@@ -795,6 +795,98 @@ def claim_free_pull(
     return {
         "ok": True,
         "sent_to": telegram_user_id,
+        "preview": preview,
+        "delivery": delivery,
+    }
+
+
+@router.get("/key-roll/status")
+def key_roll_status(
+    telegram_user_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    uid = int(telegram_user_id)
+    return {
+        "telegram_user_id": uid,
+        "is_loot_key_holder": is_loot_key_holder(db, uid),
+        "free_pulls_remaining": free_pulls_remaining(db, uid),
+    }
+
+
+@router.post("/key-roll/claim")
+def claim_key_roll(
+    telegram_user_id: int = Query(..., ge=1),
+    interval_code: str = Query("m30", pattern=r"^m(15|30|45|60)$"),
+    seed: int | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Paid loot-key full roll: ladder + modifiers + card reveal beat.
+    Requires active subscription_plans.bot_section='loot'.
+    """
+    uid = int(telegram_user_id)
+    if not is_loot_key_holder(db, uid):
+        pay = _payment_bot_username()
+        pay_hint = f"https://t.me/{pay}?start=loot" if pay else "payment bot /loot"
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "reason": "not_loot_key_holder",
+                "message": "Active Loot Room key required for full rolls with modifiers.",
+                "payment_link": pay_hint,
+            },
+        )
+
+    preview = build_roll_preview(
+        db,
+        telegram_user_id=uid,
+        interval_code=interval_code,
+        seed=seed,
+    )
+    if not preview.get("ok"):
+        raise HTTPException(status_code=400, detail=preview.get("reason") or "roll failed")
+
+    token = resolve_bot_token_raw(db)
+    if not token:
+        raise HTTPException(status_code=400, detail="Loot bot token not configured")
+    bot = Bot(
+        token=token,
+        request=HTTPXRequest(connect_timeout=30.0, read_timeout=180.0, write_timeout=180.0),
+    )
+    eff = get_effective_loot_bot_settings(db)
+    spoiler = bool(eff.get("drop_spoiler_default", True))
+
+    async def _run():
+        from app.database.session import SessionLocal
+
+        worker_db = SessionLocal()
+        try:
+            return await send_loot_preview_to_chat(
+                worker_db,
+                bot=bot,
+                chat_id=uid,
+                preview=preview,
+                spoiler_default=spoiler,
+                include_affiliate_footer=True,
+            )
+        finally:
+            worker_db.close()
+
+    delivery = _run_loot_async(_run())
+    if int(delivery.get("media_sent") or 0) > 0:
+        record_roll(db, uid)
+        media_ids = [int(m["id"]) for m in (preview.get("media") or []) if m.get("id") is not None]
+        if media_ids:
+            mark_free_pull_media_seen(db, uid, media_ids)
+        mod_ids = [int(m["id"]) for m in (preview.get("modifiers") or []) if m.get("id") is not None]
+        if mod_ids:
+            record_modifiers_seen(db, uid, mod_ids)
+    preview = dict(preview)
+    preview["roll_kind"] = "key_roll"
+    return {
+        "ok": True,
+        "roll_kind": "key_roll",
+        "sent_to": uid,
         "preview": preview,
         "delivery": delivery,
     }

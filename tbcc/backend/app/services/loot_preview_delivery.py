@@ -26,9 +26,11 @@ from app.services.loot_roll_presentation import (
     wrap_tier_card_body,
 )
 from app.services.loot_tier_banner import build_tier_flavor_html, build_tier_opening_html
+from app.services.loot_tier_card_assets import resolve_tier_card_path
 from app.services.loot_tier_catalog import tier_display_name
 from app.services.local_media_storage import is_local_pool_media, read_local_media_bytes
 from app.services.media_sniff import sniff_media_kind
+from app.services.promo_affiliate_rotation import build_loot_roll_affiliate_footer_html
 from app.services.telegram_admin import run_telegram_io
 from app.utils.telegram_promo_url import is_public_https_for_telegram
 
@@ -312,9 +314,10 @@ async def send_loot_preview_to_chat(
     chat_id: int,
     preview: dict[str, Any],
     spoiler_default: bool = True,
+    include_affiliate_footer: bool = True,
 ) -> dict[str, Any]:
     """
-    Order: divider → tier banner → flavor → media (caption embeds link modifiers) → ZIPs last.
+    Order: tier card reveal → divider → flavor → media (modifiers + affiliate in caption) → ZIPs last.
     """
     delivery: dict[str, Any] = {"albums_sent": 0, "media_sent": 0, "notes": []}
 
@@ -327,6 +330,40 @@ async def send_loot_preview_to_chat(
         )
         return delivery
 
+    tier = int(preview.get("rarity_tier") or 1)
+    card_path = resolve_tier_card_path(tier)
+    if card_path is not None:
+        try:
+            data = card_path.read_bytes()
+            opening = build_tier_opening_html(db, preview)
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=InputFile(io.BytesIO(data), filename=card_path.name),
+                caption=opening[:1024],
+                parse_mode="HTML",
+            )
+            delivery["notes"].append(f"tier card image:{card_path.name}")
+        except Exception as e:
+            logger.warning("loot tier card image failed tier=%s: %s", tier, e)
+            delivery["notes"].append(f"tier card image failed: {e}")
+            opening = build_tier_opening_html(db, preview)
+            await bot.send_message(
+                chat_id=chat_id,
+                text=opening,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            delivery["notes"].append("tier banner fallback")
+    else:
+        opening = build_tier_opening_html(db, preview)
+        await bot.send_message(
+            chat_id=chat_id,
+            text=opening,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        delivery["notes"].append("tier banner")
+
     divider = build_roll_divider_html(preview)
     await bot.send_message(
         chat_id=chat_id,
@@ -335,15 +372,6 @@ async def send_loot_preview_to_chat(
         disable_web_page_preview=True,
     )
     delivery["notes"].append("roll divider")
-
-    opening = build_tier_opening_html(db, preview)
-    await bot.send_message(
-        chat_id=chat_id,
-        text=opening,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
-    delivery["notes"].append("tier banner")
 
     flavor = build_tier_flavor_html(preview)
     if flavor:
@@ -358,10 +386,20 @@ async def send_loot_preview_to_chat(
     mod_specs = preview.get("modifiers") or []
     mod_ids = [int(m["id"]) for m in mod_specs if m.get("id") is not None]
     link_mod_lines = format_modifier_caption_lines(mod_specs)
+    affiliate_footer = None
+    if include_affiliate_footer:
+        try:
+            affiliate_footer = build_loot_roll_affiliate_footer_html(db, advance=True)
+            if affiliate_footer:
+                delivery["notes"].append("affiliate footer")
+        except Exception as e:
+            logger.warning("loot affiliate footer failed: %s", e)
+            delivery["notes"].append(f"affiliate footer skip: {e}")
     album_caption = build_album_caption_html(
         preview,
         modifier_lines=link_mod_lines,
         item_count=len(media_specs),
+        affiliate_footer_html=affiliate_footer,
     )
     roll_kb = build_loot_roll_inline_markup()
 

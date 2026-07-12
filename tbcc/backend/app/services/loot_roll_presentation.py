@@ -6,75 +6,75 @@ import html
 import random
 from typing import Any
 
-# Decorative separators between consecutive rolls in a chat (HTML).
+# Between consecutive rolls only (not menus). Telegram HTML <pre> = monospace ASCII.
 ROLL_DIVIDERS: list[str] = [
-    "━━━━━━━━━━━━━━━━\n🎰 <i>next pull</i> 🎰\n━━━━━━━━━━━━━━━━",
-    "· · · ✦ · · ·\n<i>rolling…</i>\n· · · ✦ · · ·",
-    "╭─────────────────╮\n│  🎲  <i>new draw</i>  🎲  │\n╰─────────────────╯",
-    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n✨ <i>loot table</i> ✨\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰",
-    "┈┈┈ 🎁 ┈┈┈\n<i>fresh roll</i>\n┈┈┈ 🎁 ┈┈┈",
-    "══════════════════\n🃏 <i>deal the cards</i> 🃏\n══════════════════",
+    "<pre>┌──── AOF LOOT ────┐\n│   next pull…     │\n└──────────────────┘</pre>",
+    "<pre>═══ TIER GATE ═══\n   rolling…\n═══ · · · · ═══</pre>",
+    "<pre>╱╱╱ DRAW ╱╱╱\n world ladder ticks\n╲╲╲ ······ ╲╲╲</pre>",
+    "<pre>┌─ ROLL ─┐\n│ 1-1 ▸ … │\n└─────────┘</pre>",
+    "<pre>┈┈┈ TIER GATE ┈┈┈\n    deal the cards\n┈┈┈ · · · · ┈┈┈</pre>",
+    "<pre>╔══════════════╗\n║  loot table  ║\n╚══════════════╝</pre>",
 ]
 
 TIER_FLAVOR_BANKS: dict[int, list[str]] = {
     1: [
         "The vault coughs up crumbs. Squint harder.",
-        "A whisper of dust — barely worth the tap.",
-        "Low stakes, low heat. Still counts as a pull.",
-        "The room yawns. Something flickered anyway.",
+        "Barely a taste. Still counts as a pull.",
+        "Low heat. The room barely notices you.",
+        "Crumb-tier — thin, but the reel spun.",
     ],
     2: [
-        "Not quite nothing. Not quite a drop.",
+        "Skirt lifts. Nothing promised.",
         "A shadow moved behind the spoiler blur.",
-        "Thin pull — but the reel still spun.",
-        "Glimpse-tier: enough to keep you curious.",
+        "Peek-tier: enough to keep you curious.",
+        "Thin pull — the door is only cracked.",
     ],
     3: [
-        "Warm enough to keep scrolling.",
-        "A single spark — the floor noticed you.",
-        "Small flame, real enough to unwrap.",
-        "Spark tier: modest, but the blur hides something.",
+        "Someone left the door cracked.",
+        "Amateur heat. Wet enough to keep scrolling.",
+        "Leak-tier: modest, but the blur hides something.",
+        "A single drip — the floor noticed you.",
     ],
     4: [
+        "The room starts breathing with you.",
         "Rhythm picks up — spoilers earned.",
-        "The pulse tier hits different on a streak.",
-        "Room energy shifts — you're on the board.",
+        "Throb-tier hits different on a streak.",
         "Mid-low heat; the album might surprise you.",
     ],
     5: [
+        "Mid-heat. You're not leaving yet.",
         "More on the reel than you expected.",
-        "Surge tier — modifiers start whispering.",
-        "The table leans in. Worth the unwrap.",
-        "Halfway up the ladder — feel the pull.",
+        "Drip-tier — modifiers start whispering.",
+        "Halfway up the ladder — hands already dirty.",
     ],
     6: [
         "Photos stack, video hits — feel the pull.",
-        "Blaze energy — mixed media flex.",
-        "Spotlight tier: density climbing.",
+        "Soak energy — mixed media flex.",
+        "Density climbing. No soft lighting.",
         "The vault opens wider at this band.",
     ],
     7: [
-        "Rare enough that a bundle might follow.",
-        "Vault-tier pull — packs may whisper.",
+        "Vault opens. Packs may follow.",
+        "Filth-tier — rare enough that a bundle might follow.",
         "Heavy hitters live in this band.",
         "Seven deep — bonus routes get plausible.",
     ],
     8: [
-        "This is why you paid attention.",
-        "Crown tier — album density spikes.",
+        "Density spikes. No soft landing.",
+        "Ruin-tier — this is why you paid attention.",
         "The room applauds. Open everything.",
-        "Eight deep — confetti weather starts here.",
+        "Eight deep — confetti of sin starts here.",
     ],
     9: [
-        "The overseer grins. Open everything.",
-        "Oracle tier — modifiers stack with intent.",
-        "Near-mythic heat. Screenshot energy.",
+        "Near-mythic. Modifiers stack mean.",
+        "Blackout-tier — the overseer grins.",
+        "Screenshot the mess. Almost max.",
         "Nine bells — the table is yours tonight.",
     ],
     10: [
-        "🔥 Peak dopamine. Screenshot the receipts. 🔥",
-        "MAX TIER — the vault throws a party.",
-        "Ascension drop. Tell your group chat.",
+        "MAX TIER — screenshot the mess.",
+        "Godroll. Peak filth. Tell your group chat.",
+        "The vault throws a party. No survivors.",
         "Ten out of ten. This is the flex roll.",
     ],
 }
@@ -87,16 +87,16 @@ TIER_CELEBRATION: dict[int, str] = {
 
 # Per-tier decorative frames (opening banners + album caption chrome).
 TIER_CARD_FRAMES: dict[int, tuple[str, str]] = {
-    1: ("▫️ ▫️ ▫️", "▫️ ▫️ ▫️"),
-    2: ("▫️ ✦ ▫️", "▫️ ✦ ▫️"),
-    3: ("─ ✨ ─", "─ ✨ ─"),
-    4: ("╭─ ⚡ ─╮", "╰─ ⚡ ─╯"),
-    5: ("╔═ 🔥 ═╗", "╚═ 🔥 ═╝"),
-    6: ("▰▰ 💎 ▰▰", "▰▰ 💎 ▰▰"),
-    7: ("◆══ 🗝 ══◆", "◆══ 🗝 ══◆"),
-    8: ("✦══ 👑 ══✦", "✦══ 👑 ══✦"),
-    9: ("★══ 🔮 ══★", "★══ 🔮 ══★"),
-    10: ("🎆══ ⭐ ══🎆", "🎆══ ⭐ ══🎆"),
+    1: ("···· crumb ····", "···· ···· ····"),
+    2: ("· > peek_ ·", "· · · · ·"),
+    3: ("─ leak ─", "─ ▓▓▓ ─"),
+    4: ("╭─ throb ─╮", "╰─ ▁▃▅ ─╯"),
+    5: ("╔═ drip ═╗", "╚═ │││ ═╝"),
+    6: ("▰ soak ▰", "▰ ▰ ▰ ▰"),
+    7: ("◆══ filth ══◆", "◆══ ⌂⌂⌂ ══◆"),
+    8: ("✦══ ruin ══✦", "✦══ ♛♛♛ ══✦"),
+    9: ("★══ blackout ══★", "★══ ▓░█ ══★"),
+    10: ("*** godroll ***", "*** TIER MAX ***"),
 }
 
 
@@ -107,7 +107,7 @@ def tier_card_frame_lines(tier: int) -> tuple[str, str]:
 
 def wrap_tier_card_body(tier: int, body: str) -> str:
     top, bottom = tier_card_frame_lines(tier)
-    return f"{top}\n{body}\n{bottom}"
+    return f"<code>{html.escape(top)}</code>\n{body}\n<code>{html.escape(bottom)}</code>"
 
 
 def build_album_caption_html(
@@ -115,8 +115,9 @@ def build_album_caption_html(
     *,
     modifier_lines: list[str],
     item_count: int,
+    affiliate_footer_html: str | None = None,
 ) -> str:
-    """First album item caption: tier card + up to 3 modifier slots inline."""
+    """First album item caption: tier card + up to 3 modifier slots + optional affiliate footer."""
     from app.services.loot_tier_catalog import tier_display_name
 
     tier = int(preview.get("rarity_tier") or 1)
@@ -133,7 +134,12 @@ def build_album_caption_html(
     elif slot_count > 0:
         mod_block = f"\n\n<b>✦ Modifiers</b>\n<i>— none matched this tier —</i>"
 
-    body = header + mod_block
+    foot = ""
+    footer = (affiliate_footer_html or "").strip()
+    if footer:
+        foot = f"\n\n{footer}"
+
+    body = header + mod_block + foot
     return wrap_tier_card_body(tier, body)
 
 
