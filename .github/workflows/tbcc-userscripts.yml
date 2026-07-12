@@ -1,0 +1,30 @@
+name: TBCC Userscripts
+
+on:
+  push:
+    paths:
+      - 'tbcc/userscripts/**'
+      - '.github/workflows/tbcc-userscripts.yml'
+  pull_request:
+    paths:
+      - 'tbcc/userscripts/**'
+      - '.github/workflows/tbcc-userscripts.yml'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tbcc/userscripts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build, lint headers, test
+        run: npm run ci
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tbcc-userscripts-dist
+          path: tbcc/userscripts/dist/*.user.js
