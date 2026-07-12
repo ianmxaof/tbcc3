@@ -1309,6 +1309,7 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
         _post_queue_length,
         clear_post_scheduling_redis_state,
         ensure_scheduled_drain_running,
+        orphaned_post_enqueue_lock_ids,
         post_queue_backlog_threshold,
         resume_scheduled_posting,
         scheduled_drain_snapshot,
@@ -1386,7 +1387,8 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
                 )
 
         # Overdue schedulers OR scheduler-lane backlog: purge, clear locks, re-enqueue.
-        resume_needed = overdue > 0 or post_len >= backlog_threshold
+        orphan_lock_ids = orphaned_post_enqueue_lock_ids()
+        resume_needed = overdue > 0 or post_len >= backlog_threshold or bool(orphan_lock_ids)
         if resume_needed and _auto_remediate_cooldown_ok("resume_scheduled_posting"):
             try:
                 r = resume_scheduled_posting(purge_post_queue=True)
@@ -1395,7 +1397,10 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
             _mark_auto_remediate_cooldown(["resume_scheduled_posting"])
             _record_watchdog_action(
                 "resume_scheduled_posting",
-                f"overdue={overdue} scheduler_queue={post_len} backlog_threshold={backlog_threshold}",
+                (
+                    f"overdue={overdue} scheduler_queue={post_len} "
+                    f"backlog_threshold={backlog_threshold} orphan_locks={len(orphan_lock_ids)}"
+                ),
                 actions,
                 r,
             )

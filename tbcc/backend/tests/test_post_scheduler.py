@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from app.services.post_scheduler import (
     check_and_schedule,
     pool_auto_post_enabled,
+    resume_scheduled_posting,
     _schedule_pool_interval_posts,
 )
 
@@ -117,3 +118,67 @@ def test_check_and_schedule_commits():
     with patch("app.services.post_scheduler._schedule_pool_interval_posts"):
         check_and_schedule(db)
     db.commit.assert_called_once()
+
+
+def test_resume_requeues_orphan_enqueue_lock_despite_failure_hold():
+    post = MagicMock()
+    post.id = 48
+    post.interval_minutes = 120
+    post.last_posted_at = datetime.utcnow()
+    post.posting_auto_paused_at = None
+    post.scheduled_at = None
+    post.sent_at = None
+    post.campaign_group_id = None
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.return_value = [post]
+    with patch("app.services.post_scheduler.orphaned_post_enqueue_lock_ids", return_value=[48]):
+        with patch("app.services.post_scheduler._migrate_scheduler_tasks_off_post_queue", return_value={}):
+            with patch("app.services.celery_queue_ops.purge_celery_queues", return_value={}):
+                with patch("app.services.post_scheduler.clear_post_scheduling_redis_state", return_value={}):
+                    with patch("app.services.post_scheduler.SessionLocal", return_value=db):
+                        with patch("app.services.post_scheduler.prioritize_scheduled_post_lane", return_value={}):
+                            with patch("app.services.post_scheduler.check_and_schedule") as check:
+                                with patch(
+                                    "app.services.post_scheduler._enqueue_scheduled_post",
+                                    return_value=True,
+                                ) as enqueue:
+                                    with patch(
+                                        "app.services.post_scheduler.ensure_scheduled_drain_running",
+                                        return_value={},
+                                    ):
+                                        out = resume_scheduled_posting(purge_post_queue=True)
+    check.assert_called_once_with(db)
+    enqueue.assert_called_once_with(48, interval_minutes=120)
+    assert out["orphan_enqueue_locks"] == [48]
+    assert out["orphan_requeued"] == [48]
+
+
+def test_resume_does_not_requeue_auto_paused_orphan_lock():
+    post = MagicMock()
+    post.id = 49
+    post.interval_minutes = 120
+    post.last_posted_at = datetime.utcnow()
+    post.posting_auto_paused_at = datetime.utcnow()
+    post.scheduled_at = None
+    post.sent_at = None
+    post.campaign_group_id = None
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.return_value = [post]
+    with patch("app.services.post_scheduler.orphaned_post_enqueue_lock_ids", return_value=[49]):
+        with patch("app.services.post_scheduler._migrate_scheduler_tasks_off_post_queue", return_value={}):
+            with patch("app.services.celery_queue_ops.purge_celery_queues", return_value={}):
+                with patch("app.services.post_scheduler.clear_post_scheduling_redis_state", return_value={}):
+                    with patch("app.services.post_scheduler.SessionLocal", return_value=db):
+                        with patch("app.services.post_scheduler.prioritize_scheduled_post_lane", return_value={}):
+                            with patch("app.services.post_scheduler.check_and_schedule"):
+                                with patch(
+                                    "app.services.post_scheduler._enqueue_scheduled_post"
+                                ) as enqueue:
+                                    with patch(
+                                        "app.services.post_scheduler.ensure_scheduled_drain_running",
+                                        return_value={},
+                                    ):
+                                        out = resume_scheduled_posting(purge_post_queue=True)
+    enqueue.assert_not_called()
+    assert out["orphan_enqueue_locks"] == [49]
+    assert out["orphan_requeued"] == []

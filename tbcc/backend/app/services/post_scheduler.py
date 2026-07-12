@@ -115,6 +115,47 @@ def release_post_enqueue_lock(post_id: int) -> None:
         pass
 
 
+def _redis_key_to_str(raw: bytes | str) -> str:
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="ignore")
+    return str(raw)
+
+
+def _redis_value_to_int(raw: bytes | str | int) -> int | None:
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="ignore")
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def orphaned_post_enqueue_lock_ids() -> list[int]:
+    """Post ids with enqueue locks but no Redis due/drain work left to release them."""
+    try:
+        import redis
+
+        url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.from_url(url, socket_connect_timeout=1.5)
+        locked: set[int] = set()
+        for key in r.scan_iter(match="tbcc:post:enqueued:*", count=200):
+            post_id = _redis_value_to_int(_redis_key_to_str(key).rsplit(":", 1)[-1])
+            if post_id is not None:
+                locked.add(post_id)
+        if not locked:
+            return []
+        due_ids: set[int] = set()
+        for raw in r.lrange(_POST_DUE_QUEUE_KEY, 0, -1) or []:
+            post_id = _redis_value_to_int(raw)
+            if post_id is not None:
+                due_ids.add(post_id)
+        if r.get(_POST_DRAIN_TICK_KEY) or scheduler_queue_length() > 0:
+            return []
+        return sorted(locked - due_ids)
+    except Exception:
+        return []
+
+
 def _enqueue_scheduled_post(post_id: int, *, interval_minutes: int | None = None) -> bool:
     """Skip duplicate Celery tasks for the same post while a send is pending or retrying."""
     ttl = _enqueue_dedupe_ttl_s(interval_minutes)
@@ -395,6 +436,26 @@ def _migrate_scheduler_tasks_off_post_queue() -> dict[str, Any]:
     )
 
 
+def _requeue_orphan_locked_scheduled_posts(db: Session, post_ids: list[int]) -> list[int]:
+    ids = list(dict.fromkeys(int(x) for x in post_ids if x is not None))
+    if not ids:
+        return []
+    now = datetime.utcnow()
+    rows = db.query(ScheduledTextPost).filter(ScheduledTextPost.id.in_(ids)).all()
+    requeued: list[int] = []
+    for post in _dedupe_campaign_leaders(rows):
+        if getattr(post, "posting_auto_paused_at", None) is not None:
+            continue
+        interval = getattr(post, "interval_minutes", None)
+        if interval is None:
+            scheduled_at = getattr(post, "scheduled_at", None)
+            if getattr(post, "sent_at", None) is not None or scheduled_at is None or scheduled_at > now:
+                continue
+        if _enqueue_scheduled_post(int(post.id), interval_minutes=interval):
+            requeued.append(int(post.id))
+    return requeued
+
+
 def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
     """
     Unblock stalled schedulers: purge stale post-queue tasks, clear Redis enqueue locks,
@@ -403,6 +464,8 @@ def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
     from app.services.celery_queue_ops import purge_celery_queues, purge_post_pool_tasks_from_queue
 
     out: dict = {"ok": True}
+    orphan_lock_ids = orphaned_post_enqueue_lock_ids()
+    out["orphan_enqueue_locks"] = orphan_lock_ids
     out["migrate_post_queue"] = _migrate_scheduler_tasks_off_post_queue()
     if purge_post_queue:
         out["purge"] = purge_celery_queues([SCHEDULER_POST_QUEUE, POOL_POST_QUEUE], min_length=0)
@@ -413,6 +476,7 @@ def resume_scheduled_posting(*, purge_post_queue: bool = True) -> dict:
     try:
         out["priority"] = prioritize_scheduled_post_lane(db)
         check_and_schedule(db)
+        out["orphan_requeued"] = _requeue_orphan_locked_scheduled_posts(db, orphan_lock_ids)
         out["scheduled"] = True
     finally:
         db.close()

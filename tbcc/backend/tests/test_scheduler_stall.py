@@ -121,6 +121,7 @@ def _watchdog_env(
     p(patch("app.services.post_scheduler.schedulers_stall_summary", return_value={"count": overdue}))
     p(patch("app.services.post_scheduler._post_queue_length", return_value=post_len))
     p(patch("app.services.post_scheduler.clear_post_scheduling_redis_state", return_value={}))
+    p(patch("app.services.post_scheduler.orphaned_post_enqueue_lock_ids", return_value=[]))
     p(patch("app.services.focus_profile.get_focus_state", return_value={"profile": focus}))
     p(patch("app.services.focus_profile.pause_beat_scheduling", return_value=beat_paused))
     p(patch("app.services.focus_profile.count_processing_import_jobs", return_value=processing))
@@ -169,6 +170,21 @@ def test_watchdog_resume_when_overdue_and_empty_scheduler_queue():
     resume.assert_called_once_with(purge_post_queue=True)
     mark.assert_any_call(["resume_scheduled_posting"])
     assert any(a["action"] == "resume_scheduled_posting" for a in out["actions"])
+
+
+def test_watchdog_resume_when_orphan_enqueue_lock_without_overdue():
+    sh.reset_scheduler_watchdog_state()
+    stack, mark = _watchdog_env(overdue=0, post_len=0)
+    with stack:
+        with patch("app.services.post_scheduler.orphaned_post_enqueue_lock_ids", return_value=[48]):
+            with patch(
+                "app.services.post_scheduler.resume_scheduled_posting",
+                return_value={"ok": True},
+            ) as resume:
+                out = sh.scheduler_watchdog_tick()
+    resume.assert_called_once_with(purge_post_queue=True)
+    mark.assert_any_call(["resume_scheduled_posting"])
+    assert any("orphan_locks=1" in a["reason"] for a in out["actions"])
 
 
 def test_watchdog_import_burst_restores_only_after_dwell():
