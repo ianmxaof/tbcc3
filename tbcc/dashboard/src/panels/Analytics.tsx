@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
@@ -17,6 +17,7 @@ import { CategoryDemandCrosswalk } from "../components/CategoryDemandCrosswalk";
 
 export function Analytics() {
   const rangeDays = 30;
+  const qc = useQueryClient();
 
   const subQ = useQuery({
     queryKey: ["analytics", "subscriptions"],
@@ -31,6 +32,18 @@ export function Analytics() {
   const eventsQ = useQuery({
     queryKey: ["analytics", "post-events", 40],
     queryFn: () => api.analytics.postEvents({ limit: 40, offset: 0 }),
+  });
+
+  const eromeGovQ = useQuery({
+    queryKey: ["analytics", "erome-upload-governance"],
+    queryFn: () => api.analytics.eromeUploadGovernance(),
+    refetchInterval: 60_000,
+  });
+
+  const markApproved = useMutation({
+    mutationFn: (albumUrl: string) =>
+      api.analytics.eromeGovernanceMark({ album_url: albumUrl, status: "approved_public" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["analytics", "erome-upload-governance"] }),
   });
 
   const chartData = summaryQ.data?.by_day ?? [];
@@ -194,6 +207,67 @@ export function Analytics() {
         ) : (
           <p className="text-slate-500 text-sm">No events logged yet.</p>
         )}
+      </section>
+
+      <section>
+        <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide mb-3">
+          Erome private staging
+        </h2>
+        {eromeGovQ.isError && (
+          <QueryErrorBanner
+            title="Could not load Erome governance"
+            message={String((eromeGovQ.error as Error)?.message ?? eromeGovQ.error)}
+            onRetry={() => void eromeGovQ.refetch()}
+          />
+        )}
+        {eromeGovQ.isPending ? (
+          <p className="text-slate-500 text-sm">Loading…</p>
+        ) : eromeGovQ.data ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard label="Pending review" value={eromeGovQ.data.pending_review} />
+              <StatCard label="Private" value={eromeGovQ.data.private_count} />
+              <StatCard label="Public" value={eromeGovQ.data.public_count} />
+              <div className="rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2">
+                <div className="text-slate-500 text-xs uppercase tracking-wide">Default</div>
+                <div className="text-lg font-semibold text-slate-100">{eromeGovQ.data.default_visibility}</div>
+              </div>
+            </div>
+            {(eromeGovQ.data.pending || []).length === 0 ? (
+              <p className="text-slate-500 text-sm">No private albums awaiting governance.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {eromeGovQ.data.pending.map((row) => (
+                  <li
+                    key={row.album_url || row.title}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-700 bg-slate-800/30 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-slate-200 truncate">{row.title || "Untitled"}</div>
+                      <a
+                        className="text-cyan-400 hover:text-cyan-300 text-xs break-all"
+                        href={row.album_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {row.album_url}
+                      </a>
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded bg-emerald-700/80 px-2 py-1 text-xs text-white hover:bg-emerald-600 disabled:opacity-50"
+                      disabled={!row.album_url || markApproved.isPending}
+                      onClick={() => row.album_url && markApproved.mutate(row.album_url)}
+                      title="Marks ledger approved — still flip Public on Erome (or use --promote-public)"
+                    >
+                      Mark approved
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : null}
       </section>
     </div>
   );
