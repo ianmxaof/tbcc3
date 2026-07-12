@@ -229,6 +229,91 @@ def purge_post_pool_tasks_from_queue(queue_name: str = "post") -> dict[str, Any]
     )
 
 
+def dedupe_task_keep_newest(
+    queue_name: str,
+    *,
+    task_substrings: list[str],
+    keep: int = 1,
+) -> dict[str, Any]:
+    """
+    Keep at most ``keep`` newest broker messages whose task name matches any substring.
+    Newest = closest to the tail (last pushed); FIFO consumers eat from the head.
+    """
+    needles = [s.strip() for s in task_substrings if s and s.strip()]
+    if not needles:
+        return {"ok": False, "error": "no task_substrings specified"}
+    try:
+        keep_n = max(0, int(keep))
+    except (TypeError, ValueError):
+        keep_n = 1
+    try:
+        r = _redis_client()
+        r.ping()
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+    items = r.lrange(queue_name, 0, -1) or []
+    before = len(items)
+    if before == 0:
+        return {
+            "ok": True,
+            "queue": queue_name,
+            "before": 0,
+            "after": 0,
+            "removed": 0,
+            "kept": 0,
+            "removed_tasks": {},
+        }
+
+    match_indices: list[int] = []
+    for i, raw in enumerate(items):
+        task = _task_name_from_broker_payload(raw)
+        if any(n in task for n in needles):
+            match_indices.append(i)
+
+    # Keep the last keep_n matches (newest); drop earlier duplicates.
+    keep_set = set(match_indices[-keep_n:]) if keep_n else set()
+    drop = {i for i in match_indices if i not in keep_set}
+    kept = [items[i] for i in range(len(items)) if i not in drop]
+    removed: Counter[str] = Counter()
+    for i in drop:
+        removed[_task_name_from_broker_payload(items[i])] += 1
+
+    if drop:
+        pipe = r.pipeline()
+        pipe.delete(queue_name)
+        if kept:
+            pipe.rpush(queue_name, *kept)
+        pipe.execute()
+
+    return {
+        "ok": True,
+        "queue": queue_name,
+        "before": before,
+        "after": len(kept),
+        "removed": before - len(kept),
+        "kept": len(keep_set),
+        "removed_tasks": dict(removed.most_common(20)),
+    }
+
+
+def dedupe_run_schedule_queue(*, keep: int = 1) -> dict[str, Any]:
+    """Collapse Beat run_schedule pile-ups on the home celery queue (Windows solo)."""
+    return dedupe_task_keep_newest(
+        "celery",
+        task_substrings=["scheduler_worker.run_schedule"],
+        keep=keep,
+    )
+
+
+def purge_thumbnail_warm_from_telegram_queue() -> dict[str, Any]:
+    """Drop pending thumbnail warms so storage-hub imports can drain first."""
+    return purge_queue_tasks_matching(
+        "telegram",
+        task_substrings=["thumbnail_warm_worker.warm_media_thumbnails"],
+    )
+
+
 def purge_celery_queues(
     queues: list[str] | None = None,
     *,

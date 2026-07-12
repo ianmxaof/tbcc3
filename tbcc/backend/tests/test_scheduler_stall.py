@@ -108,6 +108,9 @@ def _watchdog_env(
     cooldown_ok=True,
     enabled=True,
     sched=None,
+    celery_len=0,
+    open_imports=0,
+    enqueue_locks=0,
 ):
     """Patch every external the tick reaches so only in-memory logic is exercised."""
     if sched is None:
@@ -124,7 +127,72 @@ def _watchdog_env(
     p(patch("app.services.focus_profile.get_focus_state", return_value={"profile": focus}))
     p(patch("app.services.focus_profile.pause_beat_scheduling", return_value=beat_paused))
     p(patch("app.services.focus_profile.count_processing_import_jobs", return_value=processing))
+    p(
+        patch(
+            "app.services.post_scheduler.scheduled_drain_snapshot",
+            return_value={
+                "due_len": 0,
+                "scheduler_queue": post_len,
+                "enqueue_locks": enqueue_locks,
+            },
+        )
+    )
+    p(patch("app.services.system_health._count_open_import_jobs", return_value=open_imports))
+    p(
+        patch(
+            "app.services.celery_queue_ops.celery_queue_snapshot",
+            return_value={"ok": True, "queues": {"celery": {"length": celery_len}}},
+        )
+    )
     return stack, mark
+
+
+def test_watchdog_dedupes_run_schedule_when_celery_deep():
+    sh.reset_scheduler_watchdog_state()
+    stack, mark = _watchdog_env(overdue=0, post_len=0, celery_len=220)
+    with stack:
+        with patch(
+            "app.services.celery_queue_ops.dedupe_run_schedule_queue",
+            return_value={"ok": True, "removed": 40},
+        ) as dedupe:
+            out = sh.scheduler_watchdog_tick()
+    dedupe.assert_called_once_with(keep=1)
+    mark.assert_any_call(["dedupe_run_schedule"])
+    assert any(a["action"] == "dedupe_run_schedule" for a in out["actions"])
+
+
+def test_watchdog_purges_thumbnail_warm_when_imports_queued():
+    sh.reset_scheduler_watchdog_state()
+    stack, mark = _watchdog_env(overdue=0, post_len=0, open_imports=5)
+    with stack:
+        with patch(
+            "app.services.celery_queue_ops.purge_thumbnail_warm_from_telegram_queue",
+            return_value={"ok": True, "removed": 12},
+        ) as purge:
+            out = sh.scheduler_watchdog_tick()
+    purge.assert_called_once()
+    mark.assert_any_call(["purge_thumbnail_warm_for_imports"])
+    assert any(a["action"] == "purge_thumbnail_warm_for_imports" for a in out["actions"])
+
+
+def test_watchdog_resumes_when_orphan_enqueue_locks():
+    # Empty queues + overdue + locks>0 must NOT hold — resume clears orphan locks.
+    sh.reset_scheduler_watchdog_state()
+    sched = {
+        "beat_running": True,
+        "celery_post_worker_running": True,
+        "celery_post_scheduler_worker_running": True,
+    }
+    stack, _ = _watchdog_env(overdue=3, post_len=0, sched=sched, enqueue_locks=11)
+    with stack:
+        with patch(
+            "app.services.post_scheduler.resume_scheduled_posting",
+            return_value={"ok": True},
+        ) as resume:
+            sh._WATCHDOG_OVERDUE_STREAK = sh._watchdog_send_failure_streak()
+            out = sh.scheduler_watchdog_tick()
+    resume.assert_called_once_with(purge_post_queue=True)
+    assert not any(a["action"] == "send_failure_hold" for a in out["actions"])
 
 
 def test_watchdog_resume_when_overdue_and_queue_nonempty():
