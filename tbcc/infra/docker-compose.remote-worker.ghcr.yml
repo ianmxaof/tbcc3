@@ -1,0 +1,51 @@
+# TBCC remote worker — pull prebuilt image from GHCR (no on-VM docker build).
+# Prefer this on e2-micro / Oracle free: building on the VM burns CPU/RAM.
+#
+#   export TBCC_WORKER_IMAGE=ghcr.io/ianmxaof/tbcc-worker:latest
+#   docker login ghcr.io -u USER --password-stdin   # PAT with read:packages
+#   docker compose -f docker-compose.remote-worker.ghcr.yml pull
+#   docker compose -f docker-compose.remote-worker.ghcr.yml up -d
+#
+# Same env + session volume contract as docker-compose.remote-worker.yml.
+
+services:
+  worker_scrape:
+    image: ${TBCC_WORKER_IMAGE:-ghcr.io/ianmxaof/tbcc-worker:latest}
+    pull_policy: always
+    restart: unless-stopped
+    env_file:
+      - .env.remote-worker
+    environment:
+      PYTHONPATH: /app
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -Q scrape
+      -P solo
+      -n scrape@remote
+      --without-gossip
+      --without-mingle
+    volumes:
+      - ./data/sessions:/data/sessions
+    working_dir: /app
+
+  worker_post:
+    image: ${TBCC_WORKER_IMAGE:-ghcr.io/ianmxaof/tbcc-worker:latest}
+    pull_policy: always
+    restart: unless-stopped
+    profiles: ["post"]
+    env_file:
+      - .env.remote-worker
+    environment:
+      PYTHONPATH: /app
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -Q post
+      -P solo
+      -n post@remote
+      --without-gossip
+      --without-mingle
+    volumes:
+      - ./data/sessions:/data/sessions
+    working_dir: /app

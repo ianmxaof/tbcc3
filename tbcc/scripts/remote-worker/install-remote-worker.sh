@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Bootstrap Oracle / Hetzner / any Linux VM for TBCC remote scrape worker.
+# Bootstrap Linux VM for TBCC remote scrape worker.
+# Prefer GHCR pull (TBCC_USE_GHCR=1) to avoid docker build CPU on small VMs.
 set -euo pipefail
 
 TBCC_ROOT="${TBCC_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 INFRA="$TBCC_ROOT/infra"
+USE_GHCR="${TBCC_USE_GHCR:-0}"
+GHCR_IMAGE="${TBCC_WORKER_IMAGE:-ghcr.io/ianmxaof/tbcc-worker:latest}"
 
 echo "==> TBCC remote worker bootstrap"
 echo "    TBCC root: $TBCC_ROOT"
+echo "    Mode: $([[ "$USE_GHCR" == "1" || "$USE_GHCR" == "true" ]] && echo "GHCR pull ($GHCR_IMAGE)" || echo "local docker build")"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Installing Docker..."
@@ -33,9 +37,21 @@ if [[ ! -f "$INFRA/data/sessions/scraper.session" ]]; then
 fi
 
 cd "$INFRA"
-docker compose -f docker-compose.remote-worker.yml up -d --build
+if [[ "$USE_GHCR" == "1" || "$USE_GHCR" == "true" ]]; then
+  export TBCC_WORKER_IMAGE="$GHCR_IMAGE"
+  if [[ -n "${TBCC_GHCR_TOKEN:-}" && -n "${TBCC_GHCR_USER:-}" ]]; then
+    echo "$TBCC_GHCR_TOKEN" | docker login ghcr.io -u "$TBCC_GHCR_USER" --password-stdin
+  fi
+  docker compose -f docker-compose.remote-worker.ghcr.yml pull
+  docker compose -f docker-compose.remote-worker.ghcr.yml up -d
+  COMPOSE="docker-compose.remote-worker.ghcr.yml"
+else
+  docker compose -f docker-compose.remote-worker.yml up -d --build
+  COMPOSE="docker-compose.remote-worker.yml"
+fi
 
 echo ""
 echo "Remote scrape worker started. Verify:"
-echo "  docker compose -f docker-compose.remote-worker.yml logs -f worker_scrape"
+echo "  docker compose -f $COMPOSE logs -f worker_scrape"
 echo "  bash $TBCC_ROOT/scripts/remote-worker/health-remote-worker.sh"
+echo "Update image later: bash $TBCC_ROOT/scripts/remote-worker/pull-remote-worker.sh"

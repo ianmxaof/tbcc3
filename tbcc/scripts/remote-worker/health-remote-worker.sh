@@ -16,6 +16,18 @@ set -a
 source "$ENV_FILE"
 set +a
 
+pick_compose() {
+  if docker compose -f "$INFRA/docker-compose.remote-worker.ghcr.yml" ps --status running 2>/dev/null | grep -q worker_scrape; then
+    echo "$INFRA/docker-compose.remote-worker.ghcr.yml"
+  elif [[ -f "$INFRA/docker-compose.remote-worker.ghcr.yml" ]] && [[ "${TBCC_USE_GHCR:-0}" == "1" ]]; then
+    echo "$INFRA/docker-compose.remote-worker.ghcr.yml"
+  else
+    echo "$INFRA/docker-compose.remote-worker.yml"
+  fi
+}
+
+COMPOSE="$(pick_compose)"
+
 echo "==> Redis"
 docker run --rm --network host redis:7-alpine redis-cli -u "${REDIS_URL}" ping
 
@@ -31,9 +43,9 @@ with e.connect() as c:
     print(\"sources:\", c.execute(text(\"select count(*) from sources\")).scalar())
 "'
 
-echo "==> Celery scrape worker"
+echo "==> Celery scrape worker ($COMPOSE)"
 cd "$INFRA"
-docker compose -f docker-compose.remote-worker.yml exec -T worker_scrape \
+docker compose -f "$COMPOSE" exec -T worker_scrape \
   celery -A app.workers.celery_app inspect ping -d scrape@remote 2>/dev/null || \
   echo "(worker not running or still starting)"
 
