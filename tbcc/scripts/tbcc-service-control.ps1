@@ -631,133 +631,155 @@ function Get-TbccStackServiceById {
 
 function Get-TbccServiceOpsCatalog {
   <#
-  Phase 6 (Calm Ops): plain-language tray labels + linked queues / Beat / related services.
-  Keys merge onto stack service objects in Merge-TbccServiceOpsCatalog.
+  Tray Services menu: plain-language labels + tooltips.
+  MenuDoes = what this process is for (not other services' jobs).
+  MenuRestartWhen = when Ctrl+click restart matters.
+  MenuAlso = other menu rows often restarted with this (human labels, not ids).
+  MenuQueues / MenuSession = optional technical detail last.
+  Avoid non-ASCII in tooltip strings (WinForms can garble middle-dot etc.).
   #>
   return @{
     backend = @{
-      MenuGroup  = "core"
-      MenuLabel  = "API + ops watchdog"
-      MenuBeat   = @("focus watch loop", "idle governor tick (opt-in)")
-      MenuRelated = @("beat", "celery_post_scheduler")
-      MenuLane   = "core · :8000"
+      MenuGroup       = "core"
+      MenuLabel       = "Backend API"
+      MenuDoes        = "The main TBCC server (dashboard + bots talk to this). Includes auto-heal for stalled scheduled posts."
+      MenuRestartWhen = "After backend code or .env changes - this is what agents mean by restart backend."
+      MenuAlso        = @("Beat timer", "Worker: due posts", "Worker: Telegram sends")
     }
     dashboard = @{
-      MenuGroup = "core"
-      MenuLabel = "Dashboard UI"
-      MenuLane  = "vite · :5173"
+      MenuGroup       = "core"
+      MenuLabel       = "Dashboard website"
+      MenuDoes        = "Operator UI in the browser (schedulers, pools, health)."
+      MenuRestartWhen = "After dashboard UI code changes."
+      MenuAlso        = @("Backend API")
     }
     forum = @{
-      MenuGroup = "extra"
-      MenuLabel = "AOF Forum dev"
-      MenuLane  = ":3001"
+      MenuGroup       = "extra"
+      MenuLabel       = "AOF Forum (dev site)"
+      MenuDoes        = "Optional Next.js forum app for local development."
+      MenuRestartWhen = "After forum frontend code changes."
     }
     beat = @{
-      MenuGroup  = "celery"
-      MenuLabel  = "Beat cron (enqueues ticks)"
-      MenuBeat   = @("schedule-posts", "listening-relay", "scrape-tick", "loot-promo", "storage-pool-seed", "thin-pool-backfill (opt-in)")
-      MenuRelated = @("celery", "celery_post_scheduler", "celery_ops")
-      MenuLane   = "scheduling"
+      MenuGroup       = "celery"
+      MenuLabel       = "Beat timer"
+      MenuDoes        = "Alarm clock only - puts jobs on queues on a schedule. Does NOT do the work itself."
+      MenuRestartWhen = "After Beat schedule / .env timing changes, or when jobs stop appearing."
+      MenuAlso        = @("Worker: imports and scrape", "Worker: due posts", "Worker: growth and relay")
+      MenuSchedules   = @("due posts", "listening relay", "scrape ticks", "loot promo", "storage pool seed", "thin-pool backfill (opt-in)")
     }
     celery = @{
-      MenuGroup  = "celery"
-      MenuLabel  = "Celery home (imports, scrape, light)"
-      MenuQueues = @("celery", "scrape", "subscription", "telegram")
-      MenuBeat   = @("scrape-scheduler-tick", "loot-daily-promo", "buffer-armory", "aof-milestone-fomo")
-      MenuRelated = @("beat", "celery_post", "celery_ops")
-      MenuLane   = "home worker"
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: imports and scrape"
+      MenuDoes        = "Does the actual work for imports, scrapes, telegram jobs, and other light home-queue tasks."
+      MenuRestartWhen = "After worker/import code changes, or when the imports/scrape queues stall."
+      MenuAlso        = @("Beat timer")
+      MenuQueues      = @("celery", "scrape", "subscription", "telegram")
     }
     celery_post = @{
-      MenuGroup   = "celery"
-      MenuLabel   = "Celery post (Telegram send)"
-      MenuQueues  = @("post")
-      MenuRelated = @("celery_post_scheduler", "album_composer")
-      MenuSession = "admin_poster.session"
-      MenuLane    = "posting"
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: Telegram sends"
+      MenuDoes        = "Sends scheduled/pool posts to Telegram from the post queue."
+      MenuRestartWhen = "When posts are queued but not sending, or after poster code changes."
+      MenuAlso        = @("Worker: due posts", "Beat timer")
+      MenuQueues      = @("post")
+      MenuSession     = "admin_poster.session (Telegram login for sends)"
     }
     celery_post_scheduler = @{
-      MenuGroup  = "celery"
-      MenuLabel  = "Post scheduler (run_schedule)"
-      MenuQueues = @("post_scheduler")
-      MenuBeat   = @("schedule-posts every ~2m")
-      MenuRelated = @("beat", "celery_post")
-      MenuLane   = "scheduling lane"
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: due posts"
+      MenuDoes        = "Moves due scheduled posts onto the send queue. Pair with Worker: Telegram sends."
+      MenuRestartWhen = "When schedulers show overdue but the send worker looks idle."
+      MenuAlso        = @("Beat timer", "Worker: Telegram sends")
+      MenuQueues      = @("post_scheduler")
     }
     celery_ops = @{
-      MenuGroup  = "celery"
-      MenuLabel  = "Celery ops (growth / relay / erome)"
-      MenuQueues = @("ops_growth", "ops_relay", "ops_erome")
-      MenuBeat   = @("listening-relay", "export-flywheel", "erome analytics", "income-poll", "thin-pool-backfill")
-      MenuRelated = @("beat", "admin", "celery")
-      MenuLane   = "background ops"
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: growth and relay"
+      MenuDoes        = "Background growth jobs: listening relay, Erome analytics, income poll, storage pool seed runs."
+      MenuRestartWhen = "After growth/relay/erome worker code changes, or those jobs stop running."
+      MenuAlso        = @("Beat timer")
+      MenuQueues      = @("ops_growth", "ops_relay", "ops_erome")
     }
     payment = @{
-      MenuGroup = "bots"
-      MenuLabel = "Payment bot"
-      MenuLane  = "revenue /resolve"
+      MenuGroup       = "bots"
+      MenuLabel       = "Payment bot"
+      MenuDoes        = "Telegram bot for Stars / checkout /resolve."
+      MenuRestartWhen = "After payment-bot code or bot token env changes. Do not run a second copy."
     }
     secretary = @{
-      MenuGroup = "bots"
-      MenuLabel = "Secretary bot"
-      MenuLane  = "ops commands"
+      MenuGroup       = "bots"
+      MenuLabel       = "Secretary bot"
+      MenuDoes        = "Operator Telegram commands and inbox helpers."
+      MenuRestartWhen = "After secretary-bot code changes. Do not run a second copy."
     }
     loot = @{
-      MenuGroup = "bots"
-      MenuLabel = "Loot bot"
-      MenuLane  = "modifiers / promos"
+      MenuGroup       = "bots"
+      MenuLabel       = "Loot bot"
+      MenuDoes        = "Loot rolls, keys, and promo CTAs in Telegram."
+      MenuRestartWhen = "After loot-bot code changes. Do not run a second copy."
     }
     album_composer = @{
-      MenuGroup  = "bots"
-      MenuLabel  = "Album composer (remixer)"
-      MenuRelated = @("celery_post")
-      MenuLane   = "emoji / albums"
+      MenuGroup       = "bots"
+      MenuLabel       = "Album composer"
+      MenuDoes        = "Remixer / album composer Telegram bot."
+      MenuRestartWhen = "After album-composer code changes."
+      MenuAlso        = @("Worker: Telegram sends")
     }
     companion = @{
-      MenuGroup = "bots"
-      MenuLabel = "Companion bot (spicy)"
-      MenuLane  = "optional"
+      MenuGroup       = "bots"
+      MenuLabel       = "Companion bot"
+      MenuDoes        = "Optional spicy companion Telegram bot (off unless you enable it)."
+      MenuRestartWhen = "After companion-bot code changes."
     }
     admin = @{
-      MenuGroup   = "bots"
-      MenuLabel   = "Admin / Storage bot (/erome)"
-      MenuSession = "admin.session"
-      MenuRelated = @("celery_ops", "celery")
-      MenuLane    = "scrape + storage hub"
+      MenuGroup       = "bots"
+      MenuLabel       = "Admin / Storage bot"
+      MenuDoes        = "Storage hub /erome and admin Telegram commands. Shares admin.session with scrapes."
+      MenuRestartWhen = "After admin-bot code changes. Avoid while a heavy scrape holds the session."
+      MenuAlso        = @("Worker: imports and scrape", "Worker: growth and relay")
+      MenuSession     = "admin.session"
     }
     macro_search = @{
-      MenuGroup = "bots"
-      MenuLabel = "Macro search bot"
-      MenuLane  = "catalog"
+      MenuGroup       = "bots"
+      MenuLabel       = "Macro search bot"
+      MenuDoes        = "Optional catalog / macro-search Telegram bot."
+      MenuRestartWhen = "After macro-search bot code changes."
     }
     openclaw = @{
-      MenuGroup = "extra"
-      MenuLabel = "OpenClaw gateway"
-      MenuLane  = "growth agent"
+      MenuGroup       = "extra"
+      MenuLabel       = "OpenClaw gateway"
+      MenuDoes        = "Optional growth-agent gateway process."
+      MenuRestartWhen = "After OpenClaw config changes."
     }
     llm_chat = @{
-      MenuGroup = "extra"
-      MenuLabel = "LLM chat bot"
-      MenuLane  = "catalog only"
+      MenuGroup       = "extra"
+      MenuLabel       = "LLM chat bot"
+      MenuDoes        = "Optional LLM chat bot (catalog / disabled by default)."
+      MenuRestartWhen = "After LLM chat bot code changes."
     }
     watch = @{
-      MenuGroup = "extra"
-      MenuLabel = "Watch folder organizer"
-      MenuLane  = "filesystem"
+      MenuGroup       = "extra"
+      MenuLabel       = "Watch folder organizer"
+      MenuDoes        = "Moves files from the watch inbox into the library folder."
+      MenuRestartWhen = "After watch-folder path or code changes."
     }
     nsfw = @{
-      MenuGroup = "extra"
-      MenuLabel = "NSFW detect"
-      MenuLane  = ":8001 enrichment"
+      MenuGroup       = "extra"
+      MenuLabel       = "NSFW detect"
+      MenuDoes        = "Optional local enrichment service for NSFW tagging."
+      MenuRestartWhen = "After NSFW service code changes."
     }
     lustpress = @{
-      MenuGroup = "extra"
-      MenuLabel = "Lustpress"
-      MenuLane  = ":3000 enrichment"
+      MenuGroup       = "extra"
+      MenuLabel       = "Lustpress"
+      MenuDoes        = "Optional local Lustpress enrichment service."
+      MenuRestartWhen = "After Lustpress code changes."
     }
     clip = @{
-      MenuGroup = "extra"
-      MenuLabel = "CLIP categorize"
-      MenuLane  = ":8002 enrichment"
+      MenuGroup       = "extra"
+      MenuLabel       = "CLIP categorize"
+      MenuDoes        = "Optional CLIP image categorization service."
+      MenuRestartWhen = "After CLIP service code changes."
     }
   }
 }
@@ -795,21 +817,52 @@ function Get-TbccServiceMenuTooltip {
     [string]$Status = "",
     [bool]$UserEnabled = $true
   )
+  # Plain ASCII only - WinForms tooltips can mojibake middle-dot / smart punctuation.
   $lines = New-Object System.Collections.ArrayList
-  if ($Service.MenuLane) { [void]$lines.Add([string]$Service.MenuLane) }
+  $label = if ($Service.MenuLabel) { [string]$Service.MenuLabel } else { [string]$Service.Title }
+  if ($Service.Port -gt 0) {
+    [void]$lines.Add(("$label  (port {0})" -f $Service.Port))
+  } else {
+    [void]$lines.Add($label)
+  }
+  if ($Service.MenuDoes) {
+    [void]$lines.Add(("Does: " + [string]$Service.MenuDoes))
+  } elseif ($Service.MenuLane) {
+    # Legacy fallback if an older catalog field is still present
+    [void]$lines.Add([string]$Service.MenuLane)
+  }
+  if ($Service.MenuSchedules -and @($Service.MenuSchedules).Count -gt 0) {
+    [void]$lines.Add(("Schedules onto queues: " + (@($Service.MenuSchedules) -join "; ")))
+  }
+  if ($Service.MenuBeat -and @($Service.MenuBeat).Count -gt 0 -and -not $Service.MenuSchedules) {
+    [void]$lines.Add(("Schedules onto queues: " + (@($Service.MenuBeat) -join "; ")))
+  }
   if ($Service.MenuQueues -and @($Service.MenuQueues).Count -gt 0) {
     $q = @($Service.MenuQueues)
     if ($q.Count -eq 1 -and [string]$q[0] -match ',') { $q = [string]$q[0] -split ',' }
-    [void]$lines.Add(("Queues: " + (($q | ForEach-Object { $_.Trim() }) -join ", ")))
+    [void]$lines.Add(("Redis queues: " + (($q | ForEach-Object { $_.Trim() }) -join ", ")))
   }
-  if ($Service.MenuBeat -and @($Service.MenuBeat).Count -gt 0) {
-    [void]$lines.Add(("Beat: " + (@($Service.MenuBeat) -join "; ")))
+  if ($Service.MenuSession) { [void]$lines.Add(("Telegram session: " + [string]$Service.MenuSession)) }
+  if ($Service.MenuRestartWhen) {
+    [void]$lines.Add(("Restart when: " + [string]$Service.MenuRestartWhen))
   }
-  if ($Service.MenuSession) { [void]$lines.Add(("Session: " + [string]$Service.MenuSession)) }
-  if ($Service.MenuRelated -and @($Service.MenuRelated).Count -gt 0) {
-    [void]$lines.Add(("Related tabs: " + (@($Service.MenuRelated) -join ", ")))
+  if ($Service.MenuAlso -and @($Service.MenuAlso).Count -gt 0) {
+    [void]$lines.Add(("Often restart with: " + (@($Service.MenuAlso) -join "; ")))
+  } elseif ($Service.MenuRelated -and @($Service.MenuRelated).Count -gt 0) {
+    # Resolve internal ids to human labels when legacy MenuRelated is present
+    $catalog = Get-TbccServiceOpsCatalog
+    $names = @(
+      foreach ($rid in @($Service.MenuRelated)) {
+        $key = [string]$rid
+        if ($catalog.ContainsKey($key) -and $catalog[$key].MenuLabel) {
+          [string]$catalog[$key].MenuLabel
+        } else {
+          $key
+        }
+      }
+    )
+    [void]$lines.Add(("Often restart with: " + ($names -join "; ")))
   }
-  if ($Service.Port -gt 0) { [void]$lines.Add(("Port: " + $Service.Port)) }
   if ($UserEnabled) {
     if ($Status -eq "up") {
       [void]$lines.Add("Click: stop/disable  |  Ctrl+click: restart")
@@ -825,7 +878,7 @@ function Get-TbccServiceMenuTooltip {
 function Get-TbccServicePanelShortLabel {
   param($Service)
   $label = if ($Service.MenuLabel) { [string]$Service.MenuLabel } else { [string]$Service.Title }
-  if ($label.Length -gt 22) { return ($label.Substring(0, 20) + "..") }
+  if ($label.Length -gt 28) { return ($label.Substring(0, 26) + "..") }
   return $label
 }
 
@@ -1215,6 +1268,17 @@ function Ensure-TbccStackWorkersSingleton {
     }
     $restarted = $false
     if (-not $TrimOnly -and $kept -eq 0 -and $TbccRoot -and $svc.Command) {
+      if ($svc.Id -and -not (Test-TbccServiceUserEnabled -ServiceId $svc.Id -TbccRoot $TbccRoot)) {
+        $report += [pscustomobject]@{
+          Id = $svc.Id
+          Title = $svc.Title
+          KeptPid = 0
+          Trimmed = $trimmed.Count
+          Restarted = $false
+          Skipped = "disabled_in_tray"
+        }
+        continue
+      }
       if (Test-TbccServiceWrapperStarting -Title $svc.Title) {
         $report += [pscustomobject]@{
           Id = $svc.Id
@@ -1800,7 +1864,7 @@ function Initialize-TbccServiceToggleMenu {
   $hint.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
   $hint.Enabled = $false
   $hint2 = New-Object System.Windows.Forms.ToolStripMenuItem
-  $hint2.Text = "Hover for queues, Beat ticks, sessions, and related tabs (Calm Ops)"
+  $hint2.Text = "Hover any row: what it does, when to restart, related workers"
   $hint2.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
   $hint2.Enabled = $false
   [void]$MenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
