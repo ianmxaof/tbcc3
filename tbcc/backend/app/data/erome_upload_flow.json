@@ -32,6 +32,14 @@
       "method": "get_by_placeholder",
       "args": ["Tags"]
     },
+    "privacy_private_checkbox": {
+      "method": "get_by_text",
+      "args": ["MAKE PRIVATE"]
+    },
+    "privacy_public_checkbox": {
+      "method": "get_by_text",
+      "args": ["MAKE PUBLIC"]
+    },
     "submit_button": {
       "method": "get_by_role",
       "args": ["button"],

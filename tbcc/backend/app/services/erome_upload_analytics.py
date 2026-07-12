@@ -31,6 +31,7 @@ class EromeUploadParams:
     content_notes: str | None = None
     file_count: int = 0
     force_policy: bool = False
+    visibility: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,6 +100,7 @@ def merge_sidecar_params(folder: str | Path, params: EromeUploadParams) -> Erome
     notes = (side.get("content_notes") or params.content_notes or "").strip() or params.content_notes
     wm = side.get("watermark") if isinstance(side.get("watermark"), dict) else params.watermark
     crop = side.get("crop") if isinstance(side.get("crop"), dict) else params.crop
+    vis = (side.get("visibility") or params.visibility or "").strip() or params.visibility
     return EromeUploadParams(
         title=title,
         description=desc,
@@ -111,6 +113,7 @@ def merge_sidecar_params(folder: str | Path, params: EromeUploadParams) -> Erome
         content_notes=notes,
         file_count=params.file_count,
         force_policy=bool(params.force_policy or side.get("force")),
+        visibility=vis,
     )
 
 
@@ -194,9 +197,13 @@ def record_erome_upload(
 ) -> Path:
     """Append JSONL ledger row + per-upload manifest; optionally growth attribution."""
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    visibility = str(result.get("visibility") or params.visibility or "public").strip().lower()
+    gov = result.get("governance_status")
+    if not gov and visibility == "private":
+        gov = "needs_review"
     row: dict[str, Any] = {
         "recorded_at": now,
-        "published_at": now if result.get("ok") else None,
+        "published_at": now if result.get("ok") and visibility == "public" else None,
         "ok": bool(result.get("ok")),
         "album_url": result.get("album_url"),
         "title": params.title or result.get("title"),
@@ -212,6 +219,8 @@ def record_erome_upload(
         "staging_meta": staging_meta or {},
         "policy": policy or {},
         "error": result.get("error"),
+        "visibility": visibility,
+        "governance_status": gov,
     }
     append_ledger_row(row)
 
@@ -220,7 +229,8 @@ def record_erome_upload(
     manifest_path = analytics_dir() / f"{ts}_{slug}.json"
     manifest_path.write_text(json.dumps(row, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    if db is not None and result.get("ok") and result.get("album_url"):
+    # Growth attribution only for public albums — private staging is not discoverable yet
+    if db is not None and result.get("ok") and result.get("album_url") and visibility == "public":
         try:
             from app.services.growth_attribution import EVENT_EROME_ALBUM_PUBLISHED, record_growth_attribution
 
@@ -236,6 +246,7 @@ def record_erome_upload(
                     "network_key": params.network_key,
                     "staging_meta": staging_meta,
                     "content_notes": params.content_notes,
+                    "visibility": visibility,
                 },
             )
         except Exception:

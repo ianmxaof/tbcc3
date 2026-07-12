@@ -53,6 +53,8 @@ class EromeFlowConfig:
     allowed_extensions: tuple[str, ...]
     flow_mode: str = "simple"
     age_gate_use_popup: bool = False
+    tags_enter_mode: bool = False
+    privacy_before_files: bool = True
 
 
 @dataclass
@@ -76,6 +78,8 @@ class UploadResult:
     file_count: int = 0
     staging_path: str | None = None
     error: str | None = None
+    visibility: str = "public"
+    governance_status: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +91,8 @@ class UploadResult:
             "file_count": self.file_count,
             "staging_path": self.staging_path,
             "error": self.error,
+            "visibility": self.visibility,
+            "governance_status": self.governance_status,
         }
 
 
@@ -130,6 +136,8 @@ def load_flow_config() -> EromeFlowConfig:
         allowed_extensions=extensions,
         flow_mode=str(data.get("flow_mode") or "simple").strip().lower(),
         age_gate_use_popup=bool(data.get("age_gate_use_popup", False)),
+        tags_enter_mode=bool(data.get("tags_enter_mode", False)),
+        privacy_before_files=bool(data.get("privacy_before_files", True)),
     )
 
 
@@ -595,6 +603,93 @@ def _wait_for_album_published(page: Any, cfg: EromeFlowConfig) -> str | None:
     return None
 
 
+def _wait_for_album_saved(page: Any, cfg: EromeFlowConfig, *, private: bool) -> str | None:
+    """Wait for album URL after SAVE. Private albums may stay on /edit or /a/id."""
+    if not private:
+        return _wait_for_album_published(page, cfg) or _wait_for_album_url(page, cfg)
+    timeout_ms = cfg.upload_complete_timeout_ms
+    deadline = time.time() + (timeout_ms / 1000.0)
+    album_re = re.compile(r"/a/[A-Za-z0-9_-]+")
+    while time.time() < deadline:
+        url = (page.url or "").strip()
+        if album_re.search(url.split("?", 1)[0]):
+            found = extract_erome_album_url(url)
+            if found:
+                return found
+        found = _scrape_album_url(page)
+        if found:
+            return found
+        page.wait_for_timeout(1500)
+    return _scrape_album_url(page)
+
+
+def _set_album_privacy(page: Any, cfg: EromeFlowConfig, *, private: bool) -> bool:
+    """Toggle Erome private/hidden before SAVE. Returns True if a control was hit."""
+    if not private:
+        for key in ("privacy_public_checkbox", "privacy_public_radio", "privacy_public_toggle"):
+            spec = _spec(cfg, key)
+            if not spec:
+                continue
+            try:
+                click_spec(page, spec, timeout_ms=2500)
+                return True
+            except Exception:
+                continue
+        for pattern in (
+            re.compile(r"MAKE\s+PUBLIC", re.I),
+            re.compile(r"^Public$", re.I),
+            re.compile(r"^Everyone$", re.I),
+        ):
+            try:
+                page.get_by_text(pattern).first.click(timeout=2000)
+                return True
+            except Exception:
+                pass
+        return False
+
+    for key in ("privacy_private_checkbox", "privacy_private_toggle", "privacy_private_radio"):
+        spec = _spec(cfg, key)
+        if not spec:
+            continue
+        try:
+            loc = locator_from_spec(page, spec).first
+            try:
+                tag = (loc.evaluate("el => el.tagName") or "").lower()
+                typ = (loc.evaluate("el => el.type") or "").lower()
+                if tag == "input" and typ == "checkbox":
+                    if not loc.is_checked():
+                        loc.check(timeout=2500)
+                    return True
+            except Exception:
+                pass
+            click_spec(page, spec, timeout_ms=2500)
+            return True
+        except Exception:
+            logger.debug("privacy locator %s missed", key, exc_info=True)
+
+    for pattern in (
+        re.compile(r"MAKE\s+PRIVATE", re.I),
+        re.compile(r"^Private$", re.I),
+        re.compile(r"^Hidden$", re.I),
+        re.compile(r"Only\s+me", re.I),
+    ):
+        try:
+            page.get_by_label(pattern).first.check(timeout=2000)
+            return True
+        except Exception:
+            pass
+        try:
+            page.get_by_text(pattern).first.click(timeout=2000)
+            return True
+        except Exception:
+            pass
+    logger.warning(
+        "Erome privacy control not found — album may publish public. "
+        "Record MAKE PRIVATE via --record into erome_upload_flow.local.json"
+    )
+    return False
+
+
 def _wait_for_album_url(page: Any, cfg: EromeFlowConfig) -> str | None:
     timeout_ms = cfg.upload_complete_timeout_ms
     deadline = time.time() + (timeout_ms / 1000.0)
@@ -647,13 +742,40 @@ class EromeUploadSession:
         if not tags_spec:
             logger.debug("tags_input locator missing — skipping tags")
             return
-        joined = ", ".join(t.strip() for t in tags if t.strip())[:500]
-        if not joined:
+        clean = [t.strip() for t in tags if t and str(t).strip()][:30]
+        if not clean:
             return
         try:
-            fill_spec(self.page, tags_spec, joined)
+            loc = locator_from_spec(self.page, tags_spec).first
+            if self.cfg.tags_enter_mode:
+                # Erome: type tag → Enter (repeat). Comma-join does not create chips.
+                for tag in clean:
+                    loc.click(timeout=5000)
+                    loc.fill(tag)
+                    loc.press("Enter")
+                    self.page.wait_for_timeout(200)
+            else:
+                fill_spec(self.page, tags_spec, ", ".join(clean)[:500])
         except Exception:
             logger.debug("tags fill failed — continuing", exc_info=True)
+
+    def _fill_title(self, album_title: str) -> None:
+        title_spec = _spec(self.cfg, "title_input")
+        if not title_spec:
+            return
+        try:
+            loc = locator_from_spec(self.page, title_spec).first
+            loc.click(timeout=5000)
+            try:
+                loc.press("ControlOrMeta+a")
+            except Exception:
+                pass
+            loc.fill(album_title)
+        except Exception:
+            try:
+                fill_spec(self.page, title_spec, album_title)
+            except Exception:
+                logger.debug("title fill failed — continuing", exc_info=True)
 
     def upload_files(
         self,
@@ -663,25 +785,41 @@ class EromeUploadSession:
         description: str | None = None,
         tags: list[str] | None = None,
         fresh_navigate: bool = True,
+        visibility: str | None = None,
     ) -> UploadResult:
+        from app.services.erome_upload_governance import (
+            STATUS_NEEDS_REVIEW,
+            VISIBILITY_PRIVATE,
+            VISIBILITY_PUBLIC,
+            default_upload_visibility,
+            governance_enabled,
+        )
+
         if not files:
             return UploadResult(ok=False, error="no_files")
         album_title = (title or self.cfg.album_title_default).strip() or self.cfg.album_title_default
         staging = str(files[0].parent)
         tag_list = [t.strip() for t in (tags or []) if t and str(t).strip()]
+        vis_raw = (visibility or default_upload_visibility()).strip().lower()
+        want_private = vis_raw not in ("public", "pub", "open")
+        visibility_out = VISIBILITY_PRIVATE if want_private else VISIBILITY_PUBLIC
+        gov_status = STATUS_NEEDS_REVIEW if (want_private and governance_enabled()) else None
         try:
             if fresh_navigate:
                 self.page = _navigate_to_upload(self.page, self.cfg)
+            _click_if_spec(self.page, self.cfg, "dismiss_close_button")
+
+            # Recording order: MAKE PRIVATE before attaching media
+            if self.cfg.privacy_before_files:
+                privacy_ok = _set_album_privacy(self.page, self.cfg, private=want_private)
+                if want_private and not privacy_ok:
+                    logger.warning("Private requested but MAKE PRIVATE missed — continuing")
+
             paths = [str(p.resolve()) for p in files]
             _attach_files_to_erome_editor(self.page, self.cfg, paths)
             _wait_for_erome_uploads(self.page, len(files))
 
-            title_spec = _spec(self.cfg, "title_input")
-            if title_spec:
-                try:
-                    fill_spec(self.page, title_spec, album_title)
-                except Exception:
-                    logger.debug("title fill failed — continuing", exc_info=True)
+            self._fill_title(album_title)
 
             desc_spec = _spec(self.cfg, "description_input")
             if description and desc_spec:
@@ -692,40 +830,50 @@ class EromeUploadSession:
 
             self._fill_tags(tag_list)
 
+            if not self.cfg.privacy_before_files:
+                privacy_ok = _set_album_privacy(self.page, self.cfg, private=want_private)
+                if want_private and not privacy_ok:
+                    logger.warning("Private requested but privacy control missed — continuing with SAVE")
+
             submit_spec = _spec(self.cfg, "submit_button")
             if not submit_spec:
                 raise RuntimeError("submit_button locator missing")
             click_spec(self.page, submit_spec, timeout_ms=60000)
             self.page.wait_for_timeout(self.cfg.wait_after_submit_ms)
 
-            album_url = _wait_for_album_published(self.page, self.cfg) or _wait_for_album_url(
-                self.page, self.cfg
-            )
-            if not album_url or "/edit" in (self.page.url or ""):
+            album_url = _wait_for_album_saved(self.page, self.cfg, private=want_private)
+            if not album_url:
                 return UploadResult(
                     ok=False,
                     title=album_title,
                     file_count=len(files),
                     staging_path=staging,
-                    error="album_not_published",
+                    visibility=visibility_out,
+                    governance_status=gov_status,
+                    error="album_not_published" if not want_private else "album_not_saved",
                 )
-            media_count = _album_public_media_count(self.page)
-            if media_count < len(files):
-                logger.warning(
-                    "Erome album published with %s/%s media visible at %s",
-                    media_count,
-                    len(files),
-                    album_url,
-                )
-                if media_count == 0:
-                    return UploadResult(
-                        ok=False,
-                        album_url=album_url,
-                        title=album_title,
-                        file_count=len(files),
-                        staging_path=staging,
-                        error="album_empty_after_publish",
+            # Public albums: verify media visible. Private: skip public media scrape
+            # (page may still be editor or gated).
+            if not want_private:
+                media_count = _album_public_media_count(self.page)
+                if media_count < len(files):
+                    logger.warning(
+                        "Erome album published with %s/%s media visible at %s",
+                        media_count,
+                        len(files),
+                        album_url,
                     )
+                    if media_count == 0:
+                        return UploadResult(
+                            ok=False,
+                            album_url=album_url,
+                            title=album_title,
+                            file_count=len(files),
+                            staging_path=staging,
+                            visibility=visibility_out,
+                            governance_status=gov_status,
+                            error="album_empty_after_publish",
+                        )
             self.save_auth()
             return UploadResult(
                 ok=True,
@@ -735,6 +883,8 @@ class EromeUploadSession:
                 description=description,
                 file_count=len(files),
                 staging_path=staging,
+                visibility=visibility_out,
+                governance_status=gov_status,
             )
         except Exception as e:
             logger.exception("erome upload failed")
@@ -745,6 +895,8 @@ class EromeUploadSession:
                 description=description,
                 file_count=len(files),
                 staging_path=staging,
+                visibility=visibility_out,
+                governance_status=gov_status,
                 error=str(e)[:400],
             )
 
@@ -793,20 +945,126 @@ def record_upload_flow(*, headed: bool = True) -> None:
         page.goto(cfg.upload_url, wait_until="domcontentloaded", timeout=120000)
         page = _accept_age_gate(page, cfg)
         print(
-            "\n=== RECORD EROME UPLOAD FLOW ===\n"
+            "\n=== RECORD EROME UPLOAD FLOW (private staging) ===\n"
             f"Browser: {browser_label()}\n"
-            "Do one full upload cycle:\n"
-            "  • Open Upload\n"
-            "  • Select files from disk\n"
-            "  • Fill title → Publish\n"
-            "  • Note album URL on success screen\n\n"
-            "Copy Inspector Python into erome_upload_flow.local.json locators or a recording file.\n"
-            "Press Resume when done.\n"
+            "IMPORTANT: Use THIS Playwright Brave window — not your already-open Erome tab.\n\n"
+            "Do one full cycle with a SINGLE video:\n"
+            "  1. Click UPLOAD\n"
+            "  2. Select ONE .mp4 from Downloads (recording only; weekly ops use intel-week folder)\n"
+            "  3. Wait until the file finishes uploading in the editor\n"
+            "  4. Fill Title (anything short)\n"
+            "  5. Fill Tags if the field is visible\n"
+            "  6. Click / check PRIVATE (or Hidden / Only me)  ← critical new locator\n"
+            "  7. Click SAVE\n"
+            "  8. Copy the album URL from the address bar (/a/...)\n\n"
+            "Then optionally open that album and toggle Public once — record that click too\n"
+            "  (privacy_public_checkbox / make_public) for remote promote later.\n\n"
+            "Copy Inspector Python into erome_upload_flow.local.json locators.\n"
+            "Press Resume when done.\n",
+            flush=True,
         )
         page.pause()
         handle.context.storage_state(path=str(auth_path))
     finally:
         handle.close()
+
+
+def promote_album_to_public(
+    album_url: str,
+    *,
+    headed: bool = False,
+    keep_open: bool = False,
+) -> dict[str, Any]:
+    """Open a private album editor and flip it to public, then mark ledger approved."""
+    from app.services.erome_upload_governance import STATUS_APPROVED, mark_governance
+
+    url = (album_url or "").strip()
+    found = extract_erome_album_url(url)
+    if not found:
+        return {"ok": False, "error": "invalid_album_url", "album_url": url}
+    cfg = load_flow_config()
+    session = open_upload_session(headed=headed, keep_open=keep_open)
+    try:
+        page = session.page
+        # Prefer edit URL — private albums often need /edit to change visibility
+        edit_url = found.rstrip("/") + "/edit"
+        page.goto(edit_url, wait_until="domcontentloaded", timeout=90000)
+        page = _accept_age_gate(page, cfg)
+        page.wait_for_timeout(1200)
+
+        made_public = False
+        for key in ("privacy_public_checkbox", "privacy_public_radio", "privacy_public_toggle", "make_public"):
+            spec = _spec(cfg, key)
+            if not spec:
+                continue
+            try:
+                click_spec(page, spec, timeout_ms=4000)
+                made_public = True
+                break
+            except Exception:
+                logger.debug("public locator %s missed", key, exc_info=True)
+
+        if not made_public:
+            for pattern in (
+                re.compile(r"^Public$", re.I),
+                re.compile(r"^Everyone$", re.I),
+                re.compile(r"Make\s+public", re.I),
+            ):
+                try:
+                    page.get_by_label(pattern).first.click(timeout=2000)
+                    made_public = True
+                    break
+                except Exception:
+                    pass
+                try:
+                    page.get_by_text(pattern).first.click(timeout=2000)
+                    made_public = True
+                    break
+                except Exception:
+                    pass
+
+        # If Private checkbox is checked, uncheck it
+        if not made_public:
+            priv = _spec(cfg, "privacy_private_checkbox")
+            if priv:
+                try:
+                    loc = locator_from_spec(page, priv).first
+                    if loc.is_checked():
+                        loc.uncheck(timeout=2500)
+                        made_public = True
+                except Exception:
+                    logger.debug("uncheck private failed", exc_info=True)
+
+        submit_spec = _spec(cfg, "submit_button")
+        if submit_spec:
+            try:
+                click_spec(page, submit_spec, timeout_ms=30000)
+                page.wait_for_timeout(cfg.wait_after_submit_ms)
+            except Exception:
+                logger.debug("promote SAVE skipped/failed", exc_info=True)
+
+        session.save_auth()
+        if not made_public:
+            return {
+                "ok": False,
+                "album_url": found,
+                "error": "public_control_not_found",
+                "hint": "Re-record make-public click into erome_upload_flow.local.json",
+            }
+
+        marked = mark_governance(album_url=found, status=STATUS_APPROVED, notes="playwright_promote_public")
+        return {
+            "ok": True,
+            "album_url": found,
+            "visibility": "public",
+            "governance": marked,
+        }
+    except Exception as e:
+        logger.exception("promote_album_to_public failed")
+        return {"ok": False, "album_url": found, "error": str(e)[:400]}
+    finally:
+        if not keep_open:
+            session.close()
 
 
 def open_upload_session(*, headed: bool = False, keep_open: bool = False) -> EromeUploadSession:
@@ -858,6 +1116,7 @@ def upload_local_folder(
     headed: bool = False,
     keep_open: bool = False,
     max_files: int | None = None,
+    visibility: str | None = None,
 ) -> UploadResult:
     cfg = load_flow_config()
     scan = scan_staging_folder(folder, allowed_extensions=cfg.allowed_extensions, max_files=max_files)
@@ -870,6 +1129,7 @@ def upload_local_folder(
             title=title,
             description=description,
             tags=tags,
+            visibility=visibility,
         )
     finally:
         if not keep_open:
