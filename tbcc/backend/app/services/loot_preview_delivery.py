@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import io
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -21,8 +22,11 @@ from app.services.loot_free_tease import build_free_pull_tease_html
 from app.services.loot_free_tutorial import build_step_intro_html
 from app.services.loot_roll_presentation import (
     build_album_caption_html,
+    build_preparing_html,
     build_roll_divider_html,
     format_modifier_caption_lines,
+    pick_deal_failed_html,
+    pick_still_working_line,
     wrap_tier_card_body,
 )
 from app.services.loot_tier_banner import build_tier_flavor_html, build_tier_opening_html
@@ -382,6 +386,18 @@ async def send_loot_preview_to_chat(
         )
         delivery["notes"].append("flavor")
 
+    preparing_msg = None
+    try:
+        preparing_msg = await bot.send_message(
+            chat_id=chat_id,
+            text=build_preparing_html(preview),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        delivery["notes"].append("preparing")
+    except Exception as e:
+        logger.warning("loot preparing ping failed: %s", e)
+
     media_specs = preview.get("media") or []
     mod_specs = preview.get("modifiers") or []
     mod_ids = [int(m["id"]) for m in mod_specs if m.get("id") is not None]
@@ -414,6 +430,14 @@ async def send_loot_preview_to_chat(
                 reply_markup=roll_kb,
             )
             delivery["notes"].append("modifiers-only caption")
+        else:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=pick_deal_failed_html(),
+                parse_mode="HTML",
+                reply_markup=roll_kb,
+            )
+            delivery["notes"].append("deal failed empty media")
     else:
         ids = [int(m["id"]) for m in media_specs if m.get("id") is not None]
         rows = db.query(Media).filter(Media.id.in_(ids)).all()
@@ -425,8 +449,33 @@ async def send_loot_preview_to_chat(
                 ordered.append(row)
 
         payloads: list[tuple[Media, bytes, str]] = []
+        load_started = time.monotonic()
+        still_pinged = False
         for row in ordered:
             try:
+                try:
+                    from telegram.constants import ChatAction
+
+                    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+                except Exception:
+                    pass
+                if (
+                    not still_pinged
+                    and preparing_msg is not None
+                    and (time.monotonic() - load_started) > 12.0
+                ):
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=int(preparing_msg.message_id),
+                            text=f"<i>{html.escape(pick_still_working_line())}</i>",
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
+                        )
+                        still_pinged = True
+                        delivery["notes"].append("still working ping")
+                    except Exception:
+                        pass
                 data, fname = await _load_media_bytes(row)
                 payloads.append((row, data, fname))
             except Exception as e:
@@ -446,6 +495,19 @@ async def send_loot_preview_to_chat(
             )
         else:
             delivery["notes"].append("could not load any album bytes")
+            await bot.send_message(
+                chat_id=chat_id,
+                text=pick_deal_failed_html(),
+                parse_mode="HTML",
+                reply_markup=roll_kb,
+            )
+            delivery["notes"].append("deal failed no bytes")
+
+    if preparing_msg is not None and int(delivery.get("media_sent") or 0) > 0:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=int(preparing_msg.message_id))
+        except Exception:
+            pass
 
     delivery["modifier_link_notes"] = []
     delivery["modifier_zip_notes"] = await _send_modifier_zips_last(bot, chat_id, mod_ids, db)
@@ -511,9 +573,26 @@ async def send_loot_free_pull_to_chat(
             parse_mode="HTML",
         )
 
+    try:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=build_preparing_html(preview),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        delivery["notes"].append("preparing")
+    except Exception as e:
+        logger.warning("free pull preparing ping failed: %s", e)
+
     media_specs = preview.get("media") or []
     if not media_specs:
         delivery["notes"].append("no media")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=pick_deal_failed_html(),
+            parse_mode="HTML",
+            reply_markup=build_loot_roll_inline_markup(),
+        )
     else:
         mid = int(media_specs[0]["id"])
         row = db.query(Media).filter(Media.id == mid).first()
@@ -539,6 +618,19 @@ async def send_loot_free_pull_to_chat(
             except Exception as e:
                 logger.warning("free pull media skip id=%s: %s", mid, e)
                 delivery["notes"].append(f"skip media: {e}")
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=pick_deal_failed_html(),
+                    parse_mode="HTML",
+                    reply_markup=build_loot_roll_inline_markup(),
+                )
+        else:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=pick_deal_failed_html(),
+                parse_mode="HTML",
+                reply_markup=build_loot_roll_inline_markup(),
+            )
 
     from app.services.loot_free_tease import build_free_pull_tease_html, build_vip_daily_tease_html
 

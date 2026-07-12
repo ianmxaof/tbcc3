@@ -14,6 +14,48 @@ ROLL_DIVIDERS: list[str] = [
     "<pre>┌─ ROLL ─┐\n│ 1-1 ▸ … │\n└─────────┘</pre>",
     "<pre>┈┈┈ TIER GATE ┈┈┈\n    deal the cards\n┈┈┈ · · · · ┈┈┈</pre>",
     "<pre>╔══════════════╗\n║  loot table  ║\n╚══════════════╝</pre>",
+    "<pre>· · · SHUFFLE · · ·\n  vault breathes\n· · · · · · · ·</pre>",
+    "<pre>── DEALING ──\n cards face down\n── ······ ──</pre>",
+    "<pre>« RARITY SPIN »\n   hold still…\n« · · · · · »</pre>",
+    "<pre>⌈ LOOT ⌋\n assembling album\n⌊······⌉</pre>",
+]
+
+# Shown after tier banner / divider while media bytes load (can take a while).
+ROLL_PREPARING_LINES: list[str] = [
+    "Relax — the roll is being prepared.",
+    "Hold up — vault's loading your album.",
+    "Sit tight. Cards are coming off the table.",
+    "Breathe. The blur's still cooking.",
+    "One sec — packing your pull.",
+    "Don't refresh. Media is on the way.",
+    "Patience — spoilers are assembling.",
+    "Still dealing. This can take a moment.",
+    "Almost there — fetching the album stack.",
+    "Stay with me. Loot God doesn't ghost mid-deal.",
+    "Loading the reel… relax your thumb.",
+    "Table's busy. Your pull is not forgotten.",
+]
+
+ROLL_STILL_WORKING_LINES: list[str] = [
+    "Still working — big files take a beat.",
+    "Not stuck. Still pulling media from the vault.",
+    "Hang on — album transfer still in flight.",
+    "Almost dealt. Don't tap Roll again yet.",
+]
+
+ROLL_DEAL_FAILED_LINES: list[str] = [
+    "Deal failed after the table flash — no album landed. Tap <b>/roll</b> again.",
+    "The tier banner showed, but media never arrived. Retry <b>/roll</b> — that pull didn't count as a win.",
+    "Vault hiccup: draw called, album missing. Try once more.",
+]
+
+# Bot-side status before API returns (loot_bot).
+ROLL_LOADING_STATUS_LINES: list[str] = [
+    "Dealing your pull…",
+    "Spinning the table…",
+    "Asking the vault…",
+    "Rarity dice in the air…",
+    "Loot God is dealing…",
 ]
 
 TIER_FLAVOR_BANKS: dict[int, list[str]] = {
@@ -22,12 +64,14 @@ TIER_FLAVOR_BANKS: dict[int, list[str]] = {
         "Barely a taste. Still counts as a pull.",
         "Low heat. The room barely notices you.",
         "Crumb-tier — thin, but the reel spun.",
+        "Fresh low draw — the ladder starts here sometimes.",
     ],
     2: [
         "Skirt lifts. Nothing promised.",
         "A shadow moved behind the spoiler blur.",
         "Peek-tier: enough to keep you curious.",
         "Thin pull — the door is only cracked.",
+        "Independent draw: Peek can land after a hotter roll.",
     ],
     3: [
         "Someone left the door cracked.",
@@ -38,14 +82,14 @@ TIER_FLAVOR_BANKS: dict[int, list[str]] = {
     4: [
         "The room starts breathing with you.",
         "Rhythm picks up — spoilers earned.",
-        "Throb-tier hits different on a streak.",
+        "Throb-tier — mid-band heat on this draw.",
         "Mid-low heat; the album might surprise you.",
     ],
     5: [
         "Mid-heat. You're not leaving yet.",
         "More on the reel than you expected.",
         "Drip-tier — modifiers start whispering.",
-        "Halfway up the ladder — hands already dirty.",
+        "Halfway band — hands already dirty.",
     ],
     6: [
         "Photos stack, video hits — feel the pull.",
@@ -179,6 +223,39 @@ def pick_tier_flavor(tier: int, rng: random.Random | None = None) -> str:
     return r.choice(bank)
 
 
+def pick_preparing_line(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_PREPARING_LINES)
+
+
+def pick_still_working_line(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_STILL_WORKING_LINES)
+
+
+def pick_deal_failed_html(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_DEAL_FAILED_LINES)
+
+
+def pick_loading_status_line(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_LOADING_STATUS_LINES)
+
+
+def build_preparing_html(preview: dict[str, Any] | None = None) -> str:
+    seed = (preview or {}).get("seed")
+    rng = random.Random(seed) if seed is not None else random.Random()
+    # Offset so preparing ≠ same RNG slot as divider when seed shared.
+    rng2 = random.Random((int(seed) + 17) if seed is not None else None)
+    line = html.escape(pick_preparing_line(rng2 if seed is not None else rng))
+    return f"<i>{line}</i>"
+
+
+def build_independent_draw_note_html() -> str:
+    return "<i>Fresh draw — World labels are rarity bands, not a campaign you climb.</i>"
+
+
 def tier_celebration_line(tier: int) -> str | None:
     return TIER_CELEBRATION.get(max(1, min(10, int(tier))))
 
@@ -187,3 +264,17 @@ def build_roll_divider_html(preview: dict[str, Any]) -> str:
     seed = preview.get("seed")
     rng = random.Random(seed) if seed is not None else random.Random()
     return pick_roll_divider_html(rng)
+
+
+def copy_bank_inventory() -> dict[str, int]:
+    """Counts for ops / docs — how much variation exists."""
+    return {
+        "roll_dividers": len(ROLL_DIVIDERS),
+        "preparing_lines": len(ROLL_PREPARING_LINES),
+        "still_working_lines": len(ROLL_STILL_WORKING_LINES),
+        "deal_failed_lines": len(ROLL_DEAL_FAILED_LINES),
+        "loading_status_lines": len(ROLL_LOADING_STATUS_LINES),
+        "tier_flavor_total": sum(len(v) for v in TIER_FLAVOR_BANKS.values()),
+        "tier_celebration": len(TIER_CELEBRATION),
+        "tier_frames": len(TIER_CARD_FRAMES),
+    }

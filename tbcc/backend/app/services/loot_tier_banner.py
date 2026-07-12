@@ -37,6 +37,10 @@ def build_tier_opening_html(db: Session, preview: dict[str, Any]) -> str:
         celebration = tier_celebration_line(tier)
         celeb = f"{celebration}\n\n" if celebration else ""
         inner = f"{preset}\n\n<b>{title}</b>\n<i>{tag}</i>"
+        if (preview.get("roll_kind") or "").strip().lower() == "free":
+            inner += "\n<i>Training table · tiers 1–5 only</i>"
+        else:
+            inner += "\n<i>Fresh draw · not a campaign map</i>"
         return f"{celeb}{wrap_tier_card_body(tier, inner)}"
     # Tier 1 dull, tier 10 loud — until presets are wired per tier
     if tier <= 2:
@@ -54,6 +58,8 @@ def build_tier_opening_html(db: Session, preview: dict[str, Any]) -> str:
     inner = f"{lead} {world_line}<b>{title}</b>\n<i>{tag}</i>"
     if (preview.get("roll_kind") or "").strip().lower() == "free":
         inner += "\n<i>Training table · tiers 1–5 only</i>"
+    else:
+        inner += "\n<i>Fresh draw · not a campaign map</i>"
     return f"{celeb_line}{wrap_tier_card_body(tier, inner)}"
 
 

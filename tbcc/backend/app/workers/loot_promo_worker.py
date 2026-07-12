@@ -1,4 +1,4 @@
-"""Daily Loot Room promo in the main AOF group — posted by @aof_lootgod_bot (loot overseer token)."""
+"""Daily Loot Room promo — Telegram target + Buffer/X mirror via @aof_lootgod_bot."""
 
 from __future__ import annotations
 
@@ -11,6 +11,23 @@ import httpx
 from app.workers.celery_app import celery
 
 logger = logging.getLogger(__name__)
+
+# Banned AOF Main — do not attempt Telegram send; Buffer mirror still runs.
+_BANNED_MAIN_GROUP_CHAT_ID = -1003206350461
+
+
+def _mirror_to_buffer() -> None:
+    try:
+        from app.database.session import SessionLocal
+        from app.services.loot_buffer_mirror import mirror_loot_daily_promo_to_buffer
+
+        db2 = SessionLocal()
+        try:
+            mirror_loot_daily_promo_to_buffer(db2)
+        finally:
+            db2.close()
+    except Exception:
+        logger.exception("Loot daily promo Buffer mirror failed")
 
 
 def _post_loot_promo(*, force: bool = False) -> None:
@@ -33,11 +50,6 @@ def _post_loot_promo(*, force: bool = False) -> None:
                     chat_id = int(env_cid)
                 except ValueError:
                     chat_id = None
-        if chat_id is None:
-            logger.debug(
-                "Loot daily promo: no aof_group_chat_id (Dashboard → Loot overseer, or TBCC_LOOT_AOF_GROUP_CHAT_ID)"
-            )
-            return
 
         hour_cfg = s.get("daily_promo_hour_utc")
         if hour_cfg is None:
@@ -64,8 +76,31 @@ def _post_loot_promo(*, force: bool = False) -> None:
         bot_username = str(s.get("bot_username") or "aof_lootgod_bot")
         thread_id = s.get("aof_group_message_thread_id")
         token = resolve_bot_token_raw(db)
+        buffer_only = bool(s.get("buffer_mirror_enabled"))
     finally:
         db.close()
+
+    # Banned Main: skip Telegram, still mirror to Buffer/X when enabled.
+    if chat_id is not None and int(chat_id) == _BANNED_MAIN_GROUP_CHAT_ID:
+        logger.warning(
+            "Loot daily promo: aof_group_chat_id=%s is banned AOF Main — "
+            "Telegram send skipped; Buffer mirror only. Retarget Dashboard → Loot overseer "
+            "or clear TBCC_LOOT_AOF_GROUP_CHAT_ID.",
+            chat_id,
+        )
+        if buffer_only:
+            _mirror_to_buffer()
+        return
+
+    if chat_id is None:
+        if buffer_only:
+            logger.info("Loot daily promo: no Telegram chat id — Buffer/X mirror only")
+            _mirror_to_buffer()
+            return
+        logger.debug(
+            "Loot daily promo: no aof_group_chat_id (Dashboard → Loot overseer, or TBCC_LOOT_AOF_GROUP_CHAT_ID)"
+        )
+        return
 
     if not token:
         logger.warning("Loot daily promo: loot bot token not configured (TBCC_LOOT_BOT_TOKEN or dashboard)")
@@ -89,17 +124,7 @@ def _post_loot_promo(*, force: bool = False) -> None:
                 logger.warning("Loot daily promo failed: %s %s", r.status_code, r.text)
             else:
                 logger.info("Loot daily promo sent to aof_group_chat_id=%s", chat_id)
-                try:
-                    from app.database.session import SessionLocal
-                    from app.services.loot_buffer_mirror import mirror_loot_daily_promo_to_buffer
-
-                    db2 = SessionLocal()
-                    try:
-                        mirror_loot_daily_promo_to_buffer(db2)
-                    finally:
-                        db2.close()
-                except Exception:
-                    logger.exception("Loot daily promo Buffer mirror failed")
+                _mirror_to_buffer()
     except Exception as e:
         logger.exception("Loot daily promo error: %s", e)
 
@@ -107,7 +132,7 @@ def _post_loot_promo(*, force: bool = False) -> None:
 @celery.task(name="app.workers.loot_promo_worker.send_loot_daily_promo")
 def send_loot_daily_promo(force: bool = False):
     """
-    Post loot game advertisement to the main AOF group once per day.
+    Post loot game advertisement once per day (Telegram target and/or Buffer/X).
 
     Configure in Dashboard → Bots → Loot overseer (not Growth settings).
     Beat runs every hour UTC; only the configured hour sends unless force=True.

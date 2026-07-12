@@ -55,6 +55,7 @@ from telegram.ext import (
 from bots.error_reporter import report_bot_error
 
 from app.services.loot_inline_keyboards import roll_action_label
+from app.services.loot_roll_presentation import pick_loading_status_line
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -63,6 +64,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 API_BASE = os.getenv("TBCC_API_URL", "http://localhost:8000").rstrip("/")
+
+
+def _loading_status_line() -> str:
+    return pick_loading_status_line()
 
 # Longer read timeout + retries: API may be restarting (uvicorn reload) or Windows may hit transient socket limits.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=5.0)
@@ -534,7 +539,7 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data.get("effective") or {}
     status_msg = await _safe_reply_html(
         msg,
-        "<i>Dealing your pull…</i>",
+        f"<i>{html.escape(_loading_status_line())}</i>",
         disable_web_page_preview=True,
     )
 

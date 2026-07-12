@@ -31,6 +31,7 @@ from app.services.loot_creator_submit import submit_creator_profile
 from app.services.loot_player_modifiers import record_modifiers_seen
 from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining, record_roll
 from app.services.subscription_access import is_loot_key_holder
+from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_referral import (
     bonus_free_pulls_for,
     ensure_loot_referral_code,
@@ -718,16 +719,18 @@ def free_pull_status(
     db: Session = Depends(get_db),
 ):
     uid = int(telegram_user_id)
-    rem = free_pulls_remaining(db, uid)
+    operator = is_loot_operator(uid)
+    rem = 999 if operator else free_pulls_remaining(db, uid)
     allowance = free_pull_allowance(db, uid)
-    used = max(0, allowance - rem)
+    used = 0 if operator else max(0, allowance - free_pulls_remaining(db, uid))
     return {
         "telegram_user_id": uid,
-        "free_pull_limit": allowance,
+        "free_pull_limit": 999 if operator else allowance,
         "base_free_pull_limit": FREE_PULL_LIMIT,
         "bonus_free_pulls": bonus_free_pulls_for(db, uid),
         "free_pulls_used": used,
         "free_pulls_remaining": rem,
+        "is_loot_operator": operator,
         "loot_referrals_enabled": loot_referrals_enabled(db),
     }
 
@@ -806,10 +809,13 @@ def key_roll_status(
     db: Session = Depends(get_db),
 ):
     uid = int(telegram_user_id)
+    operator = is_loot_operator(uid)
     return {
         "telegram_user_id": uid,
         "is_loot_key_holder": is_loot_key_holder(db, uid),
-        "free_pulls_remaining": free_pulls_remaining(db, uid),
+        "is_loot_operator": operator,
+        "can_key_roll": operator or is_loot_key_holder(db, uid),
+        "free_pulls_remaining": 999 if operator else free_pulls_remaining(db, uid),
     }
 
 
@@ -822,10 +828,11 @@ def claim_key_roll(
 ):
     """
     Paid loot-key full roll: ladder + modifiers + card reveal beat.
-    Requires active subscription_plans.bot_section='loot'.
+    Requires active subscription_plans.bot_section='loot' (or loot operator QA id).
     """
     uid = int(telegram_user_id)
-    if not is_loot_key_holder(db, uid):
+    operator = is_loot_operator(uid)
+    if not operator and not is_loot_key_holder(db, uid):
         pay = _payment_bot_username()
         pay_hint = f"https://t.me/{pay}?start=loot" if pay else "payment bot /loot"
         raise HTTPException(
@@ -883,6 +890,8 @@ def claim_key_roll(
             record_modifiers_seen(db, uid, mod_ids)
     preview = dict(preview)
     preview["roll_kind"] = "key_roll"
+    if operator:
+        preview["operator_unlimited"] = True
     return {
         "ok": True,
         "roll_kind": "key_roll",
