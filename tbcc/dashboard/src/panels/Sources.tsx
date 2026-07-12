@@ -6,8 +6,10 @@ import { CronScheduleBuilder } from "../components/CronScheduleBuilder";
 import { LinkScrapeDeploy } from "../components/LinkScrapeDeploy";
 import { ChannelIntel } from "../components/ChannelIntel";
 import { ScraperTelegramAuth } from "../components/ScraperTelegramAuth";
+import { ScrapeTransportBar } from "../components/ScrapeTransportBar";
 import { SourceEditorModal, type SourceRow } from "../components/SourceEditorModal";
 import { buildCronFromState, defaultScheduleState, describeCron } from "../utils/cronSchedule";
+import { channelHref } from "../utils/scrapeTransportStatus";
 
 function formatMediaTypes(raw: unknown): string {
   const s = String(raw ?? "both").toLowerCase();
@@ -129,6 +131,8 @@ export function Sources({ embedded = false }: { embedded?: boolean }) {
       <div className="mb-6 max-w-2xl">
         <ScraperTelegramAuth />
       </div>
+
+      <ScrapeTransportBar pools={poolList} onNotice={setScrapeNotice} />
 
       <LinkScrapeDeploy />
 
@@ -276,8 +280,28 @@ export function Sources({ embedded = false }: { embedded?: boolean }) {
                 >
                   <td className="p-3">{String(s.id)}</td>
                   <td className="p-3 font-medium text-slate-100">{String(s.name)}</td>
-                  <td className="p-3 font-mono text-xs text-cyan-300 max-w-[140px] truncate" title={String(s.identifier)}>
-                    {String(s.identifier)}
+                  <td className="p-3" onClick={(e) => e.stopPropagation()}>
+                    {(() => {
+                      const href = channelHref({ identifier: String(s.identifier || "") });
+                      if (href) {
+                        return (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-xs text-cyan-300 hover:text-cyan-200 underline max-w-[140px] truncate inline-block"
+                            title={href}
+                          >
+                            {String(s.identifier)}
+                          </a>
+                        );
+                      }
+                      return (
+                        <span className="font-mono text-xs text-cyan-300 max-w-[140px] truncate inline-block" title={String(s.identifier)}>
+                          {String(s.identifier)}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="p-3">{String(s.pool_id)}</td>
                   <td className="p-3 text-slate-300">{formatMediaTypes(s.media_types)}</td>

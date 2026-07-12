@@ -29,6 +29,15 @@ class ScrapeChannelProfile(Base):
     folder_label = Column(String(128), nullable=True)
     tags_sample = Column(Text, nullable=True)
 
+    # Lightweight TGStat-style metrics (collected during scrape — no heavy enrichment)
+    participants_count = Column(Integer, nullable=True)
+    avg_views_sample = Column(Float, nullable=True)
+    max_views_sample = Column(Integer, nullable=True)
+    views_sampled = Column(Integer, nullable=False, default=0)
+    invite_link = Column(String(512), nullable=True)
+    suggested_pool_keys = Column(String(256), nullable=True)
+    about = Column(String(1024), nullable=True)
+
     posts_per_day = Column(Float, nullable=True)
     posts_per_week = Column(Float, nullable=True)
     posts_per_month = Column(Float, nullable=True)

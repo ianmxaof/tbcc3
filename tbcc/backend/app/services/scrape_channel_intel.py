@@ -97,6 +97,71 @@ def extract_hashtags_from_texts(texts: list[str], *, limit: int = 32) -> str:
     return ", ".join(out)
 
 
+def compute_views_sample(views: list[int]) -> dict[str, Any]:
+    """Cheap view stats from message.views already present on channel posts."""
+    clean = [int(v) for v in views if v is not None and int(v) >= 0]
+    if not clean:
+        return {
+            "avg_views_sample": None,
+            "max_views_sample": None,
+            "views_sampled": 0,
+        }
+    return {
+        "avg_views_sample": round(sum(clean) / len(clean), 1),
+        "max_views_sample": max(clean),
+        "views_sampled": len(clean),
+    }
+
+
+def public_telegram_url(*, username: str | None = None, identifier: str | None = None, invite_link: str | None = None) -> str | None:
+    """Best outbound t.me URL for dashboard hyperlinks."""
+    inv = (invite_link or "").strip()
+    if inv.startswith("http://") or inv.startswith("https://"):
+        return inv
+    if inv.startswith("t.me/"):
+        return "https://" + inv
+    if inv.startswith("+") or inv.startswith("joinchat/"):
+        return f"https://t.me/{inv.lstrip('/')}"
+    uname = (username or "").strip().lstrip("@")
+    if uname:
+        return f"https://t.me/{uname}"
+    ident = (identifier or "").strip()
+    if ident.startswith("http://") or ident.startswith("https://"):
+        return ident
+    if ident.startswith("t.me/"):
+        return "https://" + ident
+    if ident.startswith("@"):
+        return f"https://t.me/{ident[1:]}"
+    if "/+" in ident or "joinchat" in ident.lower():
+        if ident.startswith("t.me"):
+            return "https://" + ident if not ident.startswith("http") else ident
+        return ident if ident.startswith("http") else f"https://t.me/{ident.lstrip('/')}"
+    return None
+
+
+async def fetch_channel_full_light(client, entity) -> dict[str, Any]:
+    """
+    One GetFullChannel call — participants_count + about only.
+    Failures are swallowed (private channels / flood). No GetParticipants.
+    """
+    out: dict[str, Any] = {"participants_count": None, "about": None}
+    try:
+        from telethon.tl.functions.channels import GetFullChannelRequest
+
+        full = await client(GetFullChannelRequest(entity))
+        full_chat = getattr(full, "full_chat", None)
+        if full_chat is not None:
+            pc = getattr(full_chat, "participants_count", None)
+            if pc is not None:
+                out["participants_count"] = int(pc)
+            about = getattr(full_chat, "about", None)
+            if about:
+                out["about"] = str(about)[:1024]
+    except Exception as e:
+        logger.debug("GetFullChannel light failed: %s", e)
+    return out
+
+
 def _aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
@@ -150,6 +215,11 @@ def upsert_channel_profile(
     folder_label: str | None = None,
     tags_sample: str | None = None,
     cadence: dict[str, Any] | None = None,
+    participants_count: int | None = None,
+    views_stats: dict[str, Any] | None = None,
+    invite_link: str | None = None,
+    suggested_pool_keys: str | None = None,
+    about: str | None = None,
 ) -> ScrapeChannelProfile:
     row = db.query(ScrapeChannelProfile).filter(ScrapeChannelProfile.chat_id == int(chat_id)).first()
     now = datetime.utcnow()
@@ -179,6 +249,10 @@ def upsert_channel_profile(
         row.folder_label = folder_label[:128]
     if tags_sample is not None:
         row.tags_sample = (tags_sample or "")[:2000] or None
+        if suggested_pool_keys is None:
+            from app.services.scrape_tag_pool_map import suggest_pool_keys_csv
+
+            suggested_pool_keys = suggest_pool_keys_csv(tags_sample)
     if cadence:
         row.posts_per_day = cadence.get("posts_per_day")
         row.posts_per_week = cadence.get("posts_per_week")
@@ -188,6 +262,21 @@ def upsert_channel_profile(
         row.cadence_span_days = cadence.get("cadence_span_days")
         cj = cadence.get("cadence_json") or {}
         row.cadence_json = json.dumps(cj, separators=(",", ":")) if cj else row.cadence_json
+    if participants_count is not None:
+        row.participants_count = int(participants_count)
+    if views_stats:
+        if views_stats.get("avg_views_sample") is not None:
+            row.avg_views_sample = float(views_stats["avg_views_sample"])
+        if views_stats.get("max_views_sample") is not None:
+            row.max_views_sample = int(views_stats["max_views_sample"])
+        if views_stats.get("views_sampled") is not None:
+            row.views_sampled = int(views_stats["views_sampled"])
+    if invite_link is not None:
+        row.invite_link = (invite_link or "")[:512] or None
+    if suggested_pool_keys is not None:
+        row.suggested_pool_keys = (suggested_pool_keys or "")[:256] or None
+    if about is not None:
+        row.about = (about or "")[:1024] or None
     row.updated_at = now
     db.flush()
     return row
@@ -215,6 +304,18 @@ def profile_to_dict(row: ScrapeChannelProfile) -> dict[str, Any]:
         "category": row.category,
         "folder_label": row.folder_label,
         "tags_sample": row.tags_sample,
+        "participants_count": row.participants_count,
+        "avg_views_sample": row.avg_views_sample,
+        "max_views_sample": row.max_views_sample,
+        "views_sampled": row.views_sampled,
+        "invite_link": row.invite_link,
+        "telegram_url": public_telegram_url(
+            username=row.username,
+            identifier=row.identifier,
+            invite_link=row.invite_link,
+        ),
+        "suggested_pool_keys": row.suggested_pool_keys,
+        "about": row.about,
         "posts_per_day": row.posts_per_day,
         "posts_per_week": row.posts_per_week,
         "posts_per_month": row.posts_per_month,

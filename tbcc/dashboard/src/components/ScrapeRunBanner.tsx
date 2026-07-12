@@ -77,7 +77,7 @@ function isActive(status: string | undefined) {
 }
 
 function isFinished(status: string | undefined) {
-  return status === "done" || status === "failed" || status === "skipped";
+  return status === "done" || status === "failed" || status === "skipped" || status === "cancelled";
 }
 
 function runEndedAt(run: ScrapeRunRow): number {

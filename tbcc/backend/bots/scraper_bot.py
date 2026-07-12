@@ -13,14 +13,18 @@ from app.services.scrape_channel_intel import (
     auto_skip_forward_disabled,
     chat_id_from_entity,
     compute_posting_cadence,
+    compute_views_sample,
     entity_forward_flag_disabled,
     extract_hashtags_from_texts,
+    fetch_channel_full_light,
     is_forward_restricted_error,
     pool_key_for_pool_id,
     probe_channel_forwardable,
+    public_telegram_url,
     scraper_forward_only,
     upsert_channel_profile,
 )
+from app.services.scrape_tag_pool_map import suggest_pool_keys_csv
 from app.services.scrape_run_service import ERROR_CATALOG, normalize_media_types, utcnow
 from app.services.telegram_storage import ForwardRestrictedStorageError, TelegramStorage
 from app.utils.telegram_peer import normalize_telegram_username, resolve_telethon_entity
@@ -262,7 +266,11 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
     scanned_with_media = 0
     message_dates: list = []
     message_texts: list[str] = []
+    message_views: list[int] = []
     channel_forward_blocked = False
+
+    # One cheap GetFullChannel for subscriber count (no participant list).
+    full_meta = await fetch_channel_full_light(client, entity)
 
     try:
         async for message in client.iter_messages(entity, limit=limit):
@@ -271,6 +279,12 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
             txt = getattr(message, "message", None) or getattr(message, "text", None)
             if txt:
                 message_texts.append(str(txt))
+            views = getattr(message, "views", None)
+            if views is not None:
+                try:
+                    message_views.append(int(views))
+                except (TypeError, ValueError):
+                    pass
 
             kind = _message_media_kind(message)
             if not kind:
@@ -326,12 +340,16 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
 
         cadence = compute_posting_cadence(message_dates)
         tags = extract_hashtags_from_texts(message_texts)
+        views_stats = compute_views_sample(message_views)
+        suggested = suggest_pool_keys_csv(tags)
+        uname = getattr(entity, "username", None)
+        tg_url = public_telegram_url(username=uname, identifier=ident)
         upsert_channel_profile(
             db,
             chat_id=chat_id,
             source_id=source.id,
             title=getattr(entity, "title", None) or source.name,
-            username=getattr(entity, "username", None),
+            username=uname,
             identifier=ident,
             forward_enabled=False if channel_forward_blocked else True,
             skip_reason="forward_restricted" if channel_forward_blocked else None,
@@ -341,6 +359,11 @@ async def _scrape_one_source(source: Source, client, storage: TelegramStorage, d
             folder_label=_folder_label_from_source(source),
             tags_sample=tags or None,
             cadence=cadence,
+            participants_count=full_meta.get("participants_count"),
+            views_stats=views_stats,
+            invite_link=tg_url,
+            suggested_pool_keys=suggested,
+            about=full_meta.get("about"),
         )
         if channel_forward_blocked and skip_noforward:
             source.active = False
