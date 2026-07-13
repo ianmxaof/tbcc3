@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-07-13 (ZIP bundle AOF brand filename — ext 1.36.1)
+**Last updated:** 2026-07-13 (Headless stack default — no WT focus steal; panel soft-show)
 
 ## Sprint goal
 
@@ -11,8 +11,8 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Item | Owner | Notes |
 |------|-------|-------|
 | Sale FOMO announce | agent | **2026-07-13:** every fulfilled sale (loot key / pack / sub) → anonymous post to Telegram network + Buffer/X (`TBCC_SALE_ANNOUNCE_*`). Hooked from `notify_sale_fulfilled`; Celery `sale_announce_worker`. |
-| Celery home backlog + import priority | agent | **2026-07-12:** resume + seed + watchdog dedupe/import priority. Tray Services copy rewrite + **Services triage chips** (health cache, Fix all / conflict rows, severity paint). **Scheduler stall fix:** enqueue lock TTL capped 15m; drain requeues on lock timeout; drain wait 180s; cleared 18→0 overdue. |
-| Userscript monorepo + FetLife suite | agent | **v1.4 + ext 1.30:** Profile & stories tab — social-proof count pad + story types nested (no FAB). |
+| Celery home backlog + import priority | agent | **2026-07-13:** **Headless stack default** (`TBCC_STACK_CONSOLE=headless`): tray Start/Restart no longer opens WT/console (fixes focus steal + accidental Ctrl+C). Opt-in `=wt` for debug tabs. Supervisor mini: TopMost off by default; soft re-show. |
+| Userscript monorepo + FetLife suite | agent | **v1.7 + ext 1.39:** FLConsole 4 privacy presets (editable JSON); place→kinksters input (no hardcoded SJ); cross-tab overlay. |
 | Perchance Gemini-parity suite | agent | Prompt packs + suite; **headless** `run_perchance_headless.py` + `perchance_image_client` (verify→generate→disk/R2/loot). Gemini CLI fallback. |
 | ThisVid upload MVP | agent | Playwright CLI + **ext 1.35** ThisVid enhancer: title filter + infinite scroll + **auto-fill URL from Erome → ThisVid**. TM suite optional. |
 | AOF watermark brand rename | agent | After Explorer watermark: `YYYYMMDD · TG@AOFMAINHUB · {content} · allmylinks.comaof69 · {tail}.ext` |
