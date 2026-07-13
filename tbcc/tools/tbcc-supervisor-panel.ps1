@@ -647,6 +647,7 @@ function Start-TbccSupSnapshotProducer {
     Stop            = $false
     Snapshot        = $null
     SnapshotAt      = $null
+    StartedAt       = (Get-Date)
     Alive           = $false
     LastError       = $null
     Iterations      = 0
@@ -746,18 +747,30 @@ function Get-TbccSupProducerSnapshot {
     netstat) or dies (loop fault), the UI would otherwise keep painting stale data with no
     visible freeze — so we surface age instead of lying.
   #>
-  param([int]$StaleAfterSec = 8)
+  param([int]$StaleAfterSec = 8, [int]$InitGraceSec = 15)
   $p = $script:TbccSupProducer
   if (-not $p -or -not $p.Shared) { return $null }
   $shared = $p.Shared
   $snap = $shared.Snapshot
   $at = $shared.SnapshotAt
   $age = if ($at) { ((Get-Date) - $at).TotalSeconds } else { [double]::PositiveInfinity }
+  # Classify so the UI tick can tell "still dot-sourcing the runspace" (skip + wait, do NOT
+  # run the 6s synchronous snapshot on the pump) apart from "dead/wedged" (fall back + restart).
+  $state = if ($snap) {
+    "ready"
+  } elseif ($shared.LastError -like "load:*") {
+    "loadfailed"
+  } elseif ($shared.StartedAt -and (((Get-Date) - $shared.StartedAt).TotalSeconds -lt $InitGraceSec)) {
+    "initializing"
+  } else {
+    "wedged"
+  }
   return @{
     Snap      = $snap
     AgeSec    = $age
     Stale     = ($age -gt $StaleAfterSec)
     Producing = [bool]$shared.Alive
+    State     = $state
     LastError = $shared.LastError
   }
 }
@@ -1434,19 +1447,20 @@ function Show-TbccSupervisorMiniPanel {
         $script:TbccSupMiniRefreshTimer.Interval = 1200
       }
       # Read the off-thread producer; fall back to a synchronous lite snap only if it's
-      # absent/dead (and self-heal by (re)starting it). No WMI/netstat on the pump.
+      # absent or dead/wedged (self-heal by (re)starting) — never while it is still
+      # dot-sourcing, so a cold open doesn't freeze the pump. No WMI/netstat on the pump.
       $prod = Get-TbccSupProducerSnapshot
       $snap = $null
       $stale = $false
       if ($prod -and $prod.Snap) {
         $snap = $prod.Snap
         $stale = [bool]$prod.Stale
-      } elseif (-not $prod -or -not $prod.Producing) {
+      } elseif ($null -eq $prod -or ($prod.State -ne "initializing")) {
         $snap = Get-TbccSupervisorHealthSnapshot -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack) `
           -NetPrev $ui.NetPrev -Lite
         [void](Start-TbccSupSnapshotProducer -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack))
       }
-      # else: producer warming up — skip apply this tick.
+      # else: producer initializing (dot-sourcing) — skip apply this tick, let it come up.
       if ($snap) {
         Update-TbccSupMiniUi -Snap $snap
         if ($stale -and $script:TbccSupMiniUi -and $script:TbccSupMiniUi.Foot) {
@@ -1914,9 +1928,10 @@ function Show-TbccSupervisorPanel {
     if ($script:TbccSupPanelBusy) { return }
     $script:TbccSupPanelBusy = $true
     try {
-      # Read the off-thread producer's latest snapshot. Fall back to a synchronous snapshot
-      # only when the producer is absent or dead (self-healing (re)start for next tick) —
-      # this keeps the panel alive even if the runspace never came up.
+      # Read the off-thread producer's latest snapshot. Only run the (blocking) synchronous
+      # fallback when the producer is genuinely absent or dead/wedged — NOT while it is still
+      # dot-sourcing the runspace, or tick 1 would freeze the pump for ~6s on every cold open
+      # and throw away the producer that is coming up.
       $prod = Get-TbccSupProducerSnapshot
       $snap = $null
       $stale = $false
@@ -1925,11 +1940,12 @@ function Show-TbccSupervisorPanel {
         $snap = $prod.Snap
         $stale = [bool]$prod.Stale
         $ageSec = [int]$prod.AgeSec
-      } elseif (-not $prod -or -not $prod.Producing) {
+      } elseif ($null -eq $prod -or ($prod.State -ne "initializing")) {
+        # No producer object (cold), load-failed, or wedged → one sync snapshot + (re)start.
         $snap = Get-TbccSupervisorHealthSnapshot -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack) -NetPrev $ui.NetPrev
         [void](Start-TbccSupSnapshotProducer -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack))
       }
-      # else: producer alive but still warming up — skip the data apply this tick.
+      # else: producer initializing (dot-sourcing) — skip apply, show "starting", let it come up.
       if (-not $snap -and $ui.StatusLbl) {
         $ui.StatusLbl.Text = "starting monitor..."
         $ui.StatusLbl.ForeColor = $ui.Theme.Muted
@@ -1971,6 +1987,9 @@ function Show-TbccSupervisorPanel {
   })
   $form.Add_FormClosed({
     $script:TbccSupPanelClosing = $true
+    # Single shared producer: closing a *hidden* (parked) full panel while the mini is the
+    # active consumer would stop the producer the mini is using — the mini's next tick
+    # self-heals (State != initializing -> sync + restart), so it recovers with one hitch.
     Stop-TbccSupSnapshotProducer
     $t = $script:TbccSupPanelRefreshTimer
     if ($t) {
