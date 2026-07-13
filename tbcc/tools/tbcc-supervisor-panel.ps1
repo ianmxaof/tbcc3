@@ -708,7 +708,15 @@ function Update-TbccSupPanelUi {
             if ($u.OnNotify) { & $u.OnNotify ("Service action failed: " + $_.Exception.Message) }
           }
         })
-        if ($ui.Tip) { $ui.Tip.SetToolTip($cell, "Toggle | Ctrl+restart") }
+        if ($ui.Tip) {
+          $row0 = $cache.ById[$id]
+          if ($row0) {
+            $tipTxt = Get-TbccServiceMenuTooltip -Service $row0.Service -Status ([string]$row0.Status) -UserEnabled:([bool]$row0.UserEnabled)
+            $ui.Tip.SetToolTip($cell, $tipTxt)
+          } else {
+            $ui.Tip.SetToolTip($cell, "Toggle | Ctrl+restart")
+          }
+        }
         [void]$ui.SvcGrid.Controls.Add($cell, $col, $ri2)
         $ui.SvcCells[$id] = $cell
       }
@@ -726,10 +734,13 @@ function Update-TbccSupPanelUi {
       $en = [bool]$row.UserEnabled
       $ledSt = if (-not $en) { "off" } elseif ($st -eq "up") { "up" } else { "crit" }
       $det = if (-not $en) { "off" } elseif ($st -eq "up") { "UP" } else { "DN" }
-      $title = [string]$svc.Title
-      if ($title.Length -gt 18) { $title = $title.Substring(0, 16) + ".." }
+      $label = Get-TbccServicePanelShortLabel -Service $svc
       $cell.Tag.Service = $svc
-      Update-TbccSupLedRow -Row $cell -Label $title -Status $ledSt -Detail $det -Theme $t
+      Update-TbccSupLedRow -Row $cell -Label $label -Status $ledSt -Detail $det -Theme $t
+      if ($ui.Tip) {
+        $tipTxt = Get-TbccServiceMenuTooltip -Service $svc -Status $st -UserEnabled:$en
+        $ui.Tip.SetToolTip($cell, $tipTxt)
+      }
     }
   }
 

@@ -846,6 +846,15 @@ def compute_strong_signals(db: Session, *, days: int | None = None) -> dict[str,
         logger.debug("industry benchmark signals: %s", e)
 
     market_intel = _signals_market_intel(days=min(days, 14))
+    weekly_cycle: list[dict[str, Any]] = []
+    try:
+        from app.services.market_intel_cycle import cycle_signal_from_last_record
+
+        sig = cycle_signal_from_last_record()
+        if sig:
+            weekly_cycle = [sig]
+    except Exception as e:
+        logger.debug("weekly cycle signal: %s", e)
 
     merged: list[dict[str, Any]] = []
     for bucket in (
@@ -862,6 +871,7 @@ def compute_strong_signals(db: Session, *, days: int | None = None) -> dict[str,
         hub_web,
         industry,
         market_intel,
+        weekly_cycle,
     ):
         merged.extend(bucket)
 

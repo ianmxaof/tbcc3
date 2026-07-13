@@ -66,7 +66,7 @@ function Initialize-TbccServiceConsole {
 
 function Test-TbccWtPowershellHubCommand {
   param([Parameter(Mandatory = $true)][string]$Command)
-  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|run-tbcc-orchestrator\.ps1|run-tbcc-stackwatch\.ps1|run-openclaw-gateway\.ps1')
+  return ($Command -match 'run-tbcc-service\.ps1|show-tbcc-error-hub\.ps1|show-tbcc-remote-worker\.ps1|run-tbcc-orchestrator\.ps1|run-tbcc-stackwatch\.ps1|run-openclaw-gateway\.ps1')
 }
 
 function Register-TbccSelfClosingServiceTab {
@@ -272,6 +272,157 @@ function Invoke-TbccWtCommandSilent {
   } catch {
     return -1
   }
+}
+
+function Test-TbccWtNewTabBackground {
+  <#
+  Default ON: after dispatching a new tab into an EXISTING TBCC WT window, keep that window
+  in the background instead of letting Windows Terminal foreground it (focus steal on restart).
+  Demotion is skipped only when WT was the foreground window before dispatch (user is actively
+  in it), so it never yanks a window you are using. Set TBCC_WT_NEW_TAB_BACKGROUND=0 to disable.
+  #>
+  param([string]$TbccRoot = "")
+  $raw = ($env:TBCC_WT_NEW_TAB_BACKGROUND -as [string])
+  if (-not $raw -and $TbccRoot) {
+    $envPath = Join-Path $TbccRoot ".env"
+    if (Test-Path -LiteralPath $envPath) {
+      foreach ($line in Get-Content -LiteralPath $envPath -ErrorAction SilentlyContinue) {
+        $t = $line.Trim()
+        if (-not $t -or $t.StartsWith("#")) { continue }
+        if ($t -match '^\s*TBCC_WT_NEW_TAB_BACKGROUND\s*=\s*(.+)$') {
+          $raw = $Matches[1].Trim().Trim('"')
+          break
+        }
+      }
+    }
+  }
+  if (-not $raw) { return $true }
+  return $raw.Trim().ToLower() -notin @('0', 'false', 'no', 'off')
+}
+
+function Initialize-TbccWinInterop {
+  <# Load the tiny user32 P/Invoke shim once (idempotent). Returns $true when available. #>
+  if (([System.Management.Automation.PSTypeName]'Tbcc.WinInterop').Type) { return $true }
+  try {
+    Add-Type -Namespace 'Tbcc' -Name 'WinInterop' -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool ShowWindowAsync(System.IntPtr hWnd, int nCmdShow);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool IsIconic(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr GetForegroundWindow();
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool SetWindowPos(System.IntPtr hWnd, System.IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+'@ -ErrorAction Stop
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Get-TbccWtHostForeground {
+  <#
+  True when the reused WT host window is CURRENTLY the foreground window — i.e. the user is
+  actively in it, so a background tab add must not demote it. Captured before dispatch.
+  #>
+  param([int]$WtHostPid)
+  if ($WtHostPid -le 4) { return $false }
+  if (-not (Initialize-TbccWinInterop)) { return $false }
+  try {
+    $proc = Get-Process -Id $WtHostPid -ErrorAction Stop
+    $hWnd = $proc.MainWindowHandle
+    if ($hWnd -eq [System.IntPtr]::Zero) { return $false }
+    return ([Tbcc.WinInterop]::GetForegroundWindow() -eq $hWnd)
+  } catch {
+    return $false
+  }
+}
+
+# Push the reused WT host to the bottom of the Z-order without activating it (no minimize jump),
+# or keep it minimized if it already was. Re-applied on a loop across WT's async activation window.
+$script:TbccWtDemoteScriptBlock = {
+  param([int]$WtHostPid, [int]$DurationMs, [int]$IntervalMs)
+  $HWND_BOTTOM = [System.IntPtr]1
+  $SWP = [uint32](0x0010 -bor 0x0002 -bor 0x0001)  # NOACTIVATE | NOMOVE | NOSIZE
+  $SW_SHOWMINNOACTIVE = 7
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($DurationMs)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      $proc = Get-Process -Id $WtHostPid -ErrorAction Stop
+      $hWnd = $proc.MainWindowHandle
+      if ($hWnd -ne [System.IntPtr]::Zero) {
+        if ([Tbcc.WinInterop]::IsIconic($hWnd)) {
+          [void][Tbcc.WinInterop]::ShowWindowAsync($hWnd, $SW_SHOWMINNOACTIVE)
+        } else {
+          [void][Tbcc.WinInterop]::SetWindowPos($hWnd, $HWND_BOTTOM, 0, 0, 0, 0, $SWP)
+        }
+      }
+    } catch {}
+    Start-Sleep -Milliseconds $IntervalMs
+  }
+}
+
+function Start-TbccWtHostDemotionAsync {
+  <#
+  Begin demoting the WT host window in a background runspace so it overlaps WT's async tab
+  activation (which fires after the silent dispatcher exits). Returns a handle for reaping,
+  or $null when interop/runspace is unavailable. Pair with Stop-TbccWtHostDemotionAsync.
+  #>
+  param([int]$WtHostPid, [int]$DurationMs = 1600, [int]$IntervalMs = 100)
+  if ($WtHostPid -le 4) { return $null }
+  if (-not (Initialize-TbccWinInterop)) { return $null }
+  try {
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript($script:TbccWtDemoteScriptBlock).AddArgument($WtHostPid).AddArgument($DurationMs).AddArgument($IntervalMs)
+    $handle = $ps.BeginInvoke()
+    return [pscustomobject]@{ PS = $ps; Handle = $handle }
+  } catch {
+    return $null
+  }
+}
+
+function Stop-TbccWtHostDemotionAsync {
+  <# Wait for (or stop) the demotion runspace and dispose it. Safe on $null. #>
+  param($Job, [int]$TimeoutMs = 4000)
+  if (-not $Job) { return }
+  try {
+    if ($Job.Handle -and -not $Job.Handle.AsyncWaitHandle.WaitOne($TimeoutMs)) {
+      [void]$Job.PS.Stop()
+    } elseif ($Job.Handle) {
+      [void]$Job.PS.EndInvoke($Job.Handle)
+    }
+  } catch {}
+  finally { try { $Job.PS.Dispose() } catch {} }
+}
+
+function Set-TbccWtHostWindowBackground {
+  <#
+  Synchronous fallback demotion (used only when the background runspace is unavailable):
+  push the host to the bottom of the Z-order, or keep it minimized, across a short settle window.
+  #>
+  param([int]$WtHostPid, [int]$Retries = 8, [int]$DelayMs = 120)
+  if ($WtHostPid -le 4) { return $false }
+  if (-not (Initialize-TbccWinInterop)) { return $false }
+  $HWND_BOTTOM = [System.IntPtr]1
+  $SWP = [uint32](0x0010 -bor 0x0002 -bor 0x0001)  # NOACTIVATE | NOMOVE | NOSIZE
+  $SW_SHOWMINNOACTIVE = 7
+  $applied = $false
+  for ($i = 0; $i -lt $Retries; $i++) {
+    try {
+      $proc = Get-Process -Id $WtHostPid -ErrorAction Stop
+      $hWnd = $proc.MainWindowHandle
+      if ($hWnd -ne [System.IntPtr]::Zero) {
+        if ([Tbcc.WinInterop]::IsIconic($hWnd)) {
+          [void][Tbcc.WinInterop]::ShowWindowAsync($hWnd, $SW_SHOWMINNOACTIVE)
+        } else {
+          [void][Tbcc.WinInterop]::SetWindowPos($hWnd, $HWND_BOTTOM, 0, 0, 0, 0, $SWP)
+        }
+        $applied = $true
+      }
+    } catch {}
+    Start-Sleep -Milliseconds $DelayMs
+  }
+  return $applied
 }
 
 function Get-TbccServiceTabWrapperProcesses {
@@ -510,6 +661,18 @@ function Get-TbccErrorMonitorCmd {
   $tbccQ = '"' + $TbccRoot + '"'
   $monQ = '"' + $monitor + '"'
   return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $monQ + ' -TbccRoot ' + $tbccQ)
+}
+
+function Get-TbccRemoteWorkerMonitorCmd {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [int]$TickSec = 0
+  )
+  $monitor = Join-Path $TbccRoot "scripts\show-tbcc-remote-worker.ps1"
+  $tbccQ = '"' + $TbccRoot + '"'
+  $monQ = '"' + $monitor + '"'
+  $tickArg = if ($TickSec -gt 0) { " -TickSec $TickSec" } else { "" }
+  return ('powershell -NoProfile -ExecutionPolicy Bypass -File ' + $monQ + ' -TbccRoot ' + $tbccQ + $tickArg)
 }
 
 function Get-TbccStackWatchCmd {

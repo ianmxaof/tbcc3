@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { calmToastStyle, type ToastSeverityKind } from "../utils/severityToastColors";
 
 type Conflict = {
   code: string;
@@ -55,6 +56,12 @@ function clearDismissedFingerprint() {
   } catch {
     /* ignore */
   }
+}
+
+function bannerSeverityKind(criticalCount: number, total: number): ToastSeverityKind {
+  if (total <= 0) return "info";
+  if (criticalCount > 0) return "critical";
+  return "warning";
 }
 
 export function SystemHealthBanner() {
@@ -154,19 +161,23 @@ export function SystemHealthBanner() {
   const critical = conflicts.filter((c) => c.severity === "critical");
   const fixable = conflicts.filter((c) => c.action);
   const apiDown = conflicts.some((c) => c.code === "api_unreachable");
+  const calm = calmToastStyle(bannerSeverityKind(critical.length, conflicts.length));
 
   return (
     <div
-      className={
-        critical.length
-          ? "bg-red-950/90 border-b border-red-700 px-4 py-2 text-sm text-red-100"
-          : "bg-amber-950/80 border-b border-amber-700 px-4 py-2 text-sm text-amber-100"
-      }
+      className="border-b px-4 py-2 text-sm text-[var(--tbcc-text-primary,#cdd6f4)] bg-[var(--tbcc-bg-surface,rgba(30,30,46,0.92))]"
+      style={{
+        borderBottomColor: calm.accentBorder,
+        boxShadow: `inset 0 3px 0 0 ${calm.accentBorder}`,
+      }}
       role="status"
     >
       <div className="flex flex-wrap items-start gap-3">
         <div className="flex-1 min-w-[200px]">
           <strong className="font-medium">
+            <span className="mr-1.5" aria-hidden>
+              {calm.emoji}
+            </span>
             {critical.length ? "TBCC system issues" : "TBCC warnings"}
           </strong>
           <ul className="mt-1 space-y-2">
@@ -180,7 +191,8 @@ export function SystemHealthBanner() {
                     type="button"
                     disabled={fixing !== null}
                     onClick={() => void runRemediate([c.code])}
-                    className="text-xs px-2 py-0.5 rounded bg-red-800/80 hover:bg-red-700 text-red-50 disabled:opacity-50 shrink-0"
+                    className="text-xs px-2 py-0.5 rounded border border-[var(--tbcc-bg-elevated,#45475a)] bg-transparent hover:bg-white/5 disabled:opacity-50 shrink-0"
+                    style={{ borderColor: calm.accentBorder }}
                   >
                     {fixing === c.code ? "…" : c.action_label || "Fix"}
                   </button>
@@ -245,7 +257,8 @@ export function SystemHealthBanner() {
           {fixable.length > 0 && !apiDown ? (
             <button
               type="button"
-              className="text-xs px-2 py-1 rounded bg-red-800/80 hover:bg-red-700 text-red-50 disabled:opacity-50"
+              className="text-xs px-2 py-1 rounded border disabled:opacity-50"
+              style={{ borderColor: calm.accentBorder }}
               disabled={fixing !== null}
               onClick={() => void runRemediate()}
             >

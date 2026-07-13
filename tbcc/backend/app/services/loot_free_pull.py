@@ -11,6 +11,7 @@ from app.models.loot import LootPoolEligibility, LootPlayerMediaSeen
 from app.models.media import Media
 from app.services.loot_free_tease import pick_tease_lines
 from app.services.loot_roll_presentation import pick_tier_flavor
+from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_player_stats import free_pull_allowance, free_pulls_remaining, record_free_pull
 from app.services.loot_referral import try_credit_referrer_for_pull
 from app.services.loot_tier_catalog import FREE_PULL_LIMIT
@@ -29,8 +30,9 @@ def build_free_pull_preview(
     seed: int | None = None,
 ) -> dict[str, Any]:
     rng = random.Random(seed)
+    operator = is_loot_operator(telegram_user_id)
     remaining_before = free_pulls_remaining(db, telegram_user_id)
-    if remaining_before <= 0:
+    if remaining_before <= 0 and not operator:
         return {
             "ok": False,
             "reason": "free_pulls_exhausted",
@@ -39,6 +41,8 @@ def build_free_pull_preview(
             "free_pulls_remaining": 0,
             "free_pull_limit": free_pull_allowance(db, telegram_user_id),
         }
+    if operator:
+        remaining_before = max(remaining_before, 999)
 
     rarity = roll_free_rarity_tier(rng)
     rarity = min(rarity, FREE_PULL_MAX_TIER)
@@ -73,7 +77,7 @@ def build_free_pull_preview(
         .filter(LootPlayerMediaSeen.telegram_user_id == int(telegram_user_id))
         .all()
     ]
-    if seen_ids:
+    if seen_ids and not operator:
         q = q.filter(~Media.id.in_(seen_ids))
 
     candidates = q.all()
@@ -142,14 +146,25 @@ def commit_free_pull(db: Session, telegram_user_id: int, preview: dict[str, Any]
     """Increment free pull counter and mark media seen after successful delivery."""
     if not preview.get("ok"):
         return preview
-    used_before = record_free_pull(db, int(telegram_user_id))
+    uid = int(telegram_user_id)
+    operator = is_loot_operator(uid)
+    if operator:
+        # Unlimited QA: do not burn the free-pull budget.
+        media_ids = [int(m["id"]) for m in (preview.get("media") or []) if m.get("id") is not None]
+        preview = dict(preview)
+        preview["free_pulls_used"] = 0
+        preview["free_pulls_remaining"] = 999
+        preview["operator_unlimited"] = True
+        preview["free_pull_number"] = int(preview.get("free_pull_number") or 1)
+        return preview
+    used_before = record_free_pull(db, uid)
     try:
         from app.services.growth_attribution import EVENT_LOOT_FREE_PULL, record_growth_attribution
 
         record_growth_attribution(
             db,
             event_type=EVENT_LOOT_FREE_PULL,
-            telegram_user_id=int(telegram_user_id),
+            telegram_user_id=uid,
             extra={"free_pull_index_before": used_before},
         )
         db.commit()
@@ -157,9 +172,9 @@ def commit_free_pull(db: Session, telegram_user_id: int, preview: dict[str, Any]
         pass
     media_ids = [int(m["id"]) for m in (preview.get("media") or []) if m.get("id") is not None]
     if media_ids:
-        mark_free_pull_media_seen(db, int(telegram_user_id), media_ids)
-    remaining = free_pulls_remaining(db, int(telegram_user_id))
-    credit = try_credit_referrer_for_pull(db, int(telegram_user_id))
+        mark_free_pull_media_seen(db, uid, media_ids)
+    remaining = free_pulls_remaining(db, uid)
+    credit = try_credit_referrer_for_pull(db, uid)
     preview = dict(preview)
     preview["free_pulls_used"] = used_before + 1
     preview["free_pulls_remaining"] = remaining

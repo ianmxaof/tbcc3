@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.23.3",
+  "version": "1.36.1",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -23,11 +23,6 @@
     "alarms"
   ],
   "host_permissions": [
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*",
-    "http://127.0.0.1:5173/*",
-    "http://localhost:5173/*",
-    "http://127.0.0.1:8765/*",
     "<all_urls>"
   ],
   "content_security_policy": {
@@ -54,7 +49,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["tbcc-username-filter.js", "tbcc-clipboard-toast.js", "page-overlay.js"],
+      "js": ["tbcc-module-gate.js", "tbcc-username-filter.js", "tbcc-clipboard-toast.js", "page-overlay.js"],
       "run_at": "document_start",
       "all_frames": true
     },
@@ -67,13 +62,73 @@
     },
     {
       "matches": ["*://onlyfans.com/*", "*://*.onlyfans.com/*"],
-      "js": ["of-harvest.js"],
+      "js": ["tbcc-module-gate.js", "of-harvest.js"],
       "run_at": "document_start",
       "all_frames": false
     },
     {
       "matches": ["*://x.com/*", "*://twitter.com/*"],
-      "js": ["x-profile-harvest.js", "x-profile-overlay.js"],
+      "js": ["x-api-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://x.com/*", "*://twitter.com/*"],
+      "js": ["tbcc-module-gate.js", "x-feed-download.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://x.com/*", "*://twitter.com/*"],
+      "js": ["tbcc-module-gate.js", "x-profile-looms-shared.js", "x-profile-harvest.js", "x-profile-overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://erome.com/*", "*://www.erome.com/*"],
+      "js": ["tbcc-module-gate.js", "erome-enhancer.js", "erome-transport-overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://thisvid.com/*", "*://*.thisvid.com/*"],
+      "js": ["tbcc-module-gate.js", "thisvid-enhancer.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://fetlife.com/*", "*://www.fetlife.com/*"],
+      "js": ["tbcc-module-gate.js", "fetlife-suite.bundle.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://stripchat.com/*",
+        "*://*.stripchat.com/*",
+        "*://chaturbate.com/*",
+        "*://*.chaturbate.com/*",
+        "*://onlyfans.com/*",
+        "*://*.onlyfans.com/*",
+        "*://fansly.com/*",
+        "*://*.fansly.com/*",
+        "*://instagram.com/*",
+        "*://*.instagram.com/*",
+        "*://x.com/*",
+        "*://twitter.com/*",
+        "*://xhamsterlive.com/*",
+        "*://*.xhamsterlive.com/*",
+        "*://cambb.xxx/*",
+        "*://*.cambb.xxx/*",
+        "*://nudecams.xxx/*",
+        "*://*.nudecams.xxx/*"
+      ],
+      "js": [
+        "tbcc-module-gate.js",
+        "username-search-history-shared.js",
+        "username-search-overlay.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -86,6 +141,29 @@
     {
       "resources": ["x-profile-harvest.js", "x-profile-overlay.js"],
       "matches": ["*://x.com/*", "*://twitter.com/*"]
+    },
+    {
+      "resources": ["username-search-history-shared.js", "username-search-overlay.js"],
+      "matches": [
+        "*://stripchat.com/*",
+        "*://*.stripchat.com/*",
+        "*://chaturbate.com/*",
+        "*://*.chaturbate.com/*",
+        "*://onlyfans.com/*",
+        "*://*.onlyfans.com/*",
+        "*://fansly.com/*",
+        "*://*.fansly.com/*",
+        "*://instagram.com/*",
+        "*://*.instagram.com/*",
+        "*://x.com/*",
+        "*://twitter.com/*",
+        "*://xhamsterlive.com/*",
+        "*://*.xhamsterlive.com/*",
+        "*://cambb.xxx/*",
+        "*://*.cambb.xxx/*",
+        "*://nudecams.xxx/*",
+        "*://*.nudecams.xxx/*"
+      ]
     }
   ]
 }

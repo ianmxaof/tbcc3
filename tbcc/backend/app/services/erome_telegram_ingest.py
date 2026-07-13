@@ -204,6 +204,7 @@ def upload_staged_folder(
     force_policy: bool = False,
     headed: bool = False,
     keep_open: bool = False,
+    visibility: str | None = None,
     db=None,
 ) -> UploadResult:
     from app.services.erome_upload_analytics import (
@@ -212,6 +213,7 @@ def upload_staged_folder(
         merge_sidecar_params,
         record_erome_upload,
     )
+    from app.services.erome_upload_governance import default_upload_visibility
     from app.services.erome_upload_policy import check_upload_policy, policy_block_message
 
     if not selectors_ready(load_flow_config()):
@@ -247,8 +249,40 @@ def upload_staged_folder(
             content_notes=content_notes,
             file_count=len(scan.files),
             force_policy=force_policy,
+            visibility=visibility,
         ),
     )
+    if not params.visibility:
+        params.visibility = default_upload_visibility()
+
+    # Sidecar / intel-week: videos only + single-file albums
+    side = {}
+    try:
+        from app.services.erome_upload_analytics import read_erome_sidecar
+
+        side = read_erome_sidecar(folder)
+    except Exception:
+        side = {}
+    if side.get("videos_only"):
+        video_exts = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
+        before = len(scan.files)
+        scan.files = [p for p in scan.files if p.suffix.lower() in video_exts]
+        if before and not scan.files:
+            return UploadResult(
+                ok=False,
+                staging_path=str(folder),
+                title=params.title,
+                visibility=params.visibility or default_upload_visibility(),
+                error="videos_only_no_videos",
+            )
+    side_max = side.get("max_files")
+    if side_max is not None:
+        try:
+            lim = min(lim, max(1, int(side_max)))
+        except (TypeError, ValueError):
+            pass
+        scan.files = scan.files[:lim]
+        params.file_count = len(scan.files)
 
     verdict = check_upload_policy(
         title=params.title,
@@ -263,6 +297,7 @@ def upload_staged_folder(
             ok=False,
             staging_path=str(folder),
             title=params.title,
+            visibility=params.visibility or default_upload_visibility(),
             error=f"policy_blocked:{policy_block_message(verdict)}",
         )
 
@@ -278,6 +313,7 @@ def upload_staged_folder(
         max_files=lim,
         headed=headed,
         keep_open=keep_open,
+        visibility=params.visibility,
     )
 
     record_erome_upload(
@@ -287,6 +323,16 @@ def upload_staged_folder(
         policy=verdict.to_dict(),
         db=db,
     )
+    if result.ok:
+        # Producer signal for the idle governor: a fresh Erome album means
+        # erome_view_sync has new work to poll for. Covers every producer that
+        # funnels through here (Telegram ingest, CLI, album composer bytes).
+        try:
+            from app.services.idle_service_governor import touch_service_activity
+
+            touch_service_activity("erome_view_sync")
+        except Exception:
+            logger.debug("erome governor signal skipped", exc_info=True)
     return result
 
 
@@ -366,6 +412,7 @@ async def upload_processed_bytes_to_erome(
     crop: dict | None = None,
     content_notes: str | None = None,
     force_policy: bool = False,
+    visibility: str | None = None,
     db=None,
 ) -> dict[str, Any]:
     """Album Composer / API path — bytes already cropped/watermarked."""
@@ -390,6 +437,7 @@ async def upload_processed_bytes_to_erome(
         crop=crop,
         content_notes=content_notes,
         force_policy=force_policy,
+        visibility=visibility,
         db=db,
     )
     body = result.to_dict()
@@ -413,6 +461,20 @@ def format_erome_upload_reply(report: dict[str, Any], *, html: bool = False) -> 
     url = report.get("album_url") or ""
     title = report.get("title") or "Album"
     n = report.get("file_count") or 0
+    vis = str(report.get("visibility") or "public")
+    if vis == "private":
+        if html:
+            return (
+                f"🔒 <b>Erome album staged private</b> — governance pass needed\n\n"
+                f"<b>{title}</b> — {n} file(s)\n"
+                f'<a href="{url}">{url}</a>\n'
+                f"Fix title/tags on Erome, then mark approved in TBCC."
+            )
+        return (
+            f"🔒 **Erome album staged private** — governance pass needed\n\n"
+            f"**{title}** — {n} file(s)\n{url}\n"
+            f"Fix title/tags on Erome, then mark approved in TBCC."
+        )
     if html:
         return (
             f"✅ <b>Erome album published</b>\n\n"

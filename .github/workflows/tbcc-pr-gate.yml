@@ -1,0 +1,158 @@
+name: TBCC PR gate
+
+# Single required check for branch protection / rulesets.
+# Path-filtered jobs run in parallel; the final "TBCC PR gate" job aggregates.
+# Draft: enable Ruleset → require check name exactly: TBCC PR gate
+
+on:
+  pull_request:
+    branches: [main]
+  # Also run on push to PR branches so checks refresh after pushes
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: tbcc-pr-gate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      userscripts: ${{ steps.filter.outputs.userscripts }}
+      extension: ${{ steps.filter.outputs.extension }}
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'tbcc/backend/**'
+              - 'tbcc/mcp-server/**'
+            userscripts:
+              - 'tbcc/userscripts/**'
+            extension:
+              - 'tbcc/extension/**'
+            docs_only:
+              - 'tbcc/docs/**'
+              - '**/*.md'
+              - '.cursor/**'
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tbcc/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: tbcc/backend/requirements.txt
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+      - name: Required pytest gate
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/test_content_signals.py \
+            tests/test_growth_reaction.py \
+            tests/test_ops_workflow_runner.py \
+            tests/test_ops_tool_permissions.py \
+            tests/test_sale_public_announce.py \
+            tests/test_scrape_transport.py \
+            tests/test_scrape_tag_pool_map.py \
+            tests/test_buffer_x_link_order.py
+
+  userscripts:
+    needs: changes
+    if: needs.changes.outputs.userscripts == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tbcc/userscripts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm run ci
+
+  extension:
+    needs: changes
+    if: needs.changes.outputs.extension == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifest + bundle sanity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path("tbcc/extension/manifest.json").read_text(encoding="utf-8"))
+          assert m.get("manifest_version") in (2, 3)
+          assert m.get("version")
+          root = Path("tbcc/extension")
+          missing = []
+          for block in m.get("content_scripts") or []:
+              for rel in block.get("js") or []:
+                  if not (root / rel).is_file():
+                      missing.append(rel)
+          bg = m.get("background") or {}
+          sw = bg.get("service_worker")
+          sw_list = sw if isinstance(sw, list) else ([sw] if sw else [])
+          for rel in sw_list:
+              if rel and not (root / rel).is_file():
+                  missing.append(rel)
+          if missing:
+              raise SystemExit("Missing extension files: " + ", ".join(missing))
+          print("extension ok", m["version"])
+          PY
+
+  # Stable name for branch protection — do not rename lightly
+  gate:
+    name: TBCC PR gate
+    needs: [changes, backend, userscripts, extension]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate
+        run: |
+          set -euo pipefail
+          backend="${{ needs.backend.result }}"
+          userscripts="${{ needs.userscripts.result }}"
+          extension="${{ needs.extension.result }}"
+          touched_backend="${{ needs.changes.outputs.backend }}"
+          touched_userscripts="${{ needs.changes.outputs.userscripts }}"
+          touched_extension="${{ needs.changes.outputs.extension }}"
+
+          fail=0
+          if [ "$touched_backend" = "true" ] && [ "$backend" != "success" ]; then
+            echo "backend failed: $backend"; fail=1
+          fi
+          if [ "$touched_userscripts" = "true" ] && [ "$userscripts" != "success" ]; then
+            echo "userscripts failed: $userscripts"; fail=1
+          fi
+          if [ "$touched_extension" = "true" ] && [ "$extension" != "success" ]; then
+            echo "extension failed: $extension"; fail=1
+          fi
+
+          if [ "$touched_backend" != "true" ] && [ "$touched_userscripts" != "true" ] && [ "$touched_extension" != "true" ]; then
+            echo "No code paths gated; passing (docs/chore)."
+            exit 0
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "TBCC PR gate FAILED"
+            exit 1
+          fi
+          echo "TBCC PR gate PASSED"

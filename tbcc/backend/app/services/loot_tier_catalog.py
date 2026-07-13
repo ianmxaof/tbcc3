@@ -4,67 +4,67 @@ from __future__ import annotations
 
 from typing import Any
 
-# Unique tier names (low → high). Tune copy in dashboard later via presets.
+# Unique tier names (low → high). Filthy ladder — World labels for Mario-style progression.
 TIER_META: dict[int, dict[str, str]] = {
     1: {
-        "name": "Dust",
+        "name": "Crumb",
         "world": "World 1-1",
-        "tagline": "A faint shimmer — barely worth opening.",
+        "tagline": "Barely a taste. Still counts.",
         "flavor": "The vault coughs up crumbs. Squint harder.",
     },
     2: {
-        "name": "Glimpse",
+        "name": "Peek",
         "world": "World 1-2",
-        "tagline": "Something moved in the dark.",
-        "flavor": "Not quite nothing. Not quite a drop.",
+        "tagline": "Skirt lifts. Nothing promised.",
+        "flavor": "A shadow moved. The blur still hides everything.",
     },
     3: {
-        "name": "Spark",
+        "name": "Leak",
         "world": "World 1-3",
-        "tagline": "A single spark in the loot room.",
-        "flavor": "Warm enough to keep scrolling.",
+        "tagline": "Someone left the door cracked.",
+        "flavor": "Amateur heat. Wet enough to keep scrolling.",
     },
     4: {
-        "name": "Pulse",
+        "name": "Throb",
         "world": "World 2-1",
-        "tagline": "The room notices you.",
+        "tagline": "The room starts breathing with you.",
         "flavor": "Rhythm picks up — spoilers earned.",
     },
     5: {
-        "name": "Surge",
+        "name": "Drip",
         "world": "World 2-2",
-        "tagline": "Mid-tier heat — the floor leans in.",
-        "flavor": "More on the reel than you expected.",
+        "tagline": "Mid-heat. You're not leaving yet.",
+        "flavor": "More on the reel than you expected. Hands already dirty.",
     },
     6: {
-        "name": "Blaze",
+        "name": "Soak",
         "world": "World 3-1",
-        "tagline": "Spotlight energy — mixed media flex.",
+        "tagline": "Mixed media. Density climbing.",
         "flavor": "Photos stack, video hits — feel the pull.",
     },
     7: {
-        "name": "Vault",
+        "name": "Filth",
         "world": "World 4-1",
-        "tagline": "Vault-tier pull — packs may whisper.",
-        "flavor": "Rare enough that a bundle might follow.",
+        "tagline": "Vault opens. Packs may follow.",
+        "flavor": "Rare enough that a bundle might follow. No soft landing.",
     },
     8: {
-        "name": "Crown",
+        "name": "Ruin",
         "world": "World 5-1",
-        "tagline": "Heavy crown — album density spikes.",
-        "flavor": "This is why you paid attention.",
+        "tagline": "Density spikes. No soft landing.",
+        "flavor": "This is why you paid attention. Open everything.",
     },
     9: {
-        "name": "Oracle",
+        "name": "Blackout",
         "world": "World 6-1",
-        "tagline": "Near-mythic — modifiers stack.",
-        "flavor": "The overseer grins. Open everything.",
+        "tagline": "Near-mythic. Modifiers stack mean.",
+        "flavor": "The overseer grins. Screenshot the mess.",
     },
     10: {
-        "name": "Ascension",
+        "name": "Godroll",
         "world": "World ★",
-        "tagline": "MAX TIER — full celebration drop.",
-        "flavor": "🔥 Peak dopamine. Screenshot the receipts. 🔥",
+        "tagline": "MAX TIER — screenshot the mess.",
+        "flavor": "Peak filth. Tell your group chat. This is the flex roll.",
     },
 }
 

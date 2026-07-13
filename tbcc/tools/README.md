@@ -15,7 +15,7 @@ Right-click the notification-area icon:
 - **Restart all** — stop everything, then cold-start using your saved default
 - **Stop all** — close all TBCC terminal tabs and processes
 
-**Services** — toggle any process on/off; Ctrl+click to restart. Full catalog (spicy bot, remixer, LLM chat, etc.) even on lean.
+**Services** — each row is one process. Hover for plain-English "what it does" and "when to restart". Click toggles; Ctrl+click restarts. After API/`.env` changes restart **Backend API** (plus Beat timer / due-post / Telegram-send workers if those changed too).
 
 **Advanced** — troubleshooting (session fixes, focus mode, port 8000 cleanup), open dashboard/health/logs/panel.
 

@@ -12,10 +12,29 @@ def test_queue_thumbnail_warm_skips_cached(tmp_path, monkeypatch):
 
     write_thumb_atomic(42, b"jpeg-bytes")
     with patch("app.workers.thumbnail_warm_worker.warm_media_thumbnails") as mock_delay:
-        out = queue_thumbnail_warm([42, 99])
+        with patch("app.services.thumb_cache_service._open_import_jobs_above_threshold", return_value=False):
+            out = queue_thumbnail_warm([42, 99])
     assert out["already_cached"] == 1
     assert out["queued"] == 1
     mock_delay.delay.assert_called_once_with([99])
+
+
+def test_queue_thumbnail_warm_pauses_when_imports_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("TBCC_MEDIA_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("TBCC_THUMBNAIL_WARM_PAUSE_WHEN_IMPORTS", "1")
+    from app.services.thumb_cache_service import queue_thumbnail_warm
+
+    with patch("app.workers.thumbnail_warm_worker.warm_media_thumbnails") as mock_delay:
+        with patch("app.services.thumb_cache_service._open_import_jobs_above_threshold", return_value=True):
+            with patch(
+                "app.services.post_scheduler.posting_stalled_for_admission",
+                return_value=False,
+            ):
+                out = queue_thumbnail_warm([7, 8])
+    assert out["queued"] == 0
+    assert out.get("paused") is True
+    assert out.get("reason") == "imports_pending"
+    mock_delay.delay.assert_not_called()
 
 
 def test_api_thumbnail_telegram_disabled_by_default(monkeypatch):

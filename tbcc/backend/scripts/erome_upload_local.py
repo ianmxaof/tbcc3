@@ -98,6 +98,7 @@ def cmd_execute(
     manifest: Path | None,
     force_policy: bool,
     source: str,
+    visibility: str | None,
 ) -> int:
     if not selectors_ready(load_flow_config()):
         print("ERROR: Flow not configured. Set file_input + submit_button locators.", file=sys.stderr)
@@ -124,6 +125,7 @@ def cmd_execute(
             staging_path=str(folder),
             file_count=len(scan.files),
             force_policy=force_policy,
+            visibility=visibility,
         ),
     )
     verdict = check_upload_policy(
@@ -139,8 +141,10 @@ def cmd_execute(
         print(f"BLOCKED: {policy_block_message(verdict)}", file=sys.stderr)
         return 3
 
+    vis = params.visibility or "private"
     print(f"Uploading {len(scan.files)} file(s) from {folder}", flush=True)
     print(f"Title: {params.title}", flush=True)
+    print(f"Visibility: {vis} (governance staging)" if vis == "private" else f"Visibility: {vis}", flush=True)
     if params.tags:
         print(f"Tags: {', '.join(params.tags)}", flush=True)
 
@@ -156,6 +160,7 @@ def cmd_execute(
             force_policy=force_policy,
             headed=headed,
             keep_open=keep_open,
+            visibility=params.visibility,
             db=db,
         )
 
@@ -168,9 +173,12 @@ def cmd_execute(
         return 1
 
     print(f"OK: {result.album_url}")
-    print(f"Title: {result.title}  files={result.file_count}")
+    print(f"Title: {result.title}  files={result.file_count}  visibility={result.visibility}")
+    if result.visibility == "private":
+        print("Governance: album is PRIVATE — fix title/tags on Erome, then --mark-approved")
 
-    if save_archive and result.album_url:
+    # Archive / pool wire only for public albums (private is not promo-ready)
+    if result.visibility == "public" and save_archive and result.album_url:
         with SessionLocal() as db:
             saved = submit_archive_url(
                 db,
@@ -188,7 +196,7 @@ def cmd_execute(
             else:
                 print(f"Archive save failed: {saved.get('error')}", file=sys.stderr)
 
-    if wire_pool and result.album_url:
+    if result.visibility == "public" and wire_pool and result.album_url:
         from app.services.erome_promo_wire import wire_erome_album_to_modifier
 
         with SessionLocal() as db:
@@ -206,10 +214,77 @@ def cmd_execute(
     return 0
 
 
+def cmd_list_pending() -> int:
+    from app.services.erome_upload_governance import governance_summary
+
+    summary = governance_summary()
+    print(f"Default visibility: {summary['default_visibility']}")
+    print(f"Pending review:     {summary['pending_review']}")
+    print(f"Ledger ok total:    {summary['ledger_ok_total']} (private={summary['private_count']} public={summary['public_count']})")
+    for row in summary.get("pending") or []:
+        print(f"  {row.get('album_url')}  |  {row.get('title')}  |  tags={','.join(row.get('tags') or [])}")
+    return 0
+
+
+def cmd_mark_approved(album_url: str, *, notes: str | None = None) -> int:
+    from app.services.erome_upload_governance import STATUS_APPROVED, mark_governance
+
+    out = mark_governance(album_url=album_url, status=STATUS_APPROVED, notes=notes)
+    if not out.get("ok"):
+        print(f"FAIL: {out.get('error')}", file=sys.stderr)
+        return 1
+    print(f"Marked approved_public: {album_url}")
+    print("Note: flip the album to Public on Erome manually if still private in the UI.")
+    return 0
+
+
+def cmd_seed_intel_week(*, week: str | None, title: str | None) -> int:
+    from app.services.erome_upload_governance import intel_week_staging_dir, seed_intel_week_sidecar
+
+    folder = intel_week_staging_dir(week=week)
+    out = seed_intel_week_sidecar(folder, title=title)
+    print(f"Intel-week folder: {out['folder']}")
+    print(f"Sidecar:           {out['sidecar']}")
+    print(f"Suggested tags:    {', '.join(out.get('tags') or []) or '(none yet — push browse intel)'}")
+    print("Drop pre-approved media into that folder, then:")
+    print(f"  py scripts/erome_upload_local.py --execute --path \"{out['folder']}\" --headed")
+    return 0
+
+
+def cmd_promote_public(album_url: str, *, headed: bool) -> int:
+    from app.services.erome_upload_provision import promote_album_to_public
+
+    out = promote_album_to_public(album_url, headed=headed)
+    if not out.get("ok"):
+        print(f"FAIL: {out.get('error')}", file=sys.stderr)
+        if out.get("hint"):
+            print(out["hint"], file=sys.stderr)
+        return 1
+    print(f"Promoted public: {out.get('album_url')}")
+    return 0
+
+
+def cmd_promote_pending(*, headed: bool, dry_run: bool, limit: int | None) -> int:
+    from app.services.erome_upload_governance import release_pending_albums_on_main_post
+
+    out = release_pending_albums_on_main_post(headed=headed, limit=limit, dry_run=dry_run)
+    print(out)
+    return 0 if out.get("ok") else 1
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Upload local folder to Erome (Playwright Phase A)")
     p.add_argument("--login", action="store_true", help="Open Erome login and save session cookies")
-    p.add_argument("--record", action="store_true", help="Record upload flow in Playwright Inspector")
+    p.add_argument(
+        "--record",
+        action="store_true",
+        help="Open Playwright Codegen (Record/Stop) for Erome upload+private flow",
+    )
+    p.add_argument(
+        "--record-inspector",
+        action="store_true",
+        help="Legacy Inspector pause (Resume only — no Record button)",
+    )
     p.add_argument("--status", action="store_true", help="Show config/auth/selector status")
     p.add_argument("--dry-run", action="store_true", help="List media files without uploading")
     p.add_argument("--execute", action="store_true", help="Upload folder to Erome")
@@ -227,16 +302,55 @@ def main() -> int:
     p.add_argument("--force", action="store_true", help="Bypass rate-limit / duplicate-title policy blocks")
     p.add_argument("--source", type=str, default="cli", help="Analytics source label (cli, context_menu, …)")
     p.add_argument("--manifest", type=Path, default=None, help="Write JSON result manifest to path")
+    p.add_argument(
+        "--private",
+        action="store_true",
+        help="Force private/hidden upload (governance staging; default via TBCC_EROME_DEFAULT_VISIBILITY)",
+    )
+    p.add_argument(
+        "--public",
+        action="store_true",
+        help="Force public publish (skips private governance default)",
+    )
+    p.add_argument("--list-pending", action="store_true", help="List private uploads awaiting governance review")
+    p.add_argument("--mark-approved", type=str, default=None, metavar="ALBUM_URL", help="Mark ledger row approved after manual pass")
+    p.add_argument("--promote-public", type=str, default=None, metavar="ALBUM_URL", help="Playwright: flip private album to public")
+    p.add_argument("--promote-pending", action="store_true", help="Promote pending private albums (dry-run unless TBCC_EROME_PROMOTE_ON_MAIN_POST=1 or --force-promote)")
+    p.add_argument("--force-promote", action="store_true", help="With --promote-pending, run even if env flag is off")
+    p.add_argument("--seed-intel-week", action="store_true", help="Create intel-week staging folder + sidecar tags")
+    p.add_argument("--week", type=str, default=None, help="ISO week slug for --seed-intel-week (default current)")
     args = p.parse_args()
 
     if args.status:
         return cmd_status()
+    if args.list_pending:
+        return cmd_list_pending()
+    if args.mark_approved:
+        return cmd_mark_approved(args.mark_approved)
+    if args.promote_public:
+        return cmd_promote_public(args.promote_public, headed=args.headed)
+    if args.promote_pending:
+        if args.force_promote:
+            import os
+
+            os.environ["TBCC_EROME_PROMOTE_ON_MAIN_POST"] = "1"
+        return cmd_promote_pending(headed=args.headed, dry_run=args.dry_run, limit=args.max_files)
+    if args.seed_intel_week:
+        return cmd_seed_intel_week(week=args.week, title=args.title)
     if args.login:
         login_and_save_session(headed=True)
         return 0
-    if args.record:
-        record_upload_flow(headed=True)
-        return 0
+    if args.record or args.record_inspector:
+        # Prefer real Codegen (Record/Stop). Inspector has Resume only.
+        import subprocess
+
+        codegen = Path(__file__).resolve().parent / "erome_codegen.py"
+        cmd = [sys.executable, str(codegen)]
+        if args.record_inspector:
+            cmd.append("--skip-login")
+        else:
+            cmd.append("--codegen")
+        return int(subprocess.call(cmd))
     if args.dry_run:
         if not args.path:
             print("ERROR: --path required for --dry-run", file=sys.stderr)
@@ -246,6 +360,10 @@ def main() -> int:
         if not args.path:
             print("ERROR: --path required for --execute", file=sys.stderr)
             return 2
+        if args.private and args.public:
+            print("ERROR: use only one of --private / --public", file=sys.stderr)
+            return 2
+        visibility = "private" if args.private else ("public" if args.public else None)
         return cmd_execute(
             args.path,
             title=args.title,
@@ -261,6 +379,7 @@ def main() -> int:
             manifest=args.manifest,
             force_policy=args.force,
             source=args.source,
+            visibility=visibility,
         )
 
     p.print_help()

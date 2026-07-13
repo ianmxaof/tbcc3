@@ -406,6 +406,19 @@
         dataUrl = el.toDataURL("image/jpeg", 0.88);
       }
       extra.tbccCaptureSource = extra.tbccCaptureSource || "perchance-canvas";
+      try {
+        var lp = typeof window !== "undefined" ? window.__tbccPerchanceLastPrompt : null;
+        if (lp && typeof lp === "object") {
+          if (lp.jobId) extra.tbccPerchanceJobId = String(lp.jobId);
+          if (lp.lane) extra.tbccPerchanceLane = String(lp.lane);
+          if (lp.format) extra.tbccPerchanceFormat = String(lp.format);
+          if (lp.aspect) extra.tbccPerchanceAspect = String(lp.aspect);
+          if (lp.prompt) extra.tbccPerchancePrompt = String(lp.prompt).slice(0, 8000);
+        }
+        if (el.dataset && el.dataset.tbccPerchanceJob) {
+          extra.tbccPerchanceJobId = extra.tbccPerchanceJobId || String(el.dataset.tbccPerchanceJob);
+        }
+      } catch (_) {}
       add(dataUrl, w, h, "canvas", w, h, extra);
     } catch (_) {}
   }

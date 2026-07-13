@@ -17,6 +17,11 @@ def export_flywheel_tick(network_key: str | None = None):
     if not flywheel_enabled():
         return {"ok": True, "skipped": True, "reason": "disabled"}
 
+    from app.services.idle_service_governor import governed_service_active
+
+    if not governed_service_active("export_flywheel"):
+        return {"ok": True, "skipped": "governed_idle"}
+
     db = SessionLocal()
     try:
         result = tick_observe(db, push_inbox=True)

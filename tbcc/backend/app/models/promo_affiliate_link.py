@@ -20,7 +20,7 @@ class PromoAffiliateLink(Base):
     priority_tier = Column(Integer, nullable=False, default=10)
     expires_at = Column(DateTime, nullable=True)
     active = Column(Boolean, nullable=False, default=True)
-    # JSON list: manual_only | x_buffer | telegram_footer | links_hub | links_hub_ai
+    # JSON list: manual_only | x_buffer | telegram_footer | links_hub | links_hub_ai | loot_roll
     placements_json = Column(Text, nullable=True)
     # JSON list of AOF network keys (ai, main, …); empty/null = all channels
     network_keys_json = Column(Text, nullable=True)

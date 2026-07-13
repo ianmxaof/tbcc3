@@ -15,6 +15,7 @@ from app.models.loot import (
 )
 from app.models.media import Media
 from app.services.loot_composite_tier import compute_composite_tier, composite_tier_fields
+from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_player_modifiers import seen_modifier_ids
 from app.services.loot_player_stats import get_lifetime_roll_index
 from app.services.loot_roll_presentation import pick_tier_flavor
@@ -127,7 +128,7 @@ def build_roll_preview(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
     )
-    if telegram_user_id:
+    if telegram_user_id and not is_loot_operator(telegram_user_id):
         seen_ids = [
             int(x[0])
             for x in db.query(LootPlayerMediaSeen.media_id)

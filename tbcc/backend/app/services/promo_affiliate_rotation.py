@@ -18,7 +18,14 @@ from app.models.promo_affiliate_rotation_cursor import PromoAffiliateRotationCur
 logger = logging.getLogger(__name__)
 
 AFFILIATE_PLACEMENTS: frozenset[str] = frozenset(
-    {"manual_only", "x_buffer", "telegram_footer", "links_hub", "links_hub_ai"}
+    {
+        "manual_only",
+        "x_buffer",
+        "telegram_footer",
+        "links_hub",
+        "links_hub_ai",
+        "loot_roll",
+    }
 )
 DEFAULT_PLACEMENT = "manual_only"
 
@@ -257,3 +264,32 @@ def resolve_affiliate_url(
     from app.services.aof_social_links import affiliate_undress_primary_url
 
     return affiliate_undress_primary_url()
+
+
+def build_loot_roll_affiliate_footer_html(
+    db: Session,
+    *,
+    advance: bool = True,
+) -> str | None:
+    """
+    Small italic footer for paid roll album captions.
+    Prefers placement=loot_roll, falls back to telegram_footer.
+    Hyperlink sits inside a short sentence (or uses copy_template when set).
+    """
+    pick = pick_affiliate(db, "loot_roll", advance=advance)
+    if not pick:
+        pick = pick_affiliate(db, "telegram_footer", advance=advance)
+    if not pick:
+        return None
+    row = pick.row
+    template = (getattr(row, "copy_template", None) or "").strip()
+    if template and ("{link}" in template or "{url}" in template):
+        line = build_sponsor_link_html(row)
+        return f"<i>{line}</i>" if not line.lower().startswith("<i>") else line
+    from app.services.aof_growth_hub import _a_tag
+
+    url = affiliate_outbound_url(row)
+    if not url:
+        return None
+    word = (row.label or "here").strip().split()[0][:28] or "here"
+    return f"<i>Partner tip — tap {_a_tag(url, word)}</i>"

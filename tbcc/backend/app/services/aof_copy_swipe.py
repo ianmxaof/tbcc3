@@ -148,6 +148,7 @@ def adapt_swipe_sync(
     system = (
         "You adapt competitor/inspiration Telegram promo copy into original AOF brand copy. "
         "Never paste competitor channel names, prices, or file counts. "
+        "Never use competitor parcel slang (e.g. 'bento') — use AOF terms: batch, parcel, wad, thick rope, drop. "
         "Keep the persuasion structure and emotional beats. "
         "Output only the final caption — no commentary.\n\n"
         f"{voice_prompt_for_lane(lane)}\n\n"

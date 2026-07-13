@@ -67,8 +67,20 @@ def run_scrape(self, source_id: int, trigger: str = "manual", run_id: int | None
         if not acquire_scrape_lock(run.id):
             mark_run_skipped(db, run, "lock_busy")
             return {"ok": False, "run_id": run.id, "status": "skipped"}
+        from app.services.scrape_run_service import is_scrape_cancel_requested, mark_run_cancelled, clear_scrape_cancel
+
+        if is_scrape_cancel_requested(run.id):
+            mark_run_cancelled(db, run, "user_cancelled")
+            clear_scrape_cancel(run.id)
+            release_scrape_lock(run.id)
+            locked_run_id = None
+            return {"ok": False, "run_id": run.id, "status": "cancelled"}
         mark_run_running(db, run)
         try:
+            if is_scrape_cancel_requested(run.id):
+                mark_run_cancelled(db, run, "user_cancelled")
+                clear_scrape_cancel(run.id)
+                return {"ok": False, "run_id": run.id, "status": "cancelled"}
             stats = asyncio.run(
                 run_scraper(
                     api_id=os.environ["API_ID"],
@@ -77,13 +89,14 @@ def run_scrape(self, source_id: int, trigger: str = "manual", run_id: int | None
                 )
             )
             finish_run_from_stats(db, run, stats)
-            if int(stats.get("stored") or 0) > 0:
+            if int(stats.get("stored") or 0) > 0 and run.status == "done":
                 source.last_scraped_at = utcnow()
                 db.commit()
             return {"ok": True, "run_id": run.id, "status": run.status, "stored": stats.get("stored", 0)}
         finally:
             release_scrape_lock(run.id)
             locked_run_id = None
+            clear_scrape_cancel(run.id)
     except Exception as e:
         if locked_run_id is not None:
             try:

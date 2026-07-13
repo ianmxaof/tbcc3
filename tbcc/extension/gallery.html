@@ -17,17 +17,13 @@
       <button type="button" id="btnBackToGalleryPanel" class="tbcc-btn-back-gallery" title="Return to media grid" hidden>
         ← Gallery
       </button>
-      <div class="topbar-links">
-        <a href="#" id="linkPanelMain" data-panel="main" title="Return to media grid">Gallery</a>
-        <span class="sep">·</span>
-        <a href="#" id="linkGalleryView" data-panel="collected">Collected</a>
-        <span class="sep">·</span>
-        <a href="#" id="linkModelLookup" data-panel="lookup" title="Macro model search and results report">Lookup</a>
-        <span class="sep">·</span>
-        <a href="#" id="linkPopupTools" data-panel="tools">Tools</a>
-        <span class="sep">·</span>
-        <a href="http://127.0.0.1:5173/" target="_blank" rel="noopener" id="linkDashboard">Dashboard</a>
-      </div>
+      <nav class="gallery-nav-tabs" role="tablist" aria-label="Gallery sections">
+        <button type="button" role="tab" class="gallery-nav-tab" id="linkPanelMain" data-panel="main" title="Return to media grid" aria-selected="true">Gallery</button>
+        <button type="button" role="tab" class="gallery-nav-tab" id="linkGalleryView" data-panel="collected" aria-selected="false">Collected</button>
+        <button type="button" role="tab" class="gallery-nav-tab" id="linkModelLookup" data-panel="lookup" title="Macro model search and results report" aria-selected="false">Lookup</button>
+        <button type="button" role="tab" class="gallery-nav-tab" id="linkPopupTools" data-panel="tools" aria-selected="false">Tools</button>
+        <button type="button" class="gallery-nav-tab gallery-nav-tab--ext" id="linkDashboard" title="Open dashboard in a new tab">Dashboard</button>
+      </nav>
       <div class="tbcc-brand-lockup" title="Powercore · TBCC">
         <span class="tbcc-brand-powercore">Powercore</span><span class="tbcc-brand-sep">·</span><span class="tbcc-brand-tbcc">TBCC</span>
       </div>
@@ -187,8 +183,19 @@
           <div id="grid" class="grid"></div>
           <div id="sendPromoStripWrap" class="send-promo-strip-wrap" hidden>
             <div class="send-promo-strip-head">
-              <strong class="send-promo-strip-head__title">Send promo</strong>
-              <span class="send-promo-strip-head__hint">Included in the last album on batch send (Saved / channel / topic)</span>
+              <button
+                type="button"
+                id="btnSendPromoStripExpand"
+                class="send-promo-strip-chevron"
+                aria-expanded="false"
+                aria-controls="sendPromoStripBody"
+                title="Show or hide promo image tiles"
+              >
+                ▼
+              </button>
+              <strong class="send-promo-strip-head__title">Promo media</strong>
+              <span id="sendPromoStripCount" class="send-promo-strip-head__count" hidden></span>
+              <span class="send-promo-strip-head__hint">Last album on batch send — click ▼ to show tiles</span>
               <label class="send-promo-strip-head__check" title="Add active promo tile after your selection">
                 <input type="checkbox" id="sendPromoOnSend" checked />
                 Append
@@ -196,7 +203,9 @@
               <button type="button" id="btnSendPromoUpload" class="tbcc-btn-secondary tbcc-btn--compact">+ Upload</button>
               <input type="file" id="sendPromoFileInput" accept="image/jpeg,image/png,image/webp" hidden />
             </div>
-            <div id="sendPromoStrip" class="send-promo-strip" role="list" aria-label="Send promo images"></div>
+            <div id="sendPromoStripBody" class="send-promo-strip-body" hidden>
+              <div id="sendPromoStrip" class="send-promo-strip" role="list" aria-label="Promo media images"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -753,10 +762,13 @@
   <script src="tag-catalog-combobox.js"></script>
   <script src="auto-tag-utils.js"></script>
   <script src="tbcc-clipboard-toast.js"></script>
+  <script src="severity-toast-colors.js"></script>
   <script src="tbcc-insert-menu.js"></script>
   <script src="gallery-send-promo.js"></script>
   <script src="tbcc-webp-convert.js"></script>
   <script src="tbcc-import-pipeline.js"></script>
+  <script src="x-profile-looms-shared.js"></script>
+  <script src="tbcc-zip-naming.js"></script>
   <script src="gallery.js"></script>
   <script src="gallery-panel.js"></script>
 </body>

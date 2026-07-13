@@ -209,7 +209,10 @@ function Set-TbccTrayMenuDarkTheme {
   if (-not $Strip) { return }
   $bg = [System.Drawing.Color]::FromArgb(30, 30, 30)
   $fg = [System.Drawing.Color]::FromArgb(233, 230, 225)
-  $font = New-Object System.Drawing.Font("Segoe UI", 9.25)
+  if (-not $script:tbccTrayMenuFont) {
+    $script:tbccTrayMenuFont = New-Object System.Drawing.Font("Segoe UI", 9.25)
+  }
+  $font = $script:tbccTrayMenuFont
   $Strip.BackColor = $bg
   $Strip.ForeColor = $fg
   $Strip.Font = $font
@@ -233,9 +236,11 @@ function Set-TbccTrayMenuDarkTheme {
 
 $script:lastColdStart = [DateTime]::MinValue
 $script:notify = $null
+$script:supervisorForm = $null
 $script:tbccStatusCache = $null
 $script:tbccRestartMenuItems = @{}
 $script:tbccStatusRefreshInFlight = $false
+$script:tbccTrayMenuFont = $null
 $script:tbccAlertsSeen = @{}
 $script:lastOpsAlertPoll = [DateTime]::MinValue
 $script:lastProcessAuditPoll = [DateTime]::MinValue
@@ -513,10 +518,11 @@ function Open-TbccSupervisorMiniPanel {
 }
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
+$menu.ShowItemToolTips = $true
 
 $startStackItem = New-Object System.Windows.Forms.ToolStripMenuItem
 $startStackItem.Text = "Start stack"
-$startStackItem.ToolTipText = "Cold start: API, dashboard, Celery, payment/secretary/loot, Album Composer. Optional bots off unless enabled in Services."
+$startStackItem.ToolTipText = "Cold start: Backend API, Dashboard website, worker lanes, payment/secretary/loot, Album composer. Optional bots stay off until enabled in Services."
 [void]$startStackItem.Add_Click({
   try { Invoke-TbccStackLaunchDebounced } catch {
     Show-TbccTrayBalloon ("Start failed: " + $_.Exception.Message) -Force
@@ -548,7 +554,7 @@ $stopAllItem.ToolTipText = "Close all TBCC Windows Terminal tabs and stack proce
 
 $restartMenu = New-Object System.Windows.Forms.ToolStripMenuItem
 $restartMenu.Text = "Services"
-$restartMenu.ToolTipText = "[on] running | [--] stopped | [off] disabled - click toggle, Ctrl+click restart"
+$restartMenu.ToolTipText = "Plain labels + hover for queues, Beat, sessions. [on]/[--]/[off] - click toggle, Ctrl restart"
 [void]$menu.Items.Add($restartMenu)
 
 [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -774,6 +780,49 @@ function Poll-TbccProcessAuditAlerts {
   Show-TbccTrayBalloon -Text ("Process audit: $count issue(s) - $micro. Use Stop all, then Start stack.") -TimeoutMs 7000 -Force
 }
 
+function Test-TbccSupervisorStatusCacheStale {
+  param([int]$MaxAgeSec = 12)
+  if (-not $script:tbccStatusCache -or -not $script:tbccStatusCache.UpdatedAt) { return $true }
+  return ((Get-Date) - $script:tbccStatusCache.UpdatedAt).TotalSeconds -gt $MaxAgeSec
+}
+
+function Apply-TbccSupervisorServicesMenuFromCache {
+  if ($script:tbccRestartMenuItems -and $script:tbccRestartMenuItems.Count -gt 0 -and $script:tbccStatusCache) {
+    Apply-TbccServiceMenuItemsUi -MenuItemsById $script:tbccRestartMenuItems -Cache $script:tbccStatusCache
+  }
+}
+
+function Start-TbccSupervisorStatusCacheRefreshAsync {
+  param([int]$MaxAgeSec = 12)
+  if ($script:tbccStatusRefreshInFlight) { return }
+  if (-not (Test-TbccSupervisorStatusCacheStale -MaxAgeSec $MaxAgeSec)) { return }
+  $script:tbccStatusRefreshInFlight = $true
+  $root = $tbccDir
+  [void][System.Threading.Tasks.Task]::Run({
+    try {
+      $cache = Update-TbccServiceStatusCache -TbccRoot $root -FullStack -MenuCatalog
+      $ui = $script:supervisorForm
+      if ($ui -and -not $ui.IsDisposed) {
+        [void]$ui.BeginInvoke([Action]{
+          try {
+            Apply-TbccSupervisorStatusCacheUi -Cache $cache
+          } catch {
+            Write-TbccSupervisorLog ("Async status UI failed: " + $_.Exception.Message)
+          } finally {
+            $script:tbccStatusRefreshInFlight = $false
+          }
+        })
+      } else {
+        $script:tbccStatusCache = $cache
+        $script:tbccStatusRefreshInFlight = $false
+      }
+    } catch {
+      Write-TbccSupervisorLog ("Async status refresh failed: " + $_.Exception.Message)
+      $script:tbccStatusRefreshInFlight = $false
+    }
+  })
+}
+
 function Refresh-TbccSupervisorStatusCache {
   if ($script:tbccStatusRefreshInFlight) { return }
   $script:tbccStatusRefreshInFlight = $true
@@ -797,11 +846,11 @@ function Initialize-TbccSupervisorRestartMenu {
 }
 
 [void]$restartMenu.Add_DropDownOpening({
-  Refresh-TbccSupervisorStatusCache
-  if ($script:tbccRestartMenuItems -and $script:tbccRestartMenuItems.Count -gt 0) {
-    Apply-TbccServiceMenuItemsUi -MenuItemsById $script:tbccRestartMenuItems -Cache $script:tbccStatusCache
-  }
-  Set-TbccTrayMenuDarkTheme -Strip $restartMenu.DropDown
+  Apply-TbccSupervisorServicesMenuFromCache
+})
+
+[void]$restartMenu.Add_DropDownOpened({
+  Start-TbccSupervisorStatusCacheRefreshAsync
 })
 
 [void]$script:notify.Add_MouseDoubleClick({
@@ -846,6 +895,7 @@ $form.Add_FormClosing({
 })
 
 $form.Add_Load({
+  $script:supervisorForm = $form
   $form.Hide()
   try {
     [System.Windows.Forms.Application]::SetUnhandledExceptionMode(

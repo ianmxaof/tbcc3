@@ -1,0 +1,27 @@
+# scene=ma-05 format=single-9x16 aspect=9:16
+
+OUTPUT: ONE image. Aspect ratio 9:16 portrait. Single complete AOF MEGA PACKS poster. No grid.
+
+LAYOUT LOCK — identical in every cell/panel:
+TOP: distressed white "AOF" + red brush-stroke "MEGA PACKS"
+SUBHEAD: "MASSIVE COLLECTIONS • UNLIMITED POSSIBILITIES"
+CENTER: large QR code with Telegram paper-plane logo inside
+LEFT PILLS: NICHE LANES | FULL LENGTH | AI & DEEPFAKES | MEGA PACKS | DAILY DROPS
+RIGHT PILLS: LOOT ROOM | VIP ACCESS | VOYEUR & TABOO | ONE-TAP ADDLIST | 15+ CHANNELS
+BELOW QR: "DAILY DROPS · ARCHIVED LANES" / "UPDATED DAILY · 15+ CURATED LANES"
+LINK BAR: red bar, paper-plane icons, exact text "t.me/aofmainhub"
+BOTTOM: NO LIMITS | DIRECT DOWNLOADS | EXCLUSIVE CONTENT | SECURE & PRIVATE | ENDLESS LIBRARY
+UI priority #1. Text sharp, spelled exactly.
+
+SCENES:
+BACKGROUND SCENE:
+Blinding minimalist white chamber, robed figure serene at center, approaching figure in void architecture, overexposed heavenly light with analog blow-out, faint scratch marks on white walls, VHS softness at edges, transcendence vs horror, 8k photoreal.
+
+STYLE: Analog horror film still: VHS grain, scan lines, chromatic bleed, gritty photoreal, cinematic. No cartoon. No bright cheerful palette.
+
+Generate now. Same locked UI on every panel/cell. Vary only background per slot.
+
+AVOID: wrong aspect ratio, horizontal filmstrip when 2×2 requested, wrong labels (Movies/Series/Anime/Software/Books), misspelled text, watermark, random URLs, QR without Telegram logo, missing pills, cropped link bar, duplicate identical scenes, scenes bleeding across borders.
+
+# NEGATIVE
+wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text

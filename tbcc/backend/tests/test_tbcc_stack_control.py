@@ -19,6 +19,13 @@ def test_infer_service_from_title():
     assert infer_service_id_from_event(ev) == "celery_post"
 
 
+def test_infer_scheduler_lane_exact_match_wins():
+    # Reverse of the above: an exact match on the longer scheduler needle must still
+    # resolve to the scheduler lane, not collapse back to celery_post.
+    ev = {"service": "TBCC-Celery-Post-Scheduler", "message": "child process died"}
+    assert infer_service_id_from_event(ev) == "celery_post_scheduler"
+
+
 def test_infer_payment_from_409_body():
     ev = {"service": "TBCC-PaymentBot", "body": "Conflict: terminated by other getUpdates request"}
     assert infer_service_id_from_event(ev) == "payment"

@@ -237,6 +237,45 @@ def _tbcc_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_MANDATORY_SERVICE_IDS = frozenset({"album_composer"})
+_LEAN_DEFAULT_OFF_SERVICE_IDS = frozenset(
+    {"llm_chat", "watch", "forum", "macro_search", "admin", "companion"}
+)
+_FULL_DEFAULT_OFF_SERVICE_IDS = frozenset({"llm_chat", "watch", "forum"})
+_SCHEDULING_SERVICE_IDS = frozenset(
+    {"beat", "celery", "celery_post", "celery_post_scheduler"}
+)
+
+
+def service_user_enabled(service_id: str) -> bool:
+    """Mirror tray supervisor service-toggles.json (tbcc-service-control.ps1)."""
+    sid = (service_id or "").strip()
+    if not sid:
+        return False
+    if sid in _MANDATORY_SERVICE_IDS:
+        return True
+    toggles: dict[str, Any] = {}
+    path = _tbcc_root() / ".tbcc-run" / "service-toggles.json"
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                toggles = raw
+        except Exception:
+            pass
+    if sid in toggles:
+        return bool(toggles[sid])
+    profile = (os.getenv("TBCC_STACK_PROFILE") or "lean").strip().lower()
+    default_off = (
+        _FULL_DEFAULT_OFF_SERVICE_IDS if profile == "full" else _LEAN_DEFAULT_OFF_SERVICE_IDS
+    )
+    return sid not in default_off
+
+
+def scheduling_stack_user_enabled() -> bool:
+    return any(service_user_enabled(sid) for sid in _SCHEDULING_SERVICE_IDS)
+
+
 def _conflict(
     code: str,
     severity: str,
@@ -420,6 +459,9 @@ def start_tbcc_stack_services(service_ids: list[str]) -> dict[str, Any]:
     """Start TBCC Windows stack tabs via tbcc-service-control.ps1 (Beat, Celery, etc.)."""
     if platform.system() != "Windows":
         return {"ok": False, "error": "stack service launch is Windows-only"}
+    service_ids = [s.strip() for s in service_ids if s and s.strip() and service_user_enabled(s.strip())]
+    if not service_ids:
+        return {"ok": True, "skipped": "all_services_disabled_in_tray", "services": []}
     root = _tbcc_root()
     script = root / "scripts" / "_start-scheduling-stack.ps1"
     if script.is_file() and {"beat", "celery", "celery_post", "celery_post_scheduler"} <= set(service_ids):
@@ -611,11 +653,15 @@ def _scheduling_process_counts() -> dict[str, int]:
     post = _win_leaf_worker_count(
         r"app\.workers\.celery_app worker.*-Q\s+post\s+-n\s+post@"
     )
+    ops = _win_leaf_worker_count(
+        r"app\.workers\.celery_app worker.*-Q\s+ops_growth|-n\s+ops@"
+    )
     return {
         "beat": beat,
         "celery_worker": worker,
         "celery_post_scheduler": post_scheduler,
         "celery_post": post,
+        "celery_ops": ops,
     }
 
 
@@ -658,10 +704,12 @@ def collect_scheduling_health() -> dict[str, Any]:
         "celery_worker_processes": counts["celery_worker"],
         "celery_post_scheduler_worker_processes": scheduler_workers,
         "celery_post_worker_processes": post_workers,
+        "celery_ops_worker_processes": counts["celery_ops"],
         "beat_running": counts["beat"] > 0,
         "celery_worker_running": counts["celery_worker"] > 0,
         "celery_post_scheduler_worker_running": scheduler_workers > 0,
         "celery_post_worker_running": post_workers > 0,
+        "celery_ops_worker_running": counts["celery_ops"] > 0,
         "pool_auto_post_enabled": pool_auto,
         "scheduling_paused_by_focus": pause,
         "focus_profile": focus_profile,
@@ -1126,6 +1174,8 @@ _AUTO_REMEDIATE_COOLDOWN_S: dict[str, int] = {
     "watchdog_pool_purge": 30,
     "restart_post_scheduler_worker": 120,
     "start_scheduling_stack": 300,
+    "dedupe_run_schedule": 60,
+    "purge_thumbnail_warm_for_imports": 90,
 }
 
 
@@ -1204,7 +1254,11 @@ def auto_remediate_health_conflicts() -> dict[str, Any]:
         "celery_post_worker_down",
         "celery_post_scheduler_worker_down",
     } & codes
-    if worker_down and _auto_remediate_cooldown_ok("start_scheduling_stack"):
+    if (
+        worker_down
+        and scheduling_stack_user_enabled()
+        and _auto_remediate_cooldown_ok("start_scheduling_stack")
+    ):
         to_fix.append("beat_down")
         to_fix.append("celery_post_worker_down")
         to_fix.append("celery_post_scheduler_worker_down")
@@ -1268,6 +1322,85 @@ def _watchdog_drain_consumer_stuck(snap: dict[str, Any]) -> bool:
         return idle_s >= float(_watchdog_drain_stuck_seconds())
     _WATCHDOG_DRAIN_STUCK = {"key": key, "since": now, "due_len": due_len, "sched_len": sched_len}
     return False
+
+
+def _watchdog_send_failure_streak() -> int:
+    """
+    Consecutive overdue ticks (queue empty, workers up) before the watchdog concludes
+    sends are failing rather than the queue stalling. Reuses TBCC_WATCHDOG_FORCE_RESTART_STREAK
+    (historically a no-op) so an existing operator setting keeps meaning "how patient the
+    breaker is." Floor of 2: a single overdue tick before the first enqueue is normal.
+    """
+    raw = (os.getenv("TBCC_WATCHDOG_FORCE_RESTART_STREAK") or "2").strip()
+    try:
+        return max(2, min(20, int(raw)))
+    except ValueError:
+        return 2
+
+
+def _watchdog_send_failure_suspected(
+    sched: dict[str, Any] | None, post_len: int, drain_snap: dict[str, Any]
+) -> bool:
+    """
+    Distinguish "sends failing" from "queue stalled".
+
+    When schedulers stay overdue for several ticks yet the scheduler queue AND the Redis
+    due-queue are both empty and both post workers are alive, the posts drained but their
+    sends failed (Telegram lock/flood/auth) — they are not stuck in a queue. Re-enqueuing
+    them (resume_scheduled_posting purge=True) just churns doomed rows; poster_worker owns
+    per-row auto-pause. Returning True tells the watchdog to hold, not restart.
+
+    Orphan enqueue locks (due empty, locks > 0) are infrastructure stalls — never hold.
+    """
+    if post_len > 0:
+        return False
+    if int((drain_snap or {}).get("due_len") or 0) > 0:
+        return False
+    if int((drain_snap or {}).get("enqueue_locks") or 0) > 0:
+        return False
+    if _WATCHDOG_OVERDUE_STREAK < _watchdog_send_failure_streak():
+        return False
+    if not sched:
+        return False
+    return bool(sched.get("celery_post_scheduler_worker_running")) and bool(
+        sched.get("celery_post_worker_running")
+    )
+
+
+def _watchdog_celery_home_backlog_threshold() -> int:
+    raw = (os.getenv("TBCC_WATCHDOG_CELERY_BACKLOG") or "200").strip()
+    try:
+        return max(50, min(2000, int(raw)))
+    except ValueError:
+        return 200
+
+
+def _watchdog_import_queue_priority_threshold() -> int:
+    """Queued+processing import jobs that trigger thumbnail_warm deferral."""
+    raw = (os.getenv("TBCC_WATCHDOG_IMPORT_PRIORITY_THRESHOLD") or "3").strip()
+    try:
+        return max(1, min(50, int(raw)))
+    except ValueError:
+        return 3
+
+
+def _count_open_import_jobs() -> int:
+    """Queued + processing import jobs (storage-hub deposits waiting for telegram worker)."""
+    try:
+        from app.models.import_job import ImportJob
+        from app.services.import_pipeline import TERMINAL_STATUSES
+
+        db = SessionLocal()
+        try:
+            return int(
+                db.query(ImportJob)
+                .filter(~ImportJob.status.in_(list(TERMINAL_STATUSES)))
+                .count()
+            )
+        finally:
+            db.close()
+    except Exception:
+        return 0
 
 
 def _watchdog_import_idle_dwell_minutes() -> int:
@@ -1357,6 +1490,49 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
     if enabled:
         drain_snap = scheduled_drain_snapshot()
         due_len = int(drain_snap.get("due_len") or 0)
+
+        # Home celery queue: Beat piles duplicate run_schedule on Windows solo — purge extras.
+        try:
+            from app.services.celery_queue_ops import (
+                celery_queue_snapshot,
+                dedupe_run_schedule_queue,
+            )
+
+            qsnap = celery_queue_snapshot(sample_size=40)
+            celery_len = int((qsnap.get("queues") or {}).get("celery", {}).get("length") or 0)
+            home_threshold = _watchdog_celery_home_backlog_threshold()
+            if celery_len >= home_threshold and _auto_remediate_cooldown_ok("dedupe_run_schedule"):
+                dedupe = dedupe_run_schedule_queue(keep=1)
+                _mark_auto_remediate_cooldown(["dedupe_run_schedule"])
+                _record_watchdog_action(
+                    "dedupe_run_schedule",
+                    f"celery_len={celery_len} removed={dedupe.get('removed')} keep=1",
+                    actions,
+                    dedupe,
+                )
+        except Exception as e:
+            logger.debug("watchdog celery dedupe skipped: %s", e)
+
+        # Storage-hub imports waiting: drop thumbnail_warm so telegram worker drains deposits.
+        try:
+            open_imports = _count_open_import_jobs()
+            if open_imports >= _watchdog_import_queue_priority_threshold() and _auto_remediate_cooldown_ok(
+                "purge_thumbnail_warm_for_imports"
+            ):
+                from app.services.celery_queue_ops import purge_thumbnail_warm_from_telegram_queue
+
+                purged = purge_thumbnail_warm_from_telegram_queue()
+                _mark_auto_remediate_cooldown(["purge_thumbnail_warm_for_imports"])
+                if int(purged.get("removed") or 0) > 0:
+                    _record_watchdog_action(
+                        "purge_thumbnail_warm_for_imports",
+                        f"open_imports={open_imports} removed={purged.get('removed')}",
+                        actions,
+                        purged,
+                    )
+        except Exception as e:
+            logger.debug("watchdog import priority purge skipped: %s", e)
+
         if due_len > 0:
             try:
                 drain_kick = ensure_scheduled_drain_running()
@@ -1387,6 +1563,21 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
 
         # Overdue schedulers OR scheduler-lane backlog: purge, clear locks, re-enqueue.
         resume_needed = overdue > 0 or post_len >= backlog_threshold
+
+        # Circuit breaker: workers up + both queues empty + overdue persisting means the
+        # sends themselves are failing, not the queue stalling. Re-enqueuing just churns
+        # doomed rows; poster_worker's per-row auto-pause owns recovery. Hold, don't restart.
+        # Orphan enqueue locks (locks>0, due empty) must NOT hold — resume clears them.
+        if resume_needed and _watchdog_send_failure_suspected(sched, post_len, drain_snap):
+            resume_needed = False
+            _record_watchdog_action(
+                "send_failure_hold",
+                f"overdue_streak={_WATCHDOG_OVERDUE_STREAK} queue_empty workers_up: "
+                "holding resume (per-row auto-pause owns recovery)",
+                actions,
+                {"ok": True},
+            )
+
         if resume_needed and _auto_remediate_cooldown_ok("resume_scheduled_posting"):
             try:
                 r = resume_scheduled_posting(purge_post_queue=True)

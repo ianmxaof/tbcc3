@@ -8,6 +8,11 @@ function Get-TbccLaunchPowerShellExe {
 }
 
 function Get-TbccControlPythonCmd {
+  # Returns a cmd.exe command-line FRAGMENT (e.g. "py -3.13") for interpolation into
+  # WT/cmd launch strings like: cd /d "..." & py -3.13 -m uvicorn ...
+  # Do NOT invoke the result with the call operator (`& $py`) -- the whole string is
+  # treated as one executable name and fails. For `&` invocation use
+  # Get-TbccControlPythonExe instead, which returns a single bare python.exe path.
   try {
     & py -3.13 -c "import sys" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { return "py -3.13" }
@@ -17,12 +22,38 @@ function Get-TbccControlPythonCmd {
   return "python"
 }
 
+function Get-TbccControlPythonExe {
+  # Returns a single, bare python.exe path suitable for `& $exe <args>` invocation.
+  # The call operator treats the returned string as ONE command token, so neither
+  # "py -3.13" (multi-word) nor a quoted path work there. Resolve the py launcher to
+  # its real interpreter and return the bare path. Fallbacks: py -3.13 -> py ->
+  # known 3.13 install path -> python on PATH.
+  foreach ($ver in @('-3.13', '')) {
+    try {
+      $probe = @()
+      if ($ver) { $probe += $ver }
+      $probe += @('-c', 'import sys; print(sys.executable)')
+      $exe = & py @probe 2>$null
+      if ($LASTEXITCODE -eq 0 -and $exe) {
+        $exe = ([string[]]@($exe) | Where-Object { $_ } | Select-Object -First 1)
+        if ($exe) { $exe = $exe.Trim() }
+        if ($exe -and (Test-Path -LiteralPath $exe)) { return $exe }
+      }
+    } catch {}
+  }
+  $py313 = Join-Path $env:LOCALAPPDATA "Programs\Python\Python313\python.exe"
+  if (Test-Path -LiteralPath $py313) { return $py313 }
+  $cmd = Get-Command python -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source) { return $cmd.Source }
+  return "python"
+}
+
 function Set-TbccBackendRestartGrace {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [int]$Seconds = 0
   )
-  $py = Get-TbccControlPythonCmd
+  $py = Get-TbccControlPythonExe
   $backendDir = Join-Path $TbccRoot "backend"
   $script = Join-Path $backendDir "scripts\set_backend_restart_grace.py"
   if (-not (Test-Path -LiteralPath $script)) { return @{ ok = $false } }
@@ -37,7 +68,7 @@ function Clear-TbccBackendRestartGrace {
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [int]$TailSeconds = -1
   )
-  $py = Get-TbccControlPythonCmd
+  $py = Get-TbccControlPythonExe
   $backendDir = Join-Path $TbccRoot "backend"
   $script = Join-Path $backendDir "scripts\set_backend_restart_grace.py"
   if (-not (Test-Path -LiteralPath $script)) { return @{ ok = $false } }
@@ -208,6 +239,33 @@ function Test-TbccBackgroundServiceStartEnabled {
   $raw = ($dotEnv['TBCC_BACKGROUND_SERVICE_START'] -as [string]).Trim().ToLower()
   if ($raw -match '^(0|false|no|off)$') { return $false }
   return $true
+}
+
+function Test-TbccWtMonolithEnabled {
+  <#
+  Monolith mode: all service restarts reuse the single TBCC Windows Terminal host (no hidden PS popups).
+  Default on when TBCC_WT_MONOLITH is unset — set TBCC_WT_MONOLITH=0 to allow headless auto-restarts.
+  #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $raw = ($dotEnv['TBCC_WT_MONOLITH'] -as [string]).Trim().ToLower()
+  if ($raw -match '^(0|false|no|off)$') { return $false }
+  return $true
+}
+
+function Test-TbccUseHeadlessServiceStart {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$BackgroundRequested,
+    [int]$WtHostPid = 0
+  )
+  if ($BackgroundRequested) {
+    if ((Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot) -and $WtHostPid -gt 0) { return $false }
+    return $true
+  }
+  if ((Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot) -and $WtHostPid -gt 0) { return $false }
+  if (-not (Test-TbccBackgroundServiceStartEnabled -TbccRoot $TbccRoot)) { return $false }
+  return ($WtHostPid -le 0)
 }
 
 function Start-TbccStackServiceHeadless {
@@ -571,6 +629,259 @@ function Get-TbccStackServiceById {
     Where-Object { $_.Id -eq $ServiceId } | Select-Object -First 1)
 }
 
+function Get-TbccServiceOpsCatalog {
+  <#
+  Tray Services menu: plain-language labels + tooltips.
+  MenuDoes = what this process is for (not other services' jobs).
+  MenuRestartWhen = when Ctrl+click restart matters.
+  MenuAlso = other menu rows often restarted with this (human labels, not ids).
+  MenuQueues / MenuSession = optional technical detail last.
+  Avoid non-ASCII in tooltip strings (WinForms can garble middle-dot etc.).
+  #>
+  return @{
+    backend = @{
+      MenuGroup       = "core"
+      MenuLabel       = "Backend API"
+      MenuDoes        = "The main TBCC server (dashboard + bots talk to this). Includes auto-heal for stalled scheduled posts."
+      MenuRestartWhen = "After backend code or .env changes - this is what agents mean by restart backend."
+      MenuAlso        = @("Beat timer", "Worker: due posts", "Worker: Telegram sends")
+    }
+    dashboard = @{
+      MenuGroup       = "core"
+      MenuLabel       = "Dashboard website"
+      MenuDoes        = "Operator UI in the browser (schedulers, pools, health)."
+      MenuRestartWhen = "After dashboard UI code changes."
+      MenuAlso        = @("Backend API")
+    }
+    forum = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "AOF Forum (dev site)"
+      MenuDoes        = "Optional Next.js forum app for local development."
+      MenuRestartWhen = "After forum frontend code changes."
+    }
+    beat = @{
+      MenuGroup       = "celery"
+      MenuLabel       = "Beat timer"
+      MenuDoes        = "Alarm clock only - puts jobs on queues on a schedule. Does NOT do the work itself."
+      MenuRestartWhen = "After Beat schedule / .env timing changes, or when jobs stop appearing."
+      MenuAlso        = @("Worker: imports and scrape", "Worker: due posts", "Worker: growth and relay")
+      MenuSchedules   = @("due posts", "listening relay", "scrape ticks", "loot promo", "storage pool seed", "thin-pool backfill (opt-in)")
+    }
+    celery = @{
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: imports and scrape"
+      MenuDoes        = "Does the actual work for imports, scrapes, telegram jobs, and other light home-queue tasks."
+      MenuRestartWhen = "After worker/import code changes, or when the imports/scrape queues stall."
+      MenuAlso        = @("Beat timer")
+      MenuQueues      = @("celery", "scrape", "subscription", "telegram")
+    }
+    celery_post = @{
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: Telegram sends"
+      MenuDoes        = "Sends scheduled/pool posts to Telegram from the post queue."
+      MenuRestartWhen = "When posts are queued but not sending, or after poster code changes."
+      MenuAlso        = @("Worker: due posts", "Beat timer")
+      MenuQueues      = @("post")
+      MenuSession     = "admin_poster.session (Telegram login for sends)"
+    }
+    celery_post_scheduler = @{
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: due posts"
+      MenuDoes        = "Moves due scheduled posts onto the send queue. Pair with Worker: Telegram sends."
+      MenuRestartWhen = "When schedulers show overdue but the send worker looks idle."
+      MenuAlso        = @("Beat timer", "Worker: Telegram sends")
+      MenuQueues      = @("post_scheduler")
+    }
+    celery_ops = @{
+      MenuGroup       = "celery"
+      MenuLabel       = "Worker: growth and relay"
+      MenuDoes        = "Background growth jobs: listening relay, Erome analytics, income poll, storage pool seed runs."
+      MenuRestartWhen = "After growth/relay/erome worker code changes, or those jobs stop running."
+      MenuAlso        = @("Beat timer")
+      MenuQueues      = @("ops_growth", "ops_relay", "ops_erome")
+    }
+    payment = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Payment bot"
+      MenuDoes        = "Telegram bot for Stars / checkout /resolve."
+      MenuRestartWhen = "After payment-bot code or bot token env changes. Do not run a second copy."
+    }
+    secretary = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Secretary bot"
+      MenuDoes        = "Operator Telegram commands and inbox helpers."
+      MenuRestartWhen = "After secretary-bot code changes. Do not run a second copy."
+    }
+    loot = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Loot bot"
+      MenuDoes        = "Loot rolls, keys, and promo CTAs in Telegram."
+      MenuRestartWhen = "After loot-bot code changes. Do not run a second copy."
+    }
+    album_composer = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Album composer"
+      MenuDoes        = "Remixer / album composer Telegram bot."
+      MenuRestartWhen = "After album-composer code changes."
+      MenuAlso        = @("Worker: Telegram sends")
+    }
+    companion = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Companion bot"
+      MenuDoes        = "Optional spicy companion Telegram bot (off unless you enable it)."
+      MenuRestartWhen = "After companion-bot code changes."
+    }
+    admin = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Admin / Storage bot"
+      MenuDoes        = "Storage hub /erome and admin Telegram commands. Shares admin.session with scrapes."
+      MenuRestartWhen = "After admin-bot code changes. Avoid while a heavy scrape holds the session."
+      MenuAlso        = @("Worker: imports and scrape", "Worker: growth and relay")
+      MenuSession     = "admin.session"
+    }
+    macro_search = @{
+      MenuGroup       = "bots"
+      MenuLabel       = "Macro search bot"
+      MenuDoes        = "Optional catalog / macro-search Telegram bot."
+      MenuRestartWhen = "After macro-search bot code changes."
+    }
+    openclaw = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "OpenClaw gateway"
+      MenuDoes        = "Optional growth-agent gateway process."
+      MenuRestartWhen = "After OpenClaw config changes."
+    }
+    llm_chat = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "LLM chat bot"
+      MenuDoes        = "Optional LLM chat bot (catalog / disabled by default)."
+      MenuRestartWhen = "After LLM chat bot code changes."
+    }
+    watch = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "Watch folder organizer"
+      MenuDoes        = "Moves files from the watch inbox into the library folder."
+      MenuRestartWhen = "After watch-folder path or code changes."
+    }
+    nsfw = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "NSFW detect"
+      MenuDoes        = "Optional local enrichment service for NSFW tagging."
+      MenuRestartWhen = "After NSFW service code changes."
+    }
+    lustpress = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "Lustpress"
+      MenuDoes        = "Optional local Lustpress enrichment service."
+      MenuRestartWhen = "After Lustpress code changes."
+    }
+    clip = @{
+      MenuGroup       = "extra"
+      MenuLabel       = "CLIP categorize"
+      MenuDoes        = "Optional CLIP image categorization service."
+      MenuRestartWhen = "After CLIP service code changes."
+    }
+  }
+}
+
+function Merge-TbccServiceOpsCatalog {
+  param(
+    [Parameter(Mandatory = $true)]$Service,
+    $DotEnv = @{}
+  )
+  $catalog = Get-TbccServiceOpsCatalog
+  $meta = $catalog[[string]$Service.Id]
+  if (-not $meta) {
+    $meta = @{ MenuGroup = "extra" }
+    $title = [string]$Service.Title
+    if (-not $Service.MenuLabel -and $title -match '^TBCC-') {
+      $meta.MenuLabel = $title.Substring(5)
+    }
+  }
+  foreach ($key in $meta.Keys) {
+    $Service | Add-Member -NotePropertyName $key -NotePropertyValue $meta[$key] -Force
+  }
+  if ($Service.Id -eq "celery" -and $DotEnv) {
+    $hq = ($DotEnv["TBCC_CELERY_HOME_QUEUES"] -as [string]).Trim()
+    if ($hq) { $Service | Add-Member -NotePropertyName MenuQueues -NotePropertyValue @($hq -split ',') -Force }
+  }
+  if ($Service.Id -eq "celery_ops" -and $DotEnv) {
+    $oq = ($DotEnv["TBCC_CELERY_OPS_QUEUES"] -as [string]).Trim()
+    if ($oq) { $Service | Add-Member -NotePropertyName MenuQueues -NotePropertyValue @($oq -split ',') -Force }
+  }
+}
+
+function Get-TbccServiceMenuTooltip {
+  param(
+    $Service,
+    [string]$Status = "",
+    [bool]$UserEnabled = $true
+  )
+  # Plain ASCII only - WinForms tooltips can mojibake middle-dot / smart punctuation.
+  $lines = New-Object System.Collections.ArrayList
+  $label = if ($Service.MenuLabel) { [string]$Service.MenuLabel } else { [string]$Service.Title }
+  if ($Service.Port -gt 0) {
+    [void]$lines.Add(("$label  (port {0})" -f $Service.Port))
+  } else {
+    [void]$lines.Add($label)
+  }
+  if ($Service.MenuDoes) {
+    [void]$lines.Add(("Does: " + [string]$Service.MenuDoes))
+  } elseif ($Service.MenuLane) {
+    # Legacy fallback if an older catalog field is still present
+    [void]$lines.Add([string]$Service.MenuLane)
+  }
+  if ($Service.MenuSchedules -and @($Service.MenuSchedules).Count -gt 0) {
+    [void]$lines.Add(("Schedules onto queues: " + (@($Service.MenuSchedules) -join "; ")))
+  }
+  if ($Service.MenuBeat -and @($Service.MenuBeat).Count -gt 0 -and -not $Service.MenuSchedules) {
+    [void]$lines.Add(("Schedules onto queues: " + (@($Service.MenuBeat) -join "; ")))
+  }
+  if ($Service.MenuQueues -and @($Service.MenuQueues).Count -gt 0) {
+    $q = @($Service.MenuQueues)
+    if ($q.Count -eq 1 -and [string]$q[0] -match ',') { $q = [string]$q[0] -split ',' }
+    [void]$lines.Add(("Redis queues: " + (($q | ForEach-Object { $_.Trim() }) -join ", ")))
+  }
+  if ($Service.MenuSession) { [void]$lines.Add(("Telegram session: " + [string]$Service.MenuSession)) }
+  if ($Service.MenuRestartWhen) {
+    [void]$lines.Add(("Restart when: " + [string]$Service.MenuRestartWhen))
+  }
+  if ($Service.MenuAlso -and @($Service.MenuAlso).Count -gt 0) {
+    [void]$lines.Add(("Often restart with: " + (@($Service.MenuAlso) -join "; ")))
+  } elseif ($Service.MenuRelated -and @($Service.MenuRelated).Count -gt 0) {
+    # Resolve internal ids to human labels when legacy MenuRelated is present
+    $catalog = Get-TbccServiceOpsCatalog
+    $names = @(
+      foreach ($rid in @($Service.MenuRelated)) {
+        $key = [string]$rid
+        if ($catalog.ContainsKey($key) -and $catalog[$key].MenuLabel) {
+          [string]$catalog[$key].MenuLabel
+        } else {
+          $key
+        }
+      }
+    )
+    [void]$lines.Add(("Often restart with: " + ($names -join "; ")))
+  }
+  if ($UserEnabled) {
+    if ($Status -eq "up") {
+      [void]$lines.Add("Click: stop/disable  |  Ctrl+click: restart")
+    } else {
+      [void]$lines.Add("Click: enable + start  |  Ctrl+click: restart")
+    }
+  } else {
+    [void]$lines.Add("Click: enable + start")
+  }
+  return ($lines -join [Environment]::NewLine)
+}
+
+function Get-TbccServicePanelShortLabel {
+  param($Service)
+  $label = if ($Service.MenuLabel) { [string]$Service.MenuLabel } else { [string]$Service.Title }
+  if ($label.Length -gt 28) { return ($label.Substring(0, 26) + "..") }
+  return $label
+}
+
 function Get-TbccStackServices {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
@@ -627,6 +938,13 @@ function Get-TbccStackServices {
         Id = "celery_post_scheduler"; Title = "TBCC-Celery-Post-Scheduler"; Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q post_scheduler";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q post_scheduler -n scheduler@%h')
       })
+    $celeryOpsQueues = ($dotEnv['TBCC_CELERY_OPS_QUEUES'] -as [string]).Trim()
+    if (-not $celeryOpsQueues) { $celeryOpsQueues = 'ops_growth,ops_relay,ops_erome' }
+    [void]$list.Add([pscustomobject]@{
+        Id = "celery_ops"; Title = "TBCC-Celery-Ops";
+        Port = 0; CommandMatch = "app\.workers\.celery_app worker.*-Q ops_growth";
+        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app worker -l info -P solo -Q ' + $celeryOpsQueues + ' -n ops@%h')
+      })
     [void]$list.Add([pscustomobject]@{
         Id = "beat"; Title = "TBCC-Beat"; Port = 0; CommandMatch = "app\.workers\.celery_app beat";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m celery -A app.workers.celery_app beat -l info')
@@ -641,12 +959,12 @@ function Get-TbccStackServices {
       })
     if (-not $leanStack -or $MenuCatalog) {
       [void]$list.Add([pscustomobject]@{
-          Id = "companion"; Title = "TBCC-CompanionBot"; MenuLabel = "TBCC-CompanionBot (spicy)";
+          Id = "companion"; Title = "TBCC-CompanionBot";
           Port = 0; CommandMatch = "bots\.companion_bot";
           Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.companion_bot')
         })
       [void]$list.Add([pscustomobject]@{
-          Id = "admin"; Title = "TBCC-AdminBot"; MenuLabel = "TBCC-AdminBot (Storage /erome)";
+          Id = "admin"; Title = "TBCC-AdminBot";
           Port = 0; CommandMatch = "bots\.admin_bot";
           Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.admin_bot')
         })
@@ -662,7 +980,7 @@ function Get-TbccStackServices {
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.loot_bot')
       })
     [void]$list.Add([pscustomobject]@{
-        Id = "album_composer"; Title = "TBCC-AlbumComposer"; MenuLabel = "TBCC-AlbumComposer (remixer)";
+        Id = "album_composer"; Title = "TBCC-AlbumComposer";
         Port = 0; CommandMatch = "bots\.album_composer_bot";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.album_composer_bot')
       })
@@ -741,6 +1059,10 @@ function Get-TbccStackServices {
         } catch {}
       }
     }
+  }
+
+  foreach ($svc in $list) {
+    Merge-TbccServiceOpsCatalog -Service $svc -DotEnv $dotEnv
   }
 
   return @($list.ToArray())
@@ -946,6 +1268,17 @@ function Ensure-TbccStackWorkersSingleton {
     }
     $restarted = $false
     if (-not $TrimOnly -and $kept -eq 0 -and $TbccRoot -and $svc.Command) {
+      if ($svc.Id -and -not (Test-TbccServiceUserEnabled -ServiceId $svc.Id -TbccRoot $TbccRoot)) {
+        $report += [pscustomobject]@{
+          Id = $svc.Id
+          Title = $svc.Title
+          KeptPid = 0
+          Trimmed = $trimmed.Count
+          Restarted = $false
+          Skipped = "disabled_in_tray"
+        }
+        continue
+      }
       if (Test-TbccServiceWrapperStarting -Title $svc.Title) {
         $report += [pscustomobject]@{
           Id = $svc.Id
@@ -956,7 +1289,8 @@ function Ensure-TbccStackWorkersSingleton {
         }
         continue
       }
-      Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper -Background -Force | Out-Null
+      $bg = -not (Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot)
+      Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper -Background:$bg -Force | Out-Null
       Start-Sleep -Seconds 6
       $after = @(Get-TbccServiceWorkerProcesses -Service $svc)
       $kept = if ($after.Count -gt 0) { [int]$after[0].ProcessId } else { 0 }
@@ -1499,9 +1833,16 @@ function Initialize-TbccServiceToggleMenu {
   if (-not $PSBoundParameters.ContainsKey('MenuCatalog')) { $MenuCatalog = $true }
   Clear-TbccRestartServiceMenu -MenuItem $MenuItem
   $map = @{}
+  $prevGroup = ""
   foreach ($svc in (Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog)) {
+    $grp = if ($svc.MenuGroup) { [string]$svc.MenuGroup } else { "extra" }
+    if ($prevGroup -and $grp -ne $prevGroup) {
+      [void]$MenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+    }
+    $prevGroup = $grp
     $item = New-Object System.Windows.Forms.ToolStripMenuItem
     $item.Text = Get-TbccServiceMenuText -Service $svc
+    $item.ToolTipText = Get-TbccServiceMenuTooltip -Service $svc
     $item.Tag = @{ Id = $svc.Id; Title = $svc.Title; TbccUserEnabled = $true }
     $sid = $svc.Id
     [void]$item.Add_Click({
@@ -1522,8 +1863,13 @@ function Initialize-TbccServiceToggleMenu {
   $hint.Text = "[on] running  [--] stopped  [off] disabled  |  click toggle  Ctrl restart"
   $hint.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
   $hint.Enabled = $false
+  $hint2 = New-Object System.Windows.Forms.ToolStripMenuItem
+  $hint2.Text = "Hover any row: what it does, when to restart, related workers"
+  $hint2.Tag = @{ TbccMenuHint = $true; TbccUserEnabled = $false; TbccRunning = $false }
+  $hint2.Enabled = $false
   [void]$MenuItem.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
   [void]$MenuItem.DropDownItems.Add($hint)
+  [void]$MenuItem.DropDownItems.Add($hint2)
   return $map
 }
 
@@ -1544,15 +1890,7 @@ function Apply-TbccServiceMenuItemsUi {
     $item.Tag.TbccUserEnabled = [bool]$row.UserEnabled
     $item.Tag.TbccRunning = $running
     $item.Enabled = $true
-    if ($row.UserEnabled) {
-      if ($running) {
-        $item.ToolTipText = "Running - click to stop/disable | Ctrl+click restart"
-      } else {
-        $item.ToolTipText = "Stopped (enabled) - click to disable | Ctrl+click start"
-      }
-    } else {
-      $item.ToolTipText = "Disabled - click to enable and start"
-    }
+    $item.ToolTipText = Get-TbccServiceMenuTooltip -Service $row.Service -Status $row.Status -UserEnabled:([bool]$row.UserEnabled)
   }
 }
 
@@ -1721,7 +2059,11 @@ function Start-TbccWtTab {
 
   $openingNewWindow = ($NewWindow -or -not $WtHostPid)
   if (-not $openingNewWindow -and (Get-Command Invoke-TbccWtCommandSilent -ErrorAction SilentlyContinue)) {
+    $doDemote = ((Get-Command Test-TbccWtNewTabBackground -ErrorAction SilentlyContinue) -and (Test-TbccWtNewTabBackground -TbccRoot $TbccRoot) -and -not (Get-TbccWtHostForeground -WtHostPid $WtHostPid))
+    $demote = if ($doDemote) { Start-TbccWtHostDemotionAsync -WtHostPid $WtHostPid } else { $null }
     $null = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @($al.ToArray())
+    if ($demote) { Stop-TbccWtHostDemotionAsync -Job $demote }
+    elseif ($doDemote) { $null = Set-TbccWtHostWindowBackground -WtHostPid $WtHostPid }
     return $true
   }
   $winStyle = if ($openingNewWindow -and $Minimized) { 'Minimized' } else { 'Normal' }
@@ -2190,7 +2532,11 @@ function Start-TbccWtTabs {
   }
 
   if ($reuseWindow -and (Get-Command Invoke-TbccWtCommandSilent -ErrorAction SilentlyContinue)) {
+    $doDemote = ((Get-Command Test-TbccWtNewTabBackground -ErrorAction SilentlyContinue) -and (Test-TbccWtNewTabBackground -TbccRoot $TbccRoot) -and -not (Get-TbccWtHostForeground -WtHostPid $WtHostPid))
+    $demote = if ($doDemote) { Start-TbccWtHostDemotionAsync -WtHostPid $WtHostPid } else { $null }
     $null = Invoke-TbccWtCommandSilent -WtExe $wtExe -WtArgs @($al.ToArray()) -TimeoutMs 120000
+    if ($demote) { Stop-TbccWtHostDemotionAsync -Job $demote }
+    elseif ($doDemote) { $null = Set-TbccWtHostWindowBackground -WtHostPid $WtHostPid }
     Refresh-TbccWtHostPid -TbccRoot $TbccRoot -PreferredPid $WtHostPid
     return $true
   }
@@ -2282,9 +2628,8 @@ function Start-TbccStackService {
   }
 
   $wtHost = Get-TbccWtHostPid -TbccRoot $TbccRoot
-  $useHeadless = $Background -or (
-    (Test-TbccBackgroundServiceStartEnabled -TbccRoot $TbccRoot) -and -not $wtHost
-  )
+  $wtHostVal = if ($wtHost) { [int]$wtHost } else { 0 }
+  $useHeadless = Test-TbccUseHeadlessServiceStart -TbccRoot $TbccRoot -BackgroundRequested:$Background -WtHostPid $wtHostVal
   if ($useHeadless) {
     $null = Start-TbccStackServiceHeadless -Service $Service -TbccRoot $TbccRoot `
       -UseErrorHubWrapper:($hubReady) -Command $cmd
@@ -2376,7 +2721,12 @@ function Restart-TbccStackService {
     $null = Stop-TbccStackService -Service $svc -TbccRoot $TbccRoot
     Start-Sleep -Milliseconds 800
   }
-  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper -Force -Background:$Background
+  $wtHostVal = 0
+  $hostPid = Get-TbccWtHostPid -TbccRoot $TbccRoot
+  if ($hostPid) { $wtHostVal = [int]$hostPid }
+  $useBg = $Background.IsPresent -and $Background
+  if ((Test-TbccWtMonolithEnabled -TbccRoot $TbccRoot) -and $wtHostVal -gt 0) { $useBg = $false }
+  Start-TbccStackService -Service $svc -TbccRoot $TbccRoot -UseErrorHubWrapper:$UseErrorHubWrapper -Force -Background:$useBg
   if ($ServiceId -eq "backend") {
     $up = Wait-TbccBackendHealth -TimeoutSec 90
     if ($up) {
@@ -2481,6 +2831,43 @@ function Get-TbccProcessTreePids {
     }
   }
   return @($seen)
+}
+
+function Test-TbccProcessTreeHasLiveWorker {
+  # True when the process tree rooted at $RootPid still contains a live TBCC python
+  # worker. Used by trim/kill paths as a guard: never tear down a tree (WT host or
+  # tab wrapper) that is the only thing keeping a service's worker alive.
+  param(
+    [Parameter(Mandatory = $true)][int]$RootPid,
+    $AllProcesses = $null
+  )
+  if (-not $AllProcesses) {
+    $AllProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+  }
+  foreach ($procId in @(Get-TbccProcessTreePids -RootPid $RootPid -AllProcesses $AllProcesses)) {
+    $p = $AllProcesses | Where-Object { $_.ProcessId -eq $procId } | Select-Object -First 1
+    if (-not $p) { continue }
+    $n = [string]$p.Name
+    $cmd = [string]$p.CommandLine
+    if ($n -match '^(python|py)\.exe$' -and $cmd -match 'powercore-repo-main\\telegram_bot2\\tbcc|telegram_bot2/tbcc') {
+      return $true
+    }
+  }
+  return $false
+}
+
+function Select-TbccTabWrapperKeepPid {
+  # Decide which duplicate run-tbcc-service tab wrapper to KEEP so a trim can never
+  # remove the only live worker for a service (the 0/10 incident). Pure function:
+  # input is an array of objects with .Pid (int), .Created (datetime|null) and
+  # .OwnsLive (bool). Prefer the newest wrapper that still owns a live worker; if no
+  # wrapper owns one, keep the newest wrapper outright so we never drop to zero.
+  param([Parameter(Mandatory = $true)]$Wrappers)
+  $arr = @($Wrappers)
+  if ($arr.Count -eq 0) { return $null }
+  $live = @($arr | Where-Object { $_.OwnsLive } | Sort-Object { $_.Created } -Descending)
+  if ($live.Count -gt 0) { return [int]$live[0].Pid }
+  return [int](@($arr | Sort-Object { $_.Created } -Descending)[0]).Pid
 }
 
 function Get-TbccWindowsTerminalHostPids {

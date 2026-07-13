@@ -15,6 +15,7 @@ from app.models.loot import LootModifier
 from app.models.post_outbound_event import PostOutboundEvent
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.services.aof_packs_caption_templates import PACK_BODY_PLACEHOLDER
+from app.services.aof_packs_vocabulary import sanitize_pack_copy
 from app.services.aof_packs_post_copy import (
     build_pack_drop_caption,
     build_pack_post_album_variant,
@@ -159,12 +160,13 @@ def _build_pack_buttons(mod: LootModifier) -> str:
 
 
 def _inject_pack_body(template: str, body: str) -> str:
-    tpl = (template or "").strip()
+    tpl = sanitize_pack_copy((template or "").strip(), seed=template)
+    body_clean = sanitize_pack_copy((body or "").strip(), seed=body)
     if PACK_BODY_PLACEHOLDER in tpl:
-        return tpl.replace(PACK_BODY_PLACEHOLDER, body.strip())
+        return tpl.replace(PACK_BODY_PLACEHOLDER, body_clean)
     if tpl:
-        return f"{tpl}\n\n{body.strip()}"
-    return body.strip()
+        return f"{tpl}\n\n{body_clean}"
+    return body_clean
 
 
 def _peek_template_slot(post: ScheduledTextPost) -> tuple[int, str]:

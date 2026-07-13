@@ -164,14 +164,14 @@ def _age_confirmed(context: ContextTypes.DEFAULT_TYPE) -> bool:
 def _gate_keyboard() -> InlineKeyboardMarkup | None:
     lv = gate_lv_url()
     addlist = addlist_url()
-    main = main_group_invite_url()
+    loot = main_group_invite_url()
     rows: list[list[InlineKeyboardButton]] = []
     if lv:
         rows.append([InlineKeyboardButton("1️⃣ Open AOF gate (Linkvertise)", url=lv)])
     if addlist:
         rows.append([InlineKeyboardButton("Join all AOF channels (addlist)", url=addlist)])
-    if main:
-        rows.append([InlineKeyboardButton("Join AOF Main Group (verify fallback)", url=main)])
+    if loot:
+        rows.append([InlineKeyboardButton("Loot Room entry (verify fallback)", url=loot)])
     rows.append([InlineKeyboardButton("2️⃣ I completed the gate", callback_data="comp_gate_lv_done")])
     rows.append([InlineKeyboardButton("3️⃣ Verify channel membership", callback_data="comp_gate_verify")])
     return InlineKeyboardMarkup(rows) if rows else None
@@ -182,7 +182,7 @@ async def _reply_gate_required(msg, user_id: int, *, prefix: str = "") -> None:
     head = prefix + "\n\n" if prefix else ""
     if acc.lv_ack and not acc.member_verified:
         step3 = (
-            "3️⃣ Join <b>AOF Main Group</b> (button below) or any addlist channel, wait ~30s, "
+            "3️⃣ Open <b>Loot Room entry</b> (button below) or any addlist channel, wait ~30s, "
             "then tap <b>Verify membership</b> — or send your photo again and I'll recheck.\n\n"
         )
         tail = "After Member ✅: confirm 18+ and send a photo, or chat freely."

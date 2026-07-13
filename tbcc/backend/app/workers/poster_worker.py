@@ -379,12 +379,41 @@ def mirror_scheduled_post_to_erome(post_id: int):
     return mirror_scheduled_post_to_erome_sync(int(post_id))
 
 
+@celery.task(name="app.workers.poster_worker.promote_erome_pending_on_main")
+def promote_erome_pending_on_main():
+    from app.services.erome_upload_governance import release_pending_albums_on_main_post
+
+    return release_pending_albums_on_main_post(headed=False)
+
+
 def _after_telegram_erome_mirror(post_id: int) -> None:
     """Queue Erome album upload after successful Telegram send (Playwright on Celery worker)."""
     try:
         mirror_scheduled_post_to_erome.delay(int(post_id))
     except Exception:
         logger.debug("erome mirror enqueue skipped", exc_info=True)
+
+
+def _after_telegram_erome_promote(channel_identifier: str | None = None) -> None:
+    """Release staged private Erome albums when Main lane posts (Buffer-style side effect)."""
+    try:
+        from app.data.aof_network import MAIN_GROUP_IDENT
+        from app.services.erome_upload_governance import promote_on_main_post_enabled
+
+        if not promote_on_main_post_enabled():
+            return
+        ident = str(channel_identifier or "").strip()
+        if ident and ident != str(MAIN_GROUP_IDENT):
+            if "aofmain" not in ident.lower() and "3206350461" not in ident:
+                return
+        try:
+            promote_erome_pending_on_main.delay()
+        except Exception:
+            from app.services.erome_upload_governance import release_pending_albums_on_main_post
+
+            release_pending_albums_on_main_post(headed=False)
+    except Exception:
+        logger.debug("erome promote-on-main skipped", exc_info=True)
 
 
 def _release_scheduled_enqueue_lock(post_id: int, *, manual_trigger: bool) -> None:
@@ -588,6 +617,20 @@ async def _execute_post_scheduled_text(
                     if sent_ids and getattr(leader, "erome_mirror_enabled", False):
                         _after_telegram_erome_mirror(int(leader.id))
                     if sent_ids:
+                        try:
+                            ch_ident = None
+                            for p in siblings:
+                                if int(p.id) in sent_ids:
+                                    # leader channel is enough for Main-lane detect
+                                    break
+                            from app.models.channel import Channel
+
+                            ch = db.query(Channel).filter(Channel.id == int(leader.channel_id)).first()
+                            ch_ident = getattr(ch, "identifier", None) if ch else None
+                            _after_telegram_erome_promote(ch_ident)
+                        except Exception:
+                            logger.debug("erome promote hook skipped", exc_info=True)
+                    if sent_ids:
                         from app.services.caption_llm_rewrite import note_llm_send_completed
 
                         note_llm_send_completed(leader)
@@ -652,6 +695,10 @@ async def _execute_post_scheduled_text(
                         _after_telegram_reddit_mirror(int(post.id))
                     if getattr(post, "erome_mirror_enabled", False):
                         _after_telegram_erome_mirror(int(post.id))
+                    try:
+                        _after_telegram_erome_promote(getattr(channel, "identifier", None))
+                    except Exception:
+                        logger.debug("erome promote hook skipped", exc_info=True)
                     from app.services.caption_llm_rewrite import note_llm_send_completed
 
                     note_llm_send_completed(post)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -24,10 +25,15 @@ def build_loot_daily_promo_html(db: Session) -> str:
     if custom:
         intro = custom
     else:
+        pay_un = (
+            (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "").strip().lstrip("@")
+            or "aofsubscriptions_bot"
+        )
         intro = (
-            "<b>Loot Room — open.</b>\n\n"
+            "<b>Loot Room — 24h access via Stars.</b>\n\n"
             "Tiered pulls. Modifier slots. Nothing guaranteed.\n"
-            "@aof_lootgod_bot runs the table — up to five complimentary pulls per account (/roll), then paid 24h room access."
+            f'Paid room key: <a href="https://t.me/{html.escape(pay_un, quote=True)}?start=loot">@{html.escape(pay_un)}</a> → /loot\n'
+            f"Free tasters: @{bot_user} → /roll (5 lifetime pulls per account)."
         )
 
     tail = (
@@ -38,19 +44,16 @@ def build_loot_daily_promo_html(db: Session) -> str:
 
 
 def loot_daily_promo_inline_keyboard(bot_username: str, *, payment_bot_username: str | None = None) -> dict[str, Any]:
-    """Deep link: free pull → loot overseer; paid keys → payment bot."""
-    import os
-
+    """Deep link: paid checkout → payment bot; free pull → loot overseer."""
     loot_un = str(bot_username or "aof_lootgod_bot").strip().lstrip("@")
     pay_un = (
         (payment_bot_username or "").strip().lstrip("@")
         or (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "").strip().lstrip("@")
     )
-    rows: list[list[dict[str, str]]] = [
-        [{"text": "Claim free pull", "url": f"https://t.me/{loot_un}?start=loot_free"}],
-    ]
+    rows: list[list[dict[str, str]]] = []
     if pay_un:
-        rows.append([{"text": "24h room access", "url": f"https://t.me/{pay_un}?start=loot"}])
+        rows.append([{"text": "24h room access (Stars)", "url": f"https://t.me/{pay_un}?start=loot"}])
     else:
         rows.append([{"text": "24h room access", "url": f"https://t.me/{loot_un}?start=loot_keys"}])
+    rows.append([{"text": "Claim free pull", "url": f"https://t.me/{loot_un}?start=loot_free"}])
     return {"inline_keyboard": rows}

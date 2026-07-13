@@ -1,0 +1,17 @@
+{
+  "name": "tbcc-userscripts",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CI-built Tampermonkey suites (FetLife first). Expand via packages/* + inbox/",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:nobump": "node scripts/build.mjs --no-bump",
+    "serve": "npx --yes serve dist -p 8765 --no-clipboard",
+    "lint:headers": "node scripts/lint-headers.mjs",
+    "test": "node --test packages/fetlife-suite/features/story-filter.test.mjs packages/fetlife-suite/features/gender-filter.test.mjs packages/perchance-suite/features/jobs-data.test.mjs",
+    "ci": "npm run test && npm run build:nobump && npm run lint:headers"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

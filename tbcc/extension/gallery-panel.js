@@ -1,7 +1,7 @@
 /* global chrome */
 /**
- * In-panel views (collected / quick tools / options) via top nav links.
- * Click the same link again to return to the main gallery (underlying page visible beside the sidebar).
+ * In-panel views (collected / quick tools / options) via top nav tab buttons.
+ * Click the same tab again to return to the main gallery.
  * Dashboard opens in a new browser tab (http://127.0.0.1:5173/).
  */
 (function () {
@@ -12,6 +12,7 @@
   const linkGalleryView = document.getElementById("linkGalleryView");
   const linkModelLookup = document.getElementById("linkModelLookup");
   const linkPopupTools = document.getElementById("linkPopupTools");
+  const linkDashboard = document.getElementById("linkDashboard");
 
   let panelView = "main";
 
@@ -27,7 +28,9 @@
     [linkPanelMain, linkGalleryView, linkModelLookup, linkPopupTools].forEach((a) => {
       if (!a) return;
       const v = a.getAttribute("data-panel");
-      a.classList.toggle("active", v === panelView);
+      const on = v === panelView;
+      a.classList.toggle("active", on);
+      a.setAttribute("aria-selected", on ? "true" : "false");
     });
     if (linkPanelMain) linkPanelMain.classList.toggle("nav-exit", panelView !== "main");
     if (btnBackToGalleryPanel) btnBackToGalleryPanel.hidden = panelView === "main";
@@ -164,6 +167,11 @@
     linkPopupTools.addEventListener("click", (e) => {
       e.preventDefault();
       setPanelView("tools");
+    });
+  linkDashboard &&
+    linkDashboard.addEventListener("click", (e) => {
+      e.preventDefault();
+      chrome.tabs.create({ url: DASHBOARD_TAB_URL });
     });
   updateFooterActive();
 

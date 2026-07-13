@@ -30,12 +30,14 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env`
 | **Claude Code Handoff** | `/handoff-cc`, `hand off to Claude Code`, `Lane C` | `~/.cursor/skills/handoff-claude-code/SKILL.md` |
 | **TBCC Ship Log** | `/ship-log`, `TBCC ship log`, `draft my build-in-public tweet` | `~/.cursor/skills/tbcc-ship-log/SKILL.md` |
 | **TBCC Milestone Ship** | `/milestone-ship`, `TBCC milestone ship`, `ship milestone to GitHub` | `~/.cursor/skills/tbcc-milestone-ship/SKILL.md` |
+| **TBCC Extension Errors** | `/ext-errors`, `check extension errors`, `TBCC extension errors` | `~/.cursor/skills/tbcc-ext-errors/SKILL.md` |
 
 ### Protocol chains
 
 - **New arc:** `/sprint-start` → `/preflight` (if ≥3 files) → implement → `/session-close`
 - **Grind:** `/preflight` → `/handoff-cc` → review in Cursor
 - **Release:** `/milestone-ship` → optional `/ship-log`
+- **Extension QA:** paste Errors screenshot or `/ext-errors` → fix / restart backend → re-check
 
 ## Tooling
 

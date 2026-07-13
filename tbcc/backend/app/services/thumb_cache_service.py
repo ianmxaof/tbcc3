@@ -80,8 +80,48 @@ def queue_thumbnail_warm(media_ids: list[int]) -> dict:
 
         if thumbnail_warm_pause_when_post_stalled() and posting_stalled_for_admission():
             return {"queued": 0, "already_cached": already, "paused": True}
+        if thumbnail_warm_pause_when_imports_pending() and _open_import_jobs_above_threshold():
+            return {"queued": 0, "already_cached": already, "paused": True, "reason": "imports_pending"}
         warm_media_thumbnails.delay(need[:60])
     return {"queued": len(need[:60]), "already_cached": already}
+
+
+def thumbnail_warm_pause_when_imports_pending() -> bool:
+    """Defer thumbnail warms while storage-hub / channel imports need the telegram queue."""
+    return (os.getenv("TBCC_THUMBNAIL_WARM_PAUSE_WHEN_IMPORTS") or "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _import_priority_threshold() -> int:
+    raw = (os.getenv("TBCC_WATCHDOG_IMPORT_PRIORITY_THRESHOLD") or "3").strip()
+    try:
+        return max(1, min(50, int(raw)))
+    except ValueError:
+        return 3
+
+
+def _open_import_jobs_above_threshold() -> bool:
+    try:
+        from app.database.session import SessionLocal
+        from app.models.import_job import ImportJob
+        from app.services.import_pipeline import TERMINAL_STATUSES
+
+        db = SessionLocal()
+        try:
+            n = int(
+                db.query(ImportJob)
+                .filter(~ImportJob.status.in_(list(TERMINAL_STATUSES)))
+                .count()
+            )
+        finally:
+            db.close()
+        return n >= _import_priority_threshold()
+    except Exception:
+        return False
 
 
 async def cache_thumb_from_message(client, message, media_id: int) -> bool:

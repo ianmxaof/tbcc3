@@ -157,6 +157,16 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
         if not plain_x and not plain_long:
             return {"ok": False, "error": "empty buffer body", "channels": 0}
 
+        if plain_x and not used_queue:
+            from app.services.buffer_x_caption import finalize_buffer_x_caption, resolve_overflow_url
+
+            plain_x = finalize_buffer_x_caption(
+                plain_x,
+                db=db,
+                overflow_url=resolve_overflow_url(post=post, db=db) or None,
+                advance_link_cycle=True,
+            )
+
         share_mode = scheduled_buffer_share_mode(
             buffer_publish_now=bool(getattr(post, "buffer_publish_now", False))
         )
@@ -199,6 +209,7 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
         ok = any(buffer_create_post_succeeded(r) for r in results)
         if ok and used_queue:
             post.set_buffer_x_queue(queue[1:])
+        if ok:
             db.commit()
 
         try:

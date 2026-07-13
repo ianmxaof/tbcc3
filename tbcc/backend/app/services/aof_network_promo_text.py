@@ -7,10 +7,9 @@ import os
 from app.data.aof_network import (
     ADDLIST_RAW,
     AOF_NETWORK_CHANNELS,
-    MAIN_GROUP_INVITE,
     MAINHUB_RAW,
 )
-from app.services.aof_social_links import aof_gate_url, allmylinks_url
+from app.services.aof_social_links import aof_gate_url, aof_hub_invite_url, allmylinks_url
 from app.services.utm_links import allmylinks_tracked_url
 
 
@@ -20,7 +19,7 @@ def build_mega_pack_readme_text(*, extra_lines: list[str] | None = None) -> str:
     Uses aof_network.py invites + gate/allmylinks from .env.
     """
     gate = (os.getenv("TBCC_WORKINK_BASE_LINK") or aof_gate_url() or "").strip()
-    hub = (os.getenv("TBCC_AOF_HUB_INVITE_URL") or MAIN_GROUP_INVITE).strip()
+    hub = aof_hub_invite_url()
     custom = (os.getenv("TBCC_ZIP_PROMO_TEXT") or "").strip()
 
     lines: list[str] = [
@@ -28,7 +27,7 @@ def build_mega_pack_readme_text(*, extra_lines: list[str] | None = None) -> str:
         "========================",
         "",
         f"Main hub (public): {MAINHUB_RAW}",
-        f"Main group (members): {hub}",
+        f"Loot Room entry (public): {hub}",
         f"Add all channels: {ADDLIST_RAW}",
         "",
         "Network channels:",

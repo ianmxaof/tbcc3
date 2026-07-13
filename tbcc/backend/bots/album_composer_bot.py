@@ -361,8 +361,10 @@ def _admin_id() -> int | None:
 
 
 def _admin_ids() -> set[int]:
-    """ADMIN_TELEGRAM_ID plus TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS (comma-separated)."""
-    ids: set[int] = set()
+    """Hardcoded TBCC operators + ADMIN_TELEGRAM_ID + TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS."""
+    from app.services.tbcc_operator_ids import tbcc_operator_ids
+
+    ids: set[int] = set(tbcc_operator_ids())
     main = _admin_id()
     if main is not None:
         ids.add(main)

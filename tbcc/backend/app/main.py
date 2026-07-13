@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, extension_context_menu, extension_aof_pools, album_composer_drafts, k2s
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, extension_context_menu, extension_capture_secret, extension_aof_pools, album_composer_drafts, k2s
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -90,6 +90,13 @@ def on_startup():
                         # Watchdog owns the post-queue lane; run it before auto_remediate.
                         scheduler_watchdog_tick()
                         auto_remediate_health_conflicts()
+                        # Idle governor (opt-in) self-rate-limits to its eval interval.
+                        try:
+                            from app.services.idle_service_governor import governor_tick
+
+                            governor_tick()
+                        except Exception:
+                            logger.debug("idle governor tick failed", exc_info=True)
                     except Exception:
                         logger.debug("focus watch loop tick failed", exc_info=True)
 
@@ -1243,6 +1250,7 @@ app.include_router(main_channel_divider.router, prefix="/main-channel-divider", 
 app.include_router(k2s.router, prefix="/k2s", tags=["k2s"])
 app.include_router(watermark_settings.router, prefix="/watermark-settings", tags=["watermark-settings"])
 app.include_router(extension_context_menu.router, prefix="/extension/context-menu", tags=["extension-context-menu"])
+app.include_router(extension_capture_secret.router, prefix="/extension/capture-secret", tags=["extension-capture-secret"])
 app.include_router(extension_aof_pools.router, prefix="/extension/aof-pools", tags=["extension-aof-pools"])
 app.include_router(album_composer_drafts.router, prefix="/album-composer/drafts", tags=["album-composer-drafts"])
 app.include_router(archive.router, tags=["archive"])

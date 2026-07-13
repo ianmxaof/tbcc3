@@ -3,11 +3,8 @@
  * TBCC local launch from the extension: daemon on :8765 first, API fallback when API is up.
  */
 (function (global) {
-  const DAEMON_BASE = "http://127.0.0.1:8765";
-  const DAEMON_LAUNCH_FULL = DAEMON_BASE + "/launch-full";
-  const DAEMON_LAUNCH_SUPERVISOR = DAEMON_BASE + "/launch-supervisor";
-  const API_LAUNCH_FULL = "http://127.0.0.1:8000/internal/launch-full-stack";
-  const API_LAUNCH_SUPERVISOR = "http://127.0.0.1:8000/internal/launch-supervisor";
+  const DAEMON_BASES = ["http://127.0.0.1:8765", "http://localhost:8765"];
+  const API_BASES = ["http://127.0.0.1:8000", "http://localhost:8000"];
   const STORAGE_KEY = "tbccInternalApiKey";
 
   function notify(message) {
@@ -29,19 +26,29 @@
     });
   }
 
+  async function postFirstReachable(baseList, path, options) {
+    let lastErr = null;
+    for (const base of baseList) {
+      try {
+        const r = await fetch(base + path, options || { method: "POST", mode: "cors" });
+        const j = await r.json().catch(() => ({}));
+        return { response: r, data: j, base };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error("unreachable");
+  }
+
   async function postDaemon(path) {
-    const r = await fetch(DAEMON_BASE + path, { method: "POST", mode: "cors" });
-    const j = await r.json().catch(() => ({}));
-    return { response: r, data: j };
+    return postFirstReachable(DAEMON_BASES, path, { method: "POST", mode: "cors" });
   }
 
   async function postApi(path, needKey) {
     const headers = {};
     const key = await getInternalKey();
     if (needKey && key) headers["X-TBCC-Internal-Key"] = key;
-    const r = await fetch("http://127.0.0.1:8000" + path, { method: "POST", mode: "cors", headers });
-    const j = await r.json().catch(() => ({}));
-    return { response: r, data: j };
+    return postFirstReachable(API_BASES, path, { method: "POST", mode: "cors", headers });
   }
 
   async function launchFullStack() {
@@ -72,7 +79,7 @@
       return { ok: false, error: detail, data: j };
     } catch (e) {
       notify(
-        "No daemon :8765 or API :8000. Run: cd tbcc\\tools && .\\tbcc-launch-daemon.ps1 — or start the API and optional key in options."
+        "No daemon (:8765) or API (:8000). Run: cd tbcc\\tools && .\\tbcc-launch-daemon.ps1 — or start the API and optional key in options."
       );
       return { ok: false, error: String(e.message || e) };
     }

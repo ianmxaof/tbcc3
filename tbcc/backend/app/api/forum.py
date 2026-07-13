@@ -128,6 +128,10 @@ class ForumEromeUploadFromBotBody(BaseModel):
     watermark: WatermarkOptions | None = None
     max_files: int | None = Field(None, ge=1, le=100)
     force_policy: bool = False
+    visibility: str | None = Field(
+        None,
+        description="private (default governance) or public — omit to use TBCC_EROME_DEFAULT_VISIBILITY",
+    )
 
 
 @router.post("/erome-upload-from-bot")
@@ -195,10 +199,18 @@ async def forum_erome_upload_from_bot(body: ForumEromeUploadFromBotBody, db: Ses
         watermark=wm_payload,
         crop=crop_payload,
         force_policy=body.force_policy,
+        visibility=body.visibility,
         db=db,
     )
     if not report.get("ok"):
         return report
+    # Producer signal for the idle governor: fresh erome album -> wake erome_view_sync.
+    try:
+        from app.services.idle_service_governor import touch_service_activity
+
+        touch_service_activity("erome_view_sync")
+    except Exception:
+        pass
     report["reply_text"] = format_erome_upload_reply(report, html=False)
     return report
 

@@ -2,7 +2,11 @@
 
 from unittest.mock import MagicMock, patch
 
-from app.services.celery_queue_ops import purge_post_pool_tasks_from_queue
+from app.services.celery_queue_ops import (
+    dedupe_run_schedule_queue,
+    purge_post_pool_tasks_from_queue,
+    purge_thumbnail_warm_from_telegram_queue,
+)
 
 
 def _broker_payload(task: str) -> str:
@@ -27,3 +31,39 @@ def test_purge_post_pool_tasks_from_queue():
     pipe = r.pipeline.return_value
     pipe.delete.assert_called_once_with("post")
     pipe.rpush.assert_called_once()
+
+
+def test_dedupe_run_schedule_keeps_newest_one():
+    r = MagicMock()
+    r.ping.return_value = True
+    a = _broker_payload("app.workers.scheduler_worker.run_schedule")
+    b = _broker_payload("app.workers.scheduler_worker.run_schedule")
+    c = _broker_payload("app.workers.loot_promo_worker.send_loot_daily_promo")
+    d = _broker_payload("app.workers.scheduler_worker.run_schedule")
+    r.lrange.return_value = [a, b, c, d]
+    with patch("app.services.celery_queue_ops._redis_client", return_value=r):
+        out = dedupe_run_schedule_queue(keep=1)
+    assert out["ok"] is True
+    assert out["removed"] == 2
+    assert out["after"] == 2  # one run_schedule + loot promo
+    assert out["kept"] == 1
+    pipe = r.pipeline.return_value
+    pipe.delete.assert_called_once_with("celery")
+    args = pipe.rpush.call_args[0]
+    assert args[0] == "celery"
+    assert len(args) == 3  # queue + 2 payloads
+
+
+def test_purge_thumbnail_warm_from_telegram_queue():
+    r = MagicMock()
+    r.ping.return_value = True
+    warm = _broker_payload("app.workers.thumbnail_warm_worker.warm_media_thumbnails")
+    imp = _broker_payload("app.workers.import_telegram_worker.process_import_job")
+    r.lrange.return_value = [warm, imp, warm]
+    with patch("app.services.celery_queue_ops._redis_client", return_value=r):
+        out = purge_thumbnail_warm_from_telegram_queue()
+    assert out["ok"] is True
+    assert out["removed"] == 2
+    assert out["after"] == 1
+    pipe = r.pipeline.return_value
+    pipe.delete.assert_called_once_with("telegram")

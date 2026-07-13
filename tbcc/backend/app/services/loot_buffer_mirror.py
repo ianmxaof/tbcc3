@@ -15,7 +15,7 @@ from app.services.buffer_graphql import (
     scheduled_buffer_share_mode,
 )
 from app.services.buffer_post_result import buffer_create_post_succeeded
-from app.services.buffer_x_caption import fit_plaintext_for_x, should_fit_for_x
+from app.services.buffer_x_caption import finalize_buffer_x_caption, should_fit_for_x
 from app.services.loot_bot_settings_effective import ROW_ID, get_effective_loot_bot_settings
 from app.services.loot_daily_promo import build_loot_daily_promo_html, loot_daily_promo_inline_keyboard
 from app.services.telegram_html_plain import telegram_html_to_plain
@@ -24,8 +24,15 @@ logger = logging.getLogger(__name__)
 
 
 def _loot_overflow_url(eff: dict) -> str:
+    import os
+
+    pay_un = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+    paid_cta = f"https://t.me/{pay_un}?start=loot" if pay_un else ""
+
     from app.services.aof_social_links import x_linkvertise_enabled, x_outbound_url
 
+    if paid_cta and not x_linkvertise_enabled():
+        return paid_cta
     if not x_linkvertise_enabled():
         direct = x_outbound_url()
         if direct:
@@ -33,6 +40,8 @@ def _loot_overflow_url(eff: dict) -> str:
     env = (os.getenv("TBCC_BUFFER_X_OVERFLOW_URL") or "").strip()
     if env:
         return env
+    if paid_cta:
+        return paid_cta
     return (eff.get("primary_loot_room_invite_url") or "").strip()
 
 
@@ -69,7 +78,12 @@ def build_loot_promo_x_caption(db: Session, *, queue_item: dict | None = None) -
     else:
         plain = build_loot_promo_plaintext_for_x(db)
     if should_fit_for_x():
-        return fit_plaintext_for_x(plain, overflow_url=_loot_overflow_url(eff) or None)
+        return finalize_buffer_x_caption(
+            plain,
+            db=db,
+            overflow_url=_loot_overflow_url(eff) or None,
+            advance_link_cycle=True,
+        )
     return plain[:2800]
 
 

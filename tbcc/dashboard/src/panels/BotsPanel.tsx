@@ -7,14 +7,15 @@ import { PaymentBotSettingsPanel } from "./PaymentBotSettings";
 import { LootOverseerSettingsPanel } from "./LootOverseerSettings";
 import { SecretarySettingsPanel } from "./SecretarySettingsPanel";
 import { CompanionSettingsPanel } from "./CompanionSettingsPanel";
+import { BotAnalyticsPanel } from "./BotAnalyticsPanel";
 
-type Tab = "shop" | "settings" | "loot" | "secretary" | "companion" | "referrals" | "monitor" | "watch";
+type Tab = "shop" | "settings" | "loot" | "secretary" | "companion" | "referrals" | "analytics" | "monitor" | "watch";
 
 export function BotsPanel() {
   const [tab, setTab] = useState<Tab>(() => {
     try {
       const saved = sessionStorage.getItem("tbccBotsTab");
-      if (saved === "secretary" || saved === "loot" || saved === "settings" || saved === "shop" || saved === "referrals" || saved === "monitor" || saved === "watch" || saved === "companion") {
+      if (saved === "secretary" || saved === "loot" || saved === "settings" || saved === "shop" || saved === "referrals" || saved === "analytics" || saved === "monitor" || saved === "watch" || saved === "companion") {
         sessionStorage.removeItem("tbccBotsTab");
         return saved as Tab;
       }
@@ -89,6 +90,17 @@ export function BotsPanel() {
         </button>
         <button
           type="button"
+          onClick={() => setTab("analytics")}
+          className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+            tab === "analytics"
+              ? "border-cyan-500 text-cyan-400 bg-slate-800/80"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          Bot analytics
+        </button>
+        <button
+          type="button"
           onClick={() => setTab("referrals")}
           className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
             tab === "referrals"
@@ -134,6 +146,8 @@ export function BotsPanel() {
         <CompanionSettingsPanel />
       ) : tab === "referrals" ? (
         <Growth />
+      ) : tab === "analytics" ? (
+        <BotAnalyticsPanel />
       ) : tab === "watch" ? (
         <WatchFolder />
       ) : (

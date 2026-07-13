@@ -1,0 +1,71 @@
+AOF MEGA PACKS — Gemini image prompt template (TBCC)
+==================================================
+
+Use with: py -3.13 scripts/generate_aof_promo_gemini.py --preset martyrs-ma07-10 --execute
+
+Or paste sections below into Gemini manually.
+
+---
+FORMAT (pick one — delete the rest)
+---
+
+A) SINGLE 9:16 — one poster
+OUTPUT: ONE image. Aspect ratio 9:16 portrait. Single complete AOF MEGA PACKS poster.
+
+B) 2×2 GRID 9:16 — X / IG carousel composite (main social format)
+OUTPUT: ONE composite image. 2×2 grid of FOUR complete AOF MEGA PACKS posters.
+Each cell: 9:16 portrait. Overall composite: 9:16.
+NOT horizontal strips. Thin gutter OK.
+  TOP-LEFT | TOP-RIGHT
+  BOTTOM-LEFT | BOTTOM-RIGHT
+
+C) TELEGRAM FILMSTRIP — 4× stacked 16:9 banners
+OUTPUT: ONE tall image. FOUR complete posters stacked top to bottom.
+Each panel: 16:9 landscape banner with full UI. Overall: tall portrait strip.
+
+D) TELEGRAM FILMSTRIP — 4× stacked 3:1 banners
+Same as C but each panel is ultra-wide 3:1.
+
+---
+LAYOUT LOCK (never change)
+---
+
+TOP: distressed white "AOF" + red brush-stroke "MEGA PACKS"
+SUBHEAD: "MASSIVE COLLECTIONS • UNLIMITED POSSIBILITIES"
+CENTER: large QR code with Telegram paper-plane logo inside
+LEFT PILLS: NICHE LANES | FULL LENGTH | AI & DEEPFAKES | MEGA PACKS | DAILY DROPS
+RIGHT PILLS: LOOT ROOM | VIP ACCESS | VOYEUR & TABOO | ONE-TAP ADDLIST | 15+ CHANNELS
+BELOW QR: "DAILY DROPS · ARCHIVED LANES" / "UPDATED DAILY · 15+ CURATED LANES"
+LINK BAR: red bar, paper-plane icons, exact text "t.me/aofmainhub"
+BOTTOM: NO LIMITS | DIRECT DOWNLOADS | EXCLUSIVE CONTENT | SECURE & PRIVATE | ENDLESS LIBRARY
+
+---
+SCENE SLOTS (vary per cell/panel)
+---
+
+TOP-LEFT — [title]:
+[scene description]
+
+TOP-RIGHT — [title]:
+[scene description]
+
+BOTTOM-LEFT — [title]:
+[scene description]
+
+BOTTOM-RIGHT — [title]:
+[scene description]
+
+---
+STYLE
+---
+
+Analog horror film still: VHS grain, scan lines, chromatic bleed, gritty photoreal, cinematic.
+No cartoon. No bright cheerful palette.
+
+---
+AVOID
+---
+
+wrong aspect ratio, horizontal filmstrip when 2×2 requested, wrong labels (Movies/Series/Anime),
+misspelled text, watermark, random URLs, QR without Telegram logo, missing pills,
+cropped link bar, duplicate identical scenes, scenes bleeding across borders.

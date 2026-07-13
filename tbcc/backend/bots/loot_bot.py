@@ -55,6 +55,7 @@ from telegram.ext import (
 from bots.error_reporter import report_bot_error
 
 from app.services.loot_inline_keyboards import roll_action_label
+from app.services.loot_roll_presentation import pick_loading_status_line
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -63,6 +64,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 API_BASE = os.getenv("TBCC_API_URL", "http://localhost:8000").rstrip("/")
+
+
+def _loading_status_line() -> str:
+    return pick_loading_status_line()
 
 # Longer read timeout + retries: API may be restarting (uvicorn reload) or Windows may hit transient socket limits.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=45.0, write=10.0, pool=5.0)
@@ -106,17 +111,7 @@ def _loot_inline_keyboard(
     invite = (cfg.get("primary_loot_room_invite_url") or os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "").strip()
     pay = _payment_bot_username()
     pay_safe = html.escape(pay) if pay else ""
-    roll_text = roll_action_label(
-        free_pull_number=free_pull_number,
-        free_pulls_remaining=free_pulls_remaining,
-        free_pull_limit=free_pull_limit,
-    )
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(roll_text, callback_data="loot:roll"),
-            InlineKeyboardButton("🔗 Referral", callback_data="loot:referral"),
-        ],
-    ]
+    rows: list[list[InlineKeyboardButton]] = []
     if pay:
         rows.append(
             [
@@ -124,14 +119,25 @@ def _loot_inline_keyboard(
                 InlineKeyboardButton("💳 Payment bot", url=f"https://t.me/{pay_safe}"),
             ]
         )
-    if invite:
-        rows.append([InlineKeyboardButton("🚪 Loot Room invite", url=invite)])
+    roll_text = roll_action_label(
+        free_pull_number=free_pull_number,
+        free_pulls_remaining=free_pulls_remaining,
+        free_pull_limit=free_pull_limit,
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(roll_text, callback_data="loot:roll"),
+            InlineKeyboardButton("🔗 Referral", callback_data="loot:referral"),
+        ],
+    )
     rows.append(
         [
             InlineKeyboardButton("📖 Guide", callback_data="loot:guide"),
             InlineKeyboardButton("ℹ️ Menu", callback_data="loot:help"),
         ]
     )
+    if invite:
+        rows.append([InlineKeyboardButton("🚪 Loot Room (paid key required)", url=invite)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -353,6 +359,44 @@ async def _submit_creator_url(telegram_user_id: int, url: str) -> dict:
     return data
 
 
+def _claim_key_roll(telegram_user_id: int) -> dict:
+    """POST /loot/key-roll/claim — full paid-key roll (sync httpx; run via to_thread)."""
+    url = f"{API_BASE}/loot/key-roll/claim"
+    params = {"telegram_user_id": int(telegram_user_id)}
+    headers: dict[str, str] = {}
+    key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    if key:
+        headers["X-TBCC-Internal-Key"] = key
+    attempts = max(1, int(os.getenv("TBCC_LOOT_CLAIM_HTTP_ATTEMPTS", "3")))
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with httpx.Client(timeout=_LOOT_CLAIM_TIMEOUT) as client:
+                r = client.post(url, params=params, headers=headers)
+            if r.status_code == 403:
+                detail = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                return {"ok": False, "not_key_holder": True, "detail": detail}
+            r.raise_for_status()
+            return r.json()
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
+            last_err = e
+            if attempt + 1 < attempts:
+                wait = 2.0 * (attempt + 1)
+                logger.warning(
+                    "loot key-roll POST failed (%s), retry %s/%s in %.0fs",
+                    e,
+                    attempt + 1,
+                    attempts,
+                    wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
+    if last_err:
+        raise last_err
+    raise RuntimeError("loot key-roll: no response")
+
+
 def _claim_free_pull(telegram_user_id: int) -> dict:
     """POST /loot/free-pull/claim — delivers pull to user DM (sync httpx; run via to_thread)."""
     url = f"{API_BASE}/loot/free-pull/claim"
@@ -495,14 +539,16 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data.get("effective") or {}
     status_msg = await _safe_reply_html(
         msg,
-        "<i>Dealing your pull…</i>",
+        f"<i>{html.escape(_loading_status_line())}</i>",
         disable_web_page_preview=True,
     )
 
     try:
-        result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+        result = await asyncio.to_thread(_claim_key_roll, int(user.id))
+        if result.get("not_key_holder"):
+            result = await asyncio.to_thread(_claim_free_pull, int(user.id))
     except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
-        logger.warning("free pull claim transient API error: %s", e)
+        logger.warning("roll claim transient API error: %s", e)
         await _drop_transient_msg(status_msg)
         await _safe_reply_html(
             msg,
@@ -521,7 +567,7 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     except Exception:
-        logger.exception("free pull claim failed")
+        logger.exception("roll claim failed")
         await _drop_transient_msg(status_msg)
         await _safe_reply_html(
             msg,
@@ -533,6 +579,34 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await _drop_transient_msg(status_msg)
     cfg = context.application.bot_data.get("effective") or {}
+
+    if result.get("ok") and (result.get("roll_kind") == "key_roll" or (result.get("preview") or {}).get("roll_kind") == "key_roll"):
+        prev = result.get("preview") or {}
+        delivery = result.get("delivery") or {}
+        media_sent = int(delivery.get("media_sent") or 0)
+        finale_markup = _loot_inline_keyboard(cfg)
+        tier = int(prev.get("rarity_tier") or 0)
+        mods = int(prev.get("modifier_slot_count") or 0)
+        if media_sent <= 0:
+            notes = ", ".join(str(x) for x in (delivery.get("notes") or []) if "skip" in str(x).lower())
+            await _safe_reply_html(
+                msg,
+                "<b>Key roll failed — no loot delivered.</b>\n"
+                f"<code>{html.escape(notes[:350] or 'media load failed')}</code>\n\n"
+                "Retry in a few seconds. If this repeats, restart TBCC-Backend.",
+                disable_web_page_preview=True,
+                reply_markup=finale_markup,
+            )
+            return
+        await _safe_reply_html(
+            msg,
+            f"<b>Key roll dealt.</b>\n"
+            f"Tier <b>{tier}</b> · {mods} modifier slot(s).\n"
+            "<i>Your Loot Room key unlocked the full ladder.</i>",
+            disable_web_page_preview=True,
+            reply_markup=finale_markup,
+        )
+        return
 
     if result.get("ok"):
         prev = result.get("preview") or {}

@@ -17,17 +17,18 @@ import { OpsAlertsPoller } from "./components/OpsAlertsPoller";
 import { ScrapeRunBanner } from "./components/ScrapeRunBanner";
 import { TbccClipboardInit } from "./components/TbccClipboardInit";
 import { ApprovalQueueCounter } from "./components/ApprovalQueueCounter";
+import { SchedulerOnTrackCounter } from "./components/SchedulerOnTrackCounter";
 
 const nav = [
-  { to: "/", label: "Media", showQueue: true },
-  { to: "/curate", label: "Curate", showQueue: true },
-  { to: "/scheduler", label: "Automation", showQueue: false },
-  { to: "/subscriptions", label: "Commerce", showQueue: false },
-  { to: "/income", label: "Income", showQueue: false },
-  { to: "/analytics", label: "Analytics", showQueue: false },
-  { to: "/bots", label: "System", showQueue: false },
-  { to: "/misc", label: "Misc", showQueue: false },
-  { to: "/archive", label: "Archive", showQueue: false },
+  { to: "/", label: "Media", badge: "queue" as const },
+  { to: "/curate", label: "Curate", badge: "queue" as const },
+  { to: "/scheduler", label: "Automation", badge: "scheduler" as const },
+  { to: "/subscriptions", label: "Commerce", badge: null },
+  { to: "/income", label: "Income", badge: null },
+  { to: "/analytics", label: "Analytics", badge: null },
+  { to: "/bots", label: "System", badge: null },
+  { to: "/misc", label: "Misc", badge: null },
+  { to: "/archive", label: "Archive", badge: null },
 ];
 
 function AppShell() {
@@ -43,7 +44,7 @@ function AppShell() {
             <img src="/favicon-32x32.png" alt="" width={22} height={22} className="rounded-sm" />
             TBCC
           </span>
-          {nav.map(({ to, label, showQueue }) => (
+          {nav.map(({ to, label, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -53,7 +54,8 @@ function AppShell() {
               }
             >
               {label}
-              {showQueue ? <ApprovalQueueCounter variant="compact" /> : null}
+              {badge === "queue" ? <ApprovalQueueCounter variant="compact" /> : null}
+              {badge === "scheduler" ? <SchedulerOnTrackCounter variant="compact" /> : null}
             </NavLink>
           ))}
           <DashboardHeaderToolbar />

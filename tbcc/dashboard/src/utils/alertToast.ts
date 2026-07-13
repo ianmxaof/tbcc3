@@ -1,4 +1,10 @@
-/** TBCC priority alert toasts — sales, pending checkout, critical ops (not error-hub noise). */
+/** TBCC priority alert toasts — calm chip-palette borders on neutral surfaces. */
+
+import {
+  calmToastStyle,
+  classifyOpsAlertKind,
+  type ToastSeverityKind,
+} from "./severityToastColors";
 
 export type AlertToastSeverity = "critical" | "warning" | "info";
 
@@ -25,86 +31,62 @@ function injectStyles(): void {
     .tbcc-alert-toast-host {
       position: fixed;
       right: 16px;
-      top: 16px;
+      bottom: 16px;
+      top: auto;
       z-index: 100000;
       display: flex;
       flex-direction: column;
       gap: 10px;
-      max-width: min(440px, calc(100vw - 32px));
+      max-width: min(420px, calc(100vw - 32px));
       pointer-events: none;
     }
     .tbcc-alert-toast {
       padding: 12px 14px;
-      font: 600 13px/1.45 system-ui, -apple-system, sans-serif;
+      font: 500 13px/1.45 system-ui, -apple-system, sans-serif;
       border-radius: 10px;
-      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55);
+      background: rgba(30, 30, 46, 0.96);
+      color: #cdd6f4;
+      border: 1px solid rgba(69, 71, 90, 0.9);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
       pointer-events: auto;
-      animation: tbcc-alert-pop 0.28s ease;
-    }
-    .tbcc-alert-toast--critical {
-      color: #fecaca;
-      background: linear-gradient(135deg, rgba(127, 29, 29, 0.98), rgba(91, 20, 20, 0.98));
-      border: 2px solid rgba(248, 113, 113, 0.75);
-      animation: tbcc-alert-pop 0.28s ease, tbcc-alert-flash-critical 1.1s ease-in-out 3;
-    }
-    .tbcc-alert-toast--warning {
-      color: #fde68a;
-      background: rgba(120, 53, 15, 0.96);
-      border: 1px solid rgba(251, 191, 36, 0.55);
-    }
-    .tbcc-alert-toast--payment {
-      color: #ecfdf5;
-      background: linear-gradient(135deg, rgba(6, 95, 70, 0.98), rgba(4, 120, 87, 0.98));
-      border: 2px solid rgba(52, 211, 153, 0.85);
-      animation: tbcc-alert-pop 0.28s ease, tbcc-alert-flash-payment 0.85s ease-in-out 6;
-    }
-    .tbcc-alert-toast--pending {
-      color: #fffbeb;
-      background: linear-gradient(135deg, rgba(146, 64, 14, 0.98), rgba(180, 83, 9, 0.98));
-      border: 2px solid rgba(251, 191, 36, 0.8);
-      animation: tbcc-alert-pop 0.28s ease, tbcc-alert-flash-pending 1s ease-in-out 4;
+      animation: tbcc-alert-pop 0.22s ease;
+      box-sizing: border-box;
     }
     .tbcc-alert-toast__title {
-      font-weight: 700;
-      font-size: 14px;
-      margin-bottom: 5px;
+      font-weight: 650;
+      font-size: 13px;
+      margin-bottom: 4px;
       letter-spacing: 0.01em;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
     .tbcc-alert-toast__body {
-      font-weight: 500;
-      font-size: 13px;
+      font-weight: 450;
+      font-size: 12.5px;
       line-height: 1.5;
       white-space: pre-wrap;
+      opacity: 0.94;
     }
     .tbcc-alert-toast__badge {
-      display: inline-block;
-      margin-right: 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
       font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
-      opacity: 0.9;
+      letter-spacing: 0.05em;
+      opacity: 0.85;
+      flex-shrink: 0;
     }
     .tbcc-alert-toast__action {
       margin-top: 8px;
-      font-weight: 600;
+      font-weight: 550;
       font-size: 12px;
-      opacity: 0.92;
+      opacity: 0.88;
     }
     @keyframes tbcc-alert-pop {
-      from { opacity: 0; transform: translateY(-10px) scale(0.97); }
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
       to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    @keyframes tbcc-alert-flash-payment {
-      0%, 100% { box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 0 rgba(52, 211, 153, 0.5); }
-      50% { box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 10px rgba(52, 211, 153, 0); }
-    }
-    @keyframes tbcc-alert-flash-pending {
-      0%, 100% { box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 0 rgba(251, 191, 36, 0.45); }
-      50% { box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 8px rgba(251, 191, 36, 0); }
-    }
-    @keyframes tbcc-alert-flash-critical {
-      0%, 100% { box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 0 rgba(248, 113, 113, 0.45); }
-      50% { box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55), 0 0 0 10px rgba(248, 113, 113, 0); }
     }
   `;
   document.head.appendChild(style);
@@ -117,40 +99,26 @@ function ensureHost(): HTMLElement {
     host = document.createElement("div");
     host.id = "tbcc-alert-toast-host";
     host.className = "tbcc-alert-toast-host";
-    host.setAttribute("aria-live", "assertive");
+    host.setAttribute("aria-live", "polite");
     document.body.appendChild(host);
   }
   return host;
 }
 
-function toastClass(alert: OpsAlert): string {
-  const priority = (alert.priority || alert.kind || "").toLowerCase();
-  const code = (alert.code || "").toLowerCase();
-  if (priority === "payment" || code === "payment") {
-    return "tbcc-alert-toast--payment";
-  }
-  if (code === "invoice" || (alert.title || "").toLowerCase().includes("pending")) {
-    return "tbcc-alert-toast--pending";
-  }
-  const sev = (alert.severity || "warning").toLowerCase();
-  return sev === "critical" ? "tbcc-alert-toast--critical" : "tbcc-alert-toast--warning";
-}
-
-function toastDuration(alert: OpsAlert): number {
-  const cls = toastClass(alert);
-  if (cls.includes("payment")) return PAYMENT_MS;
-  if (cls.includes("pending")) return CRITICAL_MS;
-  if (cls.includes("critical")) return CRITICAL_MS;
+function toastDuration(kind: ToastSeverityKind): number {
+  if (kind === "payment") return PAYMENT_MS;
+  if (kind === "pending" || kind === "critical") return CRITICAL_MS;
   return DEFAULT_MS;
 }
 
-function toastBadge(alert: OpsAlert): string {
+function toastBadgeLabel(alert: OpsAlert, kind: ToastSeverityKind): string {
   const code = (alert.code || "").toLowerCase();
-  if (code === "payment") return "💰 Sale";
-  if (code === "invoice") return "🧾 Checkout";
-  if (code === "loot") return "🎮 Loot";
-  if ((alert.severity || "").toLowerCase() === "critical") return "🔴 Urgent";
-  return "⚠️ Alert";
+  if (code === "payment") return "Sale";
+  if (code === "invoice") return "Checkout";
+  if (code === "loot") return "Loot";
+  if (kind === "critical") return "Urgent";
+  if (kind === "pending") return "Pending";
+  return "Alert";
 }
 
 function splitAlertMessage(message: string): { impact: string; action: string | null } {
@@ -169,15 +137,21 @@ function splitAlertMessage(message: string): { impact: string; action: string | 
 
 export function showAlertToast(alert: OpsAlert): void {
   const host = ensureHost();
+  const kind = classifyOpsAlertKind(alert);
+  const calm = calmToastStyle(kind);
   const el = document.createElement("div");
-  el.className = `tbcc-alert-toast ${toastClass(alert)}`;
+  el.className = "tbcc-alert-toast";
+  el.style.borderColor = calm.accentBorder;
+  el.style.boxShadow = `inset 3px 0 0 0 ${calm.accentBorder}, 0 8px 24px rgba(0, 0, 0, 0.35)`;
+
   const title = document.createElement("div");
   title.className = "tbcc-alert-toast__title";
   const badge = document.createElement("span");
   badge.className = "tbcc-alert-toast__badge";
-  badge.textContent = toastBadge(alert);
+  badge.textContent = `${calm.emoji} ${toastBadgeLabel(alert, kind)}`;
   title.appendChild(badge);
   title.appendChild(document.createTextNode(alert.title || "TBCC alert"));
+
   const { impact, action } = splitAlertMessage(alert.message || "");
   const body = document.createElement("div");
   body.className = "tbcc-alert-toast__body";
@@ -197,5 +171,5 @@ export function showAlertToast(alert: OpsAlert): void {
     } catch {
       /* ignore */
     }
-  }, toastDuration(alert));
+  }, toastDuration(kind));
 }

@@ -88,11 +88,14 @@ def slug_pack_label(label: str) -> str:
 
 
 def _sanitize_theme(text: str) -> str:
+    from app.services.aof_packs_vocabulary import sanitize_pack_copy
+
     s = re.sub(r'[\\/:*?"<>|]+', " ", (text or "").strip())
     s = re.sub(r"\s+", " ", s).strip()
     if s.startswith("@"):
         s = s.lstrip("@").strip()
-    return s[:100] or "AOF Pack"
+    cleaned = sanitize_pack_copy(s, seed=s)
+    return cleaned[:100] or "AOF Pack"
 
 
 def extract_pack_theme(folder_name: str) -> str:

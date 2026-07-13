@@ -10,7 +10,7 @@
 </head>
 <body class="tbcc-options-page">
     <nav class="top">
-    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#adapter-lab">Adapter lab</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#saved-videos">Saved videos</a><span class="sep">·</span><a href="#master-archive">Master archive</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
+    <a href="#capture-settings">Capture</a><span class="sep">·</span><a href="#x-profile-looms">X overlay</a><span class="sep">·</span><a href="#local-stack">Local stack</a><span class="sep">·</span><a href="#adapter-lab">Adapter lab</a><span class="sep">·</span><a href="#model">Model search</a><span class="sep">·</span><a href="#saved-videos">Saved videos</a><span class="sep">·</span><a href="#master-archive">Master archive</a><span class="sep">·</span><a href="#reverse">Reverse image</a>
   </nav>
 
   <section id="capture-settings" class="card">
@@ -68,6 +68,65 @@
     <p style="margin:12px 0 6px;font-size:12px;color:var(--tbcc-text-muted)">Edges / watermarks: use <strong>Crop &amp; watermarks</strong> in the gallery overflow menu (percent trims all four sides).</p>
     <button type="button" id="captureSettingClearCache" class="tbcc-btn-secondary">Clear gallery cache</button>
     <p id="tbccApiStatus" style="margin:14px 0 0;font-size:12px;color:var(--tbcc-text-muted)">Checking API…</p>
+  </section>
+
+  <section id="x-profile-looms" class="card">
+    <h1>X profile overlay (Comic Looms)</h1>
+    <p class="sub" style="margin:0 0 12px">
+      Thread and timeout limits for the on-page X profile grid and ZIP handoff to the TBCC gallery.
+      Matches Comic Looms <strong>Global Twitter | X</strong> defaults (2 / 4 / 4 / 9s). Each thread count is clamped 1–4.
+    </p>
+    <div class="tbcc-looms-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:12px">
+      <label class="row2 tbcc-looms-stepper">Idle threads
+        <span style="display:flex;align-items:center;gap:6px">
+          <button type="button" class="tbcc-btn-secondary" data-step="-1" title="Decrease">−</button>
+          <input type="number" id="loomsIdleThreads" min="1" max="4" value="2" style="width:52px;text-align:center" title="Grid thumbnail preload concurrency" />
+          <button type="button" class="tbcc-btn-secondary" data-step="1" title="Increase">+</button>
+        </span>
+        <span class="desc">Thumbnail grid preload (was maxPreloadConcurrent).</span>
+      </label>
+      <label class="row2 tbcc-looms-stepper">Browse threads
+        <span style="display:flex;align-items:center;gap:6px">
+          <button type="button" class="tbcc-btn-secondary" data-step="-1">−</button>
+          <input type="number" id="loomsBrowseThreads" min="1" max="4" value="4" style="width:52px;text-align:center" title="Ahead-of-view preload burst" />
+          <button type="button" class="tbcc-btn-secondary" data-step="1">+</button>
+        </span>
+        <span class="desc">Extra preload burst while browsing the overlay grid.</span>
+      </label>
+      <label class="row2 tbcc-looms-stepper">Download threads
+        <span style="display:flex;align-items:center;gap:6px">
+          <button type="button" class="tbcc-btn-secondary" data-step="-1">−</button>
+          <input type="number" id="loomsDownloadThreads" min="1" max="12" value="8" style="width:52px;text-align:center" title="ZIP fetch parallelism" />
+          <button type="button" class="tbcc-btn-secondary" data-step="1">+</button>
+        </span>
+        <span class="desc">Parallel media fetches when building a ZIP (direct twimg CDN; default 8).</span>
+      </label>
+      <label class="row2 tbcc-looms-stepper">Timeout (seconds)
+        <span style="display:flex;align-items:center;gap:6px">
+          <button type="button" class="tbcc-btn-secondary" data-step="-1">−</button>
+          <input type="number" id="loomsTimeoutSec" min="2" max="60" value="20" style="width:52px;text-align:center" title="Per-fetch stall timeout (resets on progress)" />
+          <button type="button" class="tbcc-btn-secondary" data-step="1">+</button>
+        </span>
+        <span class="desc">Stall timeout per fetch; resets while bytes arrive (default 20s).</span>
+      </label>
+    </div>
+    <label class="row2">Max harvest items
+      <input type="number" id="loomsMaxItems" min="20" max="300" value="120" style="width:80px" />
+    </label>
+    <label class="row2"><input type="checkbox" id="loomsIncludeVideo" checked /> Include MP4 / video in harvest</label>
+    <label class="row2"><input type="checkbox" id="loomsFetchOriginal" /> Fetch original-size stills (larger; videos always use highest bitrate MP4)</label>
+    <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px">
+      <span>Harvest ZIP filename template</span>
+      <input type="text" id="loomsZipNameTemplate" class="tbcc-input" spellcheck="false"
+        placeholder="AOF_{name}_{index:5}_t.me_aofmainhub"
+        title="PowerRename-style: {name} = profile, {index:5} = padded counter, {ext} = type. Also ${padding=5;increment=1;start=1}" />
+      <span class="desc">Example: <code>AOF_twhore_00001_t.me_aofmainhub.jpg</code> — keeps <code>t.me_aofmainhub</code> for network traffic.</span>
+    </label>
+    <label class="row2"><input type="checkbox" id="loomsZipSkipWatermark" checked /> Skip promo watermark on harvest / overlay ZIP (faster; original bytes)</label>
+    <p style="margin:12px 0 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button type="button" id="loomsResetDefaults" class="tbcc-btn-secondary">Reset Comic Looms defaults</button>
+      <span id="loomsSettingsStatus" class="sub" style="margin:0"></span>
+    </p>
   </section>
 
   <section id="local-stack" class="card">
@@ -217,7 +276,10 @@
     <div id="siteFields"></div>
 
     <h2>Username search history</h2>
-    <p class="sub" style="margin:0 0 10px">Recent usernames searched by TBCC model search.</p>
+    <p class="sub" style="margin:0 0 10px">
+      Recent usernames searched by TBCC. Click a username to copy it. Site badge shows where the search was started
+      (Stripchat, Chaturbate, OnlyFans, Instagram, X, …). Remove asks for confirmation.
+    </p>
     <div id="modelSearchHistory" class="sub" style="max-height:180px;overflow:auto;border:1px solid var(--tbcc-border,#313244);border-radius:8px;padding:8px 10px;"></div>
     <div style="margin-top:8px">
       <button type="button" id="btnClearModelSearchHistory" class="tbcc-btn-secondary">Clear username history</button>
@@ -317,8 +379,11 @@
   <script src="tbcc-clipboard-toast.js"></script>
   <script src="tbcc-master-archive.js"></script>
   <script src="tbcc-archive-list-ui.js"></script>
+  <script src="x-profile-looms-shared.js"></script>
+  <script src="x-profile-looms-options.js"></script>
   <script src="gallery-capture-options.js"></script>
   <script src="model-search-shared.js"></script>
+  <script src="username-search-history-shared.js"></script>
   <script src="model-search-options.js"></script>
 </body>
 </html>

@@ -44,6 +44,38 @@ if (-not $TbccRoot) {
 
 
 
+function Show-TbccProcessFootprint {
+  # One-line footprint: workers vs shells vs WT host vs supervisor, plus a waste count
+  # (duplicate workers + orphans + extra WT hosts/supervisors). Steady-state lean target
+  # is ~10 workers, 1 WT host, ~10-12 cmd tab shells, ~1 supervisor, waste 0.
+  param([Parameter(Mandatory = $true)]$Report, [Parameter(Mandatory = $true)][string]$Root)
+
+  $workerCount = [int]((@($Report.Services | Where-Object { $_.Status -eq 'up' }) | Measure-Object -Property PidCount -Sum).Sum)
+  $rootEsc = [regex]::Escape($Root)
+  $shellProcs = @(Get-CimInstance Win32_Process -Filter "Name='cmd.exe' OR Name='powershell.exe' OR Name='pwsh.exe' OR Name='WindowsTerminal.exe'" -ErrorAction SilentlyContinue)
+
+  $wtCount = @($shellProcs | Where-Object { [string]$_.Name -ieq 'WindowsTerminal.exe' }).Count
+  $supCount = @($shellProcs | Where-Object { $_.CommandLine -match 'tbcc-supervisor\.ps1' }).Count
+  $cmdShells = @($shellProcs | Where-Object {
+      [string]$_.Name -ieq 'cmd.exe' -and $_.CommandLine -and ($_.CommandLine -match $rootEsc -or $_.CommandLine -match 'run-tbcc-service|Launch-TBCC|tbcc-orchestrate|tbcc-cold-start')
+    }).Count
+  $psWrappers = @($shellProcs | Where-Object {
+      ([string]$_.Name -ieq 'powershell.exe' -or [string]$_.Name -ieq 'pwsh.exe') -and $_.CommandLine -and
+      ($_.CommandLine -match 'run-tbcc-service|run-tbcc-stackwatch|run-tbcc-service\.ps1') -and ($_.CommandLine -notmatch 'tbcc-supervisor\.ps1')
+    }).Count
+
+  $waste = [int]$Report.DupCount + [int]$Report.OrphanCount + [Math]::Max(0, $wtCount - 1) + [Math]::Max(0, $supCount - 1)
+
+  if (-not $Quiet) {
+    Write-Host ""
+    Write-Host "  Footprint (lean target: ~10 workers / 1 WT / ~10-12 cmd / 1 supervisor / waste 0)" -ForegroundColor Yellow
+    $wasteColor = if ($waste -gt 0) { "Red" } else { "Green" }
+    Write-Host ("  {0} workers | {1} WT host | {2} cmd shells | {3} PS wrappers | {4} supervisor(s) | waste: {5}" -f `
+        $workerCount, $wtCount, $cmdShells, $psWrappers, $supCount, $waste) -ForegroundColor $wasteColor
+  }
+  return [pscustomobject]@{ Workers = $workerCount; WtHosts = $wtCount; CmdShells = $cmdShells; PsWrappers = $psWrappers; Supervisors = $supCount; Waste = $waste }
+}
+
 function Show-TbccProcessReport {
 
   param([string]$Root, [bool]$FullStack)
@@ -116,6 +148,8 @@ function Show-TbccProcessReport {
     }
 
 
+
+    $null = Show-TbccProcessFootprint -Report $report -Root $Root
 
     Write-Host ""
 

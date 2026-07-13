@@ -146,7 +146,7 @@ function Start-TbccNgrokProcess {
   }
   $cmd = 'ngrok http ' + $Port
   if ($StartCmdWindow) {
-    & $StartCmdWindow.Invoke('TBCC-ngrok', $cmd)
+    $null = $StartCmdWindow.Invoke('TBCC-ngrok', $cmd)
   } else {
     $run = 'title "TBCC-ngrok" && ' + $cmd
     Start-Process -FilePath $env:ComSpec -ArgumentList @('/k', $run) -WindowStyle Normal

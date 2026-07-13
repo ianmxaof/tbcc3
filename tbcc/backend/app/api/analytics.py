@@ -368,6 +368,17 @@ def growth_attribution_summary(
     return attribution_summary(db, days=days)
 
 
+@router.get("/bots/funnel")
+def bots_funnel_summary_route(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+):
+    """Loot rolls, attribution events, and monetization deep links for dashboard Bots tab."""
+    from app.services.bot_funnel_analytics import bot_funnel_summary
+
+    return bot_funnel_summary(db, days=days)
+
+
 @router.get("/growth-attribution/events")
 def growth_attribution_events(
     db: Session = Depends(get_db),
@@ -643,3 +654,92 @@ def market_intel_upload_hints_route(top_n: int = Query(8, ge=1, le=30)):
     from app.services.erome_upload_policy import intel_upload_hints
 
     return intel_upload_hints(top_n=top_n)
+
+
+@router.get("/erome-upload/governance")
+def erome_upload_governance_summary_route():
+    """Pending private uploads awaiting human title/tag/public pass."""
+    from app.services.erome_upload_governance import governance_summary
+
+    return governance_summary()
+
+
+class EromeGovernanceMarkBody(BaseModel):
+    album_url: str = Field(..., min_length=8, max_length=400)
+    status: str = Field(..., description="needs_review | approved_public | rejected | staged_private")
+    notes: str | None = Field(None, max_length=500)
+    title: str | None = Field(None, max_length=200)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+
+
+@router.post("/erome-upload/governance/mark")
+def erome_upload_governance_mark_route(body: EromeGovernanceMarkBody = Body(...)):
+    from app.services.erome_upload_governance import mark_governance
+
+    out = mark_governance(
+        album_url=body.album_url,
+        status=body.status,
+        notes=body.notes,
+        title=body.title,
+        tags=body.tags or None,
+    )
+    if not out.get("ok"):
+        raise HTTPException(status_code=400, detail=out.get("error") or "mark_failed")
+    return out
+
+
+@router.post("/erome-upload/intel-week/seed")
+def erome_intel_week_seed_route(
+    week: str | None = Query(None),
+    title: str | None = Query(None),
+):
+    """Create intel-week staging folder + sidecar with suggested tags (private)."""
+    from app.services.erome_upload_governance import intel_week_staging_dir, seed_intel_week_sidecar
+
+    folder = intel_week_staging_dir(week=week)
+    return seed_intel_week_sidecar(folder, title=title)
+
+
+@router.get("/market-intel/cycle")
+def market_intel_cycle_status_route():
+    """Latest weekly cycle evaluation (current ISO week if present)."""
+    from app.services.market_intel_cycle import (
+        cycle_enabled,
+        get_cycle_record_for_week,
+        get_last_cycle_record,
+        week_id,
+    )
+
+    rec = get_cycle_record_for_week() or get_last_cycle_record()
+    return {
+        "ok": True,
+        "enabled": cycle_enabled(),
+        "week_id": week_id(),
+        "record": rec,
+    }
+
+
+@router.post("/market-intel/cycle/evaluate")
+def market_intel_cycle_evaluate_route(force: bool = Query(False)):
+    """Evaluate weekly intel cycle (append ledger when complete or forced)."""
+    from app.services.market_intel_cycle import evaluate_weekly_cycle
+
+    return evaluate_weekly_cycle(force=force)
+
+
+@router.post("/market-intel/cycle/run")
+def market_intel_cycle_run_route(
+    db: Session = Depends(get_db),
+    force: bool = Query(False),
+):
+    """Probe + evaluate weekly cycle + optional gated post actions."""
+    from app.services.erome_browse_intel import sync_from_drop_file
+    from app.services.market_intel_cycle import evaluate_weekly_cycle
+    from app.services.market_intel_cycle_executor import execute_cycle_actions
+    from app.services.market_intel_probe import run_market_probes
+
+    drop = sync_from_drop_file()
+    probe = run_market_probes()
+    cycle = evaluate_weekly_cycle(force=force)
+    actions = execute_cycle_actions(db, cycle) if cycle.get("complete") else {"skipped": True}
+    return {"ok": True, "drop_sync": drop, "probe": probe, "cycle": cycle, "actions": actions}

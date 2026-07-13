@@ -1,0 +1,71 @@
+{
+  "scenes": {
+    "ma-01": {
+      "label": "Opening Farmhouse Dawn",
+      "quadrant_hint": "any",
+      "text": "Martyrs opening act — derelict French farmhouse at grey dawn, mist in barley field, broken fence, distant industrial silhouette on horizon, Lucie figure small in frame running toward house, trauma-memory atmosphere, washed desaturated palette, handheld 16mm grain, analog horror rural dread, Pascal Laugier new-wave extremity tone, no gore shown, unbearable anticipation, 8k cinematic still."
+    },
+    "ma-02": {
+      "label": "Captivity Industrial Basement",
+      "quadrant_hint": "any",
+      "text": "Martyrs captivity architecture — concrete industrial basement, rusted pipes, chain hooks on ceiling (empty), stained mattress in corner, single bare bulb swinging, figure creeping through doorway, Watchers' facility implied, cold blue-green mercury light, VHS surveillance aesthetic, claustrophobic wide angle, hyper-detailed grime, tension without explicit torture depicted."
+    },
+    "ma-03": {
+      "label": "The Chair Room",
+      "quadrant_hint": "any",
+      "text": "Martyrs interrogation room — metal chair bolted to floor center, drainage channel in concrete, two-way mirror reflecting empty darkness, clinical overhead panels, figure small and distant, ghost double-exposure on mirror, institutional horror, fluorescent buzz, grain, photoreal still."
+    },
+    "ma-04": {
+      "label": "Lucie's Breakdown Corridor",
+      "quadrant_hint": "any",
+      "text": "Long institutional corridor, figure pressing palms to temples, wallpaper peeling, lights strobing wrong, torn family photo on floor, abstract red streak on wall only (no body), analog horror mental collapse, desaturated with red accent, handheld shake frozen."
+    },
+    "ma-05": {
+      "label": "Transcendent White Room",
+      "quadrant_hint": "any",
+      "text": "Blinding minimalist white chamber, robed figure serene at center, approaching figure in void architecture, overexposed heavenly light with analog blow-out, faint scratch marks on white walls, VHS softness at edges, transcendence vs horror, 8k photoreal."
+    },
+    "ma-06": {
+      "label": "The Pit / Hole Discovery",
+      "quadrant_hint": "any",
+      "text": "Circular hole cut in farmhouse floor, darkness below absolute, rope and pulley rig, figure peering down, flashlight beam swallowed, subterranean chamber implied, earth and concrete texture hyper-detailed, analog horror excavation dread, grey-brown palette."
+    },
+    "ma-07": {
+      "label": "Family Breakfast / Dining Room Entrance",
+      "quadrant_hint": "top-left",
+      "text": "Martyrs farmhouse dining room — morning light through lace curtains. Uneaten breakfast on table: cereal bowls, coffee cups, juice glasses. All four family members visible and seated — mother, father, sister, and brother — frozen mid-meal, faces toward the hallway. Emaciated female in long dark trench coat filling the doorway, double-barrel shotgun at low ready, silhouette backlit from the hall. Family portraits on wall slightly crooked. Analog horror freeze-frame instant before violence, desaturated farmhouse palette with cold hallway contrast, handheld 16mm grain, VHS chroma bleed, no gore or bodies depicted, cinematic wide from table POV toward entrance, 8k photoreal still."
+    },
+    "ma-08": {
+      "label": "Blinder Helmet Removal",
+      "quadrant_hint": "top-right",
+      "text": "Martyrs farmhouse bathroom — cramped washroom, cracked mirror, stained sink, fluorescent tube buzzing. Protagonist removing a nailed-in metal blinder helmet from the head of a severely lacerated emaciated female — trauma implied, not explicit gore. Helmet: two flat C-shaped circular stainless steel bands — one wrapping back of head and ears, one across crown — joined by cold steel bolts along the top; one piece being lifted away. Tile grout darkened, water droplets on porcelain. Close-medium or mirror reflection, analog horror intimacy, desaturated green-white cast, VHS softness, Pascal Laugier tone, photoreal cinematic still."
+    },
+    "ma-09": {
+      "label": "Surgical Preparation / Steel Slab",
+      "quadrant_hint": "bottom-left",
+      "text": "Martyrs surgical-prep antechamber — stainless steel operating slab center, gleaming instrument trays, no pharmaceuticals or IV supplies anywhere. Bare concrete walls, floor drain, cold overhead panels. Low angle from behind bald figure in light-blue surgical scrubs over white doctor's coat, black slacks, polished black oxfords — both hands raised, one surgical instrument in each, poised toward empty slab. Operation about to begin, not in progress. Clinical blue-white light, analog surveillance grain, no patient on slab, no blood, tension only, 8k photoreal."
+    },
+    "ma-10": {
+      "label": "Victorian Society Assembly",
+      "quadrant_hint": "bottom-right",
+      "text": "Martyrs finale assembly — gaudy Victorian two-story interior, late morning (~11:00 AM) sun through tall draped windows, ornate wallpaper, chandelier, curved staircase. Elderly head lady addressing seated room of credential-class elites — businessmen, society women, clinical observers — still and attentive as ceremony. Warm daylight against cold institutional undertone, analog horror in polite domestic grandeur, wide shot from audience rear toward speaker, VHS grain at edges, no gore, unsettling calm, 8k photoreal still."
+    }
+  },
+  "presets": {
+    "martyrs-ma07-10": {
+      "format": "grid-2x2-9x16",
+      "scenes": ["ma-07", "ma-08", "ma-09", "ma-10"],
+      "style": "Martyrs / Pascal Laugier French extremity. Analog horror: VHS grain, scan lines, chromatic bleed, gritty photoreal."
+    },
+    "martyrs-grid-classic": {
+      "format": "grid-2x2-9x16",
+      "scenes": ["ma-02", "ma-03", "ma-04", "ma-05"],
+      "style": "Martyrs / Pascal Laugier. Analog horror film still."
+    },
+    "martyrs-single-breakfast": {
+      "format": "single-9x16",
+      "scenes": ["ma-07"],
+      "style": "Martyrs / Pascal Laugier. Analog horror."
+    }
+  }
+}

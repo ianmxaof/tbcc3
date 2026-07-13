@@ -57,6 +57,7 @@ celery.conf.include = [
     "app.workers.export_flywheel_worker",
     "app.workers.buffer_metrics_worker",
     "app.workers.sent_cache_composer_worker",
+    "app.workers.sale_announce_worker",
 ]
 
 celery.conf.task_routes = {
@@ -72,9 +73,19 @@ celery.conf.task_routes = {
     "app.workers.grant_access_worker.*": {"queue": "subscription"},
     "app.workers.milestone_worker.*": {"queue": "subscription"},
     "app.workers.landing_bulletin_worker.*": {"queue": "subscription"},
-    # Last.fm relay polls on the general worker so TBCC-Celery-Post stays reserved for channel posts.
-    "app.workers.listening_relay_worker.*": {"queue": "celery"},
+    # Ops lanes (Phase 4): heavy, non-latency-critical Beat ticks route off the home `celery`
+    # worker so run_schedule (post_scheduler lane) never serializes behind them on the solo pool.
+    # Consumed by TBCC-Celery-Ops (-Q ops_growth,ops_relay,ops_erome). If that worker is not
+    # running, add these queues to TBCC_CELERY_HOME_QUEUES or the tasks strand in Redis.
+    "app.workers.listening_relay_worker.*": {"queue": "ops_relay"},
+    "app.workers.export_flywheel_worker.*": {"queue": "ops_growth"},
+    "app.workers.income_poll_worker.*": {"queue": "ops_growth"},
+    "app.workers.market_intel_worker.*": {"queue": "ops_growth"},
+    "app.workers.storage_pool_seed_worker.*": {"queue": "ops_growth"},
+    "app.workers.erome_analytics_worker.*": {"queue": "ops_erome"},
+    # Light / user-facing tasks stay on the home worker.
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
+    "app.workers.sale_announce_worker.*": {"queue": "celery"},
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
     "app.workers.sent_cache_composer_worker.*": {"queue": "telegram"},
     "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
@@ -85,11 +96,7 @@ celery.conf.task_routes = {
     "app.workers.topic_mirror_worker.*": {"queue": "telegram"},
     "app.workers.thumbnail_warm_worker.*": {"queue": "telegram"},
     "app.workers.k2s_mirror_worker.*": {"queue": "celery"},
-    "app.workers.storage_pool_seed_worker.*": {"queue": "celery"},
     "app.workers.content_performance_worker.*": {"queue": "celery"},
-    "app.workers.income_poll_worker.*": {"queue": "celery"},
-    "app.workers.erome_analytics_worker.*": {"queue": "celery"},
-    "app.workers.market_intel_worker.*": {"queue": "celery"},
     "app.workers.emoji_factory_worker.*": {"queue": "celery"},
 }
 
@@ -190,6 +197,20 @@ celery.conf.beat_schedule["storage-pool-seed"] = {
 }
 
 
+# Phase 1: internal thin-lane backfill (replaces public drop-signal posts). Opt-in; routes to
+# ops_growth (Phase 4). Shares the global Telegram account lock with posting — keep to ~4h.
+if (os.getenv("TBCC_THIN_POOL_BACKFILL_ENABLED") or "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    celery.conf.beat_schedule["thin-pool-backfill"] = {
+        "task": "app.workers.storage_pool_seed_worker.backfill_thin_pools",
+        "schedule": crontab(minute=55, hour="*/4"),
+    }
+
+
 def _income_poll_crontab_hours() -> str:
     raw = (os.getenv("TBCC_INCOME_POLL_HOURS") or "6").strip()
     try:
@@ -240,6 +261,20 @@ if (os.getenv("TBCC_MARKET_INTEL_PROBE_ENABLED") or "1").strip().lower() not in 
     celery.conf.beat_schedule["market-intel-probe"] = {
         "task": "app.workers.market_intel_worker.run_market_intel_probe",
         "schedule": crontab(minute=20, hour="*/6"),
+    }
+
+if (os.getenv("TBCC_MARKET_INTEL_CYCLE_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    _cycle_minute = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_MINUTE") or "5").strip() or "5")
+    _cycle_hour = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_HOUR") or "9").strip() or "9")
+    _cycle_dow = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_WEEKDAY") or "1").strip() or "1")
+    celery.conf.beat_schedule["market-intel-weekly-cycle"] = {
+        "task": "app.workers.market_intel_worker.run_weekly_market_intel_cycle",
+        "schedule": crontab(minute=_cycle_minute, hour=_cycle_hour, day_of_week=_cycle_dow),
     }
 
 

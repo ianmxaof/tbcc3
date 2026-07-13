@@ -17,7 +17,7 @@ from app.services.buffer_graphql import (
     resolve_organization_id,
 )
 from app.services.buffer_post_result import buffer_create_post_error_message, buffer_create_post_succeeded
-from app.services.buffer_x_caption import fit_plaintext_for_x
+from app.services.buffer_x_caption import finalize_buffer_x_caption
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,12 @@ def _normalize_text_key(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
-def build_native_queue_caption(entry: dict[str, str]) -> str:
+def build_native_queue_caption(
+    entry: dict[str, str],
+    *,
+    db=None,
+    advance_link_cycle: bool = False,
+) -> str:
     from app.services.aof_social_links import aof_hub_invite_url
 
     utm_campaign = str(entry.get("utm_campaign") or entry.get("gate_key") or "native_x").strip()
@@ -71,9 +76,16 @@ def build_native_queue_caption(entry: dict[str, str]) -> str:
         utm_medium="x",
         utm_campaign=utm_campaign,
         for_x=True,
+        db=db,
+        advance_affiliate=False,
     )
     overflow = x_outbound_url()
-    text = fit_plaintext_for_x(raw, overflow_url=overflow or aof_hub_invite_url())
+    text = finalize_buffer_x_caption(
+        raw,
+        db=db,
+        overflow_url=overflow or aof_hub_invite_url(),
+        advance_link_cycle=advance_link_cycle,
+    )
     if len(text) > 280:
         text = text[:277].rstrip() + "…"
     return text
@@ -107,8 +119,8 @@ def _collect_existing_texts(*, organization_id: str, channel_id: str) -> set[str
     return keys
 
 
-def _candidate_captions(*, exclude: set[str]) -> list[str]:
-    out: list[str] = []
+def _candidate_entries(*, exclude: set[str]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
     seen: set[str] = set()
     for entry in AOF_X_BUFFER_NATIVE_POOL:
         text = build_native_queue_caption(entry)
@@ -118,7 +130,7 @@ def _candidate_captions(*, exclude: set[str]) -> list[str]:
         if key in exclude or key in seen:
             continue
         seen.add(key)
-        out.append(text)
+        out.append(entry)
     return out
 
 
@@ -172,46 +184,47 @@ def refill_buffer_native_queue(*, dry_run: bool = False) -> dict[str, Any]:
         return report
 
     exclude = _collect_existing_texts(organization_id=org_id, channel_id=channel_id)
-    candidates = _candidate_captions(exclude=exclude)
-    if not candidates:
+    candidate_entries = _candidate_entries(exclude=exclude)
+    if not candidate_entries:
         report["status"] = "empty"
         report["reason"] = "no fresh captions (all pool entries match recent posts)"
         return report
 
-    to_create = candidates[:slots]
-    report["captions_preview"] = to_create[:5]
+    to_create_entries = candidate_entries[:slots]
+    report["captions_preview"] = [build_native_queue_caption(e) for e in to_create_entries[:5]]
 
     if dry_run:
-        report["would_create"] = len(to_create)
+        report["would_create"] = len(to_create_entries)
         return report
 
-    for text in to_create:
-        from app.services.buffer_x_promo_image import direct_url_for_buffer, pick_promo_image
+    from app.database.session import SessionLocal
+    from app.services.promo_affiliate_rotation import pick_affiliate
 
-        image_url = direct_url_for_buffer(pick_promo_image())
-        res = create_post(
-            channel_id,
-            text,
-            mode="addToQueue",
-            scheduling_type="automatic",
-            image_url=image_url,
-        )
-        if buffer_create_post_succeeded(res):
-            report["created"] += 1
-            exclude.add(_normalize_text_key(text))
-            from app.database.session import SessionLocal
-            from app.services.promo_affiliate_rotation import pick_affiliate
+    local = SessionLocal()
+    try:
+        for entry in to_create_entries:
+            from app.services.buffer_x_promo_image import direct_url_for_buffer, pick_promo_image
 
-            local = SessionLocal()
-            try:
-                if pick_affiliate(local, "x_buffer", advance=True):
-                    local.commit()
-            finally:
-                local.close()
-        else:
-            msg = buffer_create_post_error_message(res) or "createPost failed"
-            report["errors"].append(msg[:200])
-            logger.warning("buffer native refill createPost: %s", msg)
+            text = build_native_queue_caption(entry, db=local, advance_link_cycle=True)
+            image_url = direct_url_for_buffer(pick_promo_image())
+            res = create_post(
+                channel_id,
+                text,
+                mode="addToQueue",
+                scheduling_type="automatic",
+                image_url=image_url,
+            )
+            if buffer_create_post_succeeded(res):
+                report["created"] += 1
+                exclude.add(_normalize_text_key(text))
+                pick_affiliate(local, "x_buffer", advance=True)
+                local.commit()
+            else:
+                msg = buffer_create_post_error_message(res) or "createPost failed"
+                report["errors"].append(msg[:200])
+                logger.warning("buffer native refill createPost: %s", msg)
+    finally:
+        local.close()
 
     report["scheduled_after"] = scheduled_count + report["created"]
     logger.info("buffer native queue refill: %s", report)

@@ -123,9 +123,26 @@ TBCC_EROME_BROWSE_INTEL_ENABLED=1
 TBCC_EROME_BROWSE_INTEL_RANK=1
 TBCC_MARKET_INTEL_PROBE_ENABLED=1
 TBCC_MARKET_INTEL_PROBE_SUBREDDITS=erome,amateur_milfs
+TBCC_MARKET_INTEL_CYCLE_ENABLED=1
+TBCC_MARKET_INTEL_CYCLE_WINDOW_DAYS=7
+TBCC_MARKET_INTEL_CYCLE_WEEKDAY=1
+TBCC_MARKET_INTEL_CYCLE_HOUR=9
+TBCC_MARKET_INTEL_CYCLE_MINUTE=5
+TBCC_MARKET_INTEL_AUTO_POST=0
 TBCC_REDDIT_EXECUTE=0          # 1 when ready for live submit
 TBCC_REDDIT_MIRROR_ON_SCHEDULED=1
 ```
+
+## Weekly cycle (Mon beat)
+
+Celery task `run_weekly_market_intel_cycle` (default **Monday 09:05**):
+
+1. Sync browse-intel drop + Reddit probe
+2. `evaluate_weekly_cycle()` on rolling 7-day window
+3. Append `{tbcc_run}/erome-analytics/market-intel-cycle.jsonl`
+4. When `complete` + `TBCC_MARKET_INTEL_AUTO_POST=queue`: rank pool picks + Buffer queue
+
+API: `GET /analytics/market-intel/cycle`, `POST /analytics/market-intel/cycle/evaluate`, `POST /analytics/market-intel/cycle/run`
 
 ---
 

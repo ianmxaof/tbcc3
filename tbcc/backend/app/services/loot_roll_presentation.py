@@ -6,75 +6,119 @@ import html
 import random
 from typing import Any
 
-# Decorative separators between consecutive rolls in a chat (HTML).
+# Between consecutive rolls only (not menus). Telegram HTML <pre> = monospace ASCII.
 ROLL_DIVIDERS: list[str] = [
-    "━━━━━━━━━━━━━━━━\n🎰 <i>next pull</i> 🎰\n━━━━━━━━━━━━━━━━",
-    "· · · ✦ · · ·\n<i>rolling…</i>\n· · · ✦ · · ·",
-    "╭─────────────────╮\n│  🎲  <i>new draw</i>  🎲  │\n╰─────────────────╯",
-    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n✨ <i>loot table</i> ✨\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰",
-    "┈┈┈ 🎁 ┈┈┈\n<i>fresh roll</i>\n┈┈┈ 🎁 ┈┈┈",
-    "══════════════════\n🃏 <i>deal the cards</i> 🃏\n══════════════════",
+    "<pre>┌──── AOF LOOT ────┐\n│   next pull…     │\n└──────────────────┘</pre>",
+    "<pre>═══ TIER GATE ═══\n   rolling…\n═══ · · · · ═══</pre>",
+    "<pre>╱╱╱ DRAW ╱╱╱\n world ladder ticks\n╲╲╲ ······ ╲╲╲</pre>",
+    "<pre>┌─ ROLL ─┐\n│ 1-1 ▸ … │\n└─────────┘</pre>",
+    "<pre>┈┈┈ TIER GATE ┈┈┈\n    deal the cards\n┈┈┈ · · · · ┈┈┈</pre>",
+    "<pre>╔══════════════╗\n║  loot table  ║\n╚══════════════╝</pre>",
+    "<pre>· · · SHUFFLE · · ·\n  vault breathes\n· · · · · · · ·</pre>",
+    "<pre>── DEALING ──\n cards face down\n── ······ ──</pre>",
+    "<pre>« RARITY SPIN »\n   hold still…\n« · · · · · »</pre>",
+    "<pre>⌈ LOOT ⌋\n assembling album\n⌊······⌉</pre>",
+]
+
+# Shown after tier banner / divider while media bytes load (can take a while).
+ROLL_PREPARING_LINES: list[str] = [
+    "Relax — the roll is being prepared.",
+    "Hold up — vault's loading your album.",
+    "Sit tight. Cards are coming off the table.",
+    "Breathe. The blur's still cooking.",
+    "One sec — packing your pull.",
+    "Don't refresh. Media is on the way.",
+    "Patience — spoilers are assembling.",
+    "Still dealing. This can take a moment.",
+    "Almost there — fetching the album stack.",
+    "Stay with me. Loot God doesn't ghost mid-deal.",
+    "Loading the reel… relax your thumb.",
+    "Table's busy. Your pull is not forgotten.",
+]
+
+ROLL_STILL_WORKING_LINES: list[str] = [
+    "Still working — big files take a beat.",
+    "Not stuck. Still pulling media from the vault.",
+    "Hang on — album transfer still in flight.",
+    "Almost dealt. Don't tap Roll again yet.",
+]
+
+ROLL_DEAL_FAILED_LINES: list[str] = [
+    "Deal failed after the table flash — no album landed. Tap <b>/roll</b> again.",
+    "The tier banner showed, but media never arrived. Retry <b>/roll</b> — that pull didn't count as a win.",
+    "Vault hiccup: draw called, album missing. Try once more.",
+]
+
+# Bot-side status before API returns (loot_bot).
+ROLL_LOADING_STATUS_LINES: list[str] = [
+    "Dealing your pull…",
+    "Spinning the table…",
+    "Asking the vault…",
+    "Rarity dice in the air…",
+    "Loot God is dealing…",
 ]
 
 TIER_FLAVOR_BANKS: dict[int, list[str]] = {
     1: [
         "The vault coughs up crumbs. Squint harder.",
-        "A whisper of dust — barely worth the tap.",
-        "Low stakes, low heat. Still counts as a pull.",
-        "The room yawns. Something flickered anyway.",
+        "Barely a taste. Still counts as a pull.",
+        "Low heat. The room barely notices you.",
+        "Crumb-tier — thin, but the reel spun.",
+        "Fresh low draw — the ladder starts here sometimes.",
     ],
     2: [
-        "Not quite nothing. Not quite a drop.",
+        "Skirt lifts. Nothing promised.",
         "A shadow moved behind the spoiler blur.",
-        "Thin pull — but the reel still spun.",
-        "Glimpse-tier: enough to keep you curious.",
+        "Peek-tier: enough to keep you curious.",
+        "Thin pull — the door is only cracked.",
+        "Independent draw: Peek can land after a hotter roll.",
     ],
     3: [
-        "Warm enough to keep scrolling.",
-        "A single spark — the floor noticed you.",
-        "Small flame, real enough to unwrap.",
-        "Spark tier: modest, but the blur hides something.",
+        "Someone left the door cracked.",
+        "Amateur heat. Wet enough to keep scrolling.",
+        "Leak-tier: modest, but the blur hides something.",
+        "A single drip — the floor noticed you.",
     ],
     4: [
+        "The room starts breathing with you.",
         "Rhythm picks up — spoilers earned.",
-        "The pulse tier hits different on a streak.",
-        "Room energy shifts — you're on the board.",
+        "Throb-tier — mid-band heat on this draw.",
         "Mid-low heat; the album might surprise you.",
     ],
     5: [
+        "Mid-heat. You're not leaving yet.",
         "More on the reel than you expected.",
-        "Surge tier — modifiers start whispering.",
-        "The table leans in. Worth the unwrap.",
-        "Halfway up the ladder — feel the pull.",
+        "Drip-tier — modifiers start whispering.",
+        "Halfway band — hands already dirty.",
     ],
     6: [
         "Photos stack, video hits — feel the pull.",
-        "Blaze energy — mixed media flex.",
-        "Spotlight tier: density climbing.",
+        "Soak energy — mixed media flex.",
+        "Density climbing. No soft lighting.",
         "The vault opens wider at this band.",
     ],
     7: [
-        "Rare enough that a bundle might follow.",
-        "Vault-tier pull — packs may whisper.",
+        "Vault opens. Packs may follow.",
+        "Filth-tier — rare enough that a bundle might follow.",
         "Heavy hitters live in this band.",
         "Seven deep — bonus routes get plausible.",
     ],
     8: [
-        "This is why you paid attention.",
-        "Crown tier — album density spikes.",
+        "Density spikes. No soft landing.",
+        "Ruin-tier — this is why you paid attention.",
         "The room applauds. Open everything.",
-        "Eight deep — confetti weather starts here.",
+        "Eight deep — confetti of sin starts here.",
     ],
     9: [
-        "The overseer grins. Open everything.",
-        "Oracle tier — modifiers stack with intent.",
-        "Near-mythic heat. Screenshot energy.",
+        "Near-mythic. Modifiers stack mean.",
+        "Blackout-tier — the overseer grins.",
+        "Screenshot the mess. Almost max.",
         "Nine bells — the table is yours tonight.",
     ],
     10: [
-        "🔥 Peak dopamine. Screenshot the receipts. 🔥",
-        "MAX TIER — the vault throws a party.",
-        "Ascension drop. Tell your group chat.",
+        "MAX TIER — screenshot the mess.",
+        "Godroll. Peak filth. Tell your group chat.",
+        "The vault throws a party. No survivors.",
         "Ten out of ten. This is the flex roll.",
     ],
 }
@@ -87,16 +131,16 @@ TIER_CELEBRATION: dict[int, str] = {
 
 # Per-tier decorative frames (opening banners + album caption chrome).
 TIER_CARD_FRAMES: dict[int, tuple[str, str]] = {
-    1: ("▫️ ▫️ ▫️", "▫️ ▫️ ▫️"),
-    2: ("▫️ ✦ ▫️", "▫️ ✦ ▫️"),
-    3: ("─ ✨ ─", "─ ✨ ─"),
-    4: ("╭─ ⚡ ─╮", "╰─ ⚡ ─╯"),
-    5: ("╔═ 🔥 ═╗", "╚═ 🔥 ═╝"),
-    6: ("▰▰ 💎 ▰▰", "▰▰ 💎 ▰▰"),
-    7: ("◆══ 🗝 ══◆", "◆══ 🗝 ══◆"),
-    8: ("✦══ 👑 ══✦", "✦══ 👑 ══✦"),
-    9: ("★══ 🔮 ══★", "★══ 🔮 ══★"),
-    10: ("🎆══ ⭐ ══🎆", "🎆══ ⭐ ══🎆"),
+    1: ("···· crumb ····", "···· ···· ····"),
+    2: ("· > peek_ ·", "· · · · ·"),
+    3: ("─ leak ─", "─ ▓▓▓ ─"),
+    4: ("╭─ throb ─╮", "╰─ ▁▃▅ ─╯"),
+    5: ("╔═ drip ═╗", "╚═ │││ ═╝"),
+    6: ("▰ soak ▰", "▰ ▰ ▰ ▰"),
+    7: ("◆══ filth ══◆", "◆══ ⌂⌂⌂ ══◆"),
+    8: ("✦══ ruin ══✦", "✦══ ♛♛♛ ══✦"),
+    9: ("★══ blackout ══★", "★══ ▓░█ ══★"),
+    10: ("*** godroll ***", "*** TIER MAX ***"),
 }
 
 
@@ -107,7 +151,7 @@ def tier_card_frame_lines(tier: int) -> tuple[str, str]:
 
 def wrap_tier_card_body(tier: int, body: str) -> str:
     top, bottom = tier_card_frame_lines(tier)
-    return f"{top}\n{body}\n{bottom}"
+    return f"<code>{html.escape(top)}</code>\n{body}\n<code>{html.escape(bottom)}</code>"
 
 
 def build_album_caption_html(
@@ -115,8 +159,9 @@ def build_album_caption_html(
     *,
     modifier_lines: list[str],
     item_count: int,
+    affiliate_footer_html: str | None = None,
 ) -> str:
-    """First album item caption: tier card + up to 3 modifier slots inline."""
+    """First album item caption: tier card + up to 3 modifier slots + optional affiliate footer."""
     from app.services.loot_tier_catalog import tier_display_name
 
     tier = int(preview.get("rarity_tier") or 1)
@@ -133,7 +178,12 @@ def build_album_caption_html(
     elif slot_count > 0:
         mod_block = f"\n\n<b>✦ Modifiers</b>\n<i>— none matched this tier —</i>"
 
-    body = header + mod_block
+    foot = ""
+    footer = (affiliate_footer_html or "").strip()
+    if footer:
+        foot = f"\n\n{footer}"
+
+    body = header + mod_block + foot
     return wrap_tier_card_body(tier, body)
 
 
@@ -173,6 +223,39 @@ def pick_tier_flavor(tier: int, rng: random.Random | None = None) -> str:
     return r.choice(bank)
 
 
+def pick_preparing_line(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_PREPARING_LINES)
+
+
+def pick_still_working_line(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_STILL_WORKING_LINES)
+
+
+def pick_deal_failed_html(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_DEAL_FAILED_LINES)
+
+
+def pick_loading_status_line(rng: random.Random | None = None) -> str:
+    r = rng or random.Random()
+    return r.choice(ROLL_LOADING_STATUS_LINES)
+
+
+def build_preparing_html(preview: dict[str, Any] | None = None) -> str:
+    seed = (preview or {}).get("seed")
+    rng = random.Random(seed) if seed is not None else random.Random()
+    # Offset so preparing ≠ same RNG slot as divider when seed shared.
+    rng2 = random.Random((int(seed) + 17) if seed is not None else None)
+    line = html.escape(pick_preparing_line(rng2 if seed is not None else rng))
+    return f"<i>{line}</i>"
+
+
+def build_independent_draw_note_html() -> str:
+    return "<i>Fresh draw — World labels are rarity bands, not a campaign you climb.</i>"
+
+
 def tier_celebration_line(tier: int) -> str | None:
     return TIER_CELEBRATION.get(max(1, min(10, int(tier))))
 
@@ -181,3 +264,17 @@ def build_roll_divider_html(preview: dict[str, Any]) -> str:
     seed = preview.get("seed")
     rng = random.Random(seed) if seed is not None else random.Random()
     return pick_roll_divider_html(rng)
+
+
+def copy_bank_inventory() -> dict[str, int]:
+    """Counts for ops / docs — how much variation exists."""
+    return {
+        "roll_dividers": len(ROLL_DIVIDERS),
+        "preparing_lines": len(ROLL_PREPARING_LINES),
+        "still_working_lines": len(ROLL_STILL_WORKING_LINES),
+        "deal_failed_lines": len(ROLL_DEAL_FAILED_LINES),
+        "loading_status_lines": len(ROLL_LOADING_STATUS_LINES),
+        "tier_flavor_total": sum(len(v) for v in TIER_FLAVOR_BANKS.values()),
+        "tier_celebration": len(TIER_CELEBRATION),
+        "tier_frames": len(TIER_CARD_FRAMES),
+    }

@@ -10,7 +10,7 @@ from app.database.session import SessionLocal
 from app.models.listening_relay_settings import ListeningRelaySettings
 from app.services.buffer_graphql import buffer_target_channel_ids, create_post
 from app.services.buffer_x_caption import (
-    fit_plaintext_for_x,
+    finalize_buffer_x_caption,
     resolve_overflow_url,
     should_fit_for_x,
 )
@@ -103,7 +103,12 @@ def run_listening_relay_social_fanout(
             img = iu if iu.startswith("https://") else None
             used_queue = bool(plain)
         elif should_fit_for_x():
-            plain = fit_plaintext_for_x(plain, overflow_url=resolve_overflow_url() or None)
+            plain = finalize_buffer_x_caption(
+                plain,
+                db=db,
+                overflow_url=resolve_overflow_url() or None,
+                advance_link_cycle=True,
+            )
 
         if not plain:
             return
