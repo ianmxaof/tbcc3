@@ -96,18 +96,18 @@
       <label class="row2 tbcc-looms-stepper">Download threads
         <span style="display:flex;align-items:center;gap:6px">
           <button type="button" class="tbcc-btn-secondary" data-step="-1">−</button>
-          <input type="number" id="loomsDownloadThreads" min="1" max="4" value="4" style="width:52px;text-align:center" title="ZIP fetch parallelism" />
+          <input type="number" id="loomsDownloadThreads" min="1" max="12" value="8" style="width:52px;text-align:center" title="ZIP fetch parallelism" />
           <button type="button" class="tbcc-btn-secondary" data-step="1">+</button>
         </span>
-        <span class="desc">Parallel media fetches when building a ZIP (Comic Looms DL).</span>
+        <span class="desc">Parallel media fetches when building a ZIP (direct twimg CDN; default 8).</span>
       </label>
       <label class="row2 tbcc-looms-stepper">Timeout (seconds)
         <span style="display:flex;align-items:center;gap:6px">
           <button type="button" class="tbcc-btn-secondary" data-step="-1">−</button>
-          <input type="number" id="loomsTimeoutSec" min="2" max="40" value="9" style="width:52px;text-align:center" title="Per-fetch stall timeout (resets on progress)" />
+          <input type="number" id="loomsTimeoutSec" min="2" max="60" value="20" style="width:52px;text-align:center" title="Per-fetch stall timeout (resets on progress)" />
           <button type="button" class="tbcc-btn-secondary" data-step="1">+</button>
         </span>
-        <span class="desc">Stall timeout per fetch; resets while bytes arrive (Comic Looms).</span>
+        <span class="desc">Stall timeout per fetch; resets while bytes arrive (default 20s).</span>
       </label>
     </div>
     <label class="row2">Max harvest items

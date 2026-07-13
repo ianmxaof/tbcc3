@@ -148,6 +148,15 @@ SEED_ITEMS: list[dict] = [
         "copy_template": "🎬 {link} — NSFW AI video",
     },
     {
+        "label": "PornMaker AI",
+        "url": "https://pornmaker.ai?ref=DExnc3FJ",
+        "payout_kind": "revshare",
+        "priority_tier": 13,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "🎬 {link} — AI porn maker",
+    },
+    {
         "label": "Vixal — image to video",
         "url": "https://vixal.to/i2v/7787282561",
         "payout_kind": "revshare",

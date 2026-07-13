@@ -41,9 +41,9 @@
 
         browseThreads: 4,
 
-        downloadThreads: 4,
+        downloadThreads: 8,
 
-        timeoutSec: 9,
+        timeoutSec: 20,
 
         layout: "grid",
 
@@ -120,9 +120,9 @@
 
     s.browseThreads = Math.min(Math.max(Number(s.browseThreads) || 4, 1), 4);
 
-    s.downloadThreads = Math.min(Math.max(Number(s.downloadThreads) || 4, 1), 4);
+    s.downloadThreads = Math.min(Math.max(Number(s.downloadThreads) || 8, 1), 12);
 
-    s.timeoutSec = Math.min(Math.max(Number(s.timeoutSec) || 9, 2), 40);
+    s.timeoutSec = Math.min(Math.max(Number(s.timeoutSec) || 20, 2), 60);
 
     if (["grid", "horizontal", "vertical"].indexOf(s.layout) < 0) s.layout = "grid";
 

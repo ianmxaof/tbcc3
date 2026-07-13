@@ -310,6 +310,9 @@
       if (!v || !v.url) continue;
       var ct = String(v.content_type || "").toLowerCase();
       if (ct === "application/x-mpegurl" || /\.m3u8(\?|#|$)/i.test(v.url)) continue;
+      // Prefer progressive mp4; ignore audio-only amplify tracks.
+      if (/\/aud\//i.test(v.url) || /mp4a/i.test(v.url)) continue;
+      if (ct && ct !== "video/mp4" && !/\.mp4(\?|#|$)/i.test(v.url)) continue;
       var b = Number(v.bitrate) || 0;
       if (b >= bitrate) {
         bitrate = b;

@@ -1,6 +1,9 @@
 /**
  * X/Twitter per-post download buttons (XEnhancer-style, TBCC extension port).
- * Hooks timeline API responses for media URLs; injects blue download on each post.
+ *
+ * Media URLs come from x-api-hook.js (MAIN world) via postMessage — same source
+ * as Tampermonkey XEnhancer's page-context XHR hook. Isolated-world fetch hooks
+ * cannot see X GraphQL and must not be relied on.
  */
 (function () {
   "use strict";
@@ -8,9 +11,17 @@
   var STYLE_ID = "tbcc-x-feed-download-css";
   var CSS =
     ".x-master-dl{margin-left:12px;order:99}.x-master-dl:hover>div>div>div>div{color:#1da1f2}" +
-    ".x-master-dl:hover svg{color:#1da1f2}.x-master-dl.tmd-media{position:absolute;right:0;z-index:5}" +
+    ".x-master-dl:hover>div>div>div>div>div{background-color:rgba(29,161,242,.1)}" +
+    ".x-master-dl:active>div>div>div>div>div{background-color:rgba(29,161,242,.2)}" +
+    ".x-master-dl:hover svg{color:#1da1f2}" +
+    ".x-master-dl:hover div:first-child:not(:last-child){background-color:rgba(29,161,242,.1)}" +
+    ".x-master-dl:active div:first-child:not(:last-child){background-color:rgba(29,161,242,.2)}" +
+    ".x-master-dl.tmd-media{position:absolute;right:0;z-index:5}" +
     ".x-master-dl.tmd-media>div{border-radius:99px;display:flex;margin:2px;background:rgba(0,0,0,.45)}" +
     ".x-master-dl.tmd-media>div>div{color:#fff;display:flex;margin:6px}" +
+    ".x-master-dl.tmd-media:hover>div{background-color:hsla(0,0%,100%,.6)}" +
+    ".x-master-dl.tmd-media:hover>div>div{color:#1da1f2}" +
+    ".x-master-dl.tmd-media:not(:hover)>div>div{filter:drop-shadow(0 0 1px #000)}" +
     ".x-master-dl.tmd-img{position:absolute;top:0;right:0;z-index:10;margin:5px}" +
     ".x-master-dl g{display:none}.x-master-dl.completed g.completed,.x-master-dl.download g.download," +
     ".x-master-dl.failed g.failed,.x-master-dl.loading g.loading{display:inline}" +
@@ -40,15 +51,6 @@
     } catch (_) {
       return false;
     }
-  }
-
-  function noteGqlQueryId(reqUrl) {
-    try {
-      var m = String(reqUrl || "").match(/\/graphql\/([A-Za-z0-9_-]+)\/(HomeTimeline|HomeLatestTimeline|UserTweets|UserMedia)/i);
-      if (!m) return;
-      window.__tbccXGqlQueryIds = window.__tbccXGqlQueryIds || {};
-      window.__tbccXGqlQueryIds[m[2]] = m[1];
-    } catch (_) {}
   }
 
   function chromeDownload(url, filename) {
@@ -87,20 +89,6 @@
       return u.toString();
     } catch (_) {
       return "";
-    }
-  }
-
-  function shouldCaptureApiUrl(url) {
-    try {
-      var u = new URL(String(url || ""), location.origin);
-      var host = u.hostname.toLowerCase();
-      if (!/(^|\.)x\.com$|(^|\.)twitter\.com$/.test(host)) return false;
-      var pathQ = u.pathname + u.search;
-      return /\/i\/api\/|graphql|HomeTimeline|HomeLatestTimeline|ForYou|SearchTimeline|UserTweets|UserMedia|TweetDetail/i.test(
-        pathQ
-      );
-    } catch (_) {
-      return false;
     }
   }
 
@@ -152,148 +140,64 @@
 
   var XDownload = {
     mediaMap: new Map(),
-    findParent: function (obj, targetKey) {
-      var result = [];
-      if (typeof obj === "object" && obj !== null) {
-        for (var key in obj) {
-          if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
-          if (key === targetKey) result.push(obj);
-          result = result.concat(this.findParent(obj[key], targetKey));
-        }
-      } else if (Array.isArray(obj)) {
-        for (var i = 0; i < obj.length; i++) result = result.concat(this.findParent(obj[i], targetKey));
-      }
-      return result;
-    },
-    ingestLegacyTweet: function (legacy) {
-      if (!legacy || !legacy.id_str) return;
-      var entityId = String(legacy.id_str);
-      var media =
-        (legacy.extended_entities && legacy.extended_entities.media) ||
-        (legacy.entities && legacy.entities.media) ||
-        [];
-      if (!media.length) return;
-      var text = (legacy.full_text || "").split("https://t.co")[0];
-      text = text ? String(text).trim().slice(0, 50) : entityId;
-      for (var mi = 0; mi < media.length; mi++) {
-        var m = media[mi];
-        if (!m || ["video", "animated_gif", "photo"].indexOf(m.type) < 0) continue;
-        var variants = (m.video_info && m.video_info.variants) || [];
-        var bestVideo = variants
-          .filter(function (v) {
-            return v && v.content_type === "video/mp4" && v.url;
-          })
-          .sort(function (a, b) {
-            return (b.bitrate || 0) - (a.bitrate || 0);
-          })[0];
-        var patch = { text: text };
-        if (bestVideo && bestVideo.url) patch.video = bestVideo.url;
-        if (m.media_url_https) patch.photo = m.media_url_https;
-        this.upsertMediaEntry(entityId, patch);
-      }
-      if (this.mediaMap.size > 300) {
-        var oldest = this.mediaMap.keys().next().value;
-        if (oldest) this.mediaMap.delete(oldest);
-      }
-    },
-    walkTweetGraph: function (node, depth, seen) {
-      if (!node || depth > 28) return;
-      if (typeof node !== "object") return;
-      if (seen.has(node)) return;
-      seen.add(node);
-      if (Array.isArray(node)) {
-        for (var i = 0; i < node.length; i++) this.walkTweetGraph(node[i], depth + 1, seen);
-        return;
-      }
-      if (node.legacy && node.legacy.id_str) this.ingestLegacyTweet(node.legacy);
-      if (node.tweet && node.tweet.legacy) this.ingestLegacyTweet(node.tweet.legacy);
-      if (node.tweet_results && node.tweet_results.result) this.walkTweetGraph(node.tweet_results.result, depth + 1, seen);
-      for (var k in node) {
-        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
-        if (k === "legacy" || k === "tweet" || k === "tweet_results") continue;
-        this.walkTweetGraph(node[k], depth + 1, seen);
-      }
-    },
-    extractMediaFromResponse: function (_url, responseText) {
-      try {
-        var data = JSON.parse(responseText);
-        this.walkTweetGraph(data, 0, new WeakSet());
-      } catch (_) {}
-    },
     upsertMediaEntry: function (entityId, patch) {
       if (!entityId) return;
-      var prev = this.mediaMap.get(entityId) || {
-        entityId: entityId,
+      var prev = this.mediaMap.get(String(entityId)) || {
+        entityId: String(entityId),
         video: null,
         photo: null,
-        text: entityId,
+        text: String(entityId),
       };
       if (patch.text) prev.text = patch.text;
       if (patch.video) prev.video = patch.video;
       if (patch.photo) prev.photo = patch.photo;
-      this.mediaMap.set(entityId, prev);
+      if (patch.id) prev.id = patch.id;
+      this.mediaMap.set(String(entityId), prev);
+      if (this.mediaMap.size > 400) {
+        var oldest = this.mediaMap.keys().next().value;
+        if (oldest) this.mediaMap.delete(oldest);
+      }
     },
-    hookFetch: function () {
-      if (window.__tbccXFeedFetchHooked) return;
-      window.__tbccXFeedFetchHooked = true;
-      var self = this;
-      var originalFetch = window.fetch.bind(window);
-      window.fetch = function (input, init) {
-        var reqUrl =
-          typeof input === "string"
-            ? input
-            : input && typeof input.url === "string"
-              ? input.url
-              : "";
-        noteGqlQueryId(reqUrl);
-        return originalFetch(input, init).then(function (response) {
-          if (shouldCaptureApiUrl(reqUrl)) {
-            try {
-              response
-                .clone()
-                .text()
-                .then(function (text) {
-                  self.extractMediaFromResponse(reqUrl, text);
-                })
-                .catch(function () {});
-            } catch (_) {}
+    ingestHookEntries: function (entries) {
+      if (!entries || !entries.length) return;
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (!e || !e.entityId) continue;
+        this.upsertMediaEntry(e.entityId, {
+          text: e.text,
+          video: e.video,
+          photo: e.photo,
+          id: e.id,
+        });
+      }
+    },
+    listenPageHook: function () {
+      if (window.__tbccXFeedHookListener) return;
+      window.__tbccXFeedHookListener = true;
+      window.addEventListener("message", function (ev) {
+        try {
+          if (ev.source !== window) return;
+          var d = ev.data;
+          if (!d || d.tbccXApiHook !== true) return;
+          if (d.gql && d.gql.op && d.gql.id) {
+            window.__tbccXGqlQueryIds = window.__tbccXGqlQueryIds || {};
+            window.__tbccXGqlQueryIds[d.gql.op] = d.gql.id;
           }
-          return response;
-        });
-      };
-    },
-    hookXHR: function () {
-      if (XMLHttpRequest.prototype.__tbccXFeedDlHooked) return;
-      XMLHttpRequest.prototype.__tbccXFeedDlHooked = true;
-      var self = this;
-      var originalOpen = XMLHttpRequest.prototype.open;
-      var originalSend = XMLHttpRequest.prototype.send;
-      XMLHttpRequest.prototype.open = function (method, url) {
-        this._tbccUrl = url;
-        noteGqlQueryId(url);
-        return originalOpen.apply(this, arguments);
-      };
-      XMLHttpRequest.prototype.send = function () {
-        this.addEventListener("load", function () {
-          var reqUrl = String(this._tbccUrl || "");
-          if (!shouldCaptureApiUrl(reqUrl)) return;
-          if (!this.response) return;
-          try {
-            if (this.responseType === "" || this.responseType === "text") {
-              self.extractMediaFromResponse(reqUrl, this.responseText);
-            }
-          } catch (_) {}
-        });
-        return originalSend.apply(this, arguments);
-      };
+          if (d.entries && d.entries.length) XDownload.ingestHookEntries(d.entries);
+        } catch (_) {}
+      });
     },
   };
 
   var XDownloadUI = {
+    showSensitive: true,
     extractStatusId: function (url) {
       if (!url) return null;
       var m = String(url).match(/\/status\/(\d+)/);
       return m ? m[1] : null;
+    },
+    uniqueArray: function (arr) {
+      return Array.from(new Set(arr.filter(Boolean)));
     },
     extFromUrl: function (url) {
       try {
@@ -312,19 +216,6 @@
         for (var i = 0; i < classes.length; i++) btn.classList.add(classes[i]);
       }
       if (title) btn.title = title;
-    },
-    primaryStatusId: function (article, statusIds) {
-      if (article) {
-        var timeEl = article.querySelector('a[href*="/status/"] time');
-        if (timeEl) {
-          var link = timeEl.closest("a");
-          if (link && link.href) {
-            var id = this.extractStatusId(link.href);
-            if (id) return id;
-          }
-        }
-      }
-      return statusIds && statusIds.length ? statusIds[0] : null;
     },
     extractMediaFromArticle: function (article, statusId) {
       if (!article) return null;
@@ -375,7 +266,9 @@
         XDownload.upsertMediaEntry(statusId, dom);
         return dom;
       }
-      var isVideoPost = article && article.querySelector('div[data-testid="videoComponent"], video, button[data-testid="playButton"]');
+      var isVideoPost =
+        article &&
+        article.querySelector('div[data-testid="videoComponent"], video, button[data-testid="playButton"]');
       if (!isVideoPost) return dom || mapped || null;
       if (article) {
         try {
@@ -410,48 +303,59 @@
       }
       return XDownload.mediaMap.get(statusId) || dom || null;
     },
-    clickDownload: async function (btn, statusIds, article) {
+    /** XEnhancer-parity primary path: mediaMap from GraphQL hook + chrome.downloads. */
+    clickDownloadEvent: async function (btn, statusIds, article) {
       var self = this;
-      var primary = this.primaryStatusId(article, statusIds);
-      if (!primary) {
+      var uniqueStatusIds = this.uniqueArray(statusIds);
+      if (!uniqueStatusIds.length) {
         this.setStatus(btn, ["failed"], "No tweet id on this post");
         return;
       }
       this.setStatus(btn, ["loading"], "Preparing download…");
+
       var tabId = await getCurrentTabId();
       var netBefore = (await getNetMp4sForTab(tabId)).length;
-      var media;
-      try {
-        media = await this.resolveMediaForStatus(article, primary, tabId, netBefore);
-      } catch (_) {
-        media = null;
-      }
-      if (!media) {
-        this.setStatus(btn, ["failed"], "No media URL — scroll post into view, play video once, retry");
-        return;
-      }
-      var filename = this.sanitizeFilename(media.text || media.entityId || primary);
-      var url = media.video;
-      if (!url && media.photo) url = upgradeTwitterPhotoUrl(media.photo) || media.photo;
-      if (!url || !isSafeTwimgUrl(url)) {
-        this.setStatus(
-          btn,
-          ["failed"],
-          media.video === null && article && article.querySelector("video")
-            ? "Play the video once so TBCC can capture the MP4, then retry"
-            : "Download failed — scroll post into view and retry"
-        );
-        return;
-      }
-      var ext = this.extFromUrl(url) || (media.video ? "mp4" : "jpg");
-      try {
+
+      var downloadPromises = uniqueStatusIds.map(async function (statusId) {
+        var media = XDownload.mediaMap.get(statusId);
+        if (!media || (!media.video && !media.photo)) {
+          media = await self.resolveMediaForStatus(article, statusId, tabId, netBefore);
+        }
+        if (!media || (!media.video && !media.photo)) {
+          throw new Error("Media data not found for status ID: " + statusId);
+        }
+        var filename = self.sanitizeFilename(media.text || media.entityId || statusId);
+        var url = media.video;
+        var defaultExt = "mp4";
+        if (!url && media.photo) {
+          url = upgradeTwitterPhotoUrl(media.photo) || media.photo;
+          defaultExt = "jpg";
+        }
+        if (!url || !isSafeTwimgUrl(url)) {
+          throw new Error("No safe media URL for " + statusId);
+        }
+        var ext = self.extFromUrl(url) || defaultExt;
         await chromeDownload(url, filename + "." + ext);
-        this.setStatus(btn, ["completed"], "Download complete");
+      });
+
+      try {
+        var results = await Promise.allSettled(downloadPromises);
+        var anySuccess = results.some(function (r) {
+          return r.status === "fulfilled";
+        });
+        if (anySuccess) {
+          this.setStatus(btn, ["completed"], "Download complete");
+        } else {
+          var firstErr =
+            (results[0] && results[0].reason && results[0].reason.message) ||
+            "Media not found — scroll timeline so X loads the post API, then retry";
+          this.setStatus(btn, ["failed"], String(firstErr).slice(0, 120));
+        }
       } catch (e) {
-        this.setStatus(btn, ["failed"], String((e && e.message) || "Download failed — retry after playing video"));
+        this.setStatus(btn, ["failed"], String((e && e.message) || "Download failed"));
       }
     },
-    addButtonToArticle: function (article) {
+    addButtonTo: function (article) {
       if (!article || article.dataset.tbccXFeedDl) return;
       article.dataset.tbccXFeedDl = "1";
       var statusIds = [];
@@ -460,46 +364,132 @@
         if (id && statusIds.indexOf(id) < 0) statusIds.push(id);
       });
       if (!statusIds.length) return;
-      var hasMedia = article.querySelector(
-        'a[href*="/photo/"], div[data-testid="videoComponent"], button[data-testid="playButton"], video, img[src*="twimg"]'
-      );
+
+      var mediaSelector = [
+        'a[href*="/photo/"]',
+        'div[role="progressbar"]',
+        'button[data-testid="playButton"]',
+        'div[data-testid="videoComponent"]',
+        'a[href="/settings/content_you_see"]',
+        "div.media-image-container",
+        "div.media-preview-container",
+        'div[aria-labelledby]>div:first-child>div[role="button"][tabindex="0"]',
+        'img[src*="twimg"]',
+        "video",
+      ].join(",");
+      var hasMedia = article.querySelector(mediaSelector);
       if (!hasMedia) return;
-      var btnGroup =
-        article.querySelector('div[role="group"]') ||
-        article.querySelector('[data-testid="tweet"] div[role="group"]') ||
-        article.querySelector('div[aria-label][role="group"]');
-      if (!btnGroup) return;
-      var btnShare =
-        article.querySelector('[data-testid="share"]') ||
-        article.querySelector('button[aria-label*="Share" i]') ||
-        btnGroup.querySelector(":scope > div:last-child");
-      if (!btnShare) return;
-      var btnDownload = btnShare.cloneNode(true);
-      btnDownload.style.marginLeft = "10px";
-      var innerBtn = btnDownload.querySelector("button");
-      if (innerBtn) innerBtn.removeAttribute("disabled");
-      var svg = btnDownload.querySelector("svg");
-      if (svg) svg.innerHTML = SVG;
-      this.setStatus(btnDownload, ["x-master-dl", "download"], "Download media");
-      if (btnShare.parentElement === btnGroup) {
-        btnGroup.insertBefore(btnDownload, btnShare.nextSibling);
-      } else {
-        btnGroup.appendChild(btnDownload);
+
+      var btnGroup = article.querySelector(
+        'div[role="group"]:last-of-type, ul.tweet-actions, ul.tweet-detail-actions'
+      );
+      if (!btnGroup) {
+        btnGroup =
+          article.querySelector('div[role="group"]') ||
+          article.querySelector('[data-testid="tweet"] div[role="group"]');
       }
-      btnDownload.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        void XDownloadUI.clickDownload(btnDownload, statusIds, article);
+      if (btnGroup) {
+        var shareCandidates = btnGroup.querySelectorAll(
+          ':scope > div > div, li.tweet-action-item > a, li.tweet-detail-action-item > a'
+        );
+        var btnShare = null;
+        if (shareCandidates.length) {
+          btnShare = shareCandidates[shareCandidates.length - 1].parentNode;
+        } else {
+          btnShare =
+            article.querySelector('[data-testid="share"]') ||
+            article.querySelector('button[aria-label*="Share" i]') ||
+            btnGroup.querySelector(":scope > div:last-child");
+        }
+        if (btnShare) {
+          var btnDownload = btnShare.cloneNode(true);
+          btnDownload.style.marginLeft = "10px";
+          var innerBtn = btnDownload.querySelector("button");
+          if (innerBtn) innerBtn.removeAttribute("disabled");
+          var svg = btnDownload.querySelector("svg");
+          if (svg) svg.innerHTML = SVG;
+          this.setStatus(btnDownload, ["x-master-dl", "download"], "Download media");
+          if (btnShare.parentElement === btnGroup) {
+            btnGroup.insertBefore(btnDownload, btnShare.nextSibling);
+          } else {
+            btnGroup.appendChild(btnDownload);
+          }
+          btnDownload.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            void XDownloadUI.clickDownloadEvent(btnDownload, statusIds, article);
+          });
+          if (this.showSensitive) {
+            try {
+              var sens = article.querySelector(
+                'div[aria-labelledby] div[role="button"][tabindex="0"]:not([data-testid]) > div[dir] > span > span'
+              );
+              if (sens) sens.click();
+            } catch (_) {}
+          }
+        }
+      }
+
+      var imgs = article.querySelectorAll('a[href*="/photo/"]');
+      if (imgs.length > 1) {
+        imgs.forEach(function (img) {
+          var imgStatusId = XDownloadUI.extractStatusId(img.href);
+          if (!imgStatusId || (img.parentNode && img.parentNode.querySelector(".x-master-dl.tmd-img"))) return;
+          var btnImg = document.createElement("div");
+          btnImg.style.cssText = "position: absolute; top: 0; right: 0; z-index: 10; margin: 5px;";
+          btnImg.innerHTML =
+            '<div><div><svg viewBox="0 0 20 20" width="15" height="15">' + SVG + "</svg></div></div>";
+          XDownloadUI.setStatus(btnImg, ["x-master-dl", "tmd-img", "download"], "Download image");
+          if (img.parentNode) {
+            var parent = img.parentNode;
+            if (!parent.style.position || parent.style.position === "static") {
+              parent.style.position = "relative";
+            }
+            parent.appendChild(btnImg);
+          }
+          btnImg.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            void XDownloadUI.clickDownloadEvent(btnImg, [imgStatusId], article);
+          });
+        });
+      }
+    },
+    addButtonToMedia: function (listitems) {
+      var self = this;
+      listitems.forEach(function (li) {
+        if (!li || li.dataset.tbccXFeedDl) return;
+        li.dataset.tbccXFeedDl = "1";
+        var statusElement = li.querySelector('a[href*="/status/"]');
+        var statusId = statusElement ? self.extractStatusId(statusElement.href) : null;
+        if (!statusId) return;
+        var btnDownload = document.createElement("div");
+        btnDownload.innerHTML =
+          '<div><div><svg viewBox="0 0 20 20" width="15" height="15">' + SVG + "</svg></div></div>";
+        self.setStatus(btnDownload, ["x-master-dl", "tmd-media", "download"], "Download media");
+        li.appendChild(btnDownload);
+        btnDownload.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          var article = li.closest("article") || document.querySelector("article");
+          void self.clickDownloadEvent(btnDownload, [statusId], article);
+        });
       });
     },
     detect: function (node) {
       if (!node || node.nodeType !== 1) return;
-      if (node.tagName === "ARTICLE") this.addButtonToArticle(node);
-      if (node.querySelectorAll) {
-        node.querySelectorAll("article").forEach(function (a) {
-          XDownloadUI.addButtonToArticle(a);
-        });
+      var article =
+        (node.tagName === "ARTICLE" && node) ||
+        (node.tagName === "DIV" && (node.querySelector("article") || node.closest("article")));
+      if (article) this.addButtonTo(article);
+
+      var listitems = null;
+      if (node.tagName === "LI" && node.getAttribute("role") === "listitem") {
+        listitems = [node];
+      } else if (node.querySelectorAll) {
+        listitems = node.querySelectorAll('li[role="listitem"]');
       }
+      if (listitems && listitems.length) this.addButtonToMedia(listitems);
     },
     startObserver: function () {
       if (this._obs) return;
@@ -516,7 +506,10 @@
       if (root) {
         this._obs.observe(root, { childList: true, subtree: true });
         root.querySelectorAll("article").forEach(function (a) {
-          self.addButtonToArticle(a);
+          self.addButtonTo(a);
+        });
+        root.querySelectorAll('li[role="listitem"]').forEach(function (li) {
+          self.addButtonToMedia([li]);
         });
       }
     },
@@ -528,7 +521,7 @@
       document.querySelectorAll(".x-master-dl").forEach(function (el) {
         el.remove();
       });
-      document.querySelectorAll("article[data-tbcc-x-feed-dl]").forEach(function (el) {
+      document.querySelectorAll("[data-tbcc-x-feed-dl]").forEach(function (el) {
         delete el.dataset.tbccXFeedDl;
       });
     },
@@ -536,11 +529,11 @@
 
   function bootUI() {
     injectStyles();
+    XDownload.listenPageHook();
     XDownloadUI.startObserver();
   }
 
-  XDownload.hookXHR();
-  XDownload.hookFetch();
+  XDownload.listenPageHook();
 
   if (typeof tbccWaitForModule === "function") {
     tbccWaitForModule("x_profile_gallery", bootUI);

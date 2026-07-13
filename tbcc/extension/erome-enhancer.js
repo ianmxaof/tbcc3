@@ -12,6 +12,12 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     minVideoSeconds: 0,
     showLikes: true,
     enableSorting: true,
+    titleInclude: '',
+    titleExclude: '',
+    /** Like + Repost controls on explore/search thumbnails (no album open). */
+    gridLikeRepost: true,
+    /** Album page: surface video source URLs + one-click → ThisVid direct-link upload. */
+    videoThisVidBridge: true,
   };
   const INTEL_KEY = 'eromeBrowseIntelRows';
   const INTEL_META_KEY = 'eromeBrowseIntelMeta';
@@ -386,6 +392,78 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       z-index: 11;
       box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     }
+    .ee-album-actions {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      z-index: 20;
+      display: flex;
+      gap: 6px;
+      pointer-events: auto;
+    }
+    .ee-album-actions .ee-act {
+      border: none;
+      border-radius: 999px;
+      min-width: 36px;
+      height: 36px;
+      cursor: pointer;
+      background: rgba(0,0,0,.72);
+      color: #fff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,.45);
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 8px;
+      gap: 3px;
+    }
+    .ee-album-actions .ee-act:hover { background: rgba(235,99,149,.95); }
+    .ee-album-actions .ee-act.on { background: #eb6395; }
+    .ee-album-actions .ee-act:disabled { opacity: .55; cursor: wait; }
+    .ee-album-actions .ee-act .ee-act-n {
+      font-size: 10px; font-weight: 700; max-width: 32px; overflow: hidden;
+    }
+    .ee-toast {
+      position: fixed; z-index: 1000001; left: 50%; bottom: 24px; transform: translateX(-50%);
+      background: rgba(20,20,20,.94); color: #eee; border: 1px solid #444; border-radius: 8px;
+      padding: 10px 14px; font: 13px/1.3 system-ui, sans-serif; pointer-events: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,.4);
+    }
+    .ee-vid-bridge {
+      margin: 8px 0 12px; padding: 8px 10px; background: #2a2a2a; border: 1px solid #444;
+      border-radius: 8px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      font: 12px/1.3 system-ui, sans-serif; color: #ddd;
+    }
+    .ee-vid-bridge a.ee-vid-src {
+      color: #7ec8e3; word-break: break-all; max-width: 100%;
+    }
+    .ee-vid-bridge .ee-vid-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ee-vid-bridge button {
+      background: #333; color: #eee; border: 1px solid #555; border-radius: 6px;
+      padding: 5px 10px; cursor: pointer; font-weight: 600;
+    }
+    .ee-vid-bridge button.ee-tv { background: #eb6395; border-color: #eb6395; color: #fff; }
+    .ee-vid-bridge button:hover { filter: brightness(1.08); }
+    #ee-title-filter-bar {
+      position: fixed; z-index: 99990; left: 12px; bottom: 16px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      max-width: min(520px, calc(100vw - 24px));
+      padding: 10px 12px; background: rgba(30,30,30,.94); color: #ddd;
+      border: 1px solid #444; border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45); font: 12px/1.3 system-ui, sans-serif;
+    }
+    #ee-title-filter-bar label { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; color: #aaa; }
+    #ee-title-filter-bar input {
+      background: #222; border: 1px solid #555; color: #eee; border-radius: 6px;
+      padding: 6px 8px; width: 100%;
+    }
+    #ee-title-filter-bar .ee-tf-hint { width: 100%; color: #777; font-size: 11px; }
+    #ee-title-filter-bar button {
+      background: #333; color: #eee; border: 1px solid #555; border-radius: 6px;
+      padding: 6px 10px; cursor: pointer; align-self: flex-end;
+    }
+    .album.ee-title-filtered { display: none !important; }
     .ee-deleted-overlay {
       top: 0; left: 0; right: 0; bottom: 0;
       width: 100%; height: 100%;
@@ -888,6 +966,8 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
           likeDisplay.innerHTML = `<i class="fas fa-heart fa-lg" style="color:#eb6395;margin-right:4px;"></i><span style="font-weight:600;">${count}</span>`;
           bottomRight.appendChild(likeDisplay);
         }
+        const nEl = albumEl.querySelector('.ee-like-n');
+        if (nEl) nEl.textContent = String(count);
       }
     } catch (err) {
       if (err.message === 'ALBUM_DELETED') markAsDeleted(albumEl);
@@ -929,6 +1009,165 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
         setTimeout(() => addLikeCount(album), index * 100);
       }
     });
+  }
+
+  /* ---------- Grid Like / Repost (no album open) ---------- */
+  function csrfToken() {
+    return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+  }
+
+  function albumIdFromEl(albumEl) {
+    const href =
+      albumEl.querySelector(SELECTORS.albumLink)?.href ||
+      albumEl.querySelector('a[href*="/a/"]')?.href ||
+      '';
+    return albumIdFromUrl(href);
+  }
+
+  function showEeToast(msg) {
+    document.querySelectorAll('.ee-toast').forEach((el) => el.remove());
+    const el = document.createElement('div');
+    el.className = 'ee-toast';
+    el.textContent = msg;
+    document.documentElement.appendChild(el);
+    setTimeout(() => el.remove(), 2800);
+  }
+
+  async function postAlbumLike(albumId) {
+    const token = csrfToken();
+    const res = await fetch(`/album/like/${encodeURIComponent(albumId)}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRF-TOKEN': token,
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  }
+
+  async function postAlbumRepost(albumId) {
+    const token = csrfToken();
+    const res = await fetch('/album/repost', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRF-TOKEN': token,
+      },
+      body: `id=${encodeURIComponent(albumId)}`,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok || data.status === 'success', status: res.status, data };
+  }
+
+  function addAlbumActionButtons(albumEl) {
+    if (!settings.gridLikeRepost || location.pathname.startsWith('/a/')) return;
+    if (albumEl.dataset.eeActionsMounted) return;
+    const thumb = albumEl.querySelector(SELECTORS.albumThumbnail);
+    const albumId = albumIdFromEl(albumEl);
+    if (!thumb || !albumId) return;
+    albumEl.dataset.eeActionsMounted = '1';
+    if (!thumb.style.position || thumb.style.position === 'static') {
+      thumb.style.position = 'relative';
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'ee-album-actions';
+    wrap.innerHTML = `
+      <button type="button" class="ee-act ee-like" title="Like" aria-label="Like">
+        <i class="fas fa-heart"></i><span class="ee-act-n ee-like-n"></span>
+      </button>
+      <button type="button" class="ee-act ee-repost" title="Repost" aria-label="Repost">
+        <i class="fas fa-retweet"></i><span class="ee-act-n ee-repost-n"></span>
+      </button>
+    `;
+
+    const stop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    wrap.addEventListener('click', stop);
+    wrap.addEventListener('mousedown', stop);
+
+    const likeBtn = wrap.querySelector('.ee-like');
+    const repostBtn = wrap.querySelector('.ee-repost');
+    const likeN = wrap.querySelector('.ee-like-n');
+    const repostN = wrap.querySelector('.ee-repost-n');
+
+    // Seed count from existing display / dataset when available
+    const seedLikes = albumEl.dataset.likeCount || albumEl.querySelector('.album-likes-display span:last-child')?.textContent;
+    if (seedLikes && String(seedLikes).trim() !== '0') likeN.textContent = String(seedLikes).trim();
+
+    likeBtn.addEventListener('click', async (e) => {
+      stop(e);
+      if (likeBtn.disabled) return;
+      likeBtn.disabled = true;
+      try {
+        const { ok, status, data } = await postAlbumLike(albumId);
+        if (status === 401 || data?.error === 'Unauthenticated.' || /login/i.test(data?.msg || '')) {
+          showEeToast('Sign in to Erome to like albums');
+          return;
+        }
+        if (!ok && data?.error) {
+          showEeToast(String(data.error));
+          return;
+        }
+        likeBtn.classList.add('on');
+        const next =
+          data?.likes ??
+          data?.count ??
+          data?.like_count ??
+          (parseInt(likeN.textContent || albumEl.dataset.likeCount || '0', 10) || 0) + 1;
+        likeN.textContent = String(next);
+        albumEl.dataset.likeCount = String(next);
+        const disp = albumEl.querySelector('.album-likes-display span:last-child');
+        if (disp) disp.textContent = String(next);
+        showEeToast(data?.msg || 'Liked');
+      } catch (err) {
+        showEeToast('Like failed');
+        console.warn('[EE] like failed', err);
+      } finally {
+        likeBtn.disabled = false;
+      }
+    });
+
+    repostBtn.addEventListener('click', async (e) => {
+      stop(e);
+      if (repostBtn.disabled) return;
+      repostBtn.disabled = true;
+      try {
+        const { ok, data } = await postAlbumRepost(albumId);
+        if (data?.status === 'error' || /login|register/i.test(data?.msg || '')) {
+          showEeToast(data?.msg || 'Sign in to Erome to repost');
+          return;
+        }
+        if (!ok && data?.status !== 'success') {
+          showEeToast(data?.msg || 'Repost failed');
+          return;
+        }
+        repostBtn.classList.add('on');
+        const n = parseInt(repostN.textContent || '0', 10) || 0;
+        repostN.textContent = String(n + 1);
+        showEeToast(data?.msg || 'Reposted');
+      } catch (err) {
+        showEeToast('Repost failed');
+        console.warn('[EE] repost failed', err);
+      } finally {
+        repostBtn.disabled = false;
+      }
+    });
+
+    thumb.appendChild(wrap);
+  }
+
+  function processAlbumActions(container = document) {
+    if (location.pathname.startsWith('/a/') || settings.gridLikeRepost === false) return;
+    container.querySelectorAll('.album').forEach((album) => addAlbumActionButtons(album));
   }
 
   /* ---------- Rate Limit Handling ---------- */
@@ -1006,6 +1245,38 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
   function markAsDeleted(albumEl) { createOverlay('deleted', albumEl); }
 
   /* ---------- Grid Filtering ---------- */
+  function parseTitleKeywords(raw) {
+    return String(raw || '')
+      .toLowerCase()
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function albumTitleText(albumEl) {
+    const link = albumEl.querySelector(SELECTORS.albumLink) || albumEl.querySelector('a');
+    const bits = [
+      link?.getAttribute('title'),
+      albumEl.querySelector('.album-title, .album-bottom-title, .title')?.textContent,
+      albumEl.querySelector('img')?.getAttribute('alt'),
+      link?.textContent,
+    ];
+    return bits
+      .map((b) => String(b || '').trim())
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+  }
+
+  function matchesTitleKeywords(albumEl) {
+    const title = albumTitleText(albumEl);
+    const exclude = parseTitleKeywords(settings.titleExclude);
+    if (exclude.some((k) => title.includes(k))) return false;
+    const include = parseTitleKeywords(settings.titleInclude);
+    if (include.length && !include.every((k) => title.includes(k))) return false;
+    return true;
+  }
+
   function matchesFilter(albumEl) {
     const videoSpan = albumEl.querySelector(SELECTORS.albumVideos);
     const imageSpan = albumEl.querySelector(SELECTORS.albumImages);
@@ -1015,12 +1286,29 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     const url = anchor?.href;
 
     if (settings.hideViewed && url && viewedAlbums.includes(url)) return false;
+    if (!matchesTitleKeywords(albumEl)) return false;
 
     switch (settings.filterMode) {
-      case 'videos': return vCount > 0;
-      case 'images': return iCount > 0 && vCount === 0;
-      default: return true;
+      case 'videos':
+        return vCount > 0;
+      case 'images':
+        return iCount > 0 && vCount === 0;
+      default:
+        return true;
     }
+  }
+
+  function applyTitleKeywordVisibility() {
+    const container = document.querySelector(SELECTORS.albums);
+    if (!container) return;
+    container.querySelectorAll('.album').forEach((album) => {
+      const ok = matchesFilter(album);
+      album.classList.toggle('ee-title-filtered', !ok);
+      if (ok) {
+        fixLazyImages(album);
+        markAlbumClick(album);
+      }
+    });
   }
 
   function markAlbumClick(albumEl) {
@@ -1046,13 +1334,53 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     if (!container) return;
     const albums = Array.from(container.querySelectorAll('.album'));
     tagOriginalOrder(albums);
-    albums.forEach(album => {
+    albums.forEach((album) => {
       if (!matchesFilter(album)) {
-        album.remove();
+        album.classList.add('ee-title-filtered');
       } else {
+        album.classList.remove('ee-title-filtered');
         fixLazyImages(album);
         markAlbumClick(album);
       }
+    });
+  }
+
+  function mountTitleFilterBar() {
+    if (location.pathname.startsWith('/a/') || document.getElementById('ee-title-filter-bar')) return;
+    if (!document.querySelector(SELECTORS.albums)) return;
+
+    const bar = document.createElement('div');
+    bar.id = 'ee-title-filter-bar';
+    bar.innerHTML = `
+      <label>Include (all must match)<input type="text" id="eeTitleInclude" placeholder="e.g. milf blonde" autocomplete="off"></label>
+      <label>Exclude (hide if any)<input type="text" id="eeTitleExclude" placeholder="e.g. gay" autocomplete="off"></label>
+      <button type="button" id="eeTitleFilterClear">Clear</button>
+      <div class="ee-tf-hint">Refines album titles on this grid (space/comma separated). Does not change Erome’s search URL.</div>
+    `;
+    document.body.appendChild(bar);
+
+    const includeEl = bar.querySelector('#eeTitleInclude');
+    const excludeEl = bar.querySelector('#eeTitleExclude');
+    includeEl.value = settings.titleInclude || '';
+    excludeEl.value = settings.titleExclude || '';
+
+    let t = null;
+    const applyLive = () => {
+      settings.titleInclude = includeEl.value.trim();
+      settings.titleExclude = excludeEl.value.trim();
+      saveSettings();
+      applyTitleKeywordVisibility();
+    };
+    const onInput = () => {
+      clearTimeout(t);
+      t = setTimeout(applyLive, 250);
+    };
+    includeEl.addEventListener('input', onInput);
+    excludeEl.addEventListener('input', onInput);
+    bar.querySelector('#eeTitleFilterClear').addEventListener('click', () => {
+      includeEl.value = '';
+      excludeEl.value = '';
+      applyLive();
     });
   }
 
@@ -1154,6 +1482,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
         
         const addedAlbums = Array.from(container.querySelectorAll('.album')).slice(-addedCount);
         addedAlbums.forEach(album => markAlbumClick(album));
+        processAlbumActions(container);
         
         showLoadingIndicator();
         processingQueue = true;
@@ -1211,6 +1540,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     const groups = getMediaGroups();
     if (!groups.length) {
       updateHiddenCounter(0);
+      publishAlbumVideoUrls();
       return;
     }
     let hidden = 0;
@@ -1228,6 +1558,88 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       }
     });
     updateHiddenCounter(hidden);
+    publishAlbumVideoUrls();
+  }
+
+  /* ---------- Album video sources → ThisVid direct-link upload ---------- */
+  const THISVID_PENDING_KEY = 'tbccThisVidPendingUpload';
+  const THISVID_UPLOAD_URL = 'https://www.thisvid.com/upload.php';
+
+  function collectVideoSources(videoEl) {
+    const sources = Array.from(videoEl.querySelectorAll('source')).filter((s) => s && s.src);
+    if (!sources.length && videoEl.src && !/^blob:/i.test(videoEl.src)) {
+      return [{ src: videoEl.src, label: '' }];
+    }
+    return sources.map((s) => ({
+      src: s.src,
+      label: String(s.getAttribute('label') || s.getAttribute('data-quality') || '').trim(),
+    }));
+  }
+
+  function pickBestVideoSrc(entries) {
+    if (!entries || !entries.length) return '';
+    const hd = entries.find((e) => /hd|1080|720/i.test(e.label));
+    if (hd) return hd.src;
+    const mp4 = entries.find((e) => /\.mp4(\?|#|$)/i.test(e.src));
+    return (mp4 || entries[0]).src;
+  }
+
+  function albumTitleHint() {
+    const h =
+      document.querySelector('h1')?.textContent ||
+      document.querySelector('.album-title')?.textContent ||
+      document.title ||
+      '';
+    return String(h).replace(/\s+/g, ' ').trim().slice(0, 120);
+  }
+
+  function sendVideoToThisVid(srcUrl) {
+    const payload = {
+      url: srcUrl,
+      title: albumTitleHint(),
+      albumUrl: location.href.split('#')[0],
+      ts: Date.now(),
+    };
+    const openUpload = () => {
+      window.open(THISVID_UPLOAD_URL, '_blank');
+      showEeToast('Opening ThisVid upload — URL will auto-fill');
+    };
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ [THISVID_PENDING_KEY]: payload }, openUpload);
+        return;
+      }
+    } catch (_) {}
+    try {
+      localStorage.setItem(THISVID_PENDING_KEY, JSON.stringify(payload));
+    } catch (_) {}
+    openUpload();
+  }
+
+  function publishAlbumVideoUrls() {
+    if (!location.pathname.startsWith('/a/') || settings.videoThisVidBridge === false) {
+      window.__tbccEromeAlbumVideos = [];
+      return;
+    }
+    const list = [];
+    document.querySelectorAll('video').forEach((videoEl, i) => {
+      const entries = collectVideoSources(videoEl);
+      const best = pickBestVideoSrc(entries);
+      if (!best) return;
+      list.push({
+        index: list.length + 1,
+        url: best,
+        sources: entries.map((e) => e.src).filter(Boolean),
+        title: albumTitleHint(),
+      });
+    });
+    window.__tbccEromeAlbumVideos = list;
+    window.__tbccEromeSendToThisVid = sendVideoToThisVid;
+    try {
+      window.dispatchEvent(new CustomEvent('tbcc-erome-album-videos', { detail: { videos: list } }));
+    } catch (_) {}
+    // Remove any leftover inline bars from earlier builds (insertBefore used to crash).
+    document.querySelectorAll('.ee-vid-bridge').forEach((el) => el.remove());
   }
 
   function observeAlbumChanges() {
@@ -1269,7 +1681,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.id = 'enhancerModal';
-    modal.innerHTML = `<div class="modal-dialog"><div class="modal-content" style="background:#2b2b2b;color:#fff;"><div class="modal-header" style="border-bottom:1px solid #444;padding:20px 25px 15px;"><button type="button" class="close" data-dismiss="modal" style="color:#fff;opacity:0.8;font-size:24px;margin-top:-5px;">×</button><h4 class="modal-title" style="font-weight:600;font-size:18px;"><i class="fa fa-sliders" style="margin-right:10px;color:#eb6395;"></i>Erome Enhancer Settings</h4></div><div class="modal-body" style="padding:25px;"><div class="settings-section"><div class="section-header"><i class="fa fa-th-large" style="margin-right:8px;"></i>Grid View Filters</div><div class="section-content"><div class="form-group"><label class="control-label">Content Filter</label><select id="filterMode" class="form-control"><option value="all">Show All Albums</option><option value="videos">Videos Only</option><option value="images">Images Only (No Videos)</option></select></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="autoScroll"> Auto-load pages (infinite scroll)</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="hideViewed"> Hide viewed albums</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="showLikes"> Show like counts on albums</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="enableSorting"> Enable album sorting controls</label></div></div></div></div>
+    modal.innerHTML = `<div class="modal-dialog"><div class="modal-content" style="background:#2b2b2b;color:#fff;"><div class="modal-header" style="border-bottom:1px solid #444;padding:20px 25px 15px;"><button type="button" class="close" data-dismiss="modal" style="color:#fff;opacity:0.8;font-size:24px;margin-top:-5px;">×</button><h4 class="modal-title" style="font-weight:600;font-size:18px;"><i class="fa fa-sliders" style="margin-right:10px;color:#eb6395;"></i>Erome Enhancer Settings</h4></div><div class="modal-body" style="padding:25px;"><div class="settings-section"><div class="section-header"><i class="fa fa-th-large" style="margin-right:8px;"></i>Grid View Filters</div><div class="section-content"><div class="form-group"><label class="control-label">Content Filter</label><select id="filterMode" class="form-control"><option value="all">Show All Albums</option><option value="videos">Videos Only</option><option value="images">Images Only (No Videos)</option></select></div><div class="form-group"><label class="control-label">Title include (all must match)</label><input type="text" id="titleInclude" class="form-control" placeholder="e.g. milf blonde"></div><div class="form-group"><label class="control-label">Title exclude (hide if any match)</label><input type="text" id="titleExclude" class="form-control" placeholder="e.g. gay"></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="autoScroll"> Auto-load pages (infinite scroll)</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="hideViewed"> Hide viewed albums</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="showLikes"> Show like counts on albums</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="gridLikeRepost"> Like + Repost on gallery thumbnails</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="videoThisVidBridge"> Album: publish video URLs to FAB Videos tab</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="enableSorting"> Enable album sorting controls</label></div></div></div></div>
 <div class="settings-section"><div class="section-header"><i class="fa fa-bar-chart" style="margin-right:8px;"></i>Browse Intel (v4)</div><div class="section-content" style="background:#333;padding:20px;border-radius:8px;border:1px solid #444;"><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="recordIntel"> Record browse intel while loading likes</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="showTransportOverlay"> Show transport overlay (live intel + Playwright)</label></div></div><div class="form-group"><label class="control-label">Max intel rows (localStorage)</label><input type="number" id="maxIntelRows" class="form-control" min="500" max="50000" value="5000"></div><div class="form-group"><label class="control-label">TBCC ingest URL (optional)</label><input type="text" id="tbccApiUrl" class="form-control" placeholder="http://127.0.0.1:8000/analytics/erome-browse-intel"></div><div class="ee-action-buttons"><button type="button" id="exportIntel" class="btn btn-default ee-action-btn"><i class="fa fa-download"></i> Export JSONL</button><button type="button" id="pushIntelTbcc" class="btn btn-default ee-action-btn"><i class="fa fa-upload"></i> Push to TBCC</button><button type="button" id="showIntelSummary" class="btn btn-default ee-action-btn"><i class="fa fa-list"></i> Summary</button><button type="button" id="clearIntel" class="btn btn-default ee-action-btn"><i class="fa fa-trash"></i> Clear Intel</button></div><pre id="intelSummaryBox" class="ee-intel-summary" hidden></pre></div></div><hr style="border-color:#444;margin:25px 0;">
 <div class="settings-section"><div class="section-header"><i class="fa fa-clock-o" style="margin-right:8px;"></i>Video Duration Filter</div><div class="section-content" style="background:#333;padding:20px;border-radius:8px;margin-top:12px;border:1px solid #444;"><div class="form-group" style="margin-bottom:20px;"><label class="control-label" style="font-size:14px;color:#ddd;font-weight:500;"><i class="fa fa-filter" style="margin-right:6px;"></i>Minimum Average Video Duration</label><div style="display:flex;align-items:center;gap:12px;margin-top:8px;"><input type="number" id="minVideoSeconds" class="form-control" min="0" placeholder="0 = disabled" style="flex:1;background:#444;border:1px solid #555;color:#fff;"><span style="color:#888;font-size:13px;white-space:nowrap;font-weight:500;">seconds</span></div><div style="font-size:12px;color:#777;margin-top:8px;line-height:1.4;"><i class="fa fa-info-circle" style="margin-right:5px;"></i>Hide albums where the average video duration is shorter than this</div></div><div style="background:#3a3a3a;padding:12px 15px;border-radius:6px;margin-top:15px;border-left:3px solid #eb6395;"><div style="font-size:12px;color:#999;display:flex;align-items:center;"><i class="fa fa-exclamation-circle" style="margin-right:8px;font-size:14px;"></i><span>Applies to both grid pages and individual album pages</span></div></div><div class="ee-action-buttons"><button id="clearViewed" class="btn btn-default ee-action-btn"><i class="fa fa-trash" style="margin-right:6px;"></i>Clear Viewed</button><button id="resetDurationFilter" class="btn btn-default ee-action-btn"><i class="fa fa-refresh" style="margin-right:6px;"></i>Reset Duration</button></div></div></div></div><div class="modal-footer" style="border-top:1px solid #444;padding:20px 25px;"><button id="saveEnhancer" class="btn btn-primary" style="background:#eb6395 !important;border-color:#eb6395 !important;color:#fff !important;font-weight:600;padding:10px 20px;width:100%;"><i class="fa fa-check" style="margin-right:8px;"></i>Apply Settings</button></div></div></div>`;
     document.body.appendChild(modal);
@@ -1277,9 +1689,13 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     anchor.addEventListener('click', e => {
       e.preventDefault();
       document.getElementById('filterMode').value = settings.filterMode;
+      document.getElementById('titleInclude').value = settings.titleInclude || '';
+      document.getElementById('titleExclude').value = settings.titleExclude || '';
       document.getElementById('autoScroll').checked = settings.autoScroll;
       document.getElementById('hideViewed').checked = settings.hideViewed;
       document.getElementById('showLikes').checked = settings.showLikes;
+      document.getElementById('gridLikeRepost').checked = settings.gridLikeRepost !== false;
+      document.getElementById('videoThisVidBridge').checked = settings.videoThisVidBridge !== false;
       document.getElementById('enableSorting').checked = settings.enableSorting;
       document.getElementById('minVideoSeconds').value = settings.minVideoSeconds || 0;
       document.getElementById('recordIntel').checked = intelMeta.recordIntel !== false;
@@ -1297,9 +1713,13 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
 
     modal.querySelector('#saveEnhancer').addEventListener('click', () => {
       settings.filterMode = document.getElementById('filterMode').value;
+      settings.titleInclude = (document.getElementById('titleInclude').value || '').trim();
+      settings.titleExclude = (document.getElementById('titleExclude').value || '').trim();
       settings.autoScroll = document.getElementById('autoScroll').checked;
       settings.hideViewed = document.getElementById('hideViewed').checked;
       settings.showLikes = document.getElementById('showLikes').checked;
+      settings.gridLikeRepost = document.getElementById('gridLikeRepost').checked;
+      settings.videoThisVidBridge = document.getElementById('videoThisVidBridge').checked;
       settings.enableSorting = document.getElementById('enableSorting').checked;
       settings.minVideoSeconds = parseInt(document.getElementById('minVideoSeconds').value) || 0;
       saveSettings();
@@ -1323,8 +1743,21 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
         modal.classList.remove('show');
       }
       setTimeout(() => {
-        location.pathname.startsWith('/a/') ? applyAlbumEnhancements() : location.reload();
-      }, 300);
+        if (location.pathname.startsWith('/a/')) {
+          applyAlbumEnhancements();
+        } else {
+          const barInc = document.getElementById('eeTitleInclude');
+          const barExc = document.getElementById('eeTitleExclude');
+          if (barInc) barInc.value = settings.titleInclude || '';
+          if (barExc) barExc.value = settings.titleExclude || '';
+          applyTitleKeywordVisibility();
+          document.querySelectorAll('.ee-album-actions').forEach((el) => el.remove());
+          document.querySelectorAll('.album').forEach((a) => {
+            delete a.dataset.eeActionsMounted;
+          });
+          if (settings.gridLikeRepost) processAlbumActions();
+        }
+      }, 200);
     });
 
     modal.querySelector('#clearViewed').addEventListener('click', clearViewed);
@@ -1417,9 +1850,11 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       }, 2000);
     } else {
       applyInitialFilter();
+      mountTitleFilterBar();
       addSortingControls();
       setTimeout(() => setupInfiniteScroll(), 1000);
       setTimeout(() => processLikesForAlbums(), 500);
+      setTimeout(() => processAlbumActions(), 300);
     }
     addSettingsUI();
     updateIntelCountBadge();

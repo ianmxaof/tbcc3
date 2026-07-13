@@ -4840,12 +4840,12 @@ async function loadXProfileLoomsSettings() {
     return {
       idleThreads: 2,
       browseThreads: 4,
-      downloadThreads: 4,
-      timeoutSec: 9,
+      downloadThreads: 8,
+      timeoutSec: 20,
       ...(raw && typeof raw === "object" ? raw : {}),
     };
   } catch (_) {
-    return { idleThreads: 2, browseThreads: 4, downloadThreads: 4, timeoutSec: 9 };
+    return { idleThreads: 2, browseThreads: 4, downloadThreads: 8, timeoutSec: 20 };
   }
 }
 
@@ -5910,19 +5910,57 @@ function tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts) {
   });
 }
 
+function resolveZipBundleProfileName(opts, selected) {
+  const rows = Array.isArray(selected) ? selected : [];
+  const fetchOpts = (opts && opts.zipFetchOpts) || opts || {};
+  if (fetchOpts.profileName && String(fetchOpts.profileName).trim() && !/^media$/i.test(fetchOpts.profileName)) {
+    return String(fetchOpts.profileName).trim();
+  }
+  for (let i = 0; i < rows.length; i++) {
+    const n = rows[i] && rows[i].tbccZipProfileName;
+    if (n && String(n).trim() && !/^media$/i.test(n)) return String(n).trim();
+  }
+  const sourceUrl =
+    fetchOpts.sourceUrl ||
+    (opts && opts.sourceUrl) ||
+    (rows[0] && rows[0].tbccSourcePageUrl) ||
+    "";
+  if (typeof TbccZipNaming !== "undefined") {
+    return TbccZipNaming.profileNameFromSourceUrl(sourceUrl) || "";
+  }
+  return "";
+}
+
+function tbccZipBundleDownloadFilename(opts, selected) {
+  const name = resolveZipBundleProfileName(opts, selected);
+  const sourceUrl =
+    (opts && opts.zipFetchOpts && opts.zipFetchOpts.sourceUrl) ||
+    (opts && opts.sourceUrl) ||
+    (selected && selected[0] && selected[0].tbccSourcePageUrl) ||
+    "";
+  if (typeof TbccZipNaming !== "undefined" && TbccZipNaming.downloadPathForBundle) {
+    return TbccZipNaming.downloadPathForBundle({ name, profileName: name, sourceUrl, ext: "zip" });
+  }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  return "tbcc/tbcc_bundle_" + stamp + ".zip";
+}
+
 async function buildHarvestZipFetchOpts(opts, rows) {
   const looms = await loadXProfileLoomsSettings();
   const sourceUrl =
-    (rows && rows[0] && rows[0].tbccSourcePageUrl) || (opts && opts.sourceUrl) || "";
+    (opts && opts.sourceUrl) ||
+    (rows && rows[0] && rows[0].tbccSourcePageUrl) ||
+    "";
   const profileName =
     typeof TbccZipNaming !== "undefined"
-      ? TbccZipNaming.profileNameFromSourceUrl(sourceUrl)
+      ? TbccZipNaming.profileNameFromSourceUrl(sourceUrl) || "media"
       : "media";
   return {
     harvestZip: !!(opts && (opts.harvestZip || opts.loomsZip)),
     skipWatermark: looms.zipSkipWatermark !== false,
     zipNameTemplate: looms.zipNameTemplate || (typeof TbccZipNaming !== "undefined" ? TbccZipNaming.DEFAULT_TEMPLATE : ""),
     profileName,
+    sourceUrl,
     stallTimeoutMs: opts && opts.stallTimeoutMs != null ? Number(opts.stallTimeoutMs) : undefined,
   };
 }
@@ -6295,6 +6333,64 @@ function resolveFetchTabIdForItem(it) {
   return null;
 }
 
+function tbccIsTwimgCdnUrl(url) {
+  try {
+    const h = new URL(String(url || "")).hostname.toLowerCase();
+    return h === "video.twimg.com" || h === "pbs.twimg.com" || h.endsWith(".twimg.com");
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * X CDN bytes from the extension page (host_permissions) — same idea as chrome.downloads
+ * direct URL. Avoids shipping multi‑MB MP4s through the service worker via sendMessage
+ * (slow + can yield tiny/corrupt bodies → "Video file too small (15 B)").
+ */
+async function fetchTwimgBytesFromExtensionPage(url, refererPageUrl, expectVideo) {
+  const raw = String(url || "").trim();
+  if (!raw || !tbccIsTwimgCdnUrl(raw)) return null;
+  const refs = [];
+  const push = (s) => {
+    const t = String(s || "")
+      .trim()
+      .split("#")[0];
+    if (t && /^https?:\/\//i.test(t) && refs.indexOf(t) < 0) refs.push(t);
+  };
+  push(refererPageUrl);
+  push("https://x.com/");
+  push("https://twitter.com/");
+  const minBytes = expectVideo ? 48 * 1024 : 256;
+  for (let i = 0; i < refs.length; i++) {
+    const ref = refs[i];
+    try {
+      const origin = new URL(ref).origin;
+      const res = await fetch(raw, {
+        method: "GET",
+        credentials: "omit",
+        mode: "cors",
+        headers: { Referer: ref, Origin: origin },
+      });
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      if (blob && blob.size >= minBytes) return blob;
+    } catch (_) {}
+  }
+  try {
+    const res = await fetch(raw, {
+      method: "GET",
+      credentials: "omit",
+      mode: "cors",
+      headers: { Referer: "https://x.com/" },
+    });
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob && blob.size >= minBytes) return blob;
+    }
+  } catch (_) {}
+  return null;
+}
+
 async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) {
   url = normalizeTbccMediaUrlForImport(url);
   const ref = typeof refererPageUrl === "string" ? refererPageUrl : "";
@@ -6311,6 +6407,13 @@ async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) 
       const r = await fetch(url);
       if (r.ok) return await r.blob();
     } catch (_) {}
+  }
+  if (tbccIsTwimgCdnUrl(url)) {
+    const expectVideo =
+      (tabIdOrItem && typeof tabIdOrItem === "object" && galleryItemMarkedVideo(tabIdOrItem)) ||
+      /\.mp4(\?|#|$)/i.test(String(url));
+    const direct = await fetchTwimgBytesFromExtensionPage(url, ref, expectVideo);
+    if (direct) return direct;
   }
   const preferSession = hostNeedsSessionFetch(url) || hostNeedsGalleryThumbProxy(url);
   if (!preferSession) {
@@ -6334,7 +6437,18 @@ async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) 
           return;
         }
         if (res && res.ok && res.buffer) {
-          resolve(new Blob([res.buffer], { type: "application/octet-stream" }));
+          const buf = res.buffer;
+          const byteLen =
+            buf && buf.byteLength != null
+              ? buf.byteLength
+              : buf && buf.length != null
+                ? buf.length
+                : 0;
+          if (byteLen > 0 && byteLen < 256 && tbccIsTwimgCdnUrl(url)) {
+            resolve(null);
+            return;
+          }
+          resolve(new Blob([buf], { type: "application/octet-stream" }));
         } else resolve(null);
       }
     );
@@ -8352,25 +8466,29 @@ async function downloadSelectedAsZipLooms(opts) {
       return;
     }
 
-    if (progressStatus) progressStatus.textContent = "Compressing…";
+    if (progressStatus) progressStatus.textContent = "Packing ZIP (STORE — media already compressed)…";
+    // MP4/JPEG are already compressed; DEFLATE level 6 on 100+ videos dominates wall time.
     const out = await zip.generateAsync(
-      { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
+      { type: "blob", compression: "STORE" },
       (meta) => {
         if (progressFill && meta && meta.percent != null) {
           progressFill.style.width = 70 + Math.round(meta.percent * 0.3) + "%";
         }
-        if (progressStatus) progressStatus.textContent = "Compressing… " + Math.round(meta.percent || 0) + "%";
+        if (progressStatus) progressStatus.textContent = "Packing… " + Math.round(meta.percent || 0) + "%";
       }
     );
     const blobUrl = URL.createObjectURL(out);
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+    const zipFilename = tbccZipBundleDownloadFilename(
+      { zipFetchOpts: fetchOpts, sourceUrl: fetchOpts && fetchOpts.sourceUrl },
+      selected
+    );
     await new Promise((resolve) => {
-      chrome.downloads.download({ url: blobUrl, filename: "tbcc/tbcc_bundle_" + stamp + ".zip", saveAs: false }, () => {
+      chrome.downloads.download({ url: blobUrl, filename: zipFilename, saveAs: false, conflictAction: "uniquify" }, () => {
         URL.revokeObjectURL(blobUrl);
         resolve();
       });
     });
-    const msg = "Saved ZIP with " + ok + " file(s) to Downloads/tbcc/.";
+    const msg = "Saved ZIP with " + ok + " file(s) as " + zipFilename.replace(/^tbcc\//, "") + ".";
     if (progressStatus) progressStatus.textContent = msg;
     notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete", {
       type: "gallery_sidepanel",
@@ -8452,23 +8570,35 @@ async function downloadSelectedAsZip(opts) {
     if (promoAdded > 0 && progressStatus) {
       progressStatus.textContent = "Added " + promoAdded + " promo file(s) to ZIP…";
     }
-    if (progressStatus) progressStatus.textContent = "Compressing…";
+    if (progressStatus) progressStatus.textContent = opts && opts.harvestZip ? "Packing ZIP (STORE)…" : "Compressing…";
     const out = await zip.generateAsync(
-      { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
+      opts && opts.harvestZip
+        ? { type: "blob", compression: "STORE" }
+        : { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
       (meta) => {
         if (progressFill && meta && meta.percent != null) progressFill.style.width = meta.percent + "%";
-        if (progressStatus) progressStatus.textContent = "Compressing… " + Math.round(meta.percent || 0) + "%";
+        if (progressStatus)
+          progressStatus.textContent =
+            (opts && opts.harvestZip ? "Packing… " : "Compressing… ") + Math.round(meta.percent || 0) + "%";
       }
     );
     const blobUrl = URL.createObjectURL(out);
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+    const zipFilename = tbccZipBundleDownloadFilename(opts, selected);
     await new Promise((resolve) => {
-      chrome.downloads.download({ url: blobUrl, filename: "tbcc/tbcc_bundle_" + stamp + ".zip", saveAs: false }, () => {
-        URL.revokeObjectURL(blobUrl);
-        resolve();
-      });
+      chrome.downloads.download(
+        { url: blobUrl, filename: zipFilename, saveAs: false, conflictAction: "uniquify" },
+        () => {
+          URL.revokeObjectURL(blobUrl);
+          resolve();
+        }
+      );
     });
-    const msg = "Saved ZIP with " + ok + " file(s) to Downloads/tbcc/ (use for digital bundle upload).";
+    const msg =
+      "Saved ZIP with " +
+      ok +
+      " file(s) as " +
+      zipFilename.replace(/^tbcc\//, "") +
+      " (use for digital bundle upload).";
     if (progressStatus) progressStatus.textContent = msg;
     notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete", {
       type: "gallery_sidepanel",

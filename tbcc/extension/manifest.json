@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.25.0",
+  "version": "1.36.1",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -68,6 +68,13 @@
     },
     {
       "matches": ["*://x.com/*", "*://twitter.com/*"],
+      "js": ["x-api-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://x.com/*", "*://twitter.com/*"],
       "js": ["tbcc-module-gate.js", "x-feed-download.js"],
       "run_at": "document_start",
       "all_frames": false
@@ -81,6 +88,18 @@
     {
       "matches": ["*://erome.com/*", "*://www.erome.com/*"],
       "js": ["tbcc-module-gate.js", "erome-enhancer.js", "erome-transport-overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://thisvid.com/*", "*://*.thisvid.com/*"],
+      "js": ["tbcc-module-gate.js", "thisvid-enhancer.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://fetlife.com/*", "*://www.fetlife.com/*"],
+      "js": ["tbcc-module-gate.js", "fetlife-suite.bundle.js"],
       "run_at": "document_idle",
       "all_frames": false
     },

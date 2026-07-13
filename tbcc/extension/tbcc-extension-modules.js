@@ -25,6 +25,16 @@
       urlPatterns: ["*://erome.com/*", "*://www.erome.com/*"],
     },
     {
+      id: "thisvid_enhancer",
+      title: "ThisVid enhancer",
+      urlPatterns: ["*://thisvid.com/*", "*://*.thisvid.com/*"],
+    },
+    {
+      id: "fetlife_suite",
+      title: "FetLife suite",
+      urlPatterns: ["*://fetlife.com/*", "*://www.fetlife.com/*"],
+    },
+    {
       id: "onlyfans_harvest",
       title: "OnlyFans harvest",
       urlPatterns: ["*://onlyfans.com/*", "*://*.onlyfans.com/*"],

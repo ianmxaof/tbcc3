@@ -1,10 +1,13 @@
 /**
  * AOF / PowerRename-style ZIP entry names for harvest & overlay ZIP export.
- * Default: AOF_{name}_{index:5}_t.me_aofmainhub.{ext}
- * Also accepts PowerRename counters: ${padding=5;increment=1;start=1}
+ * Default entry: AOF_{name}_{index:5}_t.me_aofmainhub.{ext}
+ * Bundle archive: TBCC Bundle · {name} · TG@AOFMAINHUB · allmylinks.comaof69.zip
  */
 (function (root) {
   const DEFAULT_TEMPLATE = "AOF_{name}_{index:5}_t.me_aofmainhub";
+  const BRAND_HANDLE = "TG@AOFMAINHUB";
+  const ALLMYLINKS_SLOT = "allmylinks.comaof69";
+  const BUNDLE_PREFIX = "TBCC Bundle";
 
   function sanitizeSegment(s) {
     return String(s || "")
@@ -14,21 +17,32 @@
       .slice(0, 64);
   }
 
+  /** Soft sanitize for brand bundle names — keep readable handle, strip path-illegal chars. */
+  function sanitizeBundleToken(s) {
+    return String(s || "")
+      .trim()
+      .replace(/^@+/, "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]+/g, "")
+      .replace(/\s+/g, " ")
+      .slice(0, 64)
+      .trim();
+  }
+
+  function randomFiveId() {
+    const n = Math.floor(10000 + Math.random() * 90000);
+    return String(n);
+  }
+
   /** X / Twitter profile handle from a page URL. */
   function profileNameFromSourceUrl(url) {
     const s = String(url || "");
     const m = s.match(/(?:twitter\.com|x\.com)\/([^/?#]+)/i);
-    if (!m) return "media";
+    if (!m) return "";
     const h = m[1].toLowerCase();
     if (["home", "search", "i", "intent", "share", "explore", "notifications", "messages"].includes(h)) {
-      return "media";
+      return "";
     }
-    return sanitizeSegment(h) || "media";
-  }
-
-  function parsePaddingFromBrace(token) {
-    const m = String(token || "").match(/^index:(\d+)$/i);
-    return m ? Math.min(12, Math.max(1, parseInt(m[1], 10))) : 5;
+    return sanitizeSegment(h) || "";
   }
 
   function formatCounter(index1, padding, increment, start) {
@@ -91,10 +105,42 @@
     return out.replace(/[^\w.\-]+/g, "_").replace(/_+\./g, ".").slice(0, 180);
   }
 
+  /**
+   * Final Downloads/tbcc/ archive name for overlay / gallery ZIP export.
+   * Prefer X profile handle; else 5-digit id.
+   * Example: TBCC Bundle · Damon43095616 · TG@AOFMAINHUB · allmylinks.comaof69.zip
+   */
+  function buildBundleArchiveFilename(ctx) {
+    let token = sanitizeBundleToken((ctx && (ctx.name || ctx.profileName)) || "");
+    if (!token || /^media$/i.test(token)) {
+      const fromUrl = profileNameFromSourceUrl((ctx && ctx.sourceUrl) || "");
+      token = sanitizeBundleToken(fromUrl);
+    }
+    if (!token || /^media$/i.test(token)) token = randomFiveId();
+    const ext =
+      String((ctx && ctx.ext) || "zip")
+        .replace(/^\./, "")
+        .toLowerCase() || "zip";
+    const base = `${BUNDLE_PREFIX} · ${token} · ${BRAND_HANDLE} · ${ALLMYLINKS_SLOT}.${ext}`;
+    return base.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "_").slice(0, 180);
+  }
+
+  function downloadPathForBundle(ctx) {
+    const name = buildBundleArchiveFilename(ctx);
+    return name.indexOf("tbcc/") === 0 ? name : "tbcc/" + name;
+  }
+
   root.TbccZipNaming = {
     DEFAULT_TEMPLATE,
+    BRAND_HANDLE,
+    ALLMYLINKS_SLOT,
+    BUNDLE_PREFIX,
     profileNameFromSourceUrl,
     buildZipFilename,
+    buildBundleArchiveFilename,
+    downloadPathForBundle,
     sanitizeSegment,
+    sanitizeBundleToken,
+    randomFiveId,
   };
 })(typeof self !== "undefined" ? self : globalThis);

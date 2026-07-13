@@ -1541,7 +1541,8 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId, opts) {
         } catch (_) {}
       }
     }
-    /** Twitter / X: CDN rejects Referer https://video.twimg.com/ — must look like navigation from x.com. */
+    /** Twitter / X: CDN rejects Referer https://video.twimg.com/ — must look like navigation from x.com.
+     * Prefer no Cookie (signed amplify URLs); reject tiny bodies (CDN error stubs ~15 B). */
     if (h === "video.twimg.com" || h === "pbs.twimg.com") {
       const refs = [];
       const pushRef = (s) => {
@@ -1551,15 +1552,29 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId, opts) {
       pushRef(refererPageUrl);
       pushRef("https://x.com/");
       pushRef("https://twitter.com/");
+      const expectVideo = h === "video.twimg.com" || /\.mp4(\?|#|$)/i.test(u.pathname);
+      const minBytes = expectVideo ? 48 * 1024 : 256;
+      const tryOnce = async (headers) => {
+        const res = await fetch(url, {
+          method: "GET",
+          credentials: "omit",
+          headers,
+        });
+        if (!res.ok) return null;
+        const ab = await readBody(res);
+        if (!ab || ab.byteLength < minBytes) return null;
+        return ab;
+      };
       for (const ref of refs) {
         try {
           const origin = new URL(ref).origin;
-          const res = await fetch(url, {
-            method: "GET",
-            credentials: "omit",
-            headers: { ...base, Referer: ref, Origin: origin },
-          });
-          if (res.ok) return await readBody(res);
+          // No Cookie first — matches chrome.downloads / XEnhancer path.
+          let ab = await tryOnce({ Referer: ref, Origin: origin });
+          if (ab) return ab;
+          if (cookieHeader) {
+            ab = await tryOnce({ ...base, Referer: ref, Origin: origin });
+            if (ab) return ab;
+          }
         } catch (_) {}
       }
       throw new Error(
@@ -2820,19 +2835,48 @@ function _tbccThumbSchedule(jobFactory) {
   });
 }
 
-function tbccArrayBufferToDataUrl(ab) {
+function tbccDetectMediaMime(bytes, hint) {
+  const h = String(hint || "").toLowerCase();
+  if (h.startsWith("video/") || h.startsWith("image/") || h.startsWith("audio/")) return h.split(";")[0];
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image/gif";
+  if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return "image/webp";
+  // ISO BMFF (mp4/m4v/mov): ....ftyp
+  if (bytes.length >= 8) {
+    const box = String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]);
+    if (box === "ftyp") return "video/mp4";
+  }
+  return "application/octet-stream";
+}
+
+function tbccArrayBufferToDataUrl(ab, mimeHint) {
   const bytes = new Uint8Array(ab);
-  let mime = "image/jpeg";
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) mime = "image/jpeg";
-  else if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) mime = "image/png";
-  else if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) mime = "image/gif";
-  else if (bytes.length >= 4 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) mime = "image/webp";
+  const mime = tbccDetectMediaMime(bytes, mimeHint);
   let binary = "";
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
   }
   return `data:${mime};base64,${btoa(binary)}`;
+}
+
+/** MV3 service workers have no URL.createObjectURL — prefer remote URL like GM_download. */
+function tbccChromeDownloadsDownload(opts) {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.downloads.download(opts, (id) => {
+        const err = chrome.runtime.lastError;
+        if (err || !id) {
+          reject(new Error(err ? err.message : "Download failed"));
+          return;
+        }
+        resolve(id);
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -3744,41 +3788,46 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-x-media-download") {
     (async () => {
       try {
-        const tabId = await tbccResolveSessionTabId(_sender, msg);
         const rawUrl = String(msg.url || "").trim();
         if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
           sendResponse({ ok: false, error: "Invalid media URL" });
           return;
         }
         const url = normalizeTbccMediaUrlForImport(rawUrl);
+        const fn = String(msg.filename || "media")
+          .replace(/[\\/:*?"<>|\r\n]/g, "_")
+          .slice(0, 120);
+        const filename = fn.indexOf("tbcc/") === 0 ? fn : `tbcc/${fn}`;
+        const dlOpts = { filename, saveAs: false, conflictAction: "uniquify" };
+
+        // Path A — direct CDN URL (XEnhancer GM_download parity; works in MV3 SW).
+        try {
+          const id = await tbccChromeDownloadsDownload({ ...dlOpts, url });
+          sendResponse({ ok: true, downloadId: id, via: "direct" });
+          return;
+        } catch (directErr) {
+          console.warn("[TBCC] x direct download failed, trying session fetch", directErr);
+        }
+
+        // Path B — session fetch then data: URL (no createObjectURL in service workers).
+        const tabId = await tbccResolveSessionTabId(_sender, msg);
         const referer =
           String(msg.refererPageUrl || "").trim() ||
           (_sender && _sender.tab && _sender.tab.url) ||
           "https://x.com/";
         const ab = await fetchUrlWithBrowserSession(url, referer, tabId, { stallTimeoutMs: 45000 });
         const prep = await tbccPrepareImportArrayBuffer(ab, url);
-        const blob = new Blob([prep.buffer], { type: prep.type || "application/octet-stream" });
-        const blobUrl = URL.createObjectURL(blob);
-        const fn = String(msg.filename || "media")
-          .replace(/[\\/:*?"<>|\r\n]/g, "_")
-          .slice(0, 120);
-        const filename = fn.indexOf("tbcc/") === 0 ? fn : `tbcc/${fn}`;
-        chrome.downloads.download(
-          { url: blobUrl, filename, saveAs: false, conflictAction: "uniquify" },
-          (id) => {
-            setTimeout(() => {
-              try {
-                URL.revokeObjectURL(blobUrl);
-              } catch (_) {}
-            }, 120000);
-            const err = chrome.runtime.lastError;
-            if (err || !id) {
-              sendResponse({ ok: false, error: err ? err.message : "Download failed" });
-              return;
-            }
-            sendResponse({ ok: true, downloadId: id });
-          }
-        );
+        const dataUrl = tbccArrayBufferToDataUrl(prep.buffer, prep.type);
+        // Chrome rejects enormous data: URLs — fail clearly instead of createObjectURL.
+        if (dataUrl.length > 80 * 1024 * 1024) {
+          sendResponse({
+            ok: false,
+            error: "Media too large for SW fallback — open the post and retry (direct CDN download).",
+          });
+          return;
+        }
+        const id = await tbccChromeDownloadsDownload({ ...dlOpts, url: dataUrl });
+        sendResponse({ ok: true, downloadId: id, via: "data-url" });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
       }

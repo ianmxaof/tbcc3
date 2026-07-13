@@ -8,8 +8,8 @@
   var LOOMS_DEFAULTS = {
     idleThreads: 2,
     browseThreads: 4,
-    downloadThreads: 4,
-    timeoutSec: 9,
+    downloadThreads: 8,
+    timeoutSec: 20,
     maxItems: 120,
     includeVideo: true,
     layout: "grid",
@@ -30,8 +30,8 @@
     var s = raw && typeof raw === "object" ? Object.assign({}, LOOMS_DEFAULTS, raw) : Object.assign({}, LOOMS_DEFAULTS);
     s.idleThreads = clampInt(s.idleThreads, 1, 4, LOOMS_DEFAULTS.idleThreads);
     s.browseThreads = clampInt(s.browseThreads, 1, 4, LOOMS_DEFAULTS.browseThreads);
-    s.downloadThreads = clampInt(s.downloadThreads, 1, 4, LOOMS_DEFAULTS.downloadThreads);
-    s.timeoutSec = clampInt(s.timeoutSec, 2, 40, LOOMS_DEFAULTS.timeoutSec);
+    s.downloadThreads = clampInt(s.downloadThreads, 1, 12, LOOMS_DEFAULTS.downloadThreads);
+    s.timeoutSec = clampInt(s.timeoutSec, 2, 60, LOOMS_DEFAULTS.timeoutSec);
     s.maxItems = clampInt(s.maxItems, 20, 300, LOOMS_DEFAULTS.maxItems);
     s.chapterId = clampInt(s.chapterId, 0, 3, LOOMS_DEFAULTS.chapterId);
     if (["grid", "horizontal", "vertical"].indexOf(s.layout) < 0) s.layout = "grid";
