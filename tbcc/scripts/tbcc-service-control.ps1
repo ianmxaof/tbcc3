@@ -1700,6 +1700,7 @@ function Update-TbccServiceStatusCache {
     FullStack  = [bool]$FullStack
     Services   = $services
     ById       = $byId
+    Ports      = $ports
     Up         = $up
     Total      = $services.Count
     Enabled    = $enabled
