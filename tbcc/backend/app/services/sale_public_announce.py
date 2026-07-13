@@ -307,7 +307,11 @@ def queue_public_sale_announce(
     plan_name: str | None,
     payment_method: str | None,
 ) -> dict[str, Any]:
-    """Fire-and-forget from payment path (does not block fulfillment)."""
+    """Fire-and-forget from payment path (does not block fulfillment).
+
+    Uses a daemon thread by default so announces still run when the home Celery
+    worker is down. Optional Celery path remains for ops: announce_public_sale.delay.
+    """
     if not sale_announce_enabled():
         return {"ok": False, "skipped": True, "reason": "disabled"}
     sale_kind = classify_sale_kind(
@@ -315,15 +319,30 @@ def queue_public_sale_announce(
         bot_section=bot_section,
         plan_name=plan_name,
     )
-    try:
-        from app.workers.sale_announce_worker import announce_public_sale
+    plan = (plan_name or "")[:120]
+    method = (payment_method or "")[:40]
 
-        announce_public_sale.delay(
-            sale_kind,
-            (plan_name or "")[:120],
-            (payment_method or "")[:40],
-        )
-        return {"ok": True, "queued": True, "sale_kind": sale_kind}
+    def _run() -> None:
+        from app.database.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            run_public_sale_announce(
+                db,
+                sale_kind=sale_kind,
+                plan_name=plan or None,
+                payment_method=method or None,
+            )
+        except Exception:
+            logger.exception("sale announce thread failed kind=%s", sale_kind)
+        finally:
+            db.close()
+
+    try:
+        import threading
+
+        threading.Thread(target=_run, name=f"sale-announce-{sale_kind}", daemon=True).start()
+        return {"ok": True, "queued": True, "via": "thread", "sale_kind": sale_kind}
     except Exception as e:
         logger.warning("queue_public_sale_announce failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}

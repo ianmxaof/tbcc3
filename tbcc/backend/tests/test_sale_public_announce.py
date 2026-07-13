@@ -43,11 +43,20 @@ def test_sale_announce_enabled_default_on(monkeypatch):
     assert sale_announce_enabled() is False
 
 
-def test_queue_public_sale_announce_enqueues_celery(monkeypatch):
+def test_queue_public_sale_announce_starts_thread(monkeypatch):
     monkeypatch.setenv("TBCC_SALE_ANNOUNCE_ENABLED", "1")
-    mock_delay = MagicMock()
-    with patch("app.workers.sale_announce_worker.announce_public_sale") as task:
-        task.delay = mock_delay
+    started: list[str] = []
+
+    class _FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self._target = target
+            started.append(name or "")
+
+        def start(self):
+            # Do not run target (would open DB) — only prove enqueue path.
+            return None
+
+    with patch("threading.Thread", side_effect=_FakeThread):
         out = queue_public_sale_announce(
             product_type="subscription",
             bot_section="loot",
@@ -55,11 +64,9 @@ def test_queue_public_sale_announce_enqueues_celery(monkeypatch):
             payment_method="stars",
         )
     assert out.get("ok") is True
+    assert out.get("via") == "thread"
     assert out.get("sale_kind") == "loot_key"
-    mock_delay.assert_called_once()
-    args = mock_delay.call_args[0]
-    assert args[0] == "loot_key"
-
+    assert any("loot_key" in n for n in started)
 
 def test_run_public_sale_announce_disabled(monkeypatch):
     monkeypatch.setenv("TBCC_SALE_ANNOUNCE_ENABLED", "0")
