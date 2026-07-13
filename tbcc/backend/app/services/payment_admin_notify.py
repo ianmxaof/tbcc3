@@ -160,11 +160,24 @@ def notify_sale_fulfilled(
     reference_code: str | None = None,
 ) -> None:
     """Access was granted (Stars, crypto IPN, webhook, or manual mark-paid)."""
+    ptype = (product_type or "").strip() or "subscription"
+    pm = (payment_method or "?").strip() or "?"
+    # Public FOMO (no buyer PII) — independent of TBCC_PAYMENT_NOTIFY admin gate.
+    try:
+        from app.services.sale_public_announce import queue_public_sale_announce
+
+        queue_public_sale_announce(
+            product_type=ptype,
+            bot_section=bot_section,
+            plan_name=plan_name,
+            payment_method=pm if pm != "?" else payment_method,
+        )
+    except Exception as e:
+        logger.warning("queue_public_sale_announce failed: %s", e)
+
     if _notify_disabled():
         return
     try:
-        pm = (payment_method or "?").strip() or "?"
-        ptype = (product_type or "").strip() or "subscription"
         sale_kind = classify_sale_kind(
             product_type=ptype,
             bot_section=bot_section,

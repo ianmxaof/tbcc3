@@ -57,6 +57,7 @@ celery.conf.include = [
     "app.workers.export_flywheel_worker",
     "app.workers.buffer_metrics_worker",
     "app.workers.sent_cache_composer_worker",
+    "app.workers.sale_announce_worker",
 ]
 
 celery.conf.task_routes = {
@@ -84,6 +85,7 @@ celery.conf.task_routes = {
     "app.workers.erome_analytics_worker.*": {"queue": "ops_erome"},
     # Light / user-facing tasks stay on the home worker.
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
+    "app.workers.sale_announce_worker.*": {"queue": "celery"},
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
     "app.workers.sent_cache_composer_worker.*": {"queue": "telegram"},
     "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
