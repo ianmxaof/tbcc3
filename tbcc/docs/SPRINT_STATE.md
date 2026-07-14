@@ -11,7 +11,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Item | Owner | Notes |
 |------|-------|-------|
 | FYP–AOF Link Hub divider | agent | **2026-07-13:** champagne LED mosaic staged under `tbcc/assets/emoji/fyp-aof-divider/` (14×100² tiles + 7 unique pack). Remixer upload pending — see `PACK_README.md`. |
-| Zeus CI/CD prep | agent | **2026-07-14:** Phase 0 doc reconciled; **3a shipped locally** — `GET /zeus/v1/stack/status` aliases `/ops/stack-status` (`zeus_v1.py` + `test_zeus_v1.py`). Next: co-host spike / zeus_core (not admin). |
+| Zeus CI/CD prep | agent | **2026-07-14:** 3a facade live + committed; **co-host spike** (`zeus_multi_app` + `zeus_cohost_spike`, gated) — not tray-wired. Next: Phase 2 tray merge of one token after operator smoke. |
 | Sale FOMO announce | agent | **2026-07-13:** every fulfilled sale (loot key / pack / sub) → anonymous post to Telegram network + Buffer/X (`TBCC_SALE_ANNOUNCE_*`). Hooked from `notify_sale_fulfilled`; Celery `sale_announce_worker`. |
 | Celery home backlog + import priority | agent | **2026-07-14:** Supervisor Phase 2.5: bar sparks, THROTTLE strip, DWM dark title bar, Flt filter crash fix. Relaunch tray to load. |
 | Userscript monorepo + FetLife suite | agent | **v1.7 + ext 1.39:** FLConsole 4 privacy presets (editable JSON); place→kinksters input (no hardcoded SJ); cross-tab overlay. |

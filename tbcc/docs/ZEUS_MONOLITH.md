@@ -192,7 +192,7 @@ identity, raw sessions — is operator-only. This list is the contract; widening
 | Phase | Goal | Verify |
 |-------|------|--------|
 | **0** | This doc: matrix, process target, control-plane sketch, session strategy, roadmap. | File exists; `pytest tests/test_zeus_menu.py` green **modulo the one known pre-existing loot deep-link assertion** (unrelated to Zeus). |
-| **1** | `zeus_core` library **+ multi-`Application` host proof** (secretary + one low-traffic Bot-API token on one loop). Not file moves alone. | `test_zeus_menu.py` + new `zeus_core` unit tests; two tokens live in one process. |
+| **1** | `zeus_core` library **+ multi-`Application` host proof** (secretary + one low-traffic Bot-API token on one loop). Not file moves alone. | **Host proof shipped 2026-07-14** — `bots/zeus_multi_app.py` + gated `bots/zeus_cohost_spike.py` (secretary+llm_chat); `tests/test_zeus_multi_app.py`. Not tray-wired. |
 | **2** | Tray-merge that one Bot-API token into the host. **`admin` excluded — it is Telethon.** | One fewer tray service; menu still works; tray CommandMatch updated. |
 | **3a** | **Read-only** `/zeus/v1` facade aliasing existing `/ops/*` + health. No write, no Telethon, no lease. | **Shipped 2026-07-14** — `GET /zeus/v1/stack/status` == `/ops/stack-status`; `tests/test_zeus_v1.py`. |
 | **3b** | Telethon *triggers* (scrape / relay / emoji) behind Layer A. | Job runs with the Redis account lock held; no second `admin.session` connect. |

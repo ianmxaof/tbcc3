@@ -1,0 +1,63 @@
+"""Opt-in Zeus co-host spike: secretary + llm_chat on one event loop.
+
+NOT wired into tray. Do not run while tray ``llm_chat`` (or a second secretary)
+is already polling — same token → Telegram 409.
+
+  set TBCC_ZEUS_COHOST_SPIKE=1
+  cd tbcc/backend
+  python -m bots.zeus_cohost_spike
+
+Stop with Ctrl+C.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from pathlib import Path
+
+_backend_root = Path(__file__).resolve().parent.parent
+if str(_backend_root) not in sys.path:
+    sys.path.insert(0, str(_backend_root))
+
+from bots import __init__ as _bots_env  # noqa: F401 — loads tbcc/.env
+
+from bots.llm_chat_bot import build_application as build_llm_chat
+from bots.secretary_bot import build_application as build_secretary
+from bots.zeus_multi_app import run_applications_sync
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
+
+
+def main() -> None:
+    flag = (os.getenv("TBCC_ZEUS_COHOST_SPIKE") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        print(
+            "Refusing to start: set TBCC_ZEUS_COHOST_SPIKE=1 to run the co-host spike.\n"
+            "Stop tray llm_chat (and any duplicate secretary) first to avoid 409."
+        )
+        raise SystemExit(2)
+
+    secretary = build_secretary()
+    llm = build_llm_chat()
+    if secretary is None:
+        print("Missing TBCC_SECRETARY_BOT_TOKEN")
+        raise SystemExit(2)
+    if llm is None:
+        print("Missing TBCC_LLM_CHAT_BOT_TOKEN — co-host spike needs a second Bot-API token")
+        raise SystemExit(2)
+
+    logger.info(
+        "Zeus co-host spike: secretary + llm_chat on one process (not tray-managed)"
+    )
+    print("Co-host running (secretary + llm_chat). Ctrl+C to stop.")
+    run_applications_sync([secretary, llm])
+
+
+if __name__ == "__main__":
+    main()

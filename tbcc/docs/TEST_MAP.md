@@ -24,6 +24,7 @@ py -3.13 -m pytest <path> -x -q
 | **Env secrets / capture** | `tests/test_tbcc_env_secret_store.py` | Clipboard/.env key suggest + write |
 | **Zeus / secretary menu** | `tests/test_zeus_menu.py` | Phase 1 hub callbacks, stack HTML, deep-link keyboards |
 | **Zeus HTTP (3a)** | `tests/test_zeus_v1.py` | Read-only `/zeus/v1/stack/status` alias of `/ops/stack-status` |
+| **Zeus multi-app host** | `tests/test_zeus_multi_app.py` | Co-host lifecycle (mocked PTB); spike gated by `TBCC_ZEUS_COHOST_SPIKE` |
 | **Scrape transport** | `tests/test_scrape_transport.py` | Cancel/skip/overview phases for Ingest transport |
 | **Scrape tag map / views** | `tests/test_scrape_tag_pool_map.py` | Hashtag→pool suggestions + view sample helpers |
 | **Buffer X link order** | `tests/test_buffer_x_link_order.py` | Affiliate-first preview pin; optional cycle when `AFFILIATE_FIRST=0` |
