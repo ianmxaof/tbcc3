@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-07-13 (Headless stack default — no WT focus steal; panel soft-show)
+**Last updated:** 2026-07-14 (Zeus `/zeus/v1` read facade; FYP–AOF divider staged)
 
 ## Sprint goal
 
@@ -10,16 +10,18 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 | Item | Owner | Notes |
 |------|-------|-------|
+| FYP–AOF Link Hub divider | agent | **2026-07-13:** champagne LED mosaic staged under `tbcc/assets/emoji/fyp-aof-divider/` (14×100² tiles + 7 unique pack). Remixer upload pending — see `PACK_README.md`. |
+| Zeus CI/CD prep | agent | **2026-07-14:** Phase 0 doc reconciled; **3a shipped locally** — `GET /zeus/v1/stack/status` aliases `/ops/stack-status` (`zeus_v1.py` + `test_zeus_v1.py`). Next: co-host spike / zeus_core (not admin). |
 | Sale FOMO announce | agent | **2026-07-13:** every fulfilled sale (loot key / pack / sub) → anonymous post to Telegram network + Buffer/X (`TBCC_SALE_ANNOUNCE_*`). Hooked from `notify_sale_fulfilled`; Celery `sale_announce_worker`. |
-| Celery home backlog + import priority | agent | **2026-07-13:** **Headless stack default** (`TBCC_STACK_CONSOLE=headless`): tray Start/Restart no longer opens WT/console (fixes focus steal + accidental Ctrl+C). Opt-in `=wt` for debug tabs. Supervisor mini: TopMost off by default; soft re-show. |
+| Celery home backlog + import priority | agent | **2026-07-14:** Supervisor Phase 2.5: bar sparks, THROTTLE strip, DWM dark title bar, Flt filter crash fix. Relaunch tray to load. |
 | Userscript monorepo + FetLife suite | agent | **v1.7 + ext 1.39:** FLConsole 4 privacy presets (editable JSON); place→kinksters input (no hardcoded SJ); cross-tab overlay. |
 | Perchance Gemini-parity suite | agent | Prompt packs + suite; **headless** `run_perchance_headless.py` + `perchance_image_client` (verify→generate→disk/R2/loot). Gemini CLI fallback. |
-| ThisVid upload MVP | agent | Playwright CLI + **ext 1.35** ThisVid enhancer: title filter + infinite scroll + **auto-fill URL from Erome → ThisVid**. TM suite optional. |
-| AOF watermark brand rename | agent | After Explorer watermark: `YYYYMMDD · TG@AOFMAINHUB · {content} · allmylinks.comaof69 · {tail}.ext` |
+| ThisVid upload MVP | agent | Playwright CLI + **ext 1.37.7**: expanded panel title bar drag (same vertical reposition as chevron); infinite scroll caps; download FAB. |
+| AOF watermark brand rename | agent | Burn-in + defaults: **`telegram.me/aofmainhub`** (t.me→telegram.me normalizer for .env/DB; zip `telegram.me_aofmainhub`). Gate retarget: `docs/GATE_LINK_AUDIT.md`. |
 | Creative orchestrator | agent | `/creative/plan` + suite Orch executor + Analytics deploy button; Playwright batch textarea-only |
 | Loot key → full `/roll` | agent | Operators **7787282561** + **8630278848** via `tbcc_operator_ids` (VIP/loot/companion/secretary/album). Avatars: `tbcc/assets/botfather/lootgod-avatar-v{1,2}-*.png` (640²). Prefer v2 for contrast. |
 | Loot tier cards (Gemini) | agent | Tiers renamed Crumb→Godroll; ASCII `<pre>` dividers; `gemini_loot_card_prompt` + generate script — generate PNGs next; wire into key-roll reveal |
-| AOF Main ban → Loot Room public CTA | agent | Cutover done (Main→Loot Group). **Blast fix 2026-07-12:** paused dup bot-cmd id=35; staggered loot liveness/X/cross/bot-cmd next fires 25–210m apart. Note: `t.me/aofmainhub` = affiliate/LV **bulletin board** (not banned Main group); public landing stays `@aof_lootgod_bot?start=loot_free`. |
+| AOF Main ban → Loot Room public CTA | agent | Public loot CTA locked to **https://telegram.me/aof_lootgod_bot** only (no `?start=`). Room invite separate: `+97f4Crv3G1RkMGU5`. LV loot gate must target live room. |
 | Calm Ops Phase 5 (Erome hands-off) | agent | Private staging + governance; **extension transport overlay** (live Pareto intel + Playwright record) |
 | Erome browse-intel v4.2 + market intel | agent | TM/ext **v4.3**; **ext 1.36** FAB **Videos** tab (paginated copy / → ThisVid) + ↑↓ under FAB; fixed insertBefore crash. |
 | Promo affiliate rotation | agent | Seed includes **PornMaker AI** `https://pornmaker.ai?ref=DExnc3FJ` (x_buffer / telegram_footer / links_hub_ai / loot_roll). |
@@ -48,7 +50,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 - Secrets, `.env` commits
 - Duplicate Telegram bot spawns outside tray (see `tbcc-dev-ops.mdc`)
-- **Supervisor full panel** — benched (slow/unstable; needs pagination + global on/off before production use)
+- **Supervisor panel deep rewrite** — leave foundation grind to Lane C handoff; Cursor only for targeted UX; no live bot Start from agents
 
 ## Definition of done (automation sprint)
 

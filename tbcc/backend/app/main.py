@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, extension_context_menu, extension_capture_secret, extension_aof_pools, album_composer_drafts, k2s
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, zeus_v1, extension_context_menu, extension_capture_secret, extension_aof_pools, album_composer_drafts, k2s
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -1236,6 +1236,7 @@ app.include_router(ops_triage.router)
 app.include_router(ops_flywheel.router)
 app.include_router(ops_workflow.router)
 app.include_router(ops_stack.router)
+app.include_router(zeus_v1.router)
 app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
 app.include_router(crawler.router, prefix="/crawler", tags=["crawler"])
 app.include_router(jdownloader.router, prefix="/jd", tags=["jdownloader"])
