@@ -272,19 +272,14 @@ function Test-TbccFormInteractionPaused {
 }
 
 function Hide-TbccControlScrollBars {
-  <# Suppress white WinForms scrollbar chrome; mouse-wheel still scrolls. #>
+  <# Hide white WinForms scrollbar chrome without disabling scrolling.
+     Visible=false on VerticalScroll breaks AutoScroll/wheel — never do that. #>
   param($Control)
   if (-not $Control -or $Control.IsDisposed) { return }
   Ensure-TbccSupervisorNativeTypes
   try {
     if ($Control -is [System.Windows.Forms.ListBox]) {
       $Control.HorizontalScrollbar = $false
-    }
-    if ($Control -is [System.Windows.Forms.ScrollableControl]) {
-      try { $Control.HorizontalScroll.Visible = $false } catch {}
-      try { $Control.VerticalScroll.Visible = $false } catch {}
-      try { $Control.HorizontalScroll.Enabled = $true } catch {}
-      try { $Control.VerticalScroll.Enabled = $true } catch {}
     }
     if (("TbccWin32Ui" -as [type]) -and $Control.IsHandleCreated) {
       [void][TbccWin32Ui]::ShowScrollBar($Control.Handle, [TbccWin32Ui]::SB_BOTH, $false)
@@ -307,6 +302,67 @@ function Register-TbccScrollBarSuppression {
   if ($Control.IsHandleCreated) {
     Hide-TbccControlScrollBars -Control $Control
   }
+}
+
+function Register-TbccWheelScroll {
+  <# Mouse-wheel scrolls AutoScroll panels even with chrome hidden; bubbles from children. #>
+  param($Control, [int]$LinePx = 28)
+  if (-not $Control) { return }
+  $handler = {
+    param($sender, $e)
+    $scrollable = $sender
+    while ($scrollable -and -not (
+        ($scrollable -is [System.Windows.Forms.ScrollableControl] -and $scrollable.AutoScroll) -or
+        ($scrollable -is [System.Windows.Forms.ListBox])
+      )) {
+      $scrollable = $scrollable.Parent
+    }
+    if (-not $scrollable) { return }
+    if ($scrollable -is [System.Windows.Forms.ListBox]) {
+      $deltaLines = -[Math]::Sign($e.Delta) * [Math]::Max(1, [Math]::Abs([int]($e.Delta / 120)))
+      $next = [Math]::Max(0, [Math]::Min($scrollable.Items.Count - 1, $scrollable.TopIndex + $deltaLines))
+      $scrollable.TopIndex = $next
+      return
+    }
+    # AutoScrollPosition get is negative; set expects positive offsets.
+    $pos = $scrollable.AutoScrollPosition
+    $step = 28 * [Math]::Max(1, [Math]::Abs([int]($e.Delta / 120))) * -[Math]::Sign($e.Delta)
+    $scrollable.AutoScrollPosition = New-Object System.Drawing.Point(-$pos.X, (-$pos.Y + $step))
+    Hide-TbccControlScrollBars -Control $scrollable
+  }.GetNewClosure()
+  $walk = {
+    param($c)
+    if (-not $c) { return }
+    try { [void]$c.Add_MouseWheel($handler) } catch {}
+    foreach ($child in @($c.Controls)) { & $walk $child }
+  }
+  & $walk $Control
+}
+
+function Get-TbccSupActionTag {
+  param($Control)
+  $c = $Control
+  while ($null -ne $c) {
+    if ($c.Tag -and $c.Tag.Id) { return $c.Tag }
+    $c = $c.Parent
+  }
+  return $null
+}
+
+function Register-TbccSupSubtreeMouseClick {
+  <# WinForms Label/LED children swallow Panel.Click — wire MouseClick on the whole subtree. #>
+  param($Control, [scriptblock]$Handler)
+  if (-not $Control -or -not $Handler) { return }
+  $walk = {
+    param($c)
+    if (-not $c) { return }
+    try {
+      $c.Cursor = [System.Windows.Forms.Cursors]::Hand
+      [void]$c.Add_MouseClick($Handler)
+    } catch {}
+    foreach ($child in @($c.Controls)) { & $walk $child }
+  }
+  & $walk $Control
 }
 
 function Set-TbccFormAlwaysOnTop {
@@ -505,10 +561,123 @@ function Get-TbccHubLineSeverity {
   param([string]$Line)
   if (-not $Line) { return "muted" }
   $l = $Line.ToLowerInvariant()
-  if ($l -match 'critical|fatal|database is locked|address already in use|traceback') { return "crit" }
-  if ($l -match 'error|failed|exception|refused|eaddrinuse|winerror') { return "warn" }
-  if ($l -match 'warning|warn') { return "warn" }
+  # Reserve "crit" for actionable meltdown signals — plain Traceback/Error stay "warn"
+  # so the Hub pane is not a wall of nuclear red.
+  if ($l -match 'database is locked|address already in use|eaddrinuse') { return "crit" }
+  if ($l -match '(^|\W)critical(\W|$)|fatal error|out of memory|access is denied') { return "crit" }
+  if ($l -match 'traceback|error|failed|exception|refused|winerror|warning|\bwarn\b') { return "warn" }
   return "ok"
+}
+
+function Get-TbccHeatColor {
+  <# Continuous green → amber → nuclear-red. Pct 0 = stable green; 100 = brightest red.
+     Mild mid band; upper percentiles punch harder so ~89% is near-peak (not mid yellow). #>
+  param(
+    [double]$Pct,
+    [switch]$Invert
+  )
+  $t = [Math]::Max(0.0, [Math]::Min(100.0, $Pct)) / 100.0
+  if ($Invert) { $t = 1.0 - $t }
+  # Ease: keep 0–55% relatively mild, then accelerate toward red (89% ≈ 0.93 on curve).
+  $u = [Math]::Pow($t, 0.72)
+  $green = @{ R = 52; G = 211; B = 153 }
+  $amber = @{ R = 251; G = 191; B = 36 }
+  $peak = @{ R = 248; G = 113; B = 113 }
+  $nuke = @{ R = 220; G = 38; B = 38 }
+  if ($u -le 0.55) {
+    $f = $u / 0.55
+    $a = $green; $b = $amber
+  } else {
+    $f = ($u - 0.55) / 0.45
+    # last 8%: blend peak → nuke so 100% is distinct from 89%
+    if ($u -ge 0.92) {
+      $f = ($u - 0.92) / 0.08
+      $a = $peak; $b = $nuke
+    } else {
+      $f = ($u - 0.55) / 0.37
+      $a = $amber; $b = $peak
+    }
+  }
+  $f = [Math]::Max(0.0, [Math]::Min(1.0, $f))
+  return [System.Drawing.Color]::FromArgb(
+    [int][Math]::Round($a.R + ($b.R - $a.R) * $f),
+    [int][Math]::Round($a.G + ($b.G - $a.G) * $f),
+    [int][Math]::Round($a.B + ($b.B - $a.B) * $f)
+  )
+}
+
+function Get-TbccHubInkColor {
+  param([string]$Severity, $Theme)
+  switch ($Severity) {
+    "crit" { return (Get-TbccHeatColor -Pct 94) }
+    "warn" { return (Get-TbccHeatColor -Pct 58) }
+    "ok" { return (Get-TbccHeatColor -Pct 14) }
+    default {
+      if ($Theme) { return $Theme.Muted }
+      return [System.Drawing.Color]::FromArgb(120, 118, 112)
+    }
+  }
+}
+
+function Get-TbccHubLineHint {
+  <# Dynamic recovery hint for Hub hover / Mini footer. Suggests - does not auto-apply. #>
+  param([string]$Line)
+  if ([string]::IsNullOrWhiteSpace($Line)) {
+    return "Hub is quiet. Double-click a line later to jump in notepad."
+  }
+  $l = $Line.ToLowerInvariant()
+  if ($l -match 'database is locked') {
+    return "CAUSE: two Telethon/bot writers share a session.`nFIX: stop duplicate bots (panel Off) - keep one writer. Wait ~5s, then start only what you need. Do not Start from a second terminal."
+  }
+  if ($l -match 'address already in use|eaddrinuse') {
+    return "CAUSE: port already taken.`nFIX: panel Off on the service owning that port, or tray Stop that id. Confirm with stack-cli Status before Start again."
+  }
+  if ($l -match 'connection refused|actively refused|timed out|timeout') {
+    return "CAUSE: backend/:8000 down or hung.`nFIX: Start Backend from tray; wait until Health OK. Avoid mass-restarting Celery until API answers."
+  }
+  if ($l -match 'celery|workerlost|soft time limit|timelimitexceeded') {
+    return "CAUSE: Celery worker crash/timeout.`nFIX: open this line (double-click Hub). Fix the task error, then Ctrl+click restart only the affected celery_* service - not all bots."
+  }
+  if ($l -match 'traceback|exception') {
+    return "CAUSE: unhandled exception in a service.`nFIX: double-click to open the hub log at this line. Restart that one service after the root fix. Prefer not to auto-heal Tracebacks (wrong restart can 409 Telegram)."
+  }
+  if ($l -match '401|403|unauthorized|forbidden') {
+    return "CAUSE: auth/token rejected.`nFIX: check .env credentials for that bot/API (do not commit). Restart only that service after the secret is fixed."
+  }
+  if ($l -match 'discord|buffer|graphql') {
+    return "CAUSE: external API failure.`nFIX: check network + provider status. Retry later; don't hammer Start. Buffer/Discord errors rarely need a full stack restart."
+  }
+  if ($l -match 'error|failed|warn') {
+    return "CAUSE: service logged a failure.`nFIX: double-click Hub line -> notepad. Prefer targeted restart (Ctrl+click that service) over full stack bounce."
+  }
+  return "HINT: double-click to open error-hub.log at this line. Toggle services with click; Ctrl+click restarts."
+}
+
+function Get-TbccHubFootHint {
+  param($HubLines, [int]$HubWarn, [int]$HubCrit, [double]$CpuPct = -1)
+  $parts = New-Object System.Collections.Generic.List[string]
+  if ($HubCrit -gt 0) {
+    [void]$parts.Add(("{0} critical signal(s) - red reserved for port/session/auth meltdown." -f $HubCrit))
+  } elseif ($HubWarn -gt 0) {
+    [void]$parts.Add(("{0} warning line(s) - amber = attention, not panic." -f $HubWarn))
+  } else {
+    [void]$parts.Add("Hub quiet.")
+  }
+  if ($CpuPct -ge 0) {
+    [void]$parts.Add(("CPU heat {0:N0}% (footer color tracks load + hub pressure)." -f $CpuPct))
+  }
+  $sample = $null
+  foreach ($entry in @($HubLines)) {
+    $txt = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $sev = Get-TbccHubLineSeverity -Line $txt
+    if ($sev -eq "crit") { $sample = $txt; break }
+    if ($sev -eq "warn" -and -not $sample) { $sample = $txt }
+  }
+  if ($sample) {
+    [void]$parts.Add("")
+    [void]$parts.Add((Get-TbccHubLineHint -Line $sample))
+  }
+  return ($parts -join "`n")
 }
 
 function Get-TbccSupervisorHealthSnapshot {
@@ -645,6 +814,7 @@ function Start-TbccSupSnapshotProducer {
     HostIntervalMs  = [int]$HostIntervalMs
     HeavyIntervalMs = [int]$HeavyIntervalMs
     Stop            = $false
+    ForceRefresh    = $false
     Snapshot        = $null
     SnapshotAt      = $null
     StartedAt       = (Get-Date)
@@ -670,6 +840,12 @@ function Start-TbccSupSnapshotProducer {
     while (-not $Shared.Stop) {
       try {
         $now = Get-Date
+        if ($Shared.ForceRefresh) {
+          $Shared.ForceRefresh = $false
+          $script:TbccSupSvcCache = $null
+          $script:TbccSupSvcCacheAt = $null
+          $lastHeavyAt = [datetime]::MinValue
+        }
         $doHeavy = (-not $lastFull) -or `
           (($now - $lastHeavyAt).TotalMilliseconds -ge [double]$Shared.HeavyIntervalMs)
         if ($doHeavy) {
@@ -942,7 +1118,8 @@ function Update-TbccSupPanelUi {
   $cache = $Snap.Cache
   if ($cache) {
     $pct = if ($cache.Enabled -gt 0) { [double]$cache.EnabledUp / [double]$cache.Enabled * 100.0 } else { 0 }
-    $fill = if ($pct -ge 95) { $t.Ok } elseif ($pct -ge 70) { $t.Warn } else { $t.Crit }
+    # Invert heat: high UP% = green, low UP% = red
+    $fill = Get-TbccHeatColor -Pct $pct -Invert
     $ui.LblStackSum.Text = ("{0}/{1} up" -f $cache.EnabledUp, $cache.Enabled)
     $ui.LblStackSum.ForeColor = $fill
     Set-TbccSupMetricBarValue -Bar $ui.BarStack -Pct $pct -Theme $t -FillColor $fill
@@ -969,7 +1146,7 @@ function Update-TbccSupPanelUi {
     $key = [string]$bar.Tag.HostKey
     $v = if ($hostSnap.ContainsKey($key)) { $hostSnap[$key] } else { $null }
     $pct = if ($null -ne $v) { [double]$v } else { -1 }
-    $fill = if ($pct -ge 90) { $t.Crit } elseif ($pct -ge 75) { $t.Warn } else { $t.Ok }
+    $fill = if ($pct -ge 0) { Get-TbccHeatColor -Pct $pct } else { $t.Muted }
     Set-TbccSupMetricBarValue -Bar $bar -Pct $pct -Theme $t -FillColor $fill
   }
   if ($hostSnap.Net) { $ui.NetPrev = $hostSnap.Net }
@@ -984,9 +1161,15 @@ function Update-TbccSupPanelUi {
   }
   if ($null -ne $hostSnap.CpuPct) {
     Push-TbccSupSparklineSample -Canvas $ui.CpuSpark -Value ([double]$hostSnap.CpuPct)
+    if ($ui.CpuSpark -and $ui.CpuSpark.Tag) {
+      $ui.CpuSpark.Tag.LineColor = Get-TbccHeatColor -Pct ([double]$hostSnap.CpuPct)
+    }
   }
   if ($null -ne $hostSnap.RamPct) {
     Push-TbccSupSparklineSample -Canvas $ui.RamSpark -Value ([double]$hostSnap.RamPct)
+    if ($ui.RamSpark -and $ui.RamSpark.Tag) {
+      $ui.RamSpark.Tag.LineColor = Get-TbccHeatColor -Pct ([double]$hostSnap.RamPct)
+    }
   }
 
   Update-TbccSupMiniUi -Snap $Snap
@@ -1057,7 +1240,7 @@ function Update-TbccSupPanelUi {
       $half = [Math]::Ceiling($ids.Count / 2.0)
       $ui.SvcGrid.RowCount = [Math]::Max(1, [int]$half)
       for ($ri = 0; $ri -lt $half; $ri++) {
-        [void]$ui.SvcGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 14)))
+        [void]$ui.SvcGrid.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 16)))
       }
       for ($i = 0; $i -lt $ids.Count; $i++) {
         $id = $ids[$i]
@@ -1065,34 +1248,46 @@ function Update-TbccSupPanelUi {
         $ri2 = if ($i -lt $half) { $i } else { $i - $half }
         $cell = New-TbccSupLedRow -Label "" -Status "off" -Detail "" -Theme $t
         $cell.Tag.Id = $id
-        $cell.Cursor = [System.Windows.Forms.Cursors]::Hand
-        $cell.Add_Click({
+        $onSvcClick = {
           param($sender, $e)
-          $tag = $sender.Tag
+          if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+          $tag = Get-TbccSupActionTag -Control $sender
           if (-not $tag -or -not $tag.Id) { return }
           $ctrl = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Control) -ne 0
           $u = $script:TbccSupUi
           try {
             Invoke-TbccServiceMenuAction -ServiceId $tag.Id -TbccRoot $u.TbccRoot -FullStack:([bool]$u.FullStack) -MenuCatalog `
               -ForceRestart:$ctrl -OnNotify $u.OnNotify
+            # Force producer to refresh enabled/running state on the next loop.
+            $script:TbccSupSvcCache = $null
+            $script:TbccSupSvcCacheAt = $null
+            if ($script:TbccSupProducer -and $script:TbccSupProducer.Shared) {
+              $script:TbccSupProducer.Shared.ForceRefresh = $true
+            }
             if ($u.OnRefreshCache) { & $u.OnRefreshCache }
           } catch {
             if ($u.OnNotify) { & $u.OnNotify ("Service action failed: " + $_.Exception.Message) }
           }
-        })
+        }.GetNewClosure()
+        Register-TbccSupSubtreeMouseClick -Control $cell -Handler $onSvcClick
+        Register-TbccWheelScroll -Control $cell
         if ($ui.Tip) {
           $row0 = $cache.ById[$id]
           if ($row0) {
             $tipTxt = Get-TbccServiceMenuTooltip -Service $row0.Service -Status ([string]$row0.Status) -UserEnabled:([bool]$row0.UserEnabled)
             $ui.Tip.SetToolTip($cell, $tipTxt)
+            if ($cell.Tag.Label) { $ui.Tip.SetToolTip($cell.Tag.Label, $tipTxt) }
+            if ($cell.Tag.Detail) { $ui.Tip.SetToolTip($cell.Tag.Detail, $tipTxt) }
+            if ($cell.Tag.Led) { $ui.Tip.SetToolTip($cell.Tag.Led, $tipTxt) }
           } else {
-            $ui.Tip.SetToolTip($cell, "Toggle | Ctrl+restart")
+            $ui.Tip.SetToolTip($cell, "Click: enable/disable | Ctrl+click: restart")
           }
         }
         [void]$ui.SvcGrid.Controls.Add($cell, $col, $ri2)
         $ui.SvcCells[$id] = $cell
       }
       $ui.SvcCellIdKey = $idKey
+      Hide-TbccControlScrollBars -Control $ui.SvcGrid
     }
     # Update existing cells in place every tick (no control churn, no handle growth).
     for ($i = 0; $i -lt $ids.Count; $i++) {
@@ -1144,7 +1339,8 @@ function Update-TbccSupPanelUi {
     }
     if ($ui.ModHubHeader) {
       $ui.ModHubHeader.Text = ("HUB {0}w {1}c" -f $hubWarn, $hubCrit).ToUpper()
-      $ui.ModHubHeader.ForeColor = if ($hubCrit -gt 0) { $t.Crit } elseif ($hubWarn -gt 0) { $t.Warn } else { $t.Muted }
+      $hubHeat = if ($hubCrit -gt 0) { [Math]::Min(100, 82 + $hubCrit * 4) } elseif ($hubWarn -gt 0) { [Math]::Min(78, 48 + $hubWarn * 2) } else { 12 }
+      $ui.ModHubHeader.ForeColor = Get-TbccHeatColor -Pct $hubHeat
     }
     $ui.LastHubSig = $hubSig
   }
@@ -1185,9 +1381,11 @@ function Update-TbccSupPanelUi {
     $ui.LastAlertSig = $alertSig
   }
 
-  $overall = if ($hubCrit -gt 0 -or ($Snap.HealthOk -and $health -and -not $health.ok)) { $t.Crit }
-    elseif ($hubWarn -gt 0) { $t.Warn }
-    else { $t.Ok }
+  $overallHeat = if ($hubCrit -gt 0 -or ($Snap.HealthOk -and $health -and -not $health.ok)) { 90 }
+    elseif ($hubWarn -gt 0) { 58 }
+    elseif ($cache -and $cache.Enabled -gt 0) { 100.0 - ([double]$cache.EnabledUp / [double]$cache.Enabled * 100.0) }
+    else { 40 }
+  $overall = Get-TbccHeatColor -Pct $overallHeat
   if ($ui.StatusLbl) {
     $ui.StatusLbl.Text = ("{0} | {1}" -f (Get-Date -Format "HH:mm:ss"), $ui.TbccRoot)
   }
@@ -1550,22 +1748,31 @@ function Update-TbccSupMiniUi {
   $cache = $Snap.Cache
   if ($cache) {
     $pct = if ($cache.Enabled -gt 0) { [double]$cache.EnabledUp / [double]$cache.Enabled * 100.0 } else { 0 }
-    $fill = if ($pct -ge 95) { $t.Ok } elseif ($pct -ge 70) { $t.Warn } else { $t.Crit }
+    $fill = Get-TbccHeatColor -Pct $pct -Invert
     $auditBit = ""
     if ($Snap.ProcessAudit -and [int]$Snap.ProcessAudit.issueCount -gt 0) {
       $micro = if ($Snap.ProcessAudit.summaryMicro) { [string]$Snap.ProcessAudit.summaryMicro } else { "!" }
       $auditBit = " | " + $micro
-      if ([int]$Snap.ProcessAudit.issueCount -gt 0) { $fill = $t.Warn }
+      $fill = Get-TbccHeatColor -Pct 62
     }
     $script:TbccSupMiniUi.LblStack.Text = ("{0}/{1} up{2}" -f $cache.EnabledUp, $cache.Enabled, $auditBit)
     $script:TbccSupMiniUi.LblStack.ForeColor = $fill
   }
   $hostSnap = $Snap.Host
+  $cpuPct = -1.0
   if ($null -ne $hostSnap.CpuPct) {
-    Push-TbccSupSparklineSample -Canvas $script:TbccSupMiniUi.CpuSpark -Value ([double]$hostSnap.CpuPct)
+    $cpuPct = [double]$hostSnap.CpuPct
+    Push-TbccSupSparklineSample -Canvas $script:TbccSupMiniUi.CpuSpark -Value $cpuPct
+    if ($script:TbccSupMiniUi.CpuSpark -and $script:TbccSupMiniUi.CpuSpark.Tag) {
+      $script:TbccSupMiniUi.CpuSpark.Tag.LineColor = Get-TbccHeatColor -Pct $cpuPct
+    }
   }
   if ($null -ne $hostSnap.RamPct) {
-    Push-TbccSupSparklineSample -Canvas $script:TbccSupMiniUi.RamSpark -Value ([double]$hostSnap.RamPct)
+    $ramPct = [double]$hostSnap.RamPct
+    Push-TbccSupSparklineSample -Canvas $script:TbccSupMiniUi.RamSpark -Value $ramPct
+    if ($script:TbccSupMiniUi.RamSpark -and $script:TbccSupMiniUi.RamSpark.Tag) {
+      $script:TbccSupMiniUi.RamSpark.Tag.LineColor = Get-TbccHeatColor -Pct $ramPct
+    }
   }
   $hubCrit = 0
   $hubWarn = 0
@@ -1580,9 +1787,16 @@ function Update-TbccSupMiniUi {
     $netTxt = ("NET dn {0} up {1}" -f (Format-TbccBitrate $hostSnap.Net.DownBps), (Format-TbccBitrate $hostSnap.Net.UpBps))
     $script:TbccSupMiniUi.LastNetTxt = $netTxt
   }
-  $hubColor = if ($hubCrit -gt 0) { $t.Crit } elseif ($hubWarn -gt 0) { $t.Warn } else { $t.Ok }
+  # Footer color tracks CPU heat; hub pressure only pushes toward red when urgent.
+  $heat = if ($cpuPct -ge 0) { $cpuPct } else { 20 }
+  if ($hubWarn -gt 0) { $heat = [Math]::Max($heat, [Math]::Min(72, 48 + $hubWarn)) }
+  if ($hubCrit -gt 0) { $heat = [Math]::Max($heat, [Math]::Min(100, 84 + $hubCrit * 4)) }
   $script:TbccSupMiniUi.Foot.Text = ("HUB {0}w {1}c  |  {2}" -f $hubWarn, $hubCrit, $netTxt)
-  $script:TbccSupMiniUi.Foot.ForeColor = $hubColor
+  $script:TbccSupMiniUi.Foot.ForeColor = Get-TbccHeatColor -Pct $heat
+  if ($script:TbccSupMiniUi.Tip -and $script:TbccSupMiniUi.Foot) {
+    $hint = Get-TbccHubFootHint -HubLines $Snap.HubLines -HubWarn $hubWarn -HubCrit $hubCrit -CpuPct $cpuPct
+    $script:TbccSupMiniUi.Tip.SetToolTip($script:TbccSupMiniUi.Foot, $hint)
+  }
 }
 
 function Show-TbccSupervisorPanel {
@@ -1710,9 +1924,10 @@ function Show-TbccSupervisorPanel {
   [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
   [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
   [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 67)))
-  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 60)))
-  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 83)))
-  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 52)))
+  # Services + Hub grow with the window (Absolute Services used to clip/overflow on resize).
+  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 42)))
+  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 58)))
   $form.Controls.Add($root)
 
   # --- Row0: Stack | Host ---
@@ -1794,6 +2009,7 @@ function Show-TbccSupervisorPanel {
   [void]$svcGrid.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
   $svcGrid.AutoScroll = $true
   Register-TbccScrollBarSuppression -Control $svcGrid
+  Register-TbccWheelScroll -Control $svcGrid
   $modSvc.Body.Controls.Add($svcGrid)
 
   # --- Row3: Hub | Alerts ---
@@ -1812,6 +2028,7 @@ function Show-TbccSupervisorPanel {
   $hubList.DrawMode = [System.Windows.Forms.DrawMode]::OwnerDrawFixed
   $hubList.ItemHeight = 14
   Register-TbccScrollBarSuppression -Control $hubList
+  Register-TbccWheelScroll -Control $hubList
   $hubList.Add_DrawItem({
     param($sender, $e)
     if ($e.Index -lt 0) { return }
@@ -1819,12 +2036,7 @@ function Show-TbccSupervisorPanel {
     $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
     $sev = Get-TbccHubLineSeverity -Line $line
     $t = if ($script:TbccSupUi -and $script:TbccSupUi.Theme) { $script:TbccSupUi.Theme } else { Get-TbccSupervisorTheme }
-    $fg = switch ($sev) {
-      "crit" { $t.Crit }
-      "warn" { $t.Warn }
-      "ok" { $t.Muted }
-      default { $t.Text }
-    }
+    $fg = Get-TbccHubInkColor -Severity $sev -Theme $t
     $bg = if ($e.State -band [System.Windows.Forms.DrawItemState]::Selected) {
       [System.Drawing.Color]::FromArgb(38, 38, 44)
     } else {
@@ -1854,6 +2066,24 @@ function Show-TbccSupervisorPanel {
       & $script:TbccSupUi.OnNotify "Could not open error hub log."
     }
   })
+  [void]$hubList.Add_MouseMove({
+    param($sender, $e)
+    $ui = $script:TbccSupUi
+    if (-not $ui -or -not $ui.Tip) { return }
+    $idx = $sender.IndexFromPoint($e.Location)
+    if ($idx -lt 0 -or $idx -ge $sender.Items.Count) {
+      if ($script:TbccSupHubTipIdx -ne -2) {
+        $script:TbccSupHubTipIdx = -2
+        $ui.Tip.SetToolTip($sender, "Hover a line for CAUSE/FIX · Double-click jumps in Notepad · wheel scrolls")
+      }
+      return
+    }
+    if ($script:TbccSupHubTipIdx -eq $idx) { return }
+    $script:TbccSupHubTipIdx = $idx
+    $entry = $sender.Items[$idx]
+    $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $ui.Tip.SetToolTip($sender, (Get-TbccHubLineHint -Line $line))
+  })
   $modHub.Body.Controls.Add($hubList)
 
   $alertList = New-Object System.Windows.Forms.ListBox
@@ -1863,6 +2093,7 @@ function Show-TbccSupervisorPanel {
   $alertList.Font = $theme.FontMicro
   $alertList.BorderStyle = [System.Windows.Forms.BorderStyle]::None
   Register-TbccScrollBarSuppression -Control $alertList
+  Register-TbccWheelScroll -Control $alertList
   $modAlert.Body.Controls.Add($alertList)
 
   $statusStrip = New-Object System.Windows.Forms.StatusStrip
@@ -2037,9 +2268,9 @@ function Show-TbccSupervisorPanel {
   $tip.SetToolTip($barStackObj.Row, "Enabled services that are up")
   $tip.SetToolTip($lblStackSub, "StackWatch process audit (from .tbcc-run\process-audit.json, ~60s refresh)")
   $tip.SetToolTip($modHost.Outer, "CPU/RAM bars and sparkline history")
-  $tip.SetToolTip($modSvc.Outer, "Click toggle | Ctrl+restart | drag corner to resize")
+  $tip.SetToolTip($modSvc.Outer, "Click row: enable/disable | Ctrl+click: restart | wheel scrolls")
   $tip.SetToolTip($modAlert.Outer, "Conflicts and ops alerts")
-  $tip.SetToolTip($hubList, "Double-click line to jump in Notepad | scroll with mouse wheel")
+  $tip.SetToolTip($hubList, "Hover a line for CAUSE/FIX · Double-click jumps in Notepad · wheel scrolls")
 
   $panelCtx = New-Object System.Windows.Forms.ContextMenuStrip
   $miPanelStart = New-Object System.Windows.Forms.ToolStripMenuItem
