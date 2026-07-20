@@ -26,7 +26,7 @@ _LV_HOST_RE = re.compile(
     re.I,
 )
 _X_OK_RE = re.compile(
-    r"t\.me/|allmylinks|nodress|nudify\.now|musebox|playbun|fapify|drawai|botynude|gravatar",
+    r"t\.me/|allmylinks|nodress|nudify\.now|musebox|playbun|fapify|drawai|botynude|gravatar|gumroad\.com",
     re.I,
 )
 

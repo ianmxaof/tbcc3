@@ -458,6 +458,34 @@ def merge_checkout_buttons(
         fb = (os.getenv("TBCC_CHECKOUT_BOT_FALLBACK_LABEL") or BOT_FALLBACK_LABEL).strip()[:64]
         out.append({"text": fb, "url": bot_url})
 
+    try:
+        from app.services.gumroad_ping import (
+            append_vip_checkout_hints,
+            gumroad_checkout_enabled,
+            product_url_for_plan,
+            recurrence_for_plan,
+        )
+
+        if gumroad_checkout_enabled():
+            gr_base = product_url_for_plan(int(checkout_stars_plan_id))
+            if gr_base:
+                plan_payload = {
+                    "duration_days": int(plan.duration_days or 30),
+                    "nowpayments_price_usd": float(plan.nowpayments_price_usd or 0),
+                }
+                gr_url = append_vip_checkout_hints(
+                    gr_base,
+                    recurrence=recurrence_for_plan(plan_payload),
+                )
+                gr_key = gr_url.strip().lower().rstrip("/")
+                if gr_key and gr_key not in existing_urls:
+                    gr_label = (
+                        os.getenv("TBCC_GUMROAD_CHECKOUT_BUTTON_LABEL") or "💳 Gumroad — from $6"
+                    ).strip()[:64]
+                    out.append({"text": gr_label, "url": gr_url[:512]})
+    except Exception:
+        logger.debug("checkout: gumroad button skipped", exc_info=True)
+
     return out
 
 

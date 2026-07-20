@@ -58,6 +58,18 @@ def _a_tag(url: str, anchor: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(anchor)}</a>'
 
 
+def _gumroad_vip_bulletin_link() -> str:
+    from app.services.aof_social_links import gumroad_vip_link_html
+
+    return gumroad_vip_link_html(label="from $6/mo") or "aof69.gumroad.com/l/ynnulc"
+
+
+def gumroad_vip_embed_rotation_enabled() -> bool:
+    """Bare Gumroad URL in caption rotation → Telegram link-preview card."""
+    raw = (os.getenv("TBCC_GUMROAD_VIP_EMBED_ROTATION") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def _stored_gate_url(url: str) -> bool:
     u = (url or "").strip().split()[0]
     if not u.startswith("http"):
@@ -141,7 +153,7 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
         "━━━━━━━━━━━━━━━━━━\n"
         "🔥 <b>ENTRY</b>\n"
         f"🪙 Loot Room: {_gate_link(lv, 'loot', 'AOF LOOT ROOM')}\n"
-        f"🔗 Flagship hub: {_gate_link(lv, 'mainhub', 't.me/aofmainhub')}\n"
+        f"🔗 Flagship hub: {_gate_link(lv, 'mainhub', 'telegram.me/aofmainhub')}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📂 <b>CONTENT</b>\n"
         f"📌 {_gate_link(lv, 'addlist', 'ADDLIST — all channels')}\n"
@@ -166,6 +178,7 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
         "🚀 <b>SUPPORT AOF</b>\n"
         "🔥 Buy Premium Packs: @aofsubscriptions_bot\n"
         f"⭐ AOF VIP: @aofsubscriptions_bot — /subscribe\n"
+        f"💳 Gumroad VIP (card/PayPal): {_gumroad_vip_bulletin_link()}\n"
         "📢 Referral Program: @aofsubscriptions_bot — /referral\n"
         f"{donate_line}"
         f"{partner_lines}"
@@ -614,6 +627,42 @@ def _append_gate_fomo_variations(variations: list[str], footer: str) -> list[str
     return out
 
 
+def _gumroad_vip_promo_variations(footer: str) -> list[str]:
+    """Dedicated VIP + Gumroad embed slots (bare URL → Telegram preview card)."""
+    from app.services.aof_main_group_copy import vip_promo_minimal_bodies
+    from app.services.aof_social_links import gumroad_vip_url
+
+    if not gumroad_vip_embed_rotation_enabled():
+        return []
+    url = gumroad_vip_url()
+    if not url:
+        return []
+    bodies = [
+        (
+            "⭐ <b>AOF VIP</b> — ad-free · early · all lanes.\n"
+            "Public gets gates — VIP gets direct files, bigger batches.\n"
+            "<i>Card / PayPal on Gumroad — or Pay ⭐ below.</i>"
+        ),
+        (
+            "💳 <b>VIP from $6/mo</b> — monthly → 2-year ladder on Gumroad.\n"
+            "Same access as Stars · pick your term on the landing page."
+        ),
+    ]
+    bodies.extend(vip_promo_minimal_bodies()[:1])
+    return [(b + footer + f"\n\n{url}").strip() for b in bodies]
+
+
+def _append_gumroad_vip_variations(variations: list[str], footer: str) -> list[str]:
+    seen = {v.strip() for v in variations}
+    out = list(variations)
+    for full in _gumroad_vip_promo_variations(footer):
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out
+
+
 def build_telegram_footer_variants(db: Session, lv: dict[str, str], *, network_key: str) -> list[str]:
     """One footer per telegram_footer affiliate eligible for this network channel."""
     from app.services.promo_affiliate_rotation import build_sponsor_link_html, list_candidates
@@ -792,6 +841,7 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
         if len(footer_variants) > 1:
             merged = _append_sponsor_promo_variations(merged, net_ch.promo_html, footer_variants)
         merged = _append_gate_fomo_variations(merged, base_footer)
+        merged = _append_gumroad_vip_variations(merged, base_footer)
         merged = _sanitize_variations(merged, clean_footer=base_footer, skip_bulletin=True)
         entry["variations"] = len(merged)
         entry["sponsor_footers"] = max(0, len(footer_variants) - 1)

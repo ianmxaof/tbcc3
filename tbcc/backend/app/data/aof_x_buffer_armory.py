@@ -1,6 +1,6 @@
 """Short X captions for TBCC buffer_x_queue — consumed one per Telegram→Buffer mirror trigger.
 
-Linkvertise {gate} is Telegram-only; X uses {hub} / {affiliate} (fill_armory_template for_x=True).
+Linkvertise {gate} is Telegram-only; X uses {hub} / {affiliate} / {gumroad_vip} (fill_armory_template for_x=True).
 """
 
 from __future__ import annotations
@@ -73,6 +73,14 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
     },
     {
         "text": "musebox turned a moodboard into motion before i finished my coffee. {affiliate} · full map {allmylinks}",
+        "image": "",
+    },
+    {
+        "text": "VIP ladder on Gumroad — card/PayPal when Stars feel cursed. {gumroad_vip} · hub {hub}",
+        "image": "",
+    },
+    {
+        "text": "from $6/mo to 2-year lock-in. same silo, different rail. {gumroad_vip} · map {allmylinks}",
         "image": "",
     },
 ]
