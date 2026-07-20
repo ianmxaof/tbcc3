@@ -1,0 +1,161 @@
+# TBCC revenue island — dedicated Linux VPS (~$5–15/mo). NOT the scrape e2-micro.
+#
+# Queue audit (celery_app.py task_routes) — slim workers must consume:
+#   celery       — sale_announce, loot_promo, scheduler_worker, misc fulfill helpers
+#   subscription — grant_access, subscription_worker, milestones, drop_countdown, network_liveness
+#   telegram     — import/mirror helpers used by fulfillment paths
+#   post_scheduler + post — sale FOMO + scheduled channel posts (worker_post; separate from fulfill)
+# Explicitly EXCLUDED: scrape (GCP micro), ops_* (home/dev).
+#
+# Typical bring-up (API only, then bots after home payment/loot stopped):
+#   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d postgres redis api worker worker_post beat
+#   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island --profile bots up -d
+#
+# Prefer GHCR pull (set TBCC_WORKER_IMAGE). Build-on-VPS is discouraged on small droplets.
+
+x-island-image: &island-image
+  image: ${TBCC_WORKER_IMAGE:-ghcr.io/ianmxaof/tbcc-worker:latest}
+  pull_policy: always
+  restart: unless-stopped
+  env_file:
+    - .env.revenue-island
+  environment:
+    PYTHONPATH: /app
+  working_dir: /app
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tbcc}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - island_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-tbcc}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  api:
+    <<: *island-image
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8000
+      --proxy-headers
+      --forwarded-allow-ips='*'
+    environment:
+      PYTHONPATH: /app
+      # Loot media load from Saved Messages (see REVENUE_ISLAND.md). ONE host only.
+      TELEGRAM_SESSION_PATH: /sessions/admin
+      TBCC_BUNDLE_DIR: /uploads/bundles
+      TBCC_PROMO_DIR: /uploads/promo
+    volumes:
+      - /opt/tbcc/sessions:/sessions:rw
+      - /opt/tbcc/uploads:/uploads:rw
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    <<: *island-image
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -P solo
+      -Q celery,subscription,telegram
+      -n island@%h
+      --without-gossip
+      --without-mingle
+    environment:
+      PYTHONPATH: /app
+      TELEGRAM_SESSION_PATH: /sessions/admin
+    volumes:
+      - /opt/tbcc/sessions:/sessions:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Sale FOMO + scheduled text/media posts. Separate solo worker so fulfill
+  # (subscription/telegram) never waits behind Telethon poster lock.
+  worker_post:
+    <<: *island-image
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -P solo
+      -Q post_scheduler,post
+      -n island-post@%h
+      --without-gossip
+      --without-mingle
+    environment:
+      PYTHONPATH: /app
+      TELEGRAM_SESSION_PATH: /sessions/admin
+      # Separate SQLite file on the shared volume; auto-copy from admin on first use.
+      TBCC_POSTER_TELEGRAM_SESSION: /sessions/admin_poster
+      TBCC_POSTER_AUTO_COPY_ADMIN_SESSION: "1"
+    volumes:
+      - /opt/tbcc/sessions:/sessions:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    <<: *island-image
+    command: >
+      celery -A app.workers.celery_app beat
+      -l info
+    depends_on:
+      - redis
+      - worker
+
+  payment_bot:
+    <<: *island-image
+    profiles: ["bots"]
+    command: python -m bots.payment_bot
+    environment:
+      PYTHONPATH: /app
+      TBCC_BUNDLE_DIR: /uploads/bundles
+      TBCC_PROMO_DIR: /uploads/promo
+    volumes:
+      - /opt/tbcc/uploads:/uploads:rw
+    depends_on:
+      - api
+      - redis
+      - postgres
+
+  loot_bot:
+    <<: *island-image
+    profiles: ["bots"]
+    command: python -m bots.loot_bot
+    depends_on:
+      - api
+      - redis
+      - postgres
+
+volumes:
+  island_pgdata:

@@ -1,7 +1,7 @@
 """Fresh X captions for Buffer's native queue — hub + revshare affiliates (no Linkvertise).
 
 Linkvertise gates stay on Telegram only (see TBCC_X_USE_LINKVERTISE).
-Placeholders: {hub} {allmylinks} {affiliate} {gravatar} — filled by fill_armory_template(for_x=True).
+Placeholders: {hub} {allmylinks} {affiliate} {gravatar} {gumroad_vip} — filled by fill_armory_template(for_x=True).
 """
 
 from __future__ import annotations
@@ -54,5 +54,17 @@ AOF_X_BUFFER_NATIVE_POOL: list[dict[str, str]] = [
     },
     {
         "text": "email list gets drops first. X gets affiliates + hub. {affiliate} · {hub} · map {allmylinks}",
+    },
+    {
+        "text": "VIP on card/PayPal — skip the gate circus. {gumroad_vip} · hub {hub} · keys @aofsubscriptions_bot",
+    },
+    {
+        "text": "same VIP access — Stars on Telegram or Gumroad if you hate ⭐. {gumroad_vip} · map {allmylinks}",
+    },
+    {
+        "text": "$6/mo → $100/2yr ladder. impatient people fund the network. {gumroad_vip} · {hub}",
+    },
+    {
+        "text": "public tease on Telegram. VIP lands early on Gumroad + Stars. {gumroad_vip} · hub {hub}",
     },
 ]

@@ -175,17 +175,26 @@ async def post_init(app: Application) -> None:
         logger.warning("set_my_commands: %s", e)
 
 
-def main() -> None:
-    token = _token()
-    if not token:
-        print("Set TBCC_LLM_CHAT_BOT_TOKEN (or LLM_CHAT_BOT_TOKEN) in tbcc/.env")
-        return
-
-    app = Application.builder().token(token).post_init(post_init).build()
+def build_application(token: str | None = None) -> Application | None:
+    """Build the LLM-chat Application without starting a poller (Zeus co-host ready)."""
+    tok = (token if token is not None else _token()).strip()
+    if not tok:
+        return None
+    app = Application.builder().token(tok).post_init(post_init).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("reset", cmd_reset))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text))
+    app.add_handler(
+        MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text)
+    )
+    return app
+
+
+def main() -> None:
+    app = build_application()
+    if app is None:
+        print("Set TBCC_LLM_CHAT_BOT_TOKEN (or LLM_CHAT_BOT_TOKEN) in tbcc/.env")
+        return
 
     print("LLM chat bot running. Commands: /start /help /reset")
     print("Provider:", (os.getenv("TBCC_LLM_CHAT_PROVIDER") or "ollama").strip())

@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 
 SUBSCRIPTION_PERIOD_SECONDS = 2_592_000  # 30 days — only value Telegram allows today
 BOT_FALLBACK_LABEL = "Crypto & main group →"
+CHECKOUT_CAPTION_LABEL_DEFAULT = "VIP checkout — Stars · crypto · card"
+# Retired pre-Gumroad monthly plan id (AOF Main — 500⭐); map to active VIP ladder at send time.
+LEGACY_CHECKOUT_PLAN_IDS = frozenset({6})
 CHECKOUT_CAPTION_MARKERS = (
     "Subscribe to AOF VIP",
     "Start payment for group access",
     "Pay for group access with Stars",
+    CHECKOUT_CAPTION_LABEL_DEFAULT,
 )
 _CHECKOUT_CAPTION_LINE_RE = re.compile(
     r"\n?💳\s*<a\s+href=\"[^\"]+\">[^<]+</a>",
@@ -139,6 +143,21 @@ def checkout_deep_link_payload(
     return raw
 
 
+def checkout_caption_label() -> str:
+    return (os.getenv("TBCC_CHECKOUT_CAPTION_LABEL") or CHECKOUT_CAPTION_LABEL_DEFAULT).strip()
+
+
+def normalize_checkout_plan_id(db: Session, plan_id: int) -> int:
+    """Map inactive/legacy checkout plan ids to the live monthly VIP SKU."""
+    pid = int(plan_id)
+    plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == pid).first()
+    if plan and plan.is_active is not False and int(plan.price_stars or 0) > 0:
+        return pid
+    from app.services.aof_growth_hub import resolve_group_access_plan_id
+
+    return resolve_group_access_plan_id(db)
+
+
 def bot_checkout_url(
     plan_id: int,
     referral_code: str | None = None,
@@ -226,7 +245,7 @@ def resolve_vip_promo_url(db: Session, plan_id: int) -> str:
     Checkout URL for footers/bulletins — subscription invite or payment-bot deep link.
     Never falls back to raw admin channel invites.
     """
-    pid = int(plan_id)
+    pid = normalize_checkout_plan_id(db, int(plan_id))
     primary, _kind = resolve_primary_checkout_url(db, pid)
     if primary:
         return primary
@@ -261,6 +280,7 @@ def resolve_primary_checkout_url(
     for admins and already-subscribed users. One-tap Stars modal uses createInvoiceLink;
     fallback is payment-bot deep link (Stars + crypto menu).
     """
+    plan_id = normalize_checkout_plan_id(db, int(plan_id))
     if use_invoice_link_checkout():
         plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(plan_id)).first()
         if plan and plan.is_active is not False and int(plan.price_stars or 0) > 0:
@@ -288,11 +308,12 @@ def build_checkout_caption_line(
     if not multi_album_media:
         return ""
 
-    url = bot_checkout_url(int(plan_id), referral_code)
+    pid = normalize_checkout_plan_id(db, int(plan_id))
+    url = bot_checkout_url(int(pid), referral_code, menu=True)
     if not url:
         bot = _payment_bot_username() or "aofsubscriptions_bot"
-        url = f"https://t.me/{bot}?start=c{int(plan_id)}"
-    marker = "Start payment for group access"
+        url = f"https://t.me/{bot}?start=cm{int(pid)}"
+    marker = checkout_caption_label()
     return f"\n💳 <a href=\"{html.escape(url, quote=True)}\">{html.escape(marker)}</a>"
 
 
@@ -310,9 +331,10 @@ def refresh_checkout_caption_for_send(
     body = strip_checkout_caption_lines(caption)
     if not multi_album_media:
         return body
+    pid = normalize_checkout_plan_id(db, int(plan_id))
     line = build_checkout_caption_line(
         db,
-        int(plan_id),
+        int(pid),
         multi_album_media=True,
         referral_code=referral_code,
     )
@@ -409,6 +431,7 @@ def merge_checkout_buttons(
     if not checkout_stars_enabled or not checkout_stars_plan_id:
         return out
 
+    checkout_stars_plan_id = normalize_checkout_plan_id(db, int(checkout_stars_plan_id))
     plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(checkout_stars_plan_id)).first()
     if not plan or plan.is_active is False or int(plan.price_stars or 0) <= 0:
         logger.warning("checkout: plan %s missing, inactive, or has no Stars price", checkout_stars_plan_id)
@@ -457,6 +480,34 @@ def merge_checkout_buttons(
     ):
         fb = (os.getenv("TBCC_CHECKOUT_BOT_FALLBACK_LABEL") or BOT_FALLBACK_LABEL).strip()[:64]
         out.append({"text": fb, "url": bot_url})
+
+    try:
+        from app.services.gumroad_ping import (
+            append_vip_checkout_hints,
+            gumroad_checkout_enabled,
+            product_url_for_plan,
+            recurrence_for_plan,
+        )
+
+        if gumroad_checkout_enabled():
+            gr_base = product_url_for_plan(int(checkout_stars_plan_id))
+            if gr_base:
+                plan_payload = {
+                    "duration_days": int(plan.duration_days or 30),
+                    "nowpayments_price_usd": float(plan.nowpayments_price_usd or 0),
+                }
+                gr_url = append_vip_checkout_hints(
+                    gr_base,
+                    recurrence=recurrence_for_plan(plan_payload),
+                )
+                gr_key = gr_url.strip().lower().rstrip("/")
+                if gr_key and gr_key not in existing_urls:
+                    gr_label = (
+                        os.getenv("TBCC_GUMROAD_CHECKOUT_BUTTON_LABEL") or "💳 Gumroad — from $6"
+                    ).strip()[:64]
+                    out.append({"text": gr_label, "url": gr_url[:512]})
+    except Exception:
+        logger.debug("checkout: gumroad button skipped", exc_info=True)
 
     return out
 

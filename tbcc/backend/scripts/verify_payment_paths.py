@@ -115,11 +115,11 @@ def main() -> int:
             id = 999888777
 
     async def _fake_plan(_pid: int):
-        return {"id": 6, "is_active": True, "product_type": "subscription", "price_stars": 500}
+        return {"id": 10, "is_active": True, "product_type": "subscription", "price_stars": 500}
 
     ok, err = asyncio.run(validate_pre_checkout(_FakeQuery(), _fake_plan))
     if ok:
-        _ok("pre_checkout validation (AOF Main 500 stars)")
+        _ok("pre_checkout validation (AOF VIP 1 Month 500 stars)")
     else:
         _fail("pre_checkout", err or "")
         fails += 1
@@ -143,7 +143,7 @@ def main() -> int:
     print("\n[NOWPayments invoice create — no payment required]")
     key = os.getenv("TBCC_INTERNAL_API_KEY", "")
     base = (os.getenv("TBCC_API_URL") or "http://127.0.0.1:8000").rstrip("/")
-    for plan_id, label in [(6, "AOF Main"), (2, "Loot 150 stars")]:
+    for plan_id, label in [(10, "AOF VIP 1 Month"), (2, "Loot 150 stars")]:
         try:
             r = httpx.post(
                 f"{base}/external-payment-orders/",

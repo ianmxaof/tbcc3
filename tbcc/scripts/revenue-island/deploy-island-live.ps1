@@ -1,0 +1,127 @@
+# Deploy local TBCC changes to the live revenue island immediately.
+# Builds on island when local Docker is unavailable; seeds DB; recycles services.
+#
+#   .\scripts\revenue-island\deploy-island-live.ps1
+#   .\scripts\revenue-island\deploy-island-live.ps1 -HostName root@5.161.53.91 -SkipBuild
+#   .\scripts\revenue-island\deploy-island-live.ps1 -UseGhcrPull   # skip rsync build; pull :latest only
+
+param(
+  [string]$HostName = "root@5.161.53.91",
+  [string]$RemoteDir = "/opt/tbcc",
+  [switch]$SkipBuild,
+  [switch]$UseGhcrPull,
+  [switch]$SkipTunnel,
+  [switch]$SkipSeeds,
+  [switch]$WhatIf
+)
+
+$ErrorActionPreference = "Stop"
+$tbccRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$backend = Join-Path $tbccRoot "backend"
+$composeFile = "docker-compose.revenue-island.yml"
+$envFile = ".env.revenue-island"
+$localTag = "ghcr.io/ianmxaof/tbcc-worker:local-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+
+function Invoke-Remote([string]$cmd) {
+  if ($WhatIf) { Write-Host "WHATIF ssh $HostName $cmd" -ForegroundColor DarkGray; return "" }
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  $out = (& ssh $HostName $cmd 2>&1 | Out-String).TrimEnd()
+  $ErrorActionPreference = $prev
+  if ($LASTEXITCODE -ne 0) { throw "Remote command failed (exit $LASTEXITCODE): $cmd`n$out" }
+  return $out
+}
+
+function Invoke-Compose([string]$composeArgs) {
+  $inner = "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile $composeArgs"
+  Invoke-Remote $inner
+}
+
+Write-Host "=== TBCC revenue island live deploy -> $HostName ===" -ForegroundColor Cyan
+
+# 1) Seed island env from home (never commits secrets)
+Write-Host "`n[1/7] Seed island env from home .env" -ForegroundColor Yellow
+& (Join-Path $PSScriptRoot "seed-island-env-from-home.ps1")
+if ($WhatIf) { Write-Host "WhatIf: skipping sync/build" -ForegroundColor Yellow; exit 0 }
+
+# 2) Sync compose + scripts (+ filled env)
+Write-Host "`n[2/7] Sync compose/scripts/env to island" -ForegroundColor Yellow
+& (Join-Path $PSScriptRoot "sync-island-files.ps1") -HostName $HostName -IncludeFilledEnv
+$installTunnel = Join-Path $PSScriptRoot "install-island-api-tunnel.sh"
+& scp $installTunnel "${HostName}:$RemoteDir/scripts/revenue-island/"
+Invoke-Remote "sed -i 's/\r$//' $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh && chmod +x $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh"
+
+# 3) HTTPS tunnel for webhooks (skip if TBCC_ISLAND_API_PUBLIC_URL already set on home)
+if (-not $SkipTunnel) {
+  $islandEnv = Join-Path $tbccRoot "infra\.env.revenue-island"
+  $hasPublic = Select-String -Path $islandEnv -Pattern "^TBCC_PUBLIC_API_BASE_URL=https://" -Quiet
+  if (-not $hasPublic) {
+    Write-Host "`n[3/7] Install Cloudflare quick tunnel (public HTTPS for webhooks)" -ForegroundColor Yellow
+    Invoke-Remote "bash $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh"
+    # Re-sync env after tunnel patches island file locally on VPS — pull back not needed; patch happened on VPS
+    & scp "${HostName}:$RemoteDir/infra/.env.revenue-island" (Join-Path $tbccRoot "infra\.env.revenue-island")
+  } else {
+    Write-Host "`n[3/7] Public API URL already set - skip tunnel" -ForegroundColor DarkGray
+  }
+} else {
+  Write-Host "`n[3/7] Skip tunnel (-SkipTunnel)" -ForegroundColor DarkGray
+}
+
+# 4) Code deploy — rsync backend + build on island OR pull GHCR
+if ($UseGhcrPull) {
+  Write-Host "`n[4/7] Pull GHCR :latest on island" -ForegroundColor Yellow
+  Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile pull api worker worker_post beat payment_bot loot_bot || true"
+} elseif (-not $SkipBuild) {
+  Write-Host "`n[4/7] Rsync backend + docker build on island ($localTag)" -ForegroundColor Yellow
+  Invoke-Remote "mkdir -p $RemoteDir/backend-src"
+  $tgz = Join-Path $env:TEMP "tbcc-backend-deploy.tgz"
+  if (Get-Command tar -ErrorAction SilentlyContinue) {
+    Push-Location $backend
+    & tar -czf $tgz --exclude=__pycache__ --exclude=.pytest_cache --exclude=.tbcc-run .
+    Pop-Location
+    & scp $tgz "${HostName}:/tmp/tbcc-backend-deploy.tgz"
+    if ($LASTEXITCODE -ne 0) { throw "scp backend tarball failed" }
+    Invoke-Remote "rm -rf $RemoteDir/backend-src/* && tar xzf /tmp/tbcc-backend-deploy.tgz -C $RemoteDir/backend-src && rm -f /tmp/tbcc-backend-deploy.tgz"
+  } else {
+    & scp -r "$backend\*" "${HostName}:$RemoteDir/backend-src/"
+    if ($LASTEXITCODE -ne 0) { throw "scp backend failed" }
+  }
+  Invoke-Remote "docker build -t $localTag $RemoteDir/backend-src"
+  # Point compose at local tag
+  Invoke-Remote @"
+grep -q '^TBCC_WORKER_IMAGE=' $RemoteDir/infra/$envFile && sed -i 's|^TBCC_WORKER_IMAGE=.*|TBCC_WORKER_IMAGE=$localTag|' $RemoteDir/infra/$envFile || echo 'TBCC_WORKER_IMAGE=$localTag' >> $RemoteDir/infra/$envFile
+"@
+} else {
+  Write-Host "`n[4/7] Skip build (-SkipBuild)" -ForegroundColor DarkGray
+}
+
+# 5) Recreate stack
+Write-Host "`n[5/7] Recreate api + workers + bots" -ForegroundColor Yellow
+Invoke-Compose "up -d --pull never --force-recreate api worker worker_post beat"
+Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot"
+
+# 6) Migrations + seeds
+if (-not $SkipSeeds) {
+  Write-Host "`n[6/7] Alembic + VIP/Gumroad seeds" -ForegroundColor Yellow
+  Invoke-Compose "exec -T api alembic upgrade head"
+  Invoke-Compose "exec -T api python scripts/seed_aof_shop_and_loot.py --execute"
+  Invoke-Compose "exec -T api python scripts/seed_promo_affiliate_links.py"
+  Invoke-Compose "exec -T api python scripts/apply_network_album_checkout.py --execute --sync-schedulers"
+  Invoke-Remote "mkdir -p /opt/tbcc/uploads/bundles /opt/tbcc/uploads/promo"
+} else {
+  Write-Host "`n[6/7] Skip seeds (-SkipSeeds)" -ForegroundColor DarkGray
+}
+
+# 7) Verify
+Write-Host "`n[7/7] Health + plan count" -ForegroundColor Yellow
+$health = Invoke-Remote "curl -fsS http://127.0.0.1:8000/health"
+Write-Host $health -ForegroundColor Green
+$plans = Invoke-Remote @"
+cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile exec -T postgres psql -U postgres -d tbcc -t -c "SELECT id, name, price_stars, is_active FROM subscription_plans WHERE bot_section='main' ORDER BY id;"
+"@
+Write-Host $plans
+
+Write-Host ""
+Write-Host "=== Deploy complete ===" -ForegroundColor Green
+Write-Host "Update Gumroad Ping + NOWPayments IPN to the URL in infra/.api-public-url on the VPS if tunnel was (re)started."
+Write-Host "Smoke: Telegram /subscribe on @aofsubscriptions_bot - expect 5-term VIP ladder + Gumroad + crypto."

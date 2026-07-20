@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 _PLACEMENT = "x_link_first"
 _URL_RE = re.compile(r"https://[^\s<>\"'\)]+", re.I)
+_GUMROAD_RE = re.compile(r"gumroad\.com/l/", re.I)
 _AFFILIATE_RE = re.compile(
     r"nodress|nudify\.now|musebox|playbun|fapify|drawai|botynude|/ref/|bot\?username=",
     re.I,
@@ -28,6 +29,7 @@ _PROMO_VIEWER_RE = re.compile(r"ibb\.co/(?!.+\.(jpg|jpeg|png|gif|webp)$)|imgbb\.
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "affiliate",
+    "gumroad_vip",
     "allmylinks",
     "erome",
     "promo_viewer",
@@ -64,6 +66,8 @@ def classify_url(url: str) -> str:
     u = (url or "").strip()
     if not u:
         return "other"
+    if _GUMROAD_RE.search(u):
+        return "gumroad_vip"
     if _AFFILIATE_RE.search(u):
         return "affiliate"
     if _EROME_RE.search(u):

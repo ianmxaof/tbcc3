@@ -25,14 +25,14 @@ def payment_bot_username() -> str:
 
 def loot_public_cta_url() -> str:
     """
-    Public top-of-funnel after AOF Main ban — loot overseer free-pull deep link.
-    Prefer bot start over bare Loot Room invite so keys stay behind checkout.
+    Public top-of-funnel — bare AOF LOOT GOD bot profile (no deep-link params).
+    Prefer https://telegram.me/aof_lootgod_bot over room invites / start= payloads.
     """
     explicit = (os.getenv("TBCC_LOOT_PUBLIC_CTA_URL") or "").strip()
     if explicit:
         return explicit
     un = loot_bot_username()
-    return f"https://t.me/{un}?start=loot_free" if un else ""
+    return f"https://telegram.me/{un}" if un else ""
 
 
 def loot_paid_checkout_url() -> str:
@@ -82,6 +82,25 @@ def allmylinks_url() -> str:
 def donation_url() -> str:
     """Optional Gumroad / Ko-fi / support link (shown in footers + payment bot)."""
     return (os.getenv("TBCC_DONATION_URL") or "").strip()
+
+
+def gumroad_vip_url() -> str:
+    """AOF VIP subscription product (ynnulc) — card/PayPal checkout, distinct from coffee tips."""
+    from app.data.aof_vip_membership import GUMROAD_VIP_PRODUCT_URL
+
+    u = (os.getenv("TBCC_GUMROAD_PRODUCT_URL") or "").strip()
+    if u.startswith("https://"):
+        return u
+    return GUMROAD_VIP_PRODUCT_URL
+
+
+def gumroad_vip_link_html(*, label: str = "AOF VIP on Gumroad") -> str:
+    url = gumroad_vip_url()
+    if not url:
+        return ""
+    from app.services.aof_growth_hub import _a_tag
+
+    return _a_tag(url, label)
 
 
 def donation_link_html(*, label: str = "Buy me a coffee") -> str:
@@ -180,6 +199,7 @@ def fill_armory_template(
         fallback=affiliate_undress_primary_url(),
     )
     donate = donation_url() or aml
+    gumroad_vip = gumroad_vip_url()
     return (
         (text or "")
         .replace("{gate}", gate)
@@ -192,5 +212,7 @@ def fill_armory_template(
         .replace("{affiliate_botynude}", affiliate_botynude_url())
         .replace("{donate}", donate)
         .replace("{donation}", donate)
+        .replace("{gumroad_vip}", gumroad_vip)
+        .replace("{gumroad}", gumroad_vip)
         .strip()
     )

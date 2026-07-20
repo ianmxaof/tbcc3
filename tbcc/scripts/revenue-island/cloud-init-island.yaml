@@ -1,0 +1,29 @@
+#cloud-config
+# First-boot for TBCC revenue island (Hetzner / any cloud-init VPS).
+# create-hetzner-island.ps1 may inject a Tailscale auth key write_files stanza.
+# Does NOT start payment/loot bots.
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - git
+  - jq
+
+runcmd:
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable --now docker
+  - |
+    if [ -f /etc/tbcc-tailscale-authkey ]; then
+      curl -fsSL https://tailscale.com/install.sh | sh
+      tailscale up --auth-key="$(tr -d '\n\r' </etc/tbcc-tailscale-authkey)" --ssh --hostname=tbcc-revenue-island
+      shred -u /etc/tbcc-tailscale-authkey 2>/dev/null || rm -f /etc/tbcc-tailscale-authkey
+    fi
+
+write_files:
+  - path: /etc/tbcc-island-ready.marker
+    content: |
+      Revenue island cloud-init ran. Sync compose + .env, then run bootstrap-island.sh (no bots yet).
+    owner: root:root
+    permissions: "0644"

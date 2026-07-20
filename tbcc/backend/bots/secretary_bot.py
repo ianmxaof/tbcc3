@@ -2531,17 +2531,17 @@ def _telegram_bootstrap_retries() -> int:
         return 5
 
 
-def main() -> None:
-    token = _secretary_token()
-    if not token:
-        print("Set TBCC_SECRETARY_BOT_TOKEN (or SECRETARY_BOT_TOKEN) in tbcc/.env — see .env.example")
-        return
+def build_application(token: str | None = None) -> Application | None:
+    """Build the secretary Application without starting a poller (Zeus co-host ready)."""
+    tok = (token if token is not None else _secretary_token()).strip()
+    if not tok:
+        return None
 
     t = _telegram_http_timeout_seconds()
     br = _telegram_bootstrap_retries()
     b = (
         Application.builder()
-        .token(token)
+        .token(tok)
         .post_init(post_init)
         .connect_timeout(t)
         .read_timeout(t)
@@ -2621,7 +2621,18 @@ def main() -> None:
         )
     )
     app.add_error_handler(_on_app_error)
+    # Stash bootstrap retries for callers that still use run_polling().
+    app.bot_data["_telegram_bootstrap_retries"] = br
+    return app
 
+
+def main() -> None:
+    app = build_application()
+    if app is None:
+        print("Set TBCC_SECRETARY_BOT_TOKEN (or SECRETARY_BOT_TOKEN) in tbcc/.env — see .env.example")
+        return
+
+    br = int(app.bot_data.get("_telegram_bootstrap_retries") or _telegram_bootstrap_retries())
     print(
         "Secretary bot running. FAQ: /start /help /subscribe /shop /reset | "
         "Admin inbox: /inbox /now /payment /loot /ops /critical /read /status /stack /relief /focus /triage /flywheel /toasts /skipbacklog /deposit | "

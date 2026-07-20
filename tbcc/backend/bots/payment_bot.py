@@ -555,11 +555,13 @@ def _plan_in_bot_section(p: dict, section: str) -> bool:
 
 async def fetch_plans(section: str = "main", min_stars: int | None = None) -> list[dict]:
     """Subscription products (group/channel access), grouped by bot section."""
-    return [
+    out = [
         p
         for p in await _fetch_plans_raw()
         if _plan_ok_for_stars_checkout(p, min_stars=min_stars) and _plan_in_bot_section(p, section)
     ]
+    out.sort(key=lambda p: (int(p.get("duration_days") or 0), int(p.get("id") or 0)))
+    return out
 
 
 async def fetch_bundles() -> list[dict]:
@@ -1175,7 +1177,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
             return
 
-    # Dashboard scheduled post → Stars invoice (c6) or menu with crypto (cm6)
+    # Dashboard scheduled post → Stars invoice (cN) or full checkout menu (cmN: Stars + crypto + Gumroad)
     m_menu = re.match(r"^cm(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
     m_checkout = re.match(r"^c(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
     if m_menu or m_checkout:
@@ -1188,7 +1190,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await record_referral(user.id, referrer_uid)
         plan = await fetch_plan_by_id(plan_id)
         if not plan:
-            await msg.reply_text("That offer is not available anymore.")
+            from app.database.session import SessionLocal
+            from app.services.aof_vip_checkout import normalize_checkout_plan_id
+
+            db = SessionLocal()
+            try:
+                fallback_id = normalize_checkout_plan_id(db, plan_id)
+            finally:
+                db.close()
+            if fallback_id != plan_id:
+                plan = await fetch_plan_by_id(fallback_id)
+                if plan and not menu_mode:
+                    menu_mode = True
+        if not plan:
+            await cmd_subscribe(update, context)
             return
         ptype = (plan.get("product_type") or "subscription").lower()
         if ptype not in ("subscription", "bundle"):
@@ -1385,7 +1400,12 @@ def _simple_crypto_btn_label(p: dict) -> str:
     return f"{usd} crypto"
 
 
-def _plan_checkout_keyboard_rows(plans: list[dict], *, pack: bool = False) -> list[list[InlineKeyboardButton]]:
+def _plan_checkout_keyboard_rows(
+    plans: list[dict],
+    *,
+    pack: bool = False,
+    multi_term: bool = False,
+) -> list[list[InlineKeyboardButton]]:
     """One row per payment option — price on the button, no catalog prose."""
     rows: list[list[InlineKeyboardButton]] = []
     star_cb = "pack_" if pack else "plan_"
@@ -1393,24 +1413,54 @@ def _plan_checkout_keyboard_rows(plans: list[dict], *, pack: bool = False) -> li
     for p in plans:
         pid = int(p["id"])
         if int(p.get("price_stars") or 0) > 0:
+            star_label = _subscription_stars_row_label(p) if multi_term else _simple_stars_btn_label(p)
             rows.append(
                 [
                     InlineKeyboardButton(
-                        _truncate_btn(_simple_stars_btn_label(p), 64),
+                        _truncate_btn(star_label, 64),
                         callback_data=f"{star_cb}{pid}",
                     )
                 ]
             )
         if _plan_show_crypto_checkout(p):
+            crypto_label = _simple_crypto_btn_label(p)
+            if multi_term:
+                crypto_label = f"{crypto_label} · {_subscription_duration_badge(p.get('duration_days', 30))}"
             rows.append(
                 [
                     InlineKeyboardButton(
-                        _truncate_btn(_simple_crypto_btn_label(p), 64),
+                        _truncate_btn(crypto_label, 64),
                         callback_data=f"{ext_cb}{pid}",
                     )
                 ]
             )
+        if _plan_show_gumroad_checkout(p):
+            gr_label = "💳 Gumroad (card)"
+            if multi_term:
+                gr_label = f"💳 Gumroad · {_subscription_duration_badge(p.get('duration_days', 30))}"
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        _truncate_btn(gr_label, 64),
+                        callback_data=f"{'gr_pack_' if pack else 'gr_plan_'}{pid}",
+                    )
+                ]
+            )
     return rows
+
+
+def _plan_show_gumroad_checkout(p: dict) -> bool:
+    try:
+        from app.services.gumroad_ping import gumroad_checkout_enabled, product_url_for_plan
+    except Exception:
+        return False
+    if not gumroad_checkout_enabled():
+        return False
+    try:
+        pid = int(p.get("id") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(pid and product_url_for_plan(pid))
 
 
 async def send_simple_plan_checkout(
@@ -1426,16 +1476,19 @@ async def send_simple_plan_checkout(
     if not plans:
         await msg.reply_text("No products listed right now.")
         return
-    rows = _plan_checkout_keyboard_rows(plans, pack=pack)
+    multi_term = (not pack) and len(plans) > 1
+    rows = _plan_checkout_keyboard_rows(plans, pack=pack, multi_term=multi_term)
     if not rows:
         await msg.reply_text("No checkout options for these products.")
         return
     kb = InlineKeyboardMarkup(rows)
     if len(plans) == 1:
         text = str(plans[0].get("name") or "").strip() or "·"
+    elif multi_term:
+        text = "💎 <b>AOF VIP</b> — same ladder as Gumroad. Pick a term:"
     else:
         text = "·"
-    await msg.reply_text(text, reply_markup=kb)
+    await msg.reply_text(text, parse_mode="HTML" if multi_term else None, reply_markup=kb)
 
 
 def _subscription_wallet_row_label(p: dict, c_label: str) -> str:
@@ -1509,13 +1562,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = update.effective_message
     if not msg:
         return
-    user = update.effective_user
-    st = await _get_runtime_settings()
-    plans = await fetch_plans(section="main", min_stars=int(st.get("min_subscription_stars") or 0))
-    if len(plans) == 1 and user:
-        await _send_stars_invoice(context, msg, user.id, plans[0])
-        return
-    await send_simple_plan_checkout(msg, context, plans)
+    await send_subscription_catalog_message(msg, context, section="main")
 
 
 def _bundle_caption_html(p: dict) -> str:
@@ -1710,6 +1757,104 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await reply_referral(msg, user, context)
     elif query.data == "menu_status":
         await reply_status(msg, user, context)
+
+
+async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Create EPO bound to this Telegram user, then open Gumroad with tbcc_ref=EPO-…"""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+    user = query.from_user
+    msg = query.message
+    if not user or not msg:
+        return
+
+    data = query.data
+    if data.startswith("gr_plan_"):
+        pid = int(data.replace("gr_plan_", ""))
+        want = "subscription"
+    elif data.startswith("gr_pack_"):
+        pid = int(data.replace("gr_pack_", ""))
+        want = "bundle"
+    else:
+        return
+
+    from app.services.gumroad_ping import (
+        append_tbcc_ref,
+        append_vip_checkout_hints,
+        gumroad_checkout_enabled,
+        product_url_for_plan,
+        recurrence_for_plan,
+    )
+
+    if not gumroad_checkout_enabled():
+        await msg.reply_text("Gumroad checkout is not enabled right now. Use Stars or crypto.")
+        return
+
+    plan = await fetch_plan_by_id(pid)
+    if not plan:
+        await msg.reply_text("Product not found or inactive.")
+        return
+    ptype = (plan.get("product_type") or "subscription").lower()
+    if want == "subscription" and ptype != "subscription":
+        await msg.reply_text("Invalid product.")
+        return
+    if want == "bundle" and ptype != "bundle":
+        await msg.reply_text("Invalid product.")
+        return
+
+    base_url = product_url_for_plan(pid)
+    if not base_url:
+        await msg.reply_text(
+            "Gumroad product URL not configured. Set TBCC_GUMROAD_PRODUCT_URL "
+            "(or TBCC_GUMROAD_PLAN_URLS) in tbcc/.env."
+        )
+        return
+
+    result, order_err = await api_create_external_order(user.id, pid)
+    if not result:
+        hint = order_err or "Could not create a payment order."
+        await msg.reply_text(f"Could not create a payment order.\n\n{hint}")
+        return
+
+    ref = (result.get("order") or {}).get("reference_code", "")
+    if not str(ref).startswith("EPO-"):
+        await msg.reply_text("Order created but missing EPO reference — contact admin.")
+        return
+
+    pay_url = append_tbcc_ref(base_url, str(ref))
+    rec = recurrence_for_plan(plan)
+    if rec:
+        pay_url = append_vip_checkout_hints(pay_url, recurrence=rec)
+    title = html.escape(str(plan.get("name") or "Gumroad checkout"))
+    term_hint = ""
+    if rec:
+        term_hint = (
+            f"\n3) On Gumroad choose <b>{html.escape(rec.replace('_', ' '))}</b> "
+            f"to match this term\n"
+        )
+    kb = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(_truncate_btn("Open Gumroad → pay", 64), url=str(pay_url)[:512])]]
+    )
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    body = (
+        f"<b>{title}</b>\n"
+        f"Order <code>{html.escape(str(ref))}</code>\n\n"
+        "1) Tap <b>Open Gumroad</b> and complete payment\n"
+        "2) Keep this chat open — VIP invite DMs here after Gumroad confirms"
+        f"{term_hint}"
+        "\n<i>Do not share this link — it is tied to your Telegram account.</i>"
+    )
+    try:
+        await msg.reply_text(body, parse_mode="HTML", reply_markup=kb)
+    except BadRequest as e:
+        logger.warning("gumroad pay button message failed: %s", e)
+        eu = html.escape(str(pay_url), quote=True)
+        await msg.reply_text(f'{body}\n<a href="{eu}">Open Gumroad</a>', parse_mode="HTML")
 
 
 async def handle_external_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2376,6 +2521,7 @@ def main() -> None:
     )
     app.add_handler(CallbackQueryHandler(handle_pick_pack_callback, pattern=r"^pick_pack_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_external_payment_callback, pattern=r"^ext_(plan|pack)_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_gumroad_payment_callback, pattern=r"^gr_(plan|pack)_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(plan|pack)_\d+$"))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(

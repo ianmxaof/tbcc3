@@ -48,14 +48,26 @@ def network_album_size() -> int:
 
 
 NETWORK_ALBUM_SIZE = 3  # default; sync uses network_album_size()
-CHECKOUT_CAPTION_MARKER = "Start payment for group access"  # legacy alias
-DEFAULT_GROUP_ACCESS_PLAN_ID = 6
-DEFAULT_CHECKOUT_BUTTON_LABEL = "⭐ Group access — 500⭐"
+CHECKOUT_CAPTION_MARKER = "VIP checkout — Stars · crypto · card"
+DEFAULT_GROUP_ACCESS_PLAN_ID = 10  # monthly AOF VIP after Gumroad ladder (legacy id 6 retired)
+DEFAULT_CHECKOUT_BUTTON_LABEL = "Pay ⭐ 500"
 PACKS_SEED_SCHED_NAMES = ("AOF PACKS — seed rotation",)
 
 
 def _a_tag(url: str, anchor: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(anchor)}</a>'
+
+
+def _gumroad_vip_bulletin_link() -> str:
+    from app.services.aof_social_links import gumroad_vip_link_html
+
+    return gumroad_vip_link_html(label="from $6/mo") or "aof69.gumroad.com/l/ynnulc"
+
+
+def gumroad_vip_embed_rotation_enabled() -> bool:
+    """Bare Gumroad URL in caption rotation → Telegram link-preview card."""
+    raw = (os.getenv("TBCC_GUMROAD_VIP_EMBED_ROTATION") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def _stored_gate_url(url: str) -> bool:
@@ -141,7 +153,7 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
         "━━━━━━━━━━━━━━━━━━\n"
         "🔥 <b>ENTRY</b>\n"
         f"🪙 Loot Room: {_gate_link(lv, 'loot', 'AOF LOOT ROOM')}\n"
-        f"🔗 Flagship hub: {_gate_link(lv, 'mainhub', 't.me/aofmainhub')}\n"
+        f"🔗 Flagship hub: {_gate_link(lv, 'mainhub', 'telegram.me/aofmainhub')}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📂 <b>CONTENT</b>\n"
         f"📌 {_gate_link(lv, 'addlist', 'ADDLIST — all channels')}\n"
@@ -166,6 +178,7 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
         "🚀 <b>SUPPORT AOF</b>\n"
         "🔥 Buy Premium Packs: @aofsubscriptions_bot\n"
         f"⭐ AOF VIP: @aofsubscriptions_bot — /subscribe\n"
+        f"💳 Gumroad VIP (card/PayPal): {_gumroad_vip_bulletin_link()}\n"
         "📢 Referral Program: @aofsubscriptions_bot — /referral\n"
         f"{donate_line}"
         f"{partner_lines}"
@@ -197,7 +210,22 @@ def network_pool_names() -> frozenset[str]:
 
 
 def resolve_group_access_plan_id(db: Session) -> int:
-    """Primary subscription plan for main-group access (Stars checkout on channel posts)."""
+    """Primary subscription plan for main-group access (monthly AOF VIP checkout on posts)."""
+    from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS
+
+    monthly_name = VIP_MEMBERSHIP_SKUS[0].name
+    row = (
+        db.query(SubscriptionPlan)
+        .filter(
+            SubscriptionPlan.is_active.is_(True),
+            SubscriptionPlan.product_type == "subscription",
+            SubscriptionPlan.bot_section == "main",
+            SubscriptionPlan.name == monthly_name,
+        )
+        .first()
+    )
+    if row:
+        return int(row.id)
     row = (
         db.query(SubscriptionPlan)
         .filter(
@@ -206,7 +234,7 @@ def resolve_group_access_plan_id(db: Session) -> int:
             SubscriptionPlan.bot_section == "main",
             SubscriptionPlan.price_stars > 0,
         )
-        .order_by(SubscriptionPlan.id.asc())
+        .order_by(SubscriptionPlan.duration_days.asc(), SubscriptionPlan.id.asc())
         .first()
     )
     return int(row.id) if row else DEFAULT_GROUP_ACCESS_PLAN_ID
@@ -499,6 +527,13 @@ def sync_network_album_and_checkout(db: Session, *, execute: bool = True) -> dic
     )
     rows.extend(liveness_rows)
 
+    stale_migrated = _refresh_stale_checkout_plan_ids(
+        db,
+        plan_id=plan_id,
+        button_label=button_label,
+        execute=execute,
+    )
+
     return {
         "execute": execute,
         "album_size": network_album_size(),
@@ -506,9 +541,51 @@ def sync_network_album_and_checkout(db: Session, *, execute: bool = True) -> dic
         "checkout_button_label": button_label,
         "pools_updated": pools_updated,
         "schedulers_updated": schedulers_updated,
+        "stale_checkout_migrated": stale_migrated,
         "captions_scrubbed": _scrub_all_scheduler_captions(db, clean_footer=clean_footer, execute=execute),
         "rows": rows,
     }
+
+
+def _refresh_stale_checkout_plan_ids(
+    db: Session,
+    *,
+    plan_id: int,
+    button_label: str,
+    execute: bool,
+) -> int:
+    """Re-point schedulers still on retired plan ids (e.g. c6) to the live VIP ladder."""
+    from app.services.aof_vip_checkout import LEGACY_CHECKOUT_PLAN_IDS, merge_checkout_buttons, normalize_checkout_plan_id
+
+    migrated = 0
+    target = int(plan_id)
+    for sched in db.query(ScheduledTextPost).filter(ScheduledTextPost.checkout_stars_enabled.is_(True)).all():
+        old_raw = getattr(sched, "checkout_stars_plan_id", None)
+        old = int(old_raw) if old_raw else None
+        buttons_raw = (sched.buttons or "").strip()
+        legacy_btn = bool(re.search(r"start=c6\b", buttons_raw, re.I))
+        stale_plan = old is None or old in LEGACY_CHECKOUT_PLAN_IDS
+        if old is not None and not stale_plan:
+            normalized = normalize_checkout_plan_id(db, old)
+            stale_plan = normalized != old
+        if not stale_plan and not legacy_btn:
+            continue
+        migrated += 1
+        if not execute:
+            continue
+        sched.checkout_stars_plan_id = target
+        sched.checkout_button_label = button_label
+        sched.buttons = json.dumps(
+            merge_checkout_buttons(
+                [],
+                db,
+                checkout_stars_enabled=True,
+                checkout_stars_plan_id=target,
+                checkout_button_label=button_label,
+                allow_inline_checkout=True,
+            )
+        )
+    return migrated
 
 
 def _scrub_all_scheduler_captions(
@@ -607,6 +684,42 @@ def _append_gate_fomo_variations(variations: list[str], footer: str) -> list[str
     out = list(variations)
     for body in gate_fomo_post_bodies():
         full = (body + footer).strip()
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out
+
+
+def _gumroad_vip_promo_variations(footer: str) -> list[str]:
+    """Dedicated VIP + Gumroad embed slots (bare URL → Telegram preview card)."""
+    from app.services.aof_main_group_copy import vip_promo_minimal_bodies
+    from app.services.aof_social_links import gumroad_vip_url
+
+    if not gumroad_vip_embed_rotation_enabled():
+        return []
+    url = gumroad_vip_url()
+    if not url:
+        return []
+    bodies = [
+        (
+            "⭐ <b>AOF VIP</b> — ad-free · early · all lanes.\n"
+            "Public gets gates — VIP gets direct files, bigger batches.\n"
+            "<i>Card / PayPal on Gumroad — or Pay ⭐ below.</i>"
+        ),
+        (
+            "💳 <b>VIP from $6/mo</b> — monthly → 2-year ladder on Gumroad.\n"
+            "Same access as Stars · pick your term on the landing page."
+        ),
+    ]
+    bodies.extend(vip_promo_minimal_bodies()[:1])
+    return [(b + footer + f"\n\n{url}").strip() for b in bodies]
+
+
+def _append_gumroad_vip_variations(variations: list[str], footer: str) -> list[str]:
+    seen = {v.strip() for v in variations}
+    out = list(variations)
+    for full in _gumroad_vip_promo_variations(footer):
         if full in seen:
             continue
         seen.add(full)
@@ -792,6 +905,7 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
         if len(footer_variants) > 1:
             merged = _append_sponsor_promo_variations(merged, net_ch.promo_html, footer_variants)
         merged = _append_gate_fomo_variations(merged, base_footer)
+        merged = _append_gumroad_vip_variations(merged, base_footer)
         merged = _sanitize_variations(merged, clean_footer=base_footer, skip_bulletin=True)
         entry["variations"] = len(merged)
         entry["sponsor_footers"] = max(0, len(footer_variants) - 1)

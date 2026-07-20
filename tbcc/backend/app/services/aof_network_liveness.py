@@ -610,6 +610,9 @@ def apply_network_liveness(db: Session, *, execute: bool = True) -> dict[str, An
             )
         )
         spotlight = _build_spotlight_variations(db, lv, footer)
+        from app.services.aof_growth_hub import _append_gumroad_vip_variations
+
+        spotlight = _append_gumroad_vip_variations(spotlight, footer)
         pulse_rows.append(
             _upsert_recurring_scheduler(
                 db,

@@ -20,6 +20,15 @@ from app.models.promo_affiliate_link import PromoAffiliateLink
 
 SEED_ITEMS: list[dict] = [
     {
+        "label": "AOF VIP Gumroad",
+        "url": "https://aof69.gumroad.com/l/ynnulc",
+        "payout_kind": "subscription",
+        "priority_tier": 2,
+        "placements": ["x_buffer", "telegram_footer", "links_hub"],
+        "network_keys": [],
+        "copy_template": "⭐ {link} — VIP from $6/mo · card · PayPal",
+    },
+    {
         "label": "Musebox AI",
         "url": "https://musebox.ai/?ref=uOg77ImI",
         "payout_kind": "revshare",
