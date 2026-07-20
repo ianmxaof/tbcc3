@@ -3,6 +3,7 @@ Automatic fulfillment for external (non–Telegram-Stars) checkouts.
 
 - POST /webhooks/nowpayments — NOWPayments IPN (HMAC-SHA512); set TBCC_NOWPAYMENTS_IPN_SECRET.
 - POST /webhooks/instant-payment — generic Bearer TBCC_PAYMENT_WEBHOOK_SECRET + JSON { "reference_code": "EPO-…" }.
+- POST /webhooks/gumroad — Gumroad Ping (form-urlencoded sale); set TBCC_GUMROAD_SELLER_ID.
 
 Telegram Stars remain instant via the bot’s successful_payment handler (no webhook here).
 """
@@ -122,3 +123,108 @@ async def instant_payment_webhook(request: Request, db: Session = Depends(get_db
     if result.get("error"):
         raise HTTPException(status_code=400, detail=str(result.get("error")))
     return {"ok": True, "result": result}
+
+
+@router.post("/gumroad")
+async def gumroad_ping(request: Request, db: Session = Depends(get_db)):
+    """
+    Gumroad Settings → Advanced → Ping URL:
+
+      https://<your-public-api>/webhooks/gumroad
+
+    Requires ``TBCC_GUMROAD_SELLER_ID`` matching the ping ``seller_id``.
+    Prefer checkout via payment bot so ``tbcc_ref=EPO-…`` is on the product URL.
+    """
+    from app.api.subscriptions import subscription_create_from_payload
+    from app.services import gumroad_ping as gr
+
+    if not gr.gumroad_seller_id():
+        raise HTTPException(status_code=503, detail="TBCC_GUMROAD_SELLER_ID not configured")
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    payload: dict = {}
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+            payload = body if isinstance(body, dict) else {}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="invalid json") from e
+    else:
+        form = await request.form()
+        payload = gr.form_body_to_dict(form)
+
+    if not gr.verify_seller(payload):
+        logger.warning("Gumroad ping: seller_id mismatch")
+        raise HTTPException(status_code=403, detail="invalid seller_id")
+
+    skip = gr.is_refunded_or_test_skip(payload)
+    if skip:
+        return {"ok": True, "ignored": skip}
+
+    ref = gr.extract_tbcc_ref(payload)
+    if ref:
+        order = (
+            db.query(ExternalPaymentOrder)
+            .filter(ExternalPaymentOrder.reference_code == ref)
+            .first()
+        )
+        if not order:
+            logger.warning("Gumroad ping: unknown EPO %s", ref)
+            return {"ok": True, "ignored": "unknown_order", "reference_code": ref}
+
+        result = fulfill_external_order(
+            db,
+            order,
+            payment_method="gumroad",
+            telegram_charge_id=gr.sale_charge_id(payload, ref),
+            income_amount_usd=gr.income_usd_from_payload(payload),
+        )
+        if result.get("error"):
+            logger.error("Gumroad fulfill failed: %s", result.get("error"))
+            raise HTTPException(status_code=500, detail=str(result.get("error")))
+        if result.get("idempotent"):
+            return {"ok": True, "idempotent": True, "order_id": order.id, "reference_code": ref}
+        return {"ok": True, "fulfilled": order.id, "reference_code": ref, "path": "epo"}
+
+    # Fallback: custom field Telegram ID + product → plan map (no pre-created EPO)
+    tg_id = gr.extract_telegram_user_id(payload)
+    plan_id = gr.resolve_plan_id_from_payload(payload)
+    if not tg_id or not plan_id:
+        logger.info(
+            "Gumroad ping: no EPO and incomplete fallback (tg_id=%s plan_id=%s email=%s)",
+            tg_id,
+            plan_id,
+            payload.get("email"),
+        )
+        return {
+            "ok": True,
+            "ignored": "no_tbcc_ref_or_telegram_id",
+            "hint": "Start checkout from @aofsubscriptions_bot (Gumroad button) so tbcc_ref=EPO-… is set",
+        }
+
+    charge = gr.sale_charge_id(payload)
+    result = subscription_create_from_payload(
+        {
+            "telegram_user_id": tg_id,
+            "plan_id": plan_id,
+            "payment_method": "gumroad",
+            "telegram_payment_charge_id": charge,
+            "referral_reward_days": 7,
+            "income_amount_usd": gr.income_usd_from_payload(payload),
+        },
+        db,
+    )
+    if result.get("error"):
+        # Duplicate charge_id → treat as idempotent success
+        err = str(result.get("error"))
+        if "duplicate" in err.lower() or "already" in err.lower():
+            return {"ok": True, "idempotent": True, "path": "direct", "telegram_user_id": tg_id}
+        raise HTTPException(status_code=400, detail=err)
+    return {
+        "ok": True,
+        "fulfilled": True,
+        "path": "direct",
+        "telegram_user_id": tg_id,
+        "plan_id": plan_id,
+        "result": result,
+    }
