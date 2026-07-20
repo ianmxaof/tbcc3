@@ -39,13 +39,16 @@ from app.services.bundle_storage import (
     is_zip_magic,
 )
 from app.services.promo_storage import ensure_promo_dir
-from app.data.loot_lane_economy import usd_to_stars
 
 DEFAULT_SOURCE = Path(r"C:\Users\ianmp\Downloads\tbcc\AOF NETWORK\AOF RESOURCES (ZIPS)\AOF AI PACKS")
 PACK_PREFIX = "AI Pack — "
 PRICE_USD = 3.0
 PROMO_COUNT = 3
 IMAGE_EXTS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
+
+
+def usd_to_stars(usd: float, *, stars_per_usd: float = 0.012) -> int:
+    return max(1, int(round(float(usd) / float(stars_per_usd))))
 
 _PART_RE = re.compile(r"^(?P<base>.+)_part_(?P<num>\d+)$", re.I)
 
