@@ -130,7 +130,7 @@ def seed(*, execute: bool) -> dict:
         lv_extra = [wrap_linkvertise_url(pub, dest) for _, dest in EXTRA_DESTINATIONS]
         lv_urls = [lv_terabox, lv_extra[0], lv_extra[1], lv_terabox, lv_extra[0], lv_extra[1], lv_terabox, lv_extra[0]]
         addlist_lv = wrap_linkvertise_url(pub, "https://t.me/addlist/r-7_7CGIkExhMDcx")
-        mainhub_lv = wrap_linkvertise_url(pub, "https://t.me/aofmainhub")
+        mainhub_lv = wrap_linkvertise_url(pub, "https://telegram.me/aofmainhub")
         footer = (
             "\n\n━━━━━━━━━━━━━━━━━━\n"
             "📌 <b>Join the full AOF stack</b> — one tap\n"
@@ -162,15 +162,20 @@ def seed(*, execute: bool) -> dict:
             len(captions),
             link_slot_offset=len(mods),
         )
-        # One row: LV download + Stars deep link (AOF Main plan id 6 after shop seed).
+        # LV download + VIP checkout menu (Stars · crypto · Gumroad).
+        from app.services.aof_growth_hub import checkout_button_label_for_plan, resolve_group_access_plan_id
+        from app.services.aof_vip_checkout import bot_checkout_url
+
+        vip_plan_id = resolve_group_access_plan_id(db)
+        vip_url = bot_checkout_url(vip_plan_id, menu=True) or (
+            f"https://t.me/aofsubscriptions_bot?start=cm{vip_plan_id}"
+        )
+        vip_label = checkout_button_label_for_plan(db, vip_plan_id)
         buttons = json.dumps(
             [
                 [
                     {"text": "⬇ Download Pack", "url": lv_terabox},
-                    {
-                        "text": "⭐ AOF Main — 500⭐",
-                        "url": "https://t.me/aofsubscriptions_bot?start=c6",
-                    },
+                    {"text": vip_label[:64], "url": vip_url},
                 ],
                 [
                     {"text": "📌 Full stack addlist", "url": addlist_lv},

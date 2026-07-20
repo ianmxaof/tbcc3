@@ -48,9 +48,9 @@ def network_album_size() -> int:
 
 
 NETWORK_ALBUM_SIZE = 3  # default; sync uses network_album_size()
-CHECKOUT_CAPTION_MARKER = "Start payment for group access"  # legacy alias
-DEFAULT_GROUP_ACCESS_PLAN_ID = 6
-DEFAULT_CHECKOUT_BUTTON_LABEL = "⭐ Group access — 500⭐"
+CHECKOUT_CAPTION_MARKER = "VIP checkout — Stars · crypto · card"
+DEFAULT_GROUP_ACCESS_PLAN_ID = 10  # monthly AOF VIP after Gumroad ladder (legacy id 6 retired)
+DEFAULT_CHECKOUT_BUTTON_LABEL = "Pay ⭐ 500"
 PACKS_SEED_SCHED_NAMES = ("AOF PACKS — seed rotation",)
 
 
@@ -210,7 +210,22 @@ def network_pool_names() -> frozenset[str]:
 
 
 def resolve_group_access_plan_id(db: Session) -> int:
-    """Primary subscription plan for main-group access (Stars checkout on channel posts)."""
+    """Primary subscription plan for main-group access (monthly AOF VIP checkout on posts)."""
+    from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS
+
+    monthly_name = VIP_MEMBERSHIP_SKUS[0].name
+    row = (
+        db.query(SubscriptionPlan)
+        .filter(
+            SubscriptionPlan.is_active.is_(True),
+            SubscriptionPlan.product_type == "subscription",
+            SubscriptionPlan.bot_section == "main",
+            SubscriptionPlan.name == monthly_name,
+        )
+        .first()
+    )
+    if row:
+        return int(row.id)
     row = (
         db.query(SubscriptionPlan)
         .filter(
@@ -219,7 +234,7 @@ def resolve_group_access_plan_id(db: Session) -> int:
             SubscriptionPlan.bot_section == "main",
             SubscriptionPlan.price_stars > 0,
         )
-        .order_by(SubscriptionPlan.id.asc())
+        .order_by(SubscriptionPlan.duration_days.asc(), SubscriptionPlan.id.asc())
         .first()
     )
     return int(row.id) if row else DEFAULT_GROUP_ACCESS_PLAN_ID
@@ -512,6 +527,13 @@ def sync_network_album_and_checkout(db: Session, *, execute: bool = True) -> dic
     )
     rows.extend(liveness_rows)
 
+    stale_migrated = _refresh_stale_checkout_plan_ids(
+        db,
+        plan_id=plan_id,
+        button_label=button_label,
+        execute=execute,
+    )
+
     return {
         "execute": execute,
         "album_size": network_album_size(),
@@ -519,9 +541,51 @@ def sync_network_album_and_checkout(db: Session, *, execute: bool = True) -> dic
         "checkout_button_label": button_label,
         "pools_updated": pools_updated,
         "schedulers_updated": schedulers_updated,
+        "stale_checkout_migrated": stale_migrated,
         "captions_scrubbed": _scrub_all_scheduler_captions(db, clean_footer=clean_footer, execute=execute),
         "rows": rows,
     }
+
+
+def _refresh_stale_checkout_plan_ids(
+    db: Session,
+    *,
+    plan_id: int,
+    button_label: str,
+    execute: bool,
+) -> int:
+    """Re-point schedulers still on retired plan ids (e.g. c6) to the live VIP ladder."""
+    from app.services.aof_vip_checkout import LEGACY_CHECKOUT_PLAN_IDS, merge_checkout_buttons, normalize_checkout_plan_id
+
+    migrated = 0
+    target = int(plan_id)
+    for sched in db.query(ScheduledTextPost).filter(ScheduledTextPost.checkout_stars_enabled.is_(True)).all():
+        old_raw = getattr(sched, "checkout_stars_plan_id", None)
+        old = int(old_raw) if old_raw else None
+        buttons_raw = (sched.buttons or "").strip()
+        legacy_btn = bool(re.search(r"start=c6\b", buttons_raw, re.I))
+        stale_plan = old is None or old in LEGACY_CHECKOUT_PLAN_IDS
+        if old is not None and not stale_plan:
+            normalized = normalize_checkout_plan_id(db, old)
+            stale_plan = normalized != old
+        if not stale_plan and not legacy_btn:
+            continue
+        migrated += 1
+        if not execute:
+            continue
+        sched.checkout_stars_plan_id = target
+        sched.checkout_button_label = button_label
+        sched.buttons = json.dumps(
+            merge_checkout_buttons(
+                [],
+                db,
+                checkout_stars_enabled=True,
+                checkout_stars_plan_id=target,
+                checkout_button_label=button_label,
+                allow_inline_checkout=True,
+            )
+        )
+    return migrated
 
 
 def _scrub_all_scheduler_captions(

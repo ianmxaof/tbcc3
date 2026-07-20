@@ -106,7 +106,8 @@ if (-not $SkipSeeds) {
   Invoke-Compose "exec -T api alembic upgrade head"
   Invoke-Compose "exec -T api python scripts/seed_aof_shop_and_loot.py --execute"
   Invoke-Compose "exec -T api python scripts/seed_promo_affiliate_links.py"
-  Invoke-Compose "exec -T api python scripts/apply_network_album_checkout.py --execute --sync-schedulers" 
+  Invoke-Compose "exec -T api python scripts/apply_network_album_checkout.py --execute --sync-schedulers"
+  Invoke-Remote "mkdir -p /opt/tbcc/uploads/bundles /opt/tbcc/uploads/promo"
 } else {
   Write-Host "`n[6/7] Skip seeds (-SkipSeeds)" -ForegroundColor DarkGray
 }

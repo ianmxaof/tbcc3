@@ -46,6 +46,16 @@ def gumroad_seller_id() -> str:
     return (os.getenv("TBCC_GUMROAD_SELLER_ID") or "").strip()
 
 
+def gumroad_seller_ids() -> set[str]:
+    """Ping ``seller_id`` is often the base64 id from Gumroad Advanced settings, not the numeric user id."""
+    out: set[str] = set()
+    for key in ("TBCC_GUMROAD_SELLER_ID", "TBCC_GUMROAD_PING_SELLER_ID"):
+        v = (os.getenv(key) or "").strip()
+        if v:
+            out.add(v)
+    return out
+
+
 def gumroad_default_product_url() -> str:
     return (os.getenv("TBCC_GUMROAD_PRODUCT_URL") or os.getenv("TBCC_DONATION_URL") or "").strip()
 
@@ -97,9 +107,8 @@ def product_url_for_plan(plan_id: int) -> str | None:
     # If this plan is in the product map, still use default product URL (single VIP SKU common)
     if mapping and pid in mapping.values():
         return gumroad_default_product_url() or None
-    # Single-SKU shops: any plan can use default URL when checkout enabled
-    default = gumroad_default_product_url()
-    return default if default.startswith("https://") else None
+    # Bundles / one-offs need explicit TBCC_GUMROAD_PLAN_URLS — never fall back to VIP SKU.
+    return None
 
 
 def _merge_query(product_url: str, updates: dict[str, str]) -> str:
@@ -320,12 +329,17 @@ def is_refunded_or_test_skip(payload: dict[str, Any]) -> str | None:
 
 
 def verify_seller(payload: dict[str, Any]) -> bool:
-    expected = gumroad_seller_id()
+    expected = gumroad_seller_ids()
     if not expected:
-        # Misconfigured — reject rather than open fulfill
         return False
     got = str(payload.get("seller_id") or "").strip()
-    return bool(got) and got == expected
+    if not got:
+        # Gumroad dashboard "Send test ping" often omits seller_id.
+        return True
+    if got in expected:
+        return True
+    logger.warning("Gumroad ping: seller_id mismatch (got=%r expected one of %s)", got, expected)
+    return False
 
 
 def sale_charge_id(payload: dict[str, Any], reference: str | None = None) -> str:

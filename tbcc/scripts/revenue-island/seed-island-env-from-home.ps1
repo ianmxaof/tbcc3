@@ -85,6 +85,7 @@ $copies = [ordered]@{
   "TBCC_LINK_GATE_ROTATION"      = "TBCC_LINK_GATE_ROTATION"
   "TBCC_GUMROAD_CHECKOUT_ENABLED"   = "TBCC_GUMROAD_CHECKOUT_ENABLED"
   "TBCC_GUMROAD_SELLER_ID"          = "TBCC_GUMROAD_SELLER_ID"
+  "TBCC_GUMROAD_PING_SELLER_ID"     = "TBCC_GUMROAD_PING_SELLER_ID"
   "TBCC_GUMROAD_PRODUCT_URL"        = "TBCC_GUMROAD_PRODUCT_URL"
   "TBCC_GUMROAD_VIP_OPTION_NAME"    = "TBCC_GUMROAD_VIP_OPTION_NAME"
   "TBCC_GUMROAD_VIP_EMBED_ROTATION" = "TBCC_GUMROAD_VIP_EMBED_ROTATION"
@@ -103,6 +104,14 @@ $copies = [ordered]@{
   "TBCC_AOF_VIP_EARLY_DROP_ENABLED"         = "TBCC_AOF_VIP_EARLY_DROP_ENABLED"
   "TBCC_AOF_VIP_MIRROR_ENABLED"             = "TBCC_AOF_VIP_MIRROR_ENABLED"
   "TBCC_REVENUE_ISLAND_ACTIVE"              = "TBCC_REVENUE_ISLAND_ACTIVE"
+  "TBCC_BUFFER_API_KEY"                     = "TBCC_BUFFER_API_KEY"
+  "TBCC_BUFFER_ORGANIZATION_ID"             = "TBCC_BUFFER_ORGANIZATION_ID"
+  "TBCC_BUFFER_CHANNEL_ID_PRIMARY"          = "TBCC_BUFFER_CHANNEL_ID_PRIMARY"
+  "TBCC_BUFFER_CHANNEL_ID_X_SECONDARY"      = "TBCC_BUFFER_CHANNEL_ID_X_SECONDARY"
+  "TBCC_BUFFER_CHANNEL_IDS"                 = "TBCC_BUFFER_CHANNEL_IDS"
+  "TBCC_BUFFER_X_AFFILIATE_FIRST"           = "TBCC_BUFFER_X_AFFILIATE_FIRST"
+  "TBCC_BUFFER_X_LINK_CYCLE"                = "TBCC_BUFFER_X_LINK_CYCLE"
+  "TBCC_PROMO_PUBLIC_BASE_URL"              = "TBCC_PROMO_PUBLIC_BASE_URL"
 }
 
 # Prefer loot token aliases used at home
@@ -178,6 +187,10 @@ if (-not $islandPublic) {
 if ($islandPublic) {
   $lines = Set-DotEnvKey $lines "TBCC_PUBLIC_API_BASE_URL" $islandPublic
   $lines = Set-DotEnvKey $lines "TBCC_API_PUBLIC_URL" $islandPublic
+  if ([string]::IsNullOrWhiteSpace($homeMap["TBCC_PROMO_PUBLIC_BASE_URL"])) {
+    $lines = Set-DotEnvKey $lines "TBCC_PROMO_PUBLIC_BASE_URL" $islandPublic
+    Write-Host ("OK  TBCC_PROMO_PUBLIC_BASE_URL (= public API)") -ForegroundColor Green
+  }
   Write-Host ("OK  TBCC_PUBLIC_API_BASE_URL + TBCC_API_PUBLIC_URL ({0} chars)" -f $islandPublic.Length) -ForegroundColor Green
 } else {
   Write-Host "SKIP TBCC_PUBLIC_API_BASE_URL - set TBCC_ISLAND_API_PUBLIC_URL on home or run install-island-api-tunnel.sh on VPS." -ForegroundColor Yellow

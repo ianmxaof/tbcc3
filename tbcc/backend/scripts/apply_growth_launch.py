@@ -36,9 +36,9 @@ from app.data.aof_manual_gate_links import manual_gate_url, manual_gate_urls
 from app.services.link_gate_provider import wrap_gate_url
 
 MAIN_GROUP_IDENT = "-1003206350461"
-MAIN_GROUP_INVITE = "https://t.me/+hMQzGsBFjF02MDkx"
+MAIN_GROUP_INVITE = "https://t.me/+rk8ra7fPJ1QzZDMx"
 ADDLIST_RAW = "https://t.me/addlist/r-7_7CGIkExhMDcx"
-MAINHUB_RAW = "https://t.me/aofmainhub"
+MAINHUB_RAW = "https://telegram.me/aofmainhub"
 
 # Content channels listed in the links hub bulletin (raw invites → LV-wrapped at runtime).
 BULLETIN_CHANNEL_INVITES: dict[str, tuple[str, str]] = {
@@ -53,7 +53,7 @@ BULLETIN_CHANNEL_INVITES: dict[str, tuple[str, str]] = {
     "packs": ("AOF PACKS", "https://t.me/+xCtxqzQEuoRmZGZh"),
     "goon": ("AOF GOON", "https://t.me/+jKGzJMZAhCZjNjdh"),
     "bop": ("AOF BOP", "https://t.me/+woiIGJFd19NmZjkx"),
-    "loot": ("AOF LOOT ROOM", "https://t.me/+NWathiLSqZ1lMzlh"),
+    "loot": ("AOF LOOT ROOM", "https://t.me/+97f4Crv3G1RkMGU5"),
 }
 
 NEW_CHANNELS: tuple[tuple[str, str, str, str], ...] = (
@@ -105,7 +105,7 @@ def build_links_hub_bulletin(lv: dict[str, str]) -> str:
         "━━━━━━━━━━━━━━━━━━\n"
         "🔥 <b>MAIN COMMUNITY</b>\n"
         f"💬 Main Group: {_a_tag(lv['main_group'], 'join')}\n"
-        f"🔗 Flagship hub: {_a_tag(lv['mainhub'], 't.me/aofmainhub')}\n"
+        f"🔗 Flagship hub: {_a_tag(lv['mainhub'], 'telegram.me/aofmainhub')}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "📂 <b>CONTENT</b>\n"
         f"📌 {_a_tag(lv['addlist'], 'ADDLIST — all channels')}\n"
@@ -204,10 +204,10 @@ def _build_packs_captions(lv_urls: list[str], footer: str) -> list[str]:
 def _ensure_growth_settings(db, execute: bool) -> dict:
     from app.services.aof_social_links import loot_public_cta_url
 
-    loot_cta = loot_public_cta_url() or "https://t.me/aof_lootgod_bot?start=loot_free"
+    loot_cta = loot_public_cta_url() or "https://telegram.me/aof_lootgod_bot"
     intro = (
         "🔥 AOF — referrals & milestones\n\n"
-        "Entry: @aof_lootgod_bot (Loot Room) · Flagship hub: t.me/aofmainhub\n"
+        "Entry: @aof_lootgod_bot (Loot Room) · Flagship hub: telegram.me/aofmainhub\n"
         "• Referrals: @aofsubscriptions_bot → /referral\n"
         "• Loot Room keys: /loot · Premium VIP: /subscribe"
     )
@@ -326,11 +326,20 @@ def _update_packs_sched(db, lv: dict[str, str], execute: bool) -> dict:
         link_slot_offset=len(mods),
     )
 
+    from app.services.aof_growth_hub import checkout_button_label_for_plan, resolve_group_access_plan_id
+    from app.services.aof_vip_checkout import bot_checkout_url
+
+    vip_plan_id = resolve_group_access_plan_id(db)
+    vip_url = bot_checkout_url(vip_plan_id, menu=True) or (
+        f"https://t.me/aofsubscriptions_bot?start=cm{vip_plan_id}"
+    )
+    vip_label = checkout_button_label_for_plan(db, vip_plan_id)
+
     buttons = json.dumps(
         [
             [
                 {"text": "⬇ Download Pack", "url": lv_terabox},
-                {"text": "⭐ AOF Main — 500⭐", "url": "https://t.me/aofsubscriptions_bot?start=c6"},
+                {"text": vip_label[:64], "url": vip_url},
             ],
             [
                 {"text": "📌 Full stack addlist", "url": lv["addlist"]},

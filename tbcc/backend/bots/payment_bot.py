@@ -1177,7 +1177,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
             return
 
-    # Dashboard scheduled post → Stars invoice (c6) or menu with crypto (cm6)
+    # Dashboard scheduled post → Stars invoice (cN) or full checkout menu (cmN: Stars + crypto + Gumroad)
     m_menu = re.match(r"^cm(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
     m_checkout = re.match(r"^c(\d+)(?:_([A-Za-z0-9]{1,16}))?$", payload)
     if m_menu or m_checkout:
@@ -1190,7 +1190,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 await record_referral(user.id, referrer_uid)
         plan = await fetch_plan_by_id(plan_id)
         if not plan:
-            await msg.reply_text("That offer is not available anymore.")
+            from app.database.session import SessionLocal
+            from app.services.aof_vip_checkout import normalize_checkout_plan_id
+
+            db = SessionLocal()
+            try:
+                fallback_id = normalize_checkout_plan_id(db, plan_id)
+            finally:
+                db.close()
+            if fallback_id != plan_id:
+                plan = await fetch_plan_by_id(fallback_id)
+                if plan and not menu_mode:
+                    menu_mode = True
+        if not plan:
+            await cmd_subscribe(update, context)
             return
         ptype = (plan.get("product_type") or "subscription").lower()
         if ptype not in ("subscription", "bundle"):
