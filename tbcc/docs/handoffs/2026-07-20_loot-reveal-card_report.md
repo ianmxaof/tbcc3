@@ -2,9 +2,36 @@
 
 Date: 2026-07-20
 Branch: `feat/supervisor-panel-foundation` (committed, NOT pushed)
-Scope: **Phase 1 + 1b** — asset audit + `frames/clean/` pool + audit/de-checker tools.
-Phases 2 (compositor), 3 (pick_frame_path tier-band + baked-badge reject), 4 (island
-deploy) not yet started.
+Scope: **Phase 1 + 1b + 2** — asset audit + `frames/clean/` pool + audit/de-checker
+tools + compositor hardening & deterministic tests. Phases 3 (pick_frame_path tier-band
++ baked-badge reject) and 4 (island deploy) not yet started.
+
+---
+
+## PHASE 2 (compositor hardening + deterministic tests)
+
+- **Layer order confirmed already correct:** center pasted first, `alpha_composite(frame)`
+  second, `_window_bbox` flood-fills the exterior so only the interior hole gets the
+  still. No rectangular window wipe. No change needed.
+- **Opaque-output invariant enforced:** `compose_reveal_card` now converts to RGB before
+  JPEG save unconditionally — send_photo can never receive an alpha channel.
+- **Stamp bug fixed (name/tagline overlap):** the bottom name + flavor are now stacked
+  and bottom-anchored using measured text heights; the tagline no longer renders on the
+  name's descenders. Verified on real frames (003, 097).
+- **Deterministic tests added** — `tests/test_loot_reveal_card_compose.py` (5 tests, all
+  green; existing `test_loot_reveal_composite.py` 11/11 still green):
+  - output is opaque JPEG, `mode == RGB`, no alpha
+  - center region carries the vivid photo (paste actually happened), not the backdrop
+  - no classic mid-grey checker pixel in any corner
+  - **tier label is dynamic** — same frame at tier 2 vs 8 yields different top-right
+    badge pixels (proves the label comes from the roll, not baked frame art)
+  - name+tagline compose without error / stay opaque
+- **NOT changed (design decision left to you):** the clean frames bake "AOF LOOT"
+  top-left and the stamp also draws it → a faint doubled brand. Options: drop the stamp's
+  brand+hub line (frames already carry branding) or require text-free frames. Left as-is
+  (stamp = source of truth) since future frames may lack baked branding.
+- **NOT done (deferred to Phase 3 by design):** folding the de-checker into
+  `sanitize_frame_alpha` (blast radius across all 101 frames).
 
 ---
 
