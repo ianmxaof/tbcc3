@@ -94,6 +94,49 @@ def _load_replicate_token() -> str | None:
     return None
 
 
+def key_magenta(im, thresh: int = 70):
+    """
+    Chroma-key flat magenta (#FF00FF) to real alpha=0. For border sheets generated
+    with the blank-plate prompt: window + exterior are one flat magenta, so a single
+    key cuts BOTH — no rembg, no punch_window, no checker ambiguity.
+    """
+    import numpy as np
+    from PIL import Image
+
+    arr = np.array(im.convert("RGBA"))
+    r, g, b = arr[:, :, 0].astype(int), arr[:, :, 1].astype(int), arr[:, :, 2].astype(int)
+    mag = (r > 150) & (g < 110) & (b > 150) & ((r - g) > thresh) & ((b - g) > thresh)
+    arr[mag, 3] = 0
+    return Image.fromarray(arr, "RGBA")
+
+
+def split_chroma_cards(keyed, min_frac: float = 0.004):
+    """Split a magenta-keyed sheet into per-card crops by opaque connected components.
+    Cards are isolated opaque border rings separated by transparent gutters — far more
+    robust than grey-gutter heuristics."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    from scripts.import_loot_card_frames import _components
+
+    w, h = keyed.size
+    solid = np.array(keyed)[:, :, 3] >= 40
+    # bridge small gaps in the border ring so each card is one component
+    dil = np.array(
+        Image.fromarray((solid.astype(np.uint8) * 255), "L").filter(ImageFilter.MaxFilter(5))
+    ) > 127
+    boxes = _components(dil, min_area=int(w * h * min_frac))
+    crops = []
+    for x0, y0, x1, y1 in boxes:
+        bw, bh = x1 - x0 + 1, y1 - y0 + 1
+        if bw < w * 0.10 or bh < h * 0.10:
+            continue
+        if not (0.5 < bw / max(1, bh) < 1.7):
+            continue
+        crops.append(keyed.crop((max(0, x0 - 4), max(0, y0 - 4), min(w, x1 + 5), min(h, y1 + 5))))
+    return crops
+
+
 def _remove_replicate(src_path: Path, out_path: Path) -> str:
     token = _load_replicate_token()
     if not token:
@@ -115,15 +158,13 @@ def _remove_replicate(src_path: Path, out_path: Path) -> str:
     return f"replicate bytes={len(resp.content)}"
 
 
-def split_and_normalize(nobg_png: Path, stage_cards: Path, size: int) -> int:
+def _stage_parts(parts, stage_cards: Path, size: int) -> int:
+    """Normalize each card crop (crop-to-bbox + 1024^2) and write to staging."""
     from PIL import Image
     import numpy as np
 
-    from scripts.import_loot_card_frames import _components, normalize_frame, split_cards
+    from scripts.import_loot_card_frames import _components, normalize_frame
 
-    raw = Image.open(nobg_png)
-    raw.load()
-    parts = split_cards(raw)
     existing = sorted(stage_cards.glob("frame-*.png"))
     idx = (max((int(p.stem.split("-")[1]) for p in existing), default=0) + 1) if existing else 1
     written = 0
@@ -149,12 +190,27 @@ def split_and_normalize(nobg_png: Path, stage_cards: Path, size: int) -> int:
     return written
 
 
+def split_and_normalize(nobg_png: Path, stage_cards: Path, size: int) -> int:
+    from PIL import Image
+
+    from scripts.import_loot_card_frames import split_cards
+
+    raw = Image.open(nobg_png)
+    raw.load()
+    return _stage_parts(split_cards(raw), stage_cards, size)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=Path, default=DEFAULT_SRC)
     ap.add_argument("--only", type=str, default=None, help="comma substrings to filter sheets")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--backend", choices=("local", "replicate"), default="local")
+    ap.add_argument(
+        "--backend",
+        choices=("local", "replicate", "chroma"),
+        default="local",
+        help="chroma = flat-magenta key (blank-plate sheets, no API, no checker)",
+    )
     ap.add_argument("--model", default="u2net", help="local rembg model (u2net, isnet-general-use)")
     ap.add_argument("--run", action="store_true", help="actually remove backgrounds")
     ap.add_argument("--split", action="store_true", help="split + interior-punch into staged frames")
@@ -186,14 +242,24 @@ def main() -> int:
         stage_cards.mkdir(parents=True, exist_ok=True)
     total = 0
     for p in sheets:
+        from PIL import Image
+
         out_png = stage / f"{p.stem}-nobg.png"
-        if args.backend == "local":
+        if args.backend == "chroma":
+            keyed = key_magenta(Image.open(p))
+            keyed.save(out_png)
+            msg = f"chroma:magenta size={keyed.size}"
+        elif args.backend == "local":
             msg = _remove_local(p, out_png, args.model)
         else:
             msg = _remove_replicate(p, out_png)
         print(f"{p.name}: {msg}")
         if args.split:
-            n = split_and_normalize(out_png, stage_cards, args.frame_size)
+            if args.backend == "chroma":
+                parts = split_chroma_cards(Image.open(out_png))
+                n = _stage_parts(parts, stage_cards, args.frame_size)
+            else:
+                n = split_and_normalize(out_png, stage_cards, args.frame_size)
             total += n
             print(f"  -> {n} staged frame(s)")
     if args.split:

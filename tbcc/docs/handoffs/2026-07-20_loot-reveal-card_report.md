@@ -7,6 +7,38 @@ started — that's the operator step and the only thing between here and the liv
 
 ---
 
+## MAGENTA-CHROMA BREAKTHROUGH — clean pool 12 → 36 (badge-free, no API)
+
+The blank-plate prompt worked. New Gemini sheets (in the source `New folder/`) render
+**flat pure-magenta #FF00FF windows + exteriors** and **empty plates with no baked text**
+— exactly as prompted. This unlocked the cleanest pipeline yet:
+
+- **Added a `chroma` backend** to `rembg_import_loot_frames.py`: `key_magenta()` keys the
+  flat magenta to real alpha in one shot (cuts window AND exterior — no rembg, no
+  `punch_window`, no checkerboard ambiguity), and `split_chroma_cards()` splits the sheet
+  by opaque connected components (the keyed cards are isolated rings — far more robust
+  than the grey-gutter heuristic).
+  Run: `py -3 scripts/rembg_import_loot_frames.py --src "<New folder>" --backend chroma --run --split`
+- **Processed 4 sheets → 118 staged frames.** Structural audit: **73 pass**. Composited
+  all 118 + all 73 with a placeholder center and eyeballed. Baked-text frames (078/079/080,
+  "TIER 8-5-1 RUN" / "TIER 6-6-1 BLACKOUT") failed the gate anyway — but promotion stayed
+  human-gated regardless.
+- **Curated 24 into `clean/` as `mag-*.png`** (14 MB): the cleanest, most varied,
+  badge-free set (circuit-blue, alien-teal, gold ornate, crystal, chrome, copper, cyan /
+  magenta neon, gemstone ovals). **Pool 12 → 36; live selector 36.** These are strictly
+  better than 094–101 (empty plates → the dynamic AOF LOOT/TIER/name stamps land perfectly,
+  no baked-brand doubling).
+- Remaining 49 passers left in the gitignored staging dir `frames/_rembg/cards/` for later
+  hand-promotion; regenerable anytime via the command above.
+- Full loot suite **74 passed**.
+
+### The winning recipe (documented in border-prompts/BLANK_PLATE_BORDER_PROMPTS.md)
+Prompt for **flat #FF00FF window + exterior + empty plates + zero text** → `--backend chroma`
+keys it deterministically → audit + eyeball → `clean/`. No credits, no upload, no checker,
+no baked text. This is the repeatable path for all future border art.
+
+---
+
 ## REMBG SWAP (replaced remove.bg; investigated pool growth)
 
 **What changed**
