@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,50 @@ from scripts.import_loot_card_frames import _is_checkerish  # noqa: E402
 MIN_WINDOW_HOLE = 0.55  # central window must be mostly a real alpha hole
 MAX_CHECKER_FRAC = 0.015  # opaque baked-checker residue anywhere < 1.5%
 MAX_EXTERIOR_CHECKER = 0.02  # edge ring must not be baked checker
+
+
+def declutter_exterior(im: Image.Image) -> Image.Image:
+    """
+    No-API exterior de-checker: flood the baked grey checkerboard inward from the
+    four edges, punching it to real alpha=0, stopping at the dark/neon border.
+
+    Rescues frames that have a clean center hole but a baked *opaque* checkerboard
+    margin (the import punch misses it because large checker cells only show the
+    brightness step at cell boundaries). The predicate excludes dark pixels
+    (mean<70) and saturated neon (chroma>26), so dark/neon borders are safe by
+    construction; light/silver metal borders contiguous with the checker CAN be
+    walked into, so every rescued frame must be eyeballed before promotion.
+    """
+    im = im.convert("RGBA")
+    arr = np.array(im).astype(np.int16)
+    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+    mx = np.maximum(np.maximum(r, g), b)
+    mn = np.minimum(np.minimum(r, g), b)
+    mean = (r + g + b) // 3
+    ext = (a < 40) | (((mx - mn) <= 26) & (mean >= 70) & (mean <= 236))
+    h, w = ext.shape
+    vis = np.zeros_like(ext, dtype=bool)
+    q: deque[tuple[int, int]] = deque()
+    for x in range(w):
+        for y in (0, h - 1):
+            if ext[y, x] and not vis[y, x]:
+                vis[y, x] = True
+                q.append((y, x))
+    for y in range(h):
+        for x in (0, w - 1):
+            if ext[y, x] and not vis[y, x]:
+                vis[y, x] = True
+                q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and not vis[ny, nx] and ext[ny, nx]:
+                vis[ny, nx] = True
+                q.append((ny, nx))
+    out = np.array(im)
+    out[vis, 3] = 0
+    return Image.fromarray(out, "RGBA")
 
 
 def _regions(alpha: np.ndarray) -> dict[str, np.ndarray]:
@@ -106,6 +151,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true", help="COPY clean frames into frames/clean/")
     ap.add_argument("--json", type=Path, default=None)
+    ap.add_argument(
+        "--declutter-rescue",
+        type=str,
+        default=None,
+        help=(
+            "Comma list of frame numbers (e.g. 001,003,005) with a clean center hole "
+            "but baked exterior checker: run the no-API de-checker and, if the result "
+            "passes the audit, write the DECHECKERED png into frames/clean/. Curated "
+            "keep-list — each frame was eyeballed; do not auto-promote by gate alone."
+        ),
+    )
     args = ap.parse_args()
 
     root = frames_dir()
@@ -148,6 +204,28 @@ def main() -> int:
             shutil.copy2(root / r["name"], clean_dir / r["name"])
             n += 1
         print(f"COPIED {n} clean frames -> {clean_dir}  (top-level frames left untouched)")
+
+        rescued = 0
+        if args.declutter_rescue:
+            nums = [s.strip() for s in args.declutter_rescue.split(",") if s.strip()]
+            for num in nums:
+                src = root / f"frame-{num}.png"
+                if not src.is_file():
+                    print(f"  rescue skip {num}: no such frame")
+                    continue
+                cleaned = declutter_exterior(Image.open(src))
+                # Validate the DECHECKERED result against the same structural gate.
+                tmp = clean_dir / f"frame-{num}.png"
+                cleaned.save(tmp, optimize=True)
+                a = audit_frame(tmp)
+                if not a["clean"]:
+                    tmp.unlink()
+                    print(f"  rescue reject {num}: " + ",".join(a["reasons"]))
+                    continue
+                rescued += 1
+                print(f"  RESCUED frame-{num}.png (decheckered) -> clean/")
+            print(f"decheckered rescues written: {rescued}")
+        print(f"clean pool total: {n + rescued}")
 
     return 0
 

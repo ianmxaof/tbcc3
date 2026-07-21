@@ -1,10 +1,50 @@
-# Loot Reveal Card — Phase 1 report (asset audit + clean/ pool)
+# Loot Reveal Card — Phase 1 / 1b report (asset audit + clean/ pool)
 
 Date: 2026-07-20
 Branch: `feat/supervisor-panel-foundation` (committed, NOT pushed)
-Scope: **Phase 1 only** — asset audit + `frames/clean/` pool + import/audit script.
+Scope: **Phase 1 + 1b** — asset audit + `frames/clean/` pool + audit/de-checker tools.
 Phases 2 (compositor), 3 (pick_frame_path tier-band + baked-badge reject), 4 (island
-deploy) are **not** started — stopped here for Cursor ACK per working agreement.
+deploy) not yet started.
+
+---
+
+## PHASE 1b UPDATE (no-API pool expansion) — clean pool 8 → 12
+
+- **remove.bg is a dead end for now:** key file is present but empty / 0 credits on the
+  account. The client (`scripts/removebg_import_loot_frames.py`) is committed and
+  dry-run verified, but its **live API path is untested** (no credits). It reads the key
+  from env `REMOVEBG_API_KEY` or gitignored `backend/.removebg.key`; never printed/committed.
+- **No-API de-checker added** (`declutter_exterior` in `audit_loot_card_frames.py`):
+  floods the baked grey checkerboard inward from the frame edges to real alpha=0,
+  stopping at dark/neon borders. This rescues frames that have a clean center hole but a
+  baked *opaque* checker margin (the import punch misses those — large checker cells only
+  show the brightness step at cell edges).
+- **Rescued 4 frames** into `clean/` via a **curated, eyeballed** keep-list
+  (`--declutter-rescue 001,003,005,007,010`): **001, 003, 005, 007** promoted;
+  **010 auto-rejected** by the audit gate (raw decheckered file still 2.8% checkerish —
+  its cyan double-border trips the detector; composed clean by eye but excluded
+  conservatively rather than relax the gate).
+- **Every rescued frame was eyeballed** (compose over a bright placeholder center), not
+  just gate-passed — because the gate confirms *checker gone* but cannot confirm *border
+  survived* the flood. Dropped on inspection: 002 (ragged glitch), 004 (neon fragments +
+  residue), 006 (silver border survived but outer checker residue), 008 (speckle), 009
+  (heavy magenta speckle).
+- **clean/ is no longer pure-copy:** 094–101 are copied as-is; 001/003/005/007 are
+  **script-regenerated** (decheckered). All 12 have corner+center alpha 0, so the
+  compositor's `sanitize_frame_alpha` hits its `already_clean` fast-path and ships them
+  byte-identical to what was eyeballed. Rebuild any time:
+  `py -3 scripts/audit_loot_card_frames.py --write --declutter-rescue 001,003,005,007,010`
+- **Still no live-behavior change.** `list_frame_paths()` = 101; live rolls still serve
+  all 101 (incl. checkered 001–010 and baked-tier 050/070). The user-visible wrong-tier
+  bug persists until **Phase 3** flips the selector to `clean/`. Phase 1b grew an inert
+  pool only.
+- **Deferred to Phase 2 (noted, not done):** folding the de-checker into
+  `sanitize_frame_alpha` would fix all frames at delivery, but has blast radius across all
+  101 frames (could eat light metal borders) — left as a Phase 2 decision.
+
+---
+
+## PHASE 1 (original)
 
 ---
 
