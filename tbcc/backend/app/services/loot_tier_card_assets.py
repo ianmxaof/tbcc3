@@ -131,6 +131,7 @@ def _list_images_in(folder: Path) -> list[Path]:
 
 
 def list_frame_paths() -> list[Path]:
+    """All raw top-level frames (frames/frame-*.png). Subdirs (clean/, _*) excluded."""
     root = frames_dir()
     if not root.is_dir():
         return []
@@ -146,6 +147,32 @@ def list_frame_paths() -> list[Path]:
             continue
         out.append(p)
     return out
+
+
+def list_clean_frame_paths() -> list[Path]:
+    """Curated structurally-clean pool (frames/clean/), built by audit_loot_card_frames.
+
+    These are hand-vetted: real center hole, no baked checker, no baked tier badge —
+    so a random pick can never contradict the rolled tier (the wrong-tier-label bug).
+    """
+    root = frames_dir() / "clean"
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    for p in sorted(root.iterdir()):
+        if not p.is_file() or p.name.startswith("_"):
+            continue
+        if p.suffix.lower() not in _IMAGE_EXTS or p.stat().st_size <= 0:
+            continue
+        out.append(p)
+    return out
+
+
+def list_reveal_frame_paths() -> list[Path]:
+    """Frames to actually composite from: the curated clean/ pool when present,
+    else the raw top-level pool (back-compat / fresh checkouts without clean/)."""
+    clean = list_clean_frame_paths()
+    return clean if clean else list_frame_paths()
 
 
 def _is_placeholder_center(path: Path) -> bool:
@@ -624,7 +651,7 @@ def _frame_layout_score(path: Path) -> float:
 
 def pick_frame_path(rng: random.Random, frames: list[Path] | None = None) -> Path | None:
     """Bias toward layout-friendly borders (text plates), still random among top half."""
-    frames = list(frames or list_frame_paths())
+    frames = list(frames or list_reveal_frame_paths())
     if not frames:
         return None
     if len(frames) == 1:
@@ -701,7 +728,7 @@ def compose_reveal_card(
     rng = rng or random.Random()
     t = max(1, min(10, int(tier)))
 
-    frames = list_frame_paths()
+    frames = list_reveal_frame_paths()
     centers = list_center_paths(t)
     if not frames and not centers:
         return None
@@ -810,9 +837,10 @@ def build_reveal_card_png(
         meta_name = preview.get("tier_name") or preview.get("name")
         meta_tag = preview.get("tagline")
 
-    frames = list_frame_paths()
+    frames = list_reveal_frame_paths()
     centers = list_center_paths(t)
     band = center_band_for_tier(t)
+    pool = "clean" if list_clean_frame_paths() else "raw"
     if frames:
         data = compose_reveal_card(
             t,
@@ -824,7 +852,8 @@ def build_reveal_card_png(
         if data:
             return (
                 data,
-                f"composite frames={len(frames)} centers={len(centers)} band={band} tier={t}",
+                f"composite pool={pool} frames={len(frames)} centers={len(centers)} "
+                f"band={band} tier={t}",
             )
 
     legacy = resolve_tier_card_path(t)

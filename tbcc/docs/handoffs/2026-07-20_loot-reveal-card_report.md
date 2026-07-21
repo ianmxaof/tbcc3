@@ -2,9 +2,46 @@
 
 Date: 2026-07-20
 Branch: `feat/supervisor-panel-foundation` (committed, NOT pushed)
-Scope: **Phase 1 + 1b + 2** — asset audit + `frames/clean/` pool + audit/de-checker
-tools + compositor hardening & deterministic tests. Phases 3 (pick_frame_path tier-band
-+ baked-badge reject) and 4 (island deploy) not yet started.
+Scope: **Phase 1 + 1b + 2 + 3** — asset audit + `frames/clean/` pool + audit/de-checker
+tools + compositor hardening & deterministic tests + **frame selection flipped to the
+clean pool**. Phase 4 (island deploy) **not** started — that's the operator step and the
+only thing between here and the live fix.
+
+---
+
+## PHASE 3 (frame selection → clean pool) — this is the actual bug fix
+
+- **Root cause of "Tier 5 showed TIER 3":** `pick_frame_path` chose from all 101 raw
+  frames, ~90 of which bake a wrong tier/world label into the art. Fixed by **only
+  selecting from the curated `clean/` pool.**
+- New selectors in `loot_tier_card_assets.py`:
+  - `list_clean_frame_paths()` → `frames/clean/` (the 12 vetted, badge-free frames)
+  - `list_reveal_frame_paths()` → clean pool when present, else raw top-level
+    (back-compat / fresh checkout with no clean/)
+  - `compose_reveal_card`, `pick_frame_path`, `build_reveal_card_png` all now draw from
+    `list_reveal_frame_paths()`. `build_reveal_card_png` note reports `pool=clean|raw`.
+- **Baked-badge rejection = curation, not a runtime detector.** The task allowed either
+  "reject frames with a baked badge OR only use clean/." I chose clean/-only: the 12
+  frames were hand-vetted badge-free, so a fragile runtime badge-detector (which could
+  wrongly reject the empty top-right plates) is unnecessary and riskier. If you want
+  defense-in-depth detection too, that's a follow-up.
+- **Verified:** `list_reveal_frame_paths()` returns 12 (was 101); a live
+  `build_reveal_card_png(5)` reports `pool=clean frames=12` and produces a 210 KB JPEG.
+  Two new selector tests (prefers clean / falls back to raw) + full loot suite **74
+  passed, 0 failed**.
+- **The 12 `clean/` PNGs are now committed** (≈360 KB) as the durable source of truth —
+  unlike the raw 101 + 60 MB `_source` (untracked, rsync-deployed), the curated pool
+  encodes a human keep-list that a fresh clone can't regenerate (its script inputs are
+  untracked).
+- **Still not live.** This is a committed code+asset change; it reaches users only when
+  **Phase 4 deploys to the island**. Until deploy, production still rolls all 101 and the
+  wrong-tier bug is 100% present.
+
+### What each clean frame looks like (dynamic stamp still wins)
+`test_tier_label_is_dynamic` proves the stamp varies by tier — but on a *blank* synthetic
+frame. It does **not** yet prove the stamp beats a baked "TIER 3"; that scenario is now
+avoided by curation rather than tested. Worth a real baked-frame test if we ever relax
+the clean-only rule.
 
 ---
 

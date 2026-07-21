@@ -124,3 +124,46 @@ def test_name_and_tagline_do_not_overlap(tmp_path: Path):
     assert data[:2] == b"\xff\xd8"
     im = Image.open(io.BytesIO(data))
     assert im.mode == "RGB"
+
+
+def _clean_frame_at(path: Path, size: int = 256) -> None:
+    from PIL import Image as _I
+    im = _I.new("RGBA", (size, size), (0, 0, 0, 0))
+    px = im.load()
+    lo, hi = int(size * 0.12), int(size * 0.88)
+    wlo, whi = int(size * 0.22), int(size * 0.78)
+    for y in range(size):
+        for x in range(size):
+            if lo <= x < hi and lo <= y < hi and not (wlo <= x < whi and wlo <= y < whi):
+                px[x, y] = (40, 44, 52, 255)
+    im.save(path)
+
+
+def test_reveal_pool_prefers_clean_when_present(tmp_path: Path, monkeypatch):
+    from app.services import loot_tier_card_assets as A
+
+    monkeypatch.setenv("TBCC_LOOT_TIER_CARD_DIR", str(tmp_path))
+    frames = tmp_path / "frames"
+    (frames / "clean").mkdir(parents=True)
+    # 3 raw top-level frames, 1 curated clean frame
+    for i in range(1, 4):
+        _clean_frame_at(frames / f"frame-{i:03d}.png")
+    _clean_frame_at(frames / "clean" / "frame-094.png")
+
+    assert len(A.list_frame_paths()) == 3
+    assert len(A.list_clean_frame_paths()) == 1
+    reveal = A.list_reveal_frame_paths()
+    assert len(reveal) == 1
+    assert reveal[0].parent.name == "clean"
+
+
+def test_reveal_pool_falls_back_to_raw_without_clean(tmp_path: Path, monkeypatch):
+    from app.services import loot_tier_card_assets as A
+
+    monkeypatch.setenv("TBCC_LOOT_TIER_CARD_DIR", str(tmp_path))
+    frames = tmp_path / "frames"
+    frames.mkdir(parents=True)
+    _clean_frame_at(frames / "frame-001.png")
+    _clean_frame_at(frames / "frame-002.png")
+    assert A.list_clean_frame_paths() == []
+    assert len(A.list_reveal_frame_paths()) == 2
