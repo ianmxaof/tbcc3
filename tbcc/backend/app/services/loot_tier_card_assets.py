@@ -530,6 +530,25 @@ def _content_trim_bbox(
     )
 
 
+def _fit_font(
+    draw: ImageDraw.ImageDraw, text: str, max_width: int, start_size: int, min_size: int
+):
+    """Largest font (<= start_size) whose rendered `text` width fits `max_width`.
+
+    Font metrics differ across systems (Arial on Windows vs DejaVu in the Linux
+    container — DejaVu is noticeably wider), so fixed size ratios overflow the
+    plates on one platform. Measuring + shrinking keeps stamps inside the card
+    everywhere.
+    """
+    size = max(min_size, start_size)
+    while size > min_size:
+        font = _try_font(size)
+        if _text_width(draw, text, font) <= max_width:
+            return font
+        size -= max(1, size // 12)
+    return _try_font(min_size)
+
+
 def _stamp_tier_chrome(
     canvas: Image.Image,
     *,
@@ -553,15 +572,14 @@ def _stamp_tier_chrome(
         x0, y0, x1, y1 = 0, 0, w, h
     cw, ch = max(1, x1 - x0), max(1, y1 - y0)
 
-    brand_font = _try_font(max(22, ch // 14))
-    tier_font = _try_font(max(16, ch // 22))
-    name_font = _try_font(max(28, ch // 11))
-    flavor_font = _try_font(max(12, ch // 36))
-    hub_font = _try_font(max(10, ch // 48))
+    tier_font = _try_font(max(14, ch // 26))
+    flavor_font = _try_font(max(12, ch // 40))
+    hub_font = _try_font(max(10, ch // 52))
 
-    # top-left brand
+    # top-left brand — fit within the left ~48% so it never runs into the badge.
     brand_x = x0 + int(cw * 0.05)
-    brand_y = y0 + int(ch * 0.035)
+    brand_y = y0 + int(ch * 0.04)
+    brand_font = _fit_font(draw, "AOF LOOT", int(cw * 0.48), max(20, ch // 13), 14)
     _draw_text_outlined(draw, (brand_x, brand_y), "AOF LOOT", font=brand_font)
 
     hub = "t.me/aofmainhub"
@@ -579,8 +597,9 @@ def _stamp_tier_chrome(
     tier_label = f"TIER {tier}"
     tw = _text_width(draw, tier_label, tier_font)
     badge_pad_x, badge_pad_y = 10, 6
-    bx1 = x1 - int(cw * 0.04)
-    by0 = y0 + int(ch * 0.04)
+    # Keep the badge fully inside the card's right edge (was clipping on Linux).
+    bx1 = min(x1 - int(cw * 0.05), w - max(6, int(cw * 0.02)))
+    by0 = y0 + int(ch * 0.05)
     bx0 = bx1 - tw - badge_pad_x * 2
     by1 = by0 + max(22, ch // 20) + badge_pad_y
     # neon-ish plate
@@ -611,6 +630,7 @@ def _stamp_tier_chrome(
     # bottom name + flavor — stacked and bottom-anchored so the tagline never
     # lands on the name's descenders (they used to overlap).
     name_u = (name or f"Tier {tier}").strip().upper() or f"TIER {tier}"
+    name_font = _fit_font(draw, name_u, int(cw * 0.86), max(24, ch // 11), 16)
     nw = _text_width(draw, name_u, name_font)
     nb = draw.textbbox((0, 0), name_u, font=name_font)
     nh = nb[3] - nb[1]
