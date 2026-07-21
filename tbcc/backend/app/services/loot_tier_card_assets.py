@@ -431,14 +431,23 @@ def _try_font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
         "arialbd.ttf",
         "Arial Bold.ttf",
         "DejaVuSans-Bold.ttf",
+        # Linux/Docker: no Windows fonts — try common absolute paths
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "segoeui.ttf",
         "arial.ttf",
+        "DejaVuSans.ttf",
     ):
         try:
             return ImageFont.truetype(name, size)
         except OSError:
             continue
-    return ImageFont.load_default()
+    # No system TTF (bare Docker image): Pillow >=10.1 ships DejaVu and honours size.
+    # Without the size arg load_default() is a fixed ~10px bitmap => invisible stamps.
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # older Pillow
+        return ImageFont.load_default()
 
 
 def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
