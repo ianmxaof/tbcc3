@@ -40,6 +40,19 @@ deploy) are **not** started — stopped here for Cursor ACK per working agreemen
 - **No wrong-tier baked text in the clean pool.** All 8 clean frames carry only "AOF
   LOOT" branding and an empty top-right plate where the dynamic stamp writes TIER N —
   nothing to contradict the roll. (Confirmed on 8-frame contact sheet.)
+- **Composed a real card from the pool** (existing `compose_reveal_card`, no Phase-2
+  changes) — `frame-094` + bright placeholder center, Tier 5 / World 2-2 / "drip":
+  output is opaque RGB JPEG (970×1024, no alpha), real photo in the window, border
+  wraps the edges, **TIER 5** green badge lands correctly in the top-right plate, no
+  checkerboard. Render saved to scratchpad `frameaudit/compose_t5_frame094.jpg`.
+  So the deliverable is "a pool that makes good cards," not just "8 frames that pass a
+  metric." Two Phase-2 nits observed (deferred, not Phase 1):
+    - The stamp's "AOF LOOT" line **overlaps** the frame's baked "AOF LOOT" (they are
+      two offset copies, not reinforcement — corrected wording below). Baked copy is
+      dark-on-dark so the white stamp covers it acceptably, but Phase 2 should either
+      drop the stamp brand line or require text-free frames.
+    - Bottom name ("DRIP") and tagline ("Mid-heat.") overlap vertically — stamp layout
+      nit for Phase 2.
 
 ## DEFINITION USED (read this before ACK)
 
