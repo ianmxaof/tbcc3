@@ -2,10 +2,49 @@
 
 Date: 2026-07-20
 Branch: `feat/supervisor-panel-foundation` (committed, NOT pushed)
-Scope: **Phase 1 + 1b + 2 + 3** — asset audit + `frames/clean/` pool + audit/de-checker
-tools + compositor hardening & deterministic tests + **frame selection flipped to the
-clean pool**. Phase 4 (island deploy) **not** started — that's the operator step and the
-only thing between here and the live fix.
+Scope: **Phase 1 + 1b + 2 + 3** + **rembg swap**. Phase 4 (island deploy) **not**
+started — that's the operator step and the only thing between here and the live fix.
+
+---
+
+## REMBG SWAP (replaced remove.bg; investigated pool growth)
+
+**What changed**
+- Deleted `scripts/removebg_import_loot_frames.py`; added
+  `scripts/rembg_import_loot_frames.py` with **two backends** (you chose Both):
+  - `local` (default) — `rembg` library, offline/free/unlimited. Installed
+    `rembg[cpu]` 2.0.77 + onnxruntime 1.27.0 under **Python 3.13** (no 3.14 wheels), so
+    run the script with `py -3.13`. Verified: bg removal ~1.7s/sheet after a one-time
+    176 MB u2net model download (md5-checked to `~/.u2net/u2net.onnx`).
+  - `replicate` — `cjwbw/rembg` hosted fallback. Token from env `REPLICATE_API_TOKEN`
+    or gitignored `backend/.replicate.key`. Coded, **not yet tested live** (you have a
+    token — drop it in that file to use it).
+- Pipeline: bg-remove → `split_cards` → `normalize_frame` (runs `punch_window` for the
+  interior hole) → **staging** dir `frames/_rembg/` (gitignored; live selector ignores
+  `_*`). **Never auto-writes clean/** — the structural audit is blind to baked TIER text,
+  so a "TIER 5 / DRIP" card would pass the gate and re-introduce the wrong-tier bug.
+  Human eyeball + hand-copy only.
+
+**Key finding — the swap works but current source art can't grow the badge-free pool**
+- Triaged all 9 new Gemini sheets. They are **either full 1–10 tier decks with baked
+  tier labels** (`35rrlv`, `6ol2c8`, `qnv4qq`, `wy8vwf`) **or carry other baked text**
+  (`yfb5x4` bakes "TIER 2 • 1-2" / "LOOT" / flavor). **None are truly blank-plate.** The
+  094–101 batch (from the original `removebg_blank_plates` sheet) remains the only
+  badge-free set. So local rembg removes backgrounds fine, but **feeding the random
+  badge-free pool needs blank-plate art we don't currently have.**
+- Also observed: `split_cards` mis-segments these tight grids (made 5 strips from a 2×4);
+  a **fixed uniform-grid crop** (rows×cols known) splits cleanly. And `punch_window`
+  leaves residual window checker on ~half the cards. Both are fixable but out of scope
+  until the architecture below is chosen.
+
+**Recommended next architecture (task's stretch goal) — decision for you**
+- These tier decks aren't junk: each card is labeled with *its own* tier
+  (NEWBIE=1 … DRIP=5 … GODROLL=10) and the baked names match the catalog. **Map each
+  card → its labeled tier** and the baked "TIER 5 / DRIP" becomes *correct on tier 5*,
+  reinforcing the roll instead of contradicting it. That turns the whole tier-deck supply
+  into one coherent frame per tier — and is the path that actually uses the art you have.
+  This is a genuinely different design from the shipped random-badge-free-pool selector,
+  so it's your call. **Not started.**
 
 ---
 

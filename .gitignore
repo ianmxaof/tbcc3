@@ -5,3 +5,9 @@
 # remove.bg API key (never commit)
 tbcc/backend/.removebg.key
 **/.removebg.key
+
+# Replicate API token (never commit)
+tbcc/backend/.replicate.key
+**/.replicate.key
+# rembg staging output (regenerable)
+**/loot_tier_cards/frames/_rembg/
