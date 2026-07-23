@@ -1,7 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { getApiBase } from "../api";
 import { api } from "../api";
-
-const API_PREFIX = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
 
 type RowStrip = {
   row: number;
@@ -23,7 +22,7 @@ export function EmojiFactoryRowDividers({ jobId, rows, rowStrips, compact = fals
     rowStrips ??
     Array.from({ length: rows }, (_, row) => ({
       row,
-      preview_url: `${API_PREFIX}/emoji-factory/jobs/${jobId}/rows/${row}/divider-png`,
+      preview_url: `${getApiBase()}/emoji-factory/jobs/${jobId}/rows/${row}/divider-png`,
       export_filename: `row_${String(row).padStart(2, "0")}_divider.png`,
     }));
 

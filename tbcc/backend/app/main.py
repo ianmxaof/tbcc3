@@ -14,11 +14,12 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, zeus_v1, extension_context_menu, extension_capture_secret, extension_aof_pools, album_composer_drafts, k2s
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, funnel_strategies, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, zeus_v1, extension_context_menu, extension_capture_secret, extension_aof_pools, extension_storage_hub, album_composer_drafts, k2s, lane_drops, click_beacon
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
 from app.models.link_resolver_request import LinkResolverRequest  # noqa: F401
+from app.models.lane_drop import LaneDrop  # noqa: F401
 from app.models.loot_bot_settings import LootBotSettings  # noqa: F401
 from app.models.caption_snippet import CaptionSnippet  # noqa: F401
 from app.models.emoji_factory_sketch import EmojiFactorySketchPage  # noqa: F401
@@ -33,7 +34,8 @@ from app.models.campaign_deploy_event import CampaignDeployEvent  # noqa: F401
 from app.models.scrape_channel_profile import ScrapeChannelProfile  # noqa: F401
 from app.models.secretary_user_context import SecretaryMessageRecord, SecretaryUserContext  # noqa: F401
 from app.models.secretary_settings import SecretarySettings  # noqa: F401
-from app.models.secretary_knowledge import SecretaryKnowledgeEntry
+from app.models.secretary_knowledge import SecretaryKnowledgeEntry  # noqa: F401
+from app.models.funnel_strategy import FunnelStrategyEntry  # noqa: F401
 from app.models.industry_benchmark import IndustryBenchmark  # noqa: F401  # noqa: F401
 from app.services.promo_storage import ensure_promo_dir
 from app.services.zip_promo_storage import ensure_zip_promo_dir
@@ -1202,6 +1204,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Outer when added after CORS: optional X-TBCC-Internal-Key gate (TBCC_API_REQUIRE_INTERNAL=1).
+from app.middleware.internal_api_auth import InternalApiKeyMiddleware  # noqa: E402
+
+app.add_middleware(InternalApiKeyMiddleware)
 
 app.include_router(bots.router, prefix="/bots", tags=["bots"])
 app.include_router(channels.router, prefix="/channels", tags=["channels"])
@@ -1237,10 +1243,13 @@ app.include_router(ops_flywheel.router)
 app.include_router(ops_workflow.router)
 app.include_router(ops_stack.router)
 app.include_router(zeus_v1.router)
+app.include_router(click_beacon.public_router)
+app.include_router(click_beacon.zeus_router)
 app.include_router(link_resolver.router, prefix="/link-resolver", tags=["link-resolver"])
 app.include_router(crawler.router, prefix="/crawler", tags=["crawler"])
 app.include_router(jdownloader.router, prefix="/jd", tags=["jdownloader"])
 app.include_router(caption_snippets.router, prefix="/caption-snippets", tags=["caption-snippets"])
+app.include_router(funnel_strategies.router, prefix="/funnel-strategies", tags=["funnel-strategies"])
 app.include_router(telegram_custom_emoji.router, prefix="/telegram-custom-emoji", tags=["telegram-custom-emoji"])
 app.include_router(emoji_factory.router, prefix="/emoji-factory", tags=["emoji-factory"])
 app.include_router(promo_affiliate_links.router, prefix="/promo-affiliate-links", tags=["promo-affiliate-links"])
@@ -1253,6 +1262,8 @@ app.include_router(watermark_settings.router, prefix="/watermark-settings", tags
 app.include_router(extension_context_menu.router, prefix="/extension/context-menu", tags=["extension-context-menu"])
 app.include_router(extension_capture_secret.router, prefix="/extension/capture-secret", tags=["extension-capture-secret"])
 app.include_router(extension_aof_pools.router, prefix="/extension/aof-pools", tags=["extension-aof-pools"])
+app.include_router(extension_storage_hub.router, prefix="/extension/storage-hub", tags=["extension-storage-hub"])
+app.include_router(lane_drops.router, prefix="/lane-drops", tags=["lane-drops"])
 app.include_router(album_composer_drafts.router, prefix="/album-composer/drafts", tags=["album-composer-drafts"])
 app.include_router(archive.router, tags=["archive"])
 app.include_router(macro_search_submissions.router)

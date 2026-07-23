@@ -13,6 +13,16 @@ $islandEnv = Join-Path $tbccRoot "infra\.env.revenue-island"
 $example = Join-Path $tbccRoot "infra\env.revenue-island.example"
 
 if (-not (Test-Path -LiteralPath $homeEnv)) { throw "Missing $homeEnv" }
+
+# Guard: a failed scp can balloon this file to gigabytes and OOM the seed step.
+if (Test-Path -LiteralPath $islandEnv) {
+  $envBytes = (Get-Item -LiteralPath $islandEnv).Length
+  if ($envBytes -gt 512000) {
+    Write-Host "WARN island env is $([math]::Round($envBytes/1MB,1)) MB - recreating from example (likely scp corruption)." -ForegroundColor Red
+    Remove-Item -LiteralPath $islandEnv -Force
+  }
+}
+
 if (-not (Test-Path -LiteralPath $islandEnv)) {
   if (-not (Test-Path -LiteralPath $example)) { throw "Missing example and island env" }
   Copy-Item $example $islandEnv
@@ -111,7 +121,21 @@ $copies = [ordered]@{
   "TBCC_BUFFER_CHANNEL_IDS"                 = "TBCC_BUFFER_CHANNEL_IDS"
   "TBCC_BUFFER_X_AFFILIATE_FIRST"           = "TBCC_BUFFER_X_AFFILIATE_FIRST"
   "TBCC_BUFFER_X_LINK_CYCLE"                = "TBCC_BUFFER_X_LINK_CYCLE"
+  "TBCC_SALE_ANNOUNCE_ENABLED"              = "TBCC_SALE_ANNOUNCE_ENABLED"
+  "TBCC_SALE_ANNOUNCE_TARGETS"              = "TBCC_SALE_ANNOUNCE_TARGETS"
+  "TBCC_SALE_ANNOUNCE_BUFFER_MODE"          = "TBCC_SALE_ANNOUNCE_BUFFER_MODE"
+  "TBCC_SALE_ANNOUNCE_MIN_INTERVAL_S"       = "TBCC_SALE_ANNOUNCE_MIN_INTERVAL_S"
+  "TBCC_SALE_ANNOUNCE_STAGGER_S"            = "TBCC_SALE_ANNOUNCE_STAGGER_S"
+  "TBCC_SALE_ANNOUNCE_SKIP_KEYS"            = "TBCC_SALE_ANNOUNCE_SKIP_KEYS"
   "TBCC_PROMO_PUBLIC_BASE_URL"              = "TBCC_PROMO_PUBLIC_BASE_URL"
+  "TBCC_POOL_BUFFER_MIRROR"                 = "TBCC_POOL_BUFFER_MIRROR"
+  "TBCC_STARS_BAIT_DM_ENABLED"              = "TBCC_STARS_BAIT_DM_ENABLED"
+  "TBCC_STARS_BAIT_DM_BATCH"                = "TBCC_STARS_BAIT_DM_BATCH"
+  "TBCC_STARS_BAIT_DM_INTERVAL_MIN"         = "TBCC_STARS_BAIT_DM_INTERVAL_MIN"
+  "TBCC_STARS_BAIT_CHANNEL_INTERVAL_MIN"    = "TBCC_STARS_BAIT_CHANNEL_INTERVAL_MIN"
+  "TBCC_FIAT_CHECKOUT_BUTTON_LABEL"         = "TBCC_FIAT_CHECKOUT_BUTTON_LABEL"
+  "TBCC_FIAT_CHECKOUT_DISPLAY_NAME"         = "TBCC_FIAT_CHECKOUT_DISPLAY_NAME"
+  "TBCC_FIAT_OPEN_PAY_BUTTON_LABEL"         = "TBCC_FIAT_OPEN_PAY_BUTTON_LABEL"
 }
 
 # Prefer loot token aliases used at home

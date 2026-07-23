@@ -20,7 +20,7 @@ from app.models.promo_affiliate_link import PromoAffiliateLink
 
 SEED_ITEMS: list[dict] = [
     {
-        "label": "AOF VIP Gumroad",
+        "label": "AOF VIP card checkout",
         "url": "https://aof69.gumroad.com/l/ynnulc",
         "payout_kind": "subscription",
         "priority_tier": 2,

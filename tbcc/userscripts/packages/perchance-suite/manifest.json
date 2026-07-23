@@ -1,10 +1,10 @@
 {
   "name": "perchance-suite",
-  "version": "0.1.0",
+  "version": "0.3.8",
   "header": {
     "name": "TBCC Perchance Suite",
     "namespace": "https://github.com/tbcc/userscripts/perchance",
-    "description": "Perchance ops: ads bypass, lazy queue, Gemini-parity job presets, prompt history, TBCC capture bridge.",
+    "description": "Perchance via TBCC extension: Loot God Card Lab, lean page, ads bypass, Gemini-parity jobs, capture bridge.",
     "match": [
       "https://perchance.org/*",
       "https://*.perchance.org/*",
@@ -27,7 +27,11 @@
     "../shared/flags.js",
     "../shared/ui-panel.js",
     "data/jobs-data.js",
+    "data/loot-god-library.js",
     "features/ads-bypass.js",
+    "features/lean-generator.js",
+    "features/image-hover-preview.js",
+    "features/loot-god-lab.js",
     "features/lazy-iframe-queue.js",
     "features/prompt-bridge.js",
     "features/jobs-panel.js",

@@ -1,7 +1,42 @@
-const TBCC_API_BASE_CANDIDATES = ["http://localhost:8000", "http://127.0.0.1:8000"];
+/** Local first, then revenue-island public API (home tray backend is often Off). */
+const TBCC_API_BASE_CANDIDATES = [
+  "http://127.0.0.1:8000",
+  "http://localhost:8000",
+  "http://5.161.53.91:8000",
+];
 let API_BASE = TBCC_API_BASE_CANDIDATES[0];
 const TBCC_API_HEALTH_URL = () => API_BASE + "/health";
 const TBCC_API_OFFLINE_RETRY_MS = 15000;
+
+/** Shared with gallery-send-promo.js (and other side-panel helpers). */
+async function tbccApiAuthHeaders() {
+  const h = {};
+  try {
+    const d = await chrome.storage.local.get("tbccInternalApiKey");
+    const key = String(d.tbccInternalApiKey || "").trim();
+    if (key) h["X-TBCC-Internal-Key"] = key;
+  } catch (_) {}
+  return h;
+}
+
+function tbccGetApiBase() {
+  return API_BASE;
+}
+
+/** Prefer chrome.storage tbccApiBase (Tailscale / api domain) ahead of localhost. */
+async function tbccRefreshApiBaseCandidates() {
+  try {
+    const d = await chrome.storage.local.get("tbccApiBase");
+    const custom = String(d.tbccApiBase || "").trim().replace(/\/+$/, "");
+    if (custom && /^https?:\/\//i.test(custom)) {
+      const next = [custom, ...TBCC_API_BASE_CANDIDATES.filter((b) => b !== custom)];
+      TBCC_API_BASE_CANDIDATES.length = 0;
+      TBCC_API_BASE_CANDIDATES.push(...next);
+      API_BASE = TBCC_API_BASE_CANDIDATES[0];
+    }
+  } catch (_) {}
+}
+void tbccRefreshApiBaseCandidates();
 
 /** Cached API reachability — avoids hammering :8000 when backend is down. */
 let _tbccApiReachableCache = { ok: null, at: 0 };
@@ -4880,10 +4915,19 @@ function scrollGalleryCellIntoView(url) {
 async function processGalleryMergeHarvest(msg) {
   const sig =
     String(msg.mergeId || "") ||
-    String(msg.sourceUrl || "") + "|" + msg.items.length + "|" + (msg.adapter || "") + "|" + (msg.autoZip ? "zip" : "");
+    String(msg.sourceUrl || "") +
+      "|" +
+      msg.items.length +
+      "|" +
+      (msg.adapter || "") +
+      "|" +
+      (msg.autoZip ? "zip" : "") +
+      "|" +
+      (msg.autoDownload ? "dl" : "");
   const now = Date.now();
   if (
     !msg.autoZip &&
+    !msg.autoDownload &&
     window.__tbccLastMergeHarvestSig === sig &&
     now - (window.__tbccLastMergeHarvestAt || 0) < 5000
   ) {
@@ -4944,6 +4988,10 @@ async function processGalleryMergeHarvest(msg) {
     } else {
       await downloadSelectedAsZip({ explicitItems: rows, harvestZip: true, zipFetchOpts });
     }
+  } else if (msg.autoDownload) {
+    showToast("Downloading " + rows.length + " Motherless file(s)…", "success");
+    if (settings.downloadMode === "direct") await downloadSelectedDirect(rows);
+    else await downloadSelectedBuffered(rows);
   } else {
     showToast("Added " + rows.length + " harvested item(s) to gallery.", "success");
   }
@@ -5837,26 +5885,22 @@ function zipFilenameHintForItem(it, url) {
   return filenameFromUrl(url) || "media";
 }
 
-function ensureZipRasterFilename(name, blob) {
+async function ensureZipRasterFilename(name, blob) {
   let n = String(name || "media").trim() || "media";
   n = n.replace(/[^\w.\-]+/g, "_");
-  if (/\.\w{2,5}$/i.test(n)) {
-    if (
-      tbccWebpConvertEnabled() &&
-      typeof TbccWebp !== "undefined" &&
-      TbccWebp.tbccReplaceExtToJpg &&
-      /\.webp$/i.test(n)
-    ) {
-      return TbccWebp.tbccReplaceExtToJpg(n);
-    }
-    return n;
+  // Prefer magic-byte alignment — never rename WebP bytes to .jpg.
+  if (typeof TbccWebp !== "undefined" && TbccWebp.tbccAlignFilenameToBlob && blob) {
+    try {
+      return (await TbccWebp.tbccAlignFilenameToBlob(blob, n)).replace(/[^\w.\-]+/g, "_");
+    } catch (_) {}
   }
+  if (/\.\w{2,5}$/i.test(n)) return n;
   const mime = blob && blob.type ? String(blob.type).toLowerCase() : "";
   if (mime === "image/jpeg" || mime === "image/jpg") return n + ".jpg";
   if (mime === "image/png") return n + ".png";
-  if (mime === "image/webp") return tbccWebpConvertEnabled() ? n + ".jpg" : n + ".webp";
+  if (mime === "image/webp") return n + ".webp";
   if (mime === "image/gif") return n + ".gif";
-  return n + ".jpg";
+  return n + ".bin";
 }
 
 function tbccUrlIsHlsPlaylist(url) {
@@ -6256,10 +6300,20 @@ async function tbccPrepareRasterBlob(blob, url, filenameHint) {
     name = w.name;
   }
   if (isImageItem({ url, mediaType: "photo" }) && shouldApplyImagePipelineForUrl(url)) {
-    out = await applyImagePipeline(out, url);
-    name = filenameForCropUrl(url);
+    const piped = await applyImagePipeline(out, url);
+    // Pipeline may return original WebP on failure — never force .jpg over non-JPEG bytes.
+    if (piped && piped !== out) {
+      out = piped;
+      if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegBlob) {
+        const w2 = await TbccWebp.tbccEnsureJpegBlob(out, { url, name: filenameForCropUrl(url), force: tbccWebpConvertEnabled() });
+        out = w2.blob;
+        name = w2.name;
+      } else {
+        name = filenameForCropUrl(url);
+      }
+    }
   }
-  name = ensureZipRasterFilename(name, out);
+  name = await ensureZipRasterFilename(name, out);
   return { blob: out, name };
 }
 
@@ -8356,8 +8410,10 @@ async function appendZipPromoFiles(zip, opts) {
     try {
       const ir = await fetch(p.image_url);
       if (ir.ok) {
-        const blob = await ir.blob();
-        zip.file(p.image_filename || "TBCC_PROMO.jpg", blob);
+        const raw = await ir.blob();
+        const hint = p.image_filename || "TBCC_PROMO.jpg";
+        const prep = await tbccPrepareRasterBlob(raw, p.image_url, hint);
+        zip.file(prep.name || hint, prep.blob);
         n++;
       }
     } catch (_) {}
@@ -8365,7 +8421,7 @@ async function appendZipPromoFiles(zip, opts) {
   return n;
 }
 
-/** Comic Looms–style parallel ZIP: fetch pool, ordered mirror select + overlay progress, then pack. */
+/** Parallel ZIP: fetch pool, ordered mirror select + overlay progress, then pack. */
 async function downloadSelectedAsZipLooms(opts) {
   const selected = Array.isArray(opts.explicitItems) ? opts.explicitItems.slice() : [];
   if (!selected.length || !chrome.downloads) return;
@@ -8391,7 +8447,7 @@ async function downloadSelectedAsZipLooms(opts) {
     if (btnCopyJd) btnCopyJd.disabled = true;
     if (progressError) progressError.textContent = "";
     if (progressEl) progressEl.classList.add("visible");
-    if (progressTitle) progressTitle.textContent = "ZIP bundle (Comic Looms)";
+    if (progressTitle) progressTitle.textContent = "ZIP bundle (X harvest)";
     if (progressFill) progressFill.style.width = "0%";
 
     const total = selected.length;
@@ -8583,26 +8639,83 @@ async function downloadSelectedAsZip(opts) {
       }
     );
     const blobUrl = URL.createObjectURL(out);
-    const zipFilename = tbccZipBundleDownloadFilename(opts, selected);
-    await new Promise((resolve) => {
-      chrome.downloads.download(
-        { url: blobUrl, filename: zipFilename, saveAs: false, conflictAction: "uniquify" },
-        () => {
-          URL.revokeObjectURL(blobUrl);
-          resolve();
-        }
-      );
-    });
-    const msg =
-      "Saved ZIP with " +
-      ok +
-      " file(s) as " +
-      zipFilename.replace(/^tbcc\//, "") +
-      " (use for digital bundle upload).";
-    if (progressStatus) progressStatus.textContent = msg;
-    notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete", {
-      type: "gallery_sidepanel",
-    });
+    const destEl = document.getElementById("zipFlywheelDest");
+    const flyDest = (destEl && destEl.value) || "downloads_promo";
+    const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+    const profileHint =
+      (opts && (opts.profileName || opts.name)) ||
+      (selected[0] && selected[0].pageUrl) ||
+      "";
+    let zipFilename =
+      naming && typeof naming.buildDestinationFilename === "function"
+        ? naming.buildDestinationFilename(flyDest, {
+            name: opts && opts.name,
+            profileName: opts && opts.profileName,
+            sourceUrl: profileHint,
+            ext: "zip",
+          })
+        : tbccZipBundleDownloadFilename(opts, selected);
+
+    if (flyDest && flyDest !== "downloads_promo") {
+      if (progressStatus) progressStatus.textContent = "Uploading zip flywheel (" + flyDest + ")…";
+      const resp = await chrome.runtime.sendMessage({
+        action: "tbcc-zip-flywheel",
+        blob: out,
+        flywheelAction: flyDest,
+        filename: String(zipFilename || "pack.zip").replace(/^tbcc\//i, ""),
+        name: (opts && opts.name) || "",
+        profileName: (opts && opts.profileName) || "",
+        sourceUrl: profileHint,
+        label: (opts && (opts.name || opts.profileName)) || "",
+        sourceNote: "gallery_zip_selected",
+      });
+      URL.revokeObjectURL(blobUrl);
+      if (!resp || !resp.ok) {
+        throw new Error((resp && resp.error) || "zip flywheel failed");
+      }
+      const gated = resp.primary_url || resp.destination_url || "";
+      const msg =
+        "Flywheel OK · " +
+        (resp.host || "?") +
+        " · " +
+        flyDest +
+        (gated ? " · " + String(gated).slice(0, 64) : "");
+      if (progressStatus) progressStatus.textContent = msg;
+      notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC zip flywheel", {
+        type: "gallery_sidepanel",
+      });
+    } else {
+      if (!String(zipFilename).startsWith("tbcc/") && naming) {
+        zipFilename = naming.downloadPathForBundle
+          ? naming.downloadPathForBundle({
+              name: opts && opts.name,
+              profileName: opts && opts.profileName,
+              sourceUrl: profileHint,
+            })
+          : "tbcc/" + zipFilename;
+      } else if (!String(zipFilename).startsWith("tbcc/")) {
+        zipFilename = tbccZipBundleDownloadFilename(opts, selected);
+      }
+      await new Promise((resolve) => {
+        chrome.downloads.download(
+          { url: blobUrl, filename: zipFilename, saveAs: false, conflictAction: "uniquify" },
+          () => {
+            URL.revokeObjectURL(blobUrl);
+            resolve();
+          }
+        );
+      });
+      const msg =
+        "Saved ZIP with " +
+        ok +
+        " file(s) as " +
+        zipFilename.replace(/^tbcc\//, "") +
+        " (promo filename · Downloads).";
+      if (progressStatus) progressStatus.textContent = msg;
+      notifyCompletion(msg, "success", "notifyOnZipComplete", "TBCC ZIP complete", {
+        type: "gallery_sidepanel",
+      });
+    }
   } catch (e) {
     if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
   }
@@ -9330,6 +9443,8 @@ function hostNeedsSessionFetch(url) {
       h.endsWith(".erome.com") ||
       h === "motherless.com" ||
       h.endsWith(".motherless.com") ||
+      h === "motherless.xxx" ||
+      h.endsWith(".motherless.xxx") ||
       h.includes("motherlessmedia.com") ||
       h.includes("coomer.st") ||
       h.includes("coomer.party") ||

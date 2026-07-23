@@ -359,6 +359,20 @@ async def _submit_creator_url(telegram_user_id: int, url: str) -> dict:
     return data
 
 
+def _key_roll_status(telegram_user_id: int) -> dict | None:
+    """GET /loot/key-roll/status — decide free vs paid claim path."""
+    try:
+        r = _api_get_sync(
+            "/loot/key-roll/status",
+            params={"telegram_user_id": int(telegram_user_id)},
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        logger.exception("loot key-roll status failed")
+    return None
+
+
 def _claim_key_roll(telegram_user_id: int) -> dict:
     """POST /loot/key-roll/claim — full paid-key roll (sync httpx; run via to_thread)."""
     url = f"{API_BASE}/loot/key-roll/claim"
@@ -544,8 +558,14 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     try:
-        result = await asyncio.to_thread(_claim_key_roll, int(user.id))
-        if result.get("not_key_holder"):
+        # Status-first: never call key-roll for free-only users (avoids 500/403 noise
+        # blocking the free-pull path when the API misbehaves on paid claim).
+        status = await asyncio.to_thread(_key_roll_status, int(user.id))
+        if status and status.get("can_key_roll"):
+            result = await asyncio.to_thread(_claim_key_roll, int(user.id))
+            if result.get("not_key_holder"):
+                result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+        else:
             result = await asyncio.to_thread(_claim_free_pull, int(user.id))
     except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
         logger.warning("roll claim transient API error: %s", e)
@@ -558,14 +578,32 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     except httpx.HTTPStatusError as e:
-        await _drop_transient_msg(status_msg)
-        await _safe_reply_html(
-            msg,
-            f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
-            disable_web_page_preview=True,
-            reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
-        )
-        return
+        # Paid claim blew up but user may still have free pulls — one recovery attempt.
+        if e.response is not None and e.response.status_code >= 500:
+            try:
+                result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+            except Exception:
+                result = None
+            if result and result.get("ok"):
+                pass  # fall through to success handling
+            else:
+                await _drop_transient_msg(status_msg)
+                await _safe_reply_html(
+                    msg,
+                    f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
+                    disable_web_page_preview=True,
+                    reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
+                )
+                return
+        else:
+            await _drop_transient_msg(status_msg)
+            await _safe_reply_html(
+                msg,
+                f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
+                disable_web_page_preview=True,
+                reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
+            )
+            return
     except Exception:
         logger.exception("roll claim failed")
         await _drop_transient_msg(status_msg)
@@ -1105,6 +1143,12 @@ def main() -> None:
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CallbackQueryHandler(on_loot_callback, pattern=r"^loot:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
+    try:
+        from bots.leave_message_cleanup import register_leave_cleanup_handler
+
+        register_leave_cleanup_handler(application, bot_label="loot-bot")
+    except Exception as e:
+        logger.warning("leave-message cleanup not registered: %s", e)
     application.add_error_handler(on_error)
     logger.info(
         "Loot overseer starting (API %s), Telegram timeout=%.1fs, bootstrap_retries=%s%s",

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import html
 import io
 import logging
+import random
 import time
 from pathlib import Path
 from typing import Any
@@ -30,15 +33,116 @@ from app.services.loot_roll_presentation import (
     wrap_tier_card_body,
 )
 from app.services.loot_tier_banner import build_tier_flavor_html, build_tier_opening_html
-from app.services.loot_tier_card_assets import resolve_tier_card_path
+from app.services.loot_tier_card_assets import build_reveal_card_png
 from app.services.loot_tier_catalog import tier_display_name
 from app.services.local_media_storage import is_local_pool_media, read_local_media_bytes
 from app.services.media_sniff import sniff_media_kind
 from app.services.promo_affiliate_rotation import build_loot_roll_affiliate_footer_html
 from app.services.telegram_admin import run_telegram_io
+from app.services.telegram_message_effects import FREE_EFFECT_PARTY, loot_roll_effect_id
 from app.utils.telegram_promo_url import is_public_https_for_telegram
 
 logger = logging.getLogger(__name__)
+
+
+async def _encode_reveal_card_mp4(card_bytes: bytes, preview: dict[str, Any]) -> tuple[bytes | None, str]:
+    """Thread or Celery offload for ffmpeg mux (falls back to JPEG path when None)."""
+    from app.services.loot_reveal_video import (
+        compose_reveal_card_mp4,
+        loot_reveal_video_celery_enabled,
+        loot_reveal_video_enabled,
+        reveal_video_encode_timeout_s,
+    )
+
+    if not loot_reveal_video_enabled():
+        return None, "disabled"
+
+    seed_raw = preview.get("seed")
+    seed_int: int | None = None
+    if seed_raw is not None:
+        try:
+            seed_int = int(seed_raw)
+        except (TypeError, ValueError):
+            seed_int = None
+    rng = random.Random(seed_int) if seed_int is not None else None
+
+    if loot_reveal_video_celery_enabled():
+        from app.workers.loot_reveal_video_worker import compose_reveal_card_mp4_task
+
+        timeout = reveal_video_encode_timeout_s() + 3
+
+        def _celery_encode() -> tuple[bytes | None, str]:
+            result = compose_reveal_card_mp4_task.apply_async(
+                args=[card_bytes],
+                kwargs={"seed": seed_int},
+            ).get(timeout=timeout)
+            if result.get("ok") and result.get("mp4_b64"):
+                return base64.b64decode(result["mp4_b64"]), str(result.get("note") or "celery")
+            return None, str(result.get("reason") or "celery_fail")
+
+        try:
+            return await asyncio.to_thread(_celery_encode)
+        except Exception as e:
+            logger.warning("loot reveal video celery failed: %s", e)
+            return None, f"celery:{e}"
+
+    return await asyncio.to_thread(compose_reveal_card_mp4, card_bytes, rng=rng)
+
+
+async def _send_reveal_with_effects(
+    bot: Bot,
+    *,
+    chat_id: int,
+    opening: str,
+    effect_id: str | None,
+    delivery: dict[str, Any],
+    media_kind: str,
+    media_bytes: bytes,
+    filename: str,
+) -> None:
+    """send_animation or send_photo with Premium → free 🎉 → bare cascade."""
+    effect_attempts: list[str | None] = []
+    if effect_id:
+        effect_attempts.append(effect_id)
+    if effect_id != FREE_EFFECT_PARTY:
+        effect_attempts.append(FREE_EFFECT_PARTY)
+    effect_attempts.append(None)
+
+    last_err: Exception | None = None
+    sent = False
+    for attempt_effect in effect_attempts:
+        media_buf = io.BytesIO(media_bytes)
+        send_kwargs: dict[str, Any] = {
+            "chat_id": chat_id,
+            "caption": opening[:1024],
+            "parse_mode": "HTML",
+        }
+        if media_kind == "animation":
+            send_kwargs["animation"] = InputFile(media_buf, filename=filename)
+        else:
+            send_kwargs["photo"] = InputFile(media_buf, filename=filename)
+        if attempt_effect:
+            send_kwargs["message_effect_id"] = attempt_effect
+        send_fn = bot.send_animation if media_kind == "animation" else bot.send_photo
+        try:
+            await send_fn(**send_kwargs)
+            if attempt_effect:
+                delivery["notes"].append(f"tier card effect:{attempt_effect}")
+            elif effect_id:
+                delivery["notes"].append("tier card effect skipped")
+            sent = True
+            break
+        except TelegramError as effect_err:
+            last_err = effect_err
+            logger.info(
+                "loot reveal send_%s failed effect=%s (%s); trying next",
+                media_kind,
+                attempt_effect,
+                effect_err,
+            )
+            continue
+    if not sent:
+        raise last_err or RuntimeError(f"loot reveal send_{media_kind} failed")
 
 
 def _coerce_single_message(messages):
@@ -54,6 +158,8 @@ def _coerce_single_message(messages):
 
 
 async def _download_saved_media_bytes(telegram_message_id: int) -> tuple[bytes, str]:
+    import asyncio
+
     async def _fn(storage) -> tuple[bytes, str]:
         raw = await storage.client.get_messages("me", ids=telegram_message_id)
         if isinstance(raw, list):
@@ -69,7 +175,8 @@ async def _download_saved_media_bytes(telegram_message_id: int) -> tuple[bytes, 
             raise ValueError(f"Empty download for saved message {telegram_message_id}")
         return _bytes_to_filename(data)
 
-    return await run_telegram_io(_fn)
+    # Island Telethon can hang on missing/huge msgs — fail fast so claim can retry.
+    return await asyncio.wait_for(run_telegram_io(_fn), timeout=35.0)
 
 
 def _bytes_to_filename(data: bytes) -> tuple[bytes, str]:
@@ -334,19 +441,67 @@ async def send_loot_preview_to_chat(
         )
         return delivery
 
+    try:
+        return await _send_loot_preview_to_chat_inner(
+            db,
+            bot=bot,
+            chat_id=chat_id,
+            preview=preview,
+            spoiler_default=spoiler_default,
+            include_affiliate_footer=include_affiliate_footer,
+            delivery=delivery,
+        )
+    except TelegramError as e:
+        logger.warning("loot preview delivery telegram error chat=%s: %s", chat_id, e)
+        delivery["notes"].append(f"telegram_error:{e}")
+        if "chat not found" in str(e).lower():
+            delivery["notes"].append("chat_not_found")
+        return delivery
+
+
+async def _send_loot_preview_to_chat_inner(
+    db: Session,
+    *,
+    bot: Bot,
+    chat_id: int,
+    preview: dict[str, Any],
+    spoiler_default: bool,
+    include_affiliate_footer: bool,
+    delivery: dict[str, Any],
+) -> dict[str, Any]:
     tier = int(preview.get("rarity_tier") or 1)
-    card_path = resolve_tier_card_path(tier)
-    if card_path is not None:
+    card_bytes, card_note = build_reveal_card_png(tier, preview=preview)
+    if card_bytes:
         try:
-            data = card_path.read_bytes()
             opening = build_tier_opening_html(db, preview)
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=InputFile(io.BytesIO(data), filename=card_path.name),
-                caption=opening[:1024],
-                parse_mode="HTML",
-            )
-            delivery["notes"].append(f"tier card image:{card_path.name}")
+            effect_id = loot_roll_effect_id()
+            mp4_bytes, mp4_note = await _encode_reveal_card_mp4(card_bytes, preview)
+            if mp4_bytes:
+                await _send_reveal_with_effects(
+                    bot,
+                    chat_id=chat_id,
+                    opening=opening,
+                    effect_id=effect_id,
+                    delivery=delivery,
+                    media_kind="animation",
+                    media_bytes=mp4_bytes,
+                    filename=f"loot-tier-{tier}.mp4",
+                )
+                delivery["notes"].append(f"tier card video:{mp4_note}")
+            else:
+                if mp4_note and mp4_note != "disabled":
+                    delivery["notes"].append(f"tier card video skipped:{mp4_note}")
+                await _send_reveal_with_effects(
+                    bot,
+                    chat_id=chat_id,
+                    opening=opening,
+                    effect_id=effect_id,
+                    delivery=delivery,
+                    media_kind="photo",
+                    media_bytes=card_bytes,
+                    filename=f"loot-tier-{tier}.jpg",
+                )
+                delivery["notes"].append(f"tier card image:{card_note}")
         except Exception as e:
             logger.warning("loot tier card image failed tier=%s: %s", tier, e)
             delivery["notes"].append(f"tier card image failed: {e}")
@@ -530,14 +685,47 @@ async def send_loot_free_pull_to_chat(
     delivery: dict[str, Any] = {"albums_sent": 0, "media_sent": 0, "notes": [f"roll_kind={preview.get('roll_kind') or 'free'}"]}
 
     if not preview.get("ok"):
-        await bot.send_message(
-            chat_id=chat_id,
-            text=f"<b>Pull failed</b>\n{html.escape(str(preview.get('reason') or 'unknown'))}",
-            parse_mode="HTML",
-            reply_markup=build_loot_roll_inline_markup(),
-        )
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"<b>Pull failed</b>\n{html.escape(str(preview.get('reason') or 'unknown'))}",
+                parse_mode="HTML",
+                reply_markup=build_loot_roll_inline_markup(),
+            )
+        except TelegramError as e:
+            delivery["notes"].append(f"telegram_error:{e}")
         return delivery
 
+    try:
+        return await _send_loot_free_pull_to_chat_inner(
+            db,
+            bot=bot,
+            chat_id=chat_id,
+            preview=preview,
+            spoiler_default=spoiler_default,
+            payment_bot_username=payment_bot_username,
+            free_pulls_remaining=free_pulls_remaining,
+            delivery=delivery,
+        )
+    except TelegramError as e:
+        logger.warning("loot free-pull delivery telegram error chat=%s: %s", chat_id, e)
+        delivery["notes"].append(f"telegram_error:{e}")
+        if "chat not found" in str(e).lower():
+            delivery["notes"].append("chat_not_found")
+        return delivery
+
+
+async def _send_loot_free_pull_to_chat_inner(
+    db: Session,
+    *,
+    bot: Bot,
+    chat_id: int,
+    preview: dict[str, Any],
+    spoiler_default: bool,
+    payment_bot_username: str | None,
+    free_pulls_remaining: int,
+    delivery: dict[str, Any],
+) -> dict[str, Any]:
     divider = build_roll_divider_html(preview)
     await bot.send_message(
         chat_id=chat_id,

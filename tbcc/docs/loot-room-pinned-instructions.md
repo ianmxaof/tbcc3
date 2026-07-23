@@ -4,6 +4,8 @@
 **@aof_lootgod_bot** is the top-of-funnel landing (`?start=loot_free`). VIP stays paid fulfillment.  
 Schedulers that used to target Main (liveness, bot commands, feed rhythm, +X mirror) now post here.
 
+**Lane economy (2026-07-17 scaffold):** Per-lane promo subtopics + $3 Lane Pass + curated packs → monthly MEGA — product bible: `docs/LOOT_LANE_ECONOMY.md`. Shop SKUs not live yet.
+
 Last aligned with codebase: complimentary DM pulls, paid 24h access, roll engine; timed in-group drops still rolling out.
 
 ---
@@ -79,6 +81,13 @@ Free pulls show you the format; paid runs unlock the real extras.
 2. Join **Loot Room** for the commons feed / network pulse.  
 3. Pay for 24h or VIP when you want full rolls / premium lanes.  
 4. Collect what the overseer sends before access ends.
+
+**Coming (lane economy)**  
+• **Glimpse:** reduced album (e.g. 3 of 7) with heavy watermark, left in the lane subtopic — leak = free promo.  
+• **Lane Pass $3:** 24h one-use door into the protected lane channel + Loot God roll perks (not clean forwards).  
+• **Curated Pack → monthly MEGA PACK:** operator-curated seals; month-end wrap. Members-only vault.  
+• Subtopics open only when a lane hits readiness (2.5k images + 2.5k videos min; target 5k+ each).  
+• Full bible: `docs/LOOT_LANE_ECONOMY.md`
 
 **Coming:** automated timed drops on purchased intervals (m15–m60) into this room — schema exists; live clock still rolling out.
 

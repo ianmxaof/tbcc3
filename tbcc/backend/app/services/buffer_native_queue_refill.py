@@ -18,6 +18,7 @@ from app.services.buffer_graphql import (
 )
 from app.services.buffer_post_result import buffer_create_post_error_message, buffer_create_post_succeeded
 from app.services.buffer_x_caption import finalize_buffer_x_caption
+from app.services.buffer_x_hashtags import append_x_hashtags
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def build_native_queue_caption(
         overflow_url=overflow or aof_hub_invite_url(),
         advance_link_cycle=advance_link_cycle,
     )
+    text = append_x_hashtags(text, max_chars=280)
     if len(text) > 280:
         text = text[:277].rstrip() + "…"
     return text

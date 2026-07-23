@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 # Keys align with aof_network.BULLETIN_CHANNEL_INVITES + channel keys.
+# Loot God bot CTA (not a Linkvertise slug — clearnet only; used by growth hub lookups)
 AOF_MANUAL_LV_GATES: dict[str, str] = {
     "main_group": "https://link-center.net/1367336/eURa9KVdlIR2",
     "main": "https://link-center.net/1367336/eURa9KVdlIR2",
@@ -21,6 +22,8 @@ AOF_MANUAL_LV_GATES: dict[str, str] = {
     "loot": "https://direct-link.net/1367336/S4isAVBXklrz",
     # Post & earn addlist gate (t.me/addlist target).
     "addlist": "https://link-target.net/1367336/OXrWginA5Ztr",
+    # Clearnet bot (no LV) — maps for anchor replacement only when present as raw URL
+    "lootgod": "https://telegram.me/aof_lootgod_bot",
 }
 
 # LootModifier.label (seed_aof_shop_and_loot) → gate key
@@ -48,6 +51,9 @@ ANCHOR_TEXT_TO_GATE_KEY: tuple[tuple[str, str], ...] = (
     ("addlist", "addlist"),
     ("aofmainhub", "mainhub"),
     ("t.me/aofmainhub", "mainhub"),
+    ("telegram.me/aofmainhub", "mainhub"),
+    ("aof_lootgod_bot", "lootgod"),
+    ("telegram.me/aof_lootgod_bot", "lootgod"),
     ("main group", "loot"),
     ("main hub", "loot"),
     ("aof blowjob", "blowjob"),

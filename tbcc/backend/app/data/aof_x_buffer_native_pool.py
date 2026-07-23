@@ -59,12 +59,12 @@ AOF_X_BUFFER_NATIVE_POOL: list[dict[str, str]] = [
         "text": "VIP on card/PayPal — skip the gate circus. {gumroad_vip} · hub {hub} · keys @aofsubscriptions_bot",
     },
     {
-        "text": "same VIP access — Stars on Telegram or Gumroad if you hate ⭐. {gumroad_vip} · map {allmylinks}",
+        "text": "same VIP access — Stars on Telegram or card / USD if you hate ⭐. {gumroad_vip} · map {allmylinks}",
     },
     {
         "text": "$6/mo → $100/2yr ladder. impatient people fund the network. {gumroad_vip} · {hub}",
     },
     {
-        "text": "public tease on Telegram. VIP lands early on Gumroad + Stars. {gumroad_vip} · hub {hub}",
+        "text": "public tease on Telegram. VIP lands early on card / USD + Stars. {gumroad_vip} · hub {hub}",
     },
 ]

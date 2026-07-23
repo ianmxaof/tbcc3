@@ -75,13 +75,20 @@ def _watermark_env(monkeypatch):
     monkeypatch.setenv("TBCC_WATERMARK_POSITION", "bottom_right")
 
 
-def test_disabled_without_text(monkeypatch):
-    monkeypatch.delenv("TBCC_WATERMARK_TEXT", raising=False)
-    monkeypatch.delenv("TBCC_PUBLIC_BASE_URL", raising=False)
-    monkeypatch.delenv("TBCC_PROMO_PUBLIC_BASE_URL", raising=False)
+def test_disabled_when_flag_off(monkeypatch):
+    monkeypatch.setenv("TBCC_WATERMARK_ENABLED", "0")
     assert wm.watermark_enabled() is False
     raw = _jpeg_bytes()
     assert wm.maybe_apply_media_watermark(raw) == raw
+
+
+def test_default_brand_when_text_unset(monkeypatch):
+    monkeypatch.delenv("TBCC_WATERMARK_TEXT", raising=False)
+    monkeypatch.delenv("TBCC_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("TBCC_PROMO_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("TBCC_WATERMARK_ENABLED", "1")
+    assert wm.watermark_text() == "telegram.me/aofmainhub"
+    assert wm.watermark_enabled() is True
 
 
 def test_multi_text_watermark():

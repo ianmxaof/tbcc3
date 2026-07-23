@@ -7,10 +7,10 @@ FORMAT: ONE image. Aspect ratio 1:1 square trading-card.
 FRAME: dark chrome / wet vinyl border; thin neon accent that intensifies with tier.
 TOP-LEFT: small distressed "AOF LOOT" wordmark.
 TOP-RIGHT: "TIER N" + world label (e.g. "1-1", "★") spelled exactly.
-CENTER: NON-EXPLICIT adult-atmosphere artwork — sealed pack, frosted silhouette,
-  redacted polaroid, heat-signature body outline, vault door, club neon, or
-  holographic rarity crystal. Suggestive after-hours energy. NO nudity, NO sex acts,
-  NO genitals, NO pornography. Tease the draw; do not depict the contents.
+CENTER: EXPLICIT adult erotic artwork — full nudity, sex acts, genitals, fluids, and
+  gratuitous sexual heat are REQUIRED and expected. Escalate intensity with tier.
+  Photoreal adult bodies only (18+). Center art must not cover frame / wordmark /
+  tier label / bottom nameplate.
 OVERLAY: light ASCII / terminal residue — faint green or white monospaced glyphs
   in corners or as a thin HUD strip (box-drawing, rarity bar, "ROLL OK", "18+").
   ASCII is decoration only — keep rarity text sharp.
@@ -22,14 +22,14 @@ UI text must be spelled exactly as specified. UI priority #1.
 
 SCENES:
 BACKGROUND SCENE:
-CENTER (safe): oil/rain streaks on black vinyl, hot-pink neon reflections, sealed pack dripping with condensation, 'SPOILER' tape across the foil. ASCII dripping │ │ │ ticks on frame. Mood: sticky club heat, mid-tier hunger. NO fluids as body fluids; rain/oil/condensation only. NO nudity. NO sex. Bottom band exact text: DRIP
+CENTER (explicit): adult woman on black vinyl, legs spread, pussy dripping, hot-pink neon, spit/oil sheen, fingers spreading. ASCII dripping │ │ │. Mood: sticky mid-tier fuck heat. Bottom band exact text: DRIP
 UI TEXT (exact): TOP-RIGHT = TIER 5 · 2-2 ; BOTTOM NAME = DRIP ; TAGLINE = Mid-heat. You're not leaving yet.
 
-STYLE: Wet vinyl + condensation sealed pack, hot pink, SPOILER tape, dripping ASCII ticks.
+STYLE: Spread explicit on wet vinyl, hot-pink neon, fluids.
 
-Generate now. Same locked card UI. Vary only the center motif + neon intensity by tier.
+Generate now. Same locked card UI. Vary only the center erotic motif + neon intensity by tier.
 
-AVOID: nudity, sex acts, genitals, pornography, lingerie close-ups with skin, QR codes, t.me links, cute/wholesome tone, cartoon, misspelled tier names, ASCII covering important UI text, watermark, wrong aspect ratio, duplicate identical scenes, childlike or non-adult subjects.
+AVOID: minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, ASCII covering important UI text, watermark, wrong aspect ratio, duplicate identical scenes, softcore-only tease when explicit sex is requested.
 
 # NEGATIVE
-nudity, sex acts, genitals, pornography, QR codes, t.me links, cute/wholesome tone, cartoon, misspelled tier names, watermark, wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text
+minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, softcore-only when explicit requested, wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text

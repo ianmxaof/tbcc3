@@ -1,11 +1,11 @@
 /**
  * AOF / PowerRename-style ZIP entry names for harvest & overlay ZIP export.
- * Default entry: AOF_{name}_{index:5}_t.me_aofmainhub.{ext}
- * Bundle archive: TBCC Bundle · {name} · TG@AOFMAINHUB · allmylinks.comaof69.zip
+ * Default entry: AOF_{name}_{index:5}_telegram.me_aofmainhub.{ext}
+ * Bundle archive: TBCC Bundle · {name} · telegram.me_aofmainhub · allmylinks.comaof69.zip
  */
 (function (root) {
-  const DEFAULT_TEMPLATE = "AOF_{name}_{index:5}_t.me_aofmainhub";
-  const BRAND_HANDLE = "TG@AOFMAINHUB";
+  const DEFAULT_TEMPLATE = "AOF_{name}_{index:5}_telegram.me_aofmainhub";
+  const BRAND_HANDLE = "telegram.me_aofmainhub";
   const ALLMYLINKS_SLOT = "allmylinks.comaof69";
   const BUNDLE_PREFIX = "TBCC Bundle";
 
@@ -108,7 +108,7 @@
   /**
    * Final Downloads/tbcc/ archive name for overlay / gallery ZIP export.
    * Prefer X profile handle; else 5-digit id.
-   * Example: TBCC Bundle · Damon43095616 · TG@AOFMAINHUB · allmylinks.comaof69.zip
+   * Example: TBCC Bundle · Damon43095616 · telegram.me_aofmainhub · allmylinks.comaof69.zip
    */
   function buildBundleArchiveFilename(ctx) {
     let token = sanitizeBundleToken((ctx && (ctx.name || ctx.profileName)) || "");
@@ -130,15 +130,63 @@
     return name.indexOf("tbcc/") === 0 ? name : "tbcc/" + name;
   }
 
+  /**
+   * Destination-aware archive / object names for the zip flywheel.
+   * @param {"downloads_promo"|"host_gated"|"loot_modifier"|"shop_bundle"|"video_title"|"archive_uuid"} dest
+   * @param {{ name?: string, profileName?: string, sourceUrl?: string, seoTitle?: string, ext?: string }} ctx
+   */
+  function buildDestinationFilename(dest, ctx) {
+    const d = String(dest || "downloads_promo").trim().toLowerCase();
+    const ext =
+      String((ctx && ctx.ext) || "zip")
+        .replace(/^\./, "")
+        .toLowerCase() || "zip";
+    const token =
+      sanitizeBundleToken((ctx && (ctx.name || ctx.profileName)) || "") ||
+      sanitizeBundleToken(profileNameFromSourceUrl((ctx && ctx.sourceUrl) || "")) ||
+      randomFiveId();
+
+    if (d === "downloads_promo") {
+      return downloadPathForBundle(ctx);
+    }
+    if (d === "video_title") {
+      const seo = sanitizeBundleToken((ctx && ctx.seoTitle) || token) || token;
+      // Legible + brand for platform titles / captions
+      return `${seo} · ${BRAND_HANDLE}.${ext}`.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "_").slice(0, 180);
+    }
+    if (d === "archive_uuid") {
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const id = randomFiveId() + randomFiveId().slice(0, 3);
+      return `aof_${ts}_${id}.${ext}`;
+    }
+    // host_gated | loot_modifier | shop_bundle — short, quiet object keys
+    if (d === "host_gated" || d === "loot_modifier" || d === "shop_bundle") {
+      const id = randomFiveId();
+      const leaf = sanitizeSegment(token).slice(0, 40) || "pack";
+      return `${leaf}_${id}.${ext}`;
+    }
+    return downloadPathForBundle(ctx);
+  }
+
+  /** v1 flywheel destinations (skip inbox/watch). */
+  const FLYWHEEL_DESTINATIONS = {
+    downloads_promo: "downloads_promo",
+    host_gated: "host_gated",
+    loot_modifier: "loot_modifier",
+    shop_bundle: "shop_bundle",
+  };
+
   root.TbccZipNaming = {
     DEFAULT_TEMPLATE,
     BRAND_HANDLE,
     ALLMYLINKS_SLOT,
     BUNDLE_PREFIX,
+    FLYWHEEL_DESTINATIONS,
     profileNameFromSourceUrl,
     buildZipFilename,
     buildBundleArchiveFilename,
     downloadPathForBundle,
+    buildDestinationFilename,
     sanitizeSegment,
     sanitizeBundleToken,
     randomFiveId,

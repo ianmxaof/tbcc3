@@ -55,5 +55,5 @@ def loot_daily_promo_inline_keyboard(bot_username: str, *, payment_bot_username:
         rows.append([{"text": "24h room access (Stars)", "url": f"https://t.me/{pay_un}?start=loot"}])
     else:
         rows.append([{"text": "24h room access", "url": f"https://t.me/{loot_un}?start=loot_keys"}])
-    rows.append([{"text": "Claim free pull", "url": f"https://t.me/{loot_un}?start=loot_free"}])
+    rows.append([{"text": "Claim free pull", "url": f"https://telegram.me/{loot_un}"}])
     return {"inline_keyboard": rows}

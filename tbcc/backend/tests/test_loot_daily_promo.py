@@ -11,7 +11,7 @@ def test_loot_daily_promo_keyboard_paid_first():
     assert len(rows) == 2
     assert "24h room access" in rows[0][0]["text"]
     assert rows[0][0]["url"] == "https://t.me/aofsubscriptions_bot?start=loot"
-    assert rows[1][0]["url"] == "https://t.me/aof_lootgod_bot?start=loot_free"
+    assert rows[1][0]["url"] == "https://telegram.me/aof_lootgod_bot"
 
 
 @patch("app.services.loot_daily_promo.get_effective_loot_bot_settings")

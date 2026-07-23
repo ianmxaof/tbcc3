@@ -40,6 +40,8 @@ class ScheduledTextPost(Base):
     send_silent = Column(Boolean, nullable=False, default=False)
     # After a successful send, pin the channel post (first album message). Requires pin rights.
     pin_after_send = Column(Boolean, nullable=False, default=False)
+    # Ephemeral pin liveness: delete message N seconds after pin (mainhub ping pattern).
+    delete_after_pin_seconds = Column(Integer, nullable=True)
     # JSON list of caption strings; when 2+ entries, rotate in order each time the job posts
     content_variations = Column(Text, nullable=True)
     caption_rotation_index = Column(Integer, nullable=True)  # advances after each send; NULL starts at variation 0

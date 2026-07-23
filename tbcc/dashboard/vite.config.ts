@@ -5,16 +5,17 @@ import react from "@vitejs/plugin-react";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Inject internal API key on proxied /api/* so the browser never sees TBCC_INTERNAL_API_KEY. */
-function tbccApiProxy(env: Record<string, string>) {
+/** Inject internal API key on proxied routes so the browser never sees TBCC_INTERNAL_API_KEY. */
+function tbccApiProxy(env: Record<string, string>, target: string, stripPrefix: string) {
   const internalKey = (env.TBCC_INTERNAL_API_KEY || "").trim();
   return {
-    target: "http://127.0.0.1:8000",
+    target,
     changeOrigin: true,
+    secure: target.startsWith("https"),
     /** Default proxy timeouts are too low when SQLite is busy (bulk approve vs many thumbnails). */
     timeout: 600_000,
     proxyTimeout: 600_000,
-    rewrite: (p: string) => p.replace(/^\/api/, ""),
+    rewrite: (p: string) => p.replace(new RegExp(`^${stripPrefix}`), ""),
     configure: (proxy: { on: (ev: string, fn: (...args: unknown[]) => void) => void }) => {
       proxy.on("proxyReq", (proxyReq: { setHeader: (k: string, v: string) => void }) => {
         if (internalKey) {
@@ -28,7 +29,9 @@ function tbccApiProxy(env: Record<string, string>) {
 export default defineConfig(({ mode }) => {
   const tbccRoot = path.resolve(__dirname, "..");
   const env = loadEnv(mode, tbccRoot, "");
-  const proxyApi = tbccApiProxy(env);
+  const localApi = tbccApiProxy(env, "http://127.0.0.1:8000", "/api");
+  const islandOrigin = (env.VITE_ISLAND_API_URL || "https://api.powercore.app").trim().replace(/\/$/, "");
+  const islandApi = tbccApiProxy(env, islandOrigin, "/island-api");
 
   return {
     plugins: [react()],
@@ -43,7 +46,8 @@ export default defineConfig(({ mode }) => {
         "Content-Security-Policy": "frame-ancestors *",
       },
       proxy: {
-        "/api": proxyApi,
+        "/api": localApi,
+        "/island-api": islandApi,
       },
     },
     preview: {
@@ -54,7 +58,8 @@ export default defineConfig(({ mode }) => {
         "Content-Security-Policy": "frame-ancestors *",
       },
       proxy: {
-        "/api": proxyApi,
+        "/api": localApi,
+        "/island-api": islandApi,
       },
     },
   };

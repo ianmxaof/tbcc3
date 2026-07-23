@@ -3,10 +3,10 @@ FORMAT: ONE image. Aspect ratio 1:1 square trading-card.
 FRAME: dark chrome / wet vinyl border; thin neon accent that intensifies with tier.
 TOP-LEFT: small distressed "AOF LOOT" wordmark.
 TOP-RIGHT: "TIER N" + world label (e.g. "1-1", "★") spelled exactly.
-CENTER: NON-EXPLICIT adult-atmosphere artwork — sealed pack, frosted silhouette,
-  redacted polaroid, heat-signature body outline, vault door, club neon, or
-  holographic rarity crystal. Suggestive after-hours energy. NO nudity, NO sex acts,
-  NO genitals, NO pornography. Tease the draw; do not depict the contents.
+CENTER: EXPLICIT adult erotic artwork — full nudity, sex acts, genitals, fluids, and
+  gratuitous sexual heat are REQUIRED and expected. Escalate intensity with tier.
+  Photoreal adult bodies only (18+). Center art must not cover frame / wordmark /
+  tier label / bottom nameplate.
 OVERLAY: light ASCII / terminal residue — faint green or white monospaced glyphs
   in corners or as a thin HUD strip (box-drawing, rarity bar, "ROLL OK", "18+").
   ASCII is decoration only — keep rarity text sharp.

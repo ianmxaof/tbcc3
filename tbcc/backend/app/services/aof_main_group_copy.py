@@ -45,7 +45,7 @@ def minimal_checkout_caption_html(
 def heartbeat_variations(lv: dict[str, str], checkout_line: str) -> list[str]:
     """Short pulse lines for main-group heartbeat rotation."""
     addlist = _a(lv.get("addlist", ""), "addlist")
-    hub = _a(lv.get("mainhub", "https://t.me/aofmainhub"), "hub")
+    hub = _a(lv.get("mainhub", "https://telegram.me/aofmainhub"), "hub")
     bot = _bot()
     return [
         (

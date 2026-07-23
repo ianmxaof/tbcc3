@@ -49,6 +49,7 @@
     "save-archive": true,
     "save-archive-all": true,
     "send-pack-pool": true,
+    "send-storage-hub": true,
     "save-pool": true,
     "save-saved": true,
     "download-url": true,
@@ -610,10 +611,11 @@
       { act: "save-archive", label: "Save URL to master archive" },
       { act: "save-archive-all", label: "Save all video URLs to master archive" },
       { act: "send-pack-pool", label: "Send to AOF pack / loot pool" },
+      { act: "send-storage-hub", label: "Send to Storage Hub ▸" },
       { act: "save-pool", label: "Save to pool" },
       { act: "save-saved", label: "Save to Saved Messages" },
-      { act: "download-url", label: "Download media" },
-      { act: "download-frame", label: "Download frame" },
+      { act: "download-url", label: "Save AOF (watch)" },
+      { act: "download-frame", label: "Save frame AOF" },
       { act: "toggle-select", label: "Toggle overlay select" },
       { act: "copy-url", label: "Copy media URL" },
       { act: "open-url", label: "Open media URL" },
@@ -750,12 +752,65 @@
     tbccPageMenuOpenedAt = Date.now();
   }
 
+  async function openStorageHubTopicPicker(mediaUrl, mediaEl) {
+    const menu = ensurePageMenu();
+    if (!menu) return;
+    tbccPageMenuUrl = mediaUrl || tbccPageMenuUrl;
+    tbccPageMenuEl = mediaEl || tbccPageMenuEl;
+    const inner = menu.querySelector(".tbcc-page-menu__inner") || menu;
+    inner.querySelectorAll("button[data-act]").forEach((b) => b.remove());
+    const back = document.createElement("button");
+    back.type = "button";
+    back.dataset.act = "storage-hub-back";
+    back.textContent = "◂ Back";
+    inner.appendChild(back);
+    const loading = document.createElement("button");
+    loading.type = "button";
+    loading.disabled = true;
+    loading.textContent = "Loading topics…";
+    inner.appendChild(loading);
+    menu.hidden = false;
+    let topics = [];
+    try {
+      topics = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: "tbcc-list-storage-hub-topics" }, (r) => {
+          if (chrome.runtime.lastError) resolve([]);
+          else resolve((r && r.topics) || []);
+        });
+      });
+    } catch (_) {
+      topics = [];
+    }
+    loading.remove();
+    if (!topics.length) {
+      const empty = document.createElement("button");
+      empty.type = "button";
+      empty.disabled = true;
+      empty.textContent = "(No topics — start backend)";
+      inner.appendChild(empty);
+      return;
+    }
+    for (const t of topics) {
+      const tid = parseInt(t.message_thread_id, 10);
+      if (!Number.isFinite(tid) || tid < 1) continue;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.dataset.act = `storage-hub:${tid}`;
+      btn.textContent = String(t.menu_label || t.short_label || t.topic_title || tid);
+      inner.appendChild(btn);
+    }
+  }
+
   async function handlePageMenuAction(action) {
     const url = tbccPageMenuUrl;
     const frameUrl = tbccPageMenuFrameUrl || tbccPageMenuUrl;
     const el = tbccPageMenuEl;
-    closePageMenu();
-    if (!url) return;
+    const isHubNav =
+      action === "send-storage-hub" ||
+      action === "storage-hub-back" ||
+      (typeof action === "string" && action.startsWith("storage-hub:"));
+    if (!isHubNav) closePageMenu();
+    if (!url && action !== "storage-hub-back") return;
     if (action === "copy-url") {
       let copyUrl = url;
       try {
@@ -859,6 +914,36 @@
           );
         });
       } catch (_) {}
+      return;
+    }
+    if (action === "send-storage-hub") {
+      await openStorageHubTopicPicker(url, el);
+      return;
+    }
+    if (action.startsWith("storage-hub:")) {
+      const tid = parseInt(action.slice("storage-hub:".length), 10);
+      closePageMenu();
+      if (!Number.isFinite(tid) || tid < 1) return;
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-page-menu-storage-hub",
+              url,
+              messageThreadId: tid,
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
+    if (action === "storage-hub-back") {
+      const menu = ensurePageMenu();
+      if (!menu) return;
+      populatePageMenu(menu);
+      menu.hidden = false;
       return;
     }
     if (action === "save-archive") {

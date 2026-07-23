@@ -125,7 +125,7 @@ export function WatermarkControls({
             className="mt-0.5 block w-full bg-slate-900 border border-slate-600 rounded px-2 py-1 text-slate-100"
             value={textPrimary}
             onChange={(e) => setTextPrimary(e.target.value)}
-            placeholder="t.me/aofmainhub"
+            placeholder="telegram.me/aofmainhub"
           />
         </label>
         <label className="block text-slate-400">

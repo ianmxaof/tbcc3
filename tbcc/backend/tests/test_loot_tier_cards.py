@@ -80,6 +80,32 @@ def test_wrap_tier_card_uses_code_frames():
     out = wrap_tier_card_body(10, "<b>hi</b>")
     assert "<code>" in out
     assert "godroll" in out.lower()
+    assert "╔" in out
+    assert out.count("═") >= 4
+
+
+def test_build_centered_card_frame():
+    from app.services.loot_roll_presentation import build_centered_card_frame
+
+    top, bottom = build_centered_card_frame("drip", width=32)
+    assert len(top) == 32
+    assert "drip" in top
+    assert top.startswith("╔")
+    assert bottom.startswith("╚")
+    assert "│││" in bottom
+
+
+def test_classify_frame_style_copper():
+    from PIL import Image
+
+    from app.services.loot_card_frame_styles import classify_frame_style
+
+    im = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    px = im.load()
+    for y in range(8):
+        for x in range(64):
+            px[x, y] = (180, 90, 40, 255)
+    assert classify_frame_style(im) == "b"
 
 
 def test_pick_tier_flavor_from_bank():
@@ -100,8 +126,9 @@ def test_build_loot_card_prompt_for_tier():
     assert "AOF LOOT" in prompt
     assert "FILTH" in prompt
     assert "NO QR" in prompt.upper() or "No QR" in prompt
-    assert "nudity" in prompt.lower() or "NO nudity" in prompt or "No nudity" in prompt
+    assert "nudity" in prompt.lower() or "explicit" in prompt.lower()
     assert "vault" in prompt.lower() or "RESTRICTED" in prompt
+    assert "minors" in prompt.lower() or "AVOID" in prompt
 
 
 def test_build_filmstrip_prompt():

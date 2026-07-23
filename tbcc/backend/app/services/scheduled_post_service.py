@@ -1,4 +1,5 @@
 """Send scheduled posts (text, media, buttons) to Telegram channels."""
+import asyncio
 import io
 import json
 import logging
@@ -487,13 +488,31 @@ async def _maybe_pin_after_send(
         logger.warning("pin_after_send: no message returned from Telegram for scheduled post id=%s", post.id)
         return
     try:
-        await client.pin_message(channel_identifier, msg, notify=False)
+        await client.pin_message(channel_identifier, msg, notify=True)
     except Exception as e:
         logger.warning(
             "pin_after_send failed for scheduled post id=%s: %s",
             getattr(post, "id", None),
             e,
         )
+        return
+
+    delete_after = getattr(post, "delete_after_pin_seconds", None)
+    if delete_after is not None and int(delete_after) > 0:
+        delay = int(delete_after)
+
+        async def _delete_later() -> None:
+            await asyncio.sleep(delay)
+            try:
+                await client.delete_messages(channel_identifier, msg)
+            except Exception as e:
+                logger.warning(
+                    "delete_after_pin failed for scheduled post id=%s: %s",
+                    getattr(post, "id", None),
+                    e,
+                )
+
+        asyncio.create_task(_delete_later())
 
 
 def resolve_scheduled_caption(post: ScheduledTextPost) -> str:

@@ -74,7 +74,7 @@ def _sale_blurb(display: str, price_usd: float) -> str:
     return (
         f"<b>{display}</b> — operator-curated AI fantasy set.\n"
         f"${price_usd:.0f} one-shot · zip to DM after payment.\n"
-        "Pay with ⭐ Stars, crypto, or card when Gumroad SKU is wired.\n"
+        "Pay with ⭐ Stars, crypto, or card / USD when the SKU is wired.\n"
         "Samples below are pulled straight from the vault — full pack is larger."
     )
 

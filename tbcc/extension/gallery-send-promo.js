@@ -3,29 +3,107 @@
  * Settings: GET /gallery-send-promo/extension-payload
  */
 (function (global) {
-  const API_BASE = "http://localhost:8000";
   const STORAGE_SHOW = "tbccShowSendPromoStrip";
   const STORAGE_BODY_EXPANDED = "tbccSendPromoStripBodyExpanded";
   const STORAGE_ON_SEND = "tbccSendPromoOnSend";
   const STORAGE_ACTIVE = "tbccSendPromoActiveId";
+  const API_CANDIDATES = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://5.161.53.91:8000",
+  ];
 
   let payloadCache = null;
   let payloadAt = 0;
+  let resolvedApiBase = "";
 
   function $(id) {
     return document.getElementById(id);
+  }
+
+  async function apiAuthHeaders() {
+    if (typeof global.tbccApiAuthHeaders === "function") {
+      return global.tbccApiAuthHeaders();
+    }
+    const h = {};
+    try {
+      const d = await chrome.storage.local.get("tbccInternalApiKey");
+      const key = String(d.tbccInternalApiKey || "").trim();
+      if (key) h["X-TBCC-Internal-Key"] = key;
+    } catch (_) {}
+    return h;
+  }
+
+  /**
+   * Prefer gallery.js probe (same candidates / tbccApiBase). Returns "" if no API is reachable.
+   * Never silently returns a dead localhost — that caused "Failed to fetch" on promo upload.
+   */
+  async function resolveApiBase(force) {
+    if (typeof global.probeTbccApiReachable === "function") {
+      try {
+        if (typeof global.tbccRefreshApiBaseCandidates === "function") {
+          await global.tbccRefreshApiBaseCandidates();
+        }
+        const ok = await global.probeTbccApiReachable(!!force);
+        if (ok) {
+          const live =
+            (typeof global.tbccGetApiBase === "function" && global.tbccGetApiBase()) ||
+            (typeof global.API_BASE === "string" ? global.API_BASE : "");
+          if (live && /^https?:\/\//i.test(live)) {
+            resolvedApiBase = String(live).replace(/\/+$/, "");
+            return resolvedApiBase;
+          }
+        }
+        if (!ok) {
+          resolvedApiBase = "";
+          return "";
+        }
+      } catch (_) {}
+    }
+    if (!force && resolvedApiBase) return resolvedApiBase;
+    const candidates = [];
+    try {
+      const d = await chrome.storage.local.get("tbccApiBase");
+      const custom = String(d.tbccApiBase || "").trim().replace(/\/+$/, "");
+      if (custom && /^https?:\/\//i.test(custom)) candidates.push(custom);
+    } catch (_) {}
+    for (const b of API_CANDIDATES) {
+      if (!candidates.includes(b)) candidates.push(b);
+    }
+    for (const base of candidates) {
+      try {
+        const ctrl = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(2500) : undefined;
+        const r = await fetch(base + "/health", { cache: "no-store", signal: ctrl });
+        if (r.ok) {
+          resolvedApiBase = base;
+          return base;
+        }
+      } catch (_) {}
+    }
+    resolvedApiBase = "";
+    return "";
+  }
+
+  function offlineApiMessage() {
+    return (
+      "TBCC API offline — promo upload needs a live API. " +
+      "Start Backend in the tray, or set Options → TBCC API base to your island URL " +
+      "(home :8000 is currently down / lean-off)."
+    );
   }
 
   async function fetchPayload(force) {
     const now = Date.now();
     if (!force && payloadCache && now - payloadAt < 15000) return payloadCache;
     try {
-      const r = await fetch(API_BASE + "/gallery-send-promo/extension-payload", { cache: "no-store" });
+      const base = await resolveApiBase(force);
+      const r = await fetch(base + "/gallery-send-promo/extension-payload", { cache: "no-store" });
       if (!r.ok) throw new Error(String(r.status));
       payloadCache = await r.json();
       payloadAt = now;
       return payloadCache;
     } catch (_) {
+      resolvedApiBase = "";
       return { enabled: false, images: [], active_image: null };
     }
   }
@@ -59,10 +137,19 @@
     try {
       const r = await fetch(img.url, { cache: "no-store" });
       if (!r.ok) return null;
-      const blob = await r.blob();
+      let blob = await r.blob();
       if (!blob || !blob.size) return null;
-      const name = (img.filename || "tbcc_send_promo.jpg").split("/").pop();
-      return { blob, name: name || "tbcc_send_promo.jpg", label: img.label || "" };
+      let name = (img.filename || "tbcc_send_promo.jpg").split("/").pop() || "tbcc_send_promo.jpg";
+      if (typeof global.tbccPrepareRasterBlob === "function") {
+        const prep = await global.tbccPrepareRasterBlob(blob, img.url, name);
+        blob = prep.blob;
+        name = prep.name;
+      } else if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureJpegBlob) {
+        const prep = await global.TbccWebp.tbccEnsureJpegBlob(blob, { url: img.url, name });
+        blob = prep.blob;
+        name = prep.name;
+      }
+      return { blob, name, label: img.label || "" };
     } catch (_) {
       return null;
     }
@@ -252,12 +339,34 @@
   }
 
   async function uploadImage(file) {
+    const base = await resolveApiBase(true);
+    if (!base) {
+      if (global.showToast) global.showToast(offlineApiMessage(), "error");
+      return;
+    }
     const form = new FormData();
-    form.append("file", file, file.name || "promo.jpg");
+    let uploadBlob = file;
+    let uploadName = file.name || "promo.jpg";
     try {
-      const r = await fetch(API_BASE + "/gallery-send-promo/images", { method: "POST", body: form });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || r.statusText);
+      if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureJpegBlob) {
+        const prep = await global.TbccWebp.tbccEnsureJpegBlob(file, { name: uploadName });
+        uploadBlob = prep.blob;
+        uploadName = prep.name;
+      }
+    } catch (_) {}
+    form.append("file", uploadBlob, uploadName);
+    try {
+      const headers = await apiAuthHeaders();
+      const r = await fetch(base + "/gallery-send-promo/images", {
+        method: "POST",
+        body: form,
+        headers,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        const detail = data.detail || r.statusText || "HTTP " + r.status;
+        throw new Error(String(detail) + " @ " + base);
+      }
       payloadCache = data.settings;
       payloadAt = Date.now();
       if (data.image && data.image.id) {
@@ -265,19 +374,31 @@
       }
       renderStrip();
       setStripBodyExpanded(true);
-      if (global.showToast) global.showToast("Promo image uploaded.", "info");
+      if (global.showToast) global.showToast("Promo image uploaded → " + base, "info");
     } catch (e) {
-      if (global.showToast) global.showToast((e && e.message) || "Upload failed", "error");
+      const msg = String((e && e.message) || e || "Upload failed");
+      const nice =
+        /failed to fetch|networkerror|connection refused/i.test(msg)
+          ? offlineApiMessage() + " (tried " + base + ")"
+          : msg;
+      if (global.showToast) global.showToast(nice, "error");
     }
   }
 
   async function deleteImage(imageId) {
     try {
-      const r = await fetch(API_BASE + "/gallery-send-promo/images/" + encodeURIComponent(imageId), {
+      const base = await resolveApiBase(true);
+      if (!base) {
+        if (global.showToast) global.showToast(offlineApiMessage(), "error");
+        return;
+      }
+      const headers = await apiAuthHeaders();
+      const r = await fetch(base + "/gallery-send-promo/images/" + encodeURIComponent(imageId), {
         method: "DELETE",
+        headers,
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.detail || r.statusText);
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || r.statusText || "HTTP " + r.status);
       payloadCache = data.settings;
       payloadAt = Date.now();
       renderStrip();
@@ -391,7 +512,13 @@
     form.append("files", pack.blob, pack.name);
     if (typeof appendCaptionToForm === "function") appendCaptionToForm(form, "");
     try {
-      const r = await fetch(API_BASE + "/import/saved-batch", { method: "POST", body: form });
+      const base = await resolveApiBase(true);
+      if (!base) {
+        if (appendErr) appendErr(offlineApiMessage());
+        return false;
+      }
+      const headers = await apiAuthHeaders();
+      const r = await fetch(base + "/import/saved-batch", { method: "POST", body: form, headers });
       const text = await r.text();
       let data = {};
       try {
@@ -419,7 +546,10 @@
     form.append("saved_only", "false");
     form.append("source", "extension:send-promo");
     try {
-      const r = await fetch(API_BASE + "/import/bytes", { method: "POST", body: form });
+      const base = await resolveApiBase(true);
+      if (!base) return null;
+      const headers = await apiAuthHeaders();
+      const r = await fetch(base + "/import/bytes", { method: "POST", body: form, headers });
       const text = await r.text();
       let data = {};
       try {

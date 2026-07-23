@@ -167,7 +167,8 @@ def organize_file(
     dry_run: bool = False,
 ) -> tuple[bool, str, Path | None]:
     """
-    Move ``src`` into library_root/<Category>/ (or Images/<tier>/[<class>/] when NSFW sorting is on).
+    Move ``src`` into library_root/<Category>/, flat AOF lane folders when enabled,
+    or Images/<tier>/… when legacy NSFW sorting is on and lanes are off / unresolved.
     Returns (ok, message, dest_or_none).
     """
     try:
@@ -176,6 +177,14 @@ def organize_file(
         return False, "unreadable path", None
     if not src.is_file():
         return False, "not a file", None
+    try:
+        from app.services.watch_folder_nsfw import is_watch_sidecar_file
+
+        if is_watch_sidecar_file(src):
+            return False, "sidecar companion", None
+    except Exception:
+        if src.name.lower().endswith(".tbcc-meta.json"):
+            return False, "sidecar companion", None
     if _looks_incomplete(src):
         return False, "incomplete download", None
     if stable_wait_s > 0:
@@ -218,20 +227,53 @@ def organize_file(
     nsfw_meta: dict | None = None
     rel_subdir = cat
     try:
+        from app.services.watch_folder_aof import (
+            aof_library_subdir,
+            preprocess_inbox_media,
+            resolve_lane_from_meta,
+            watch_aof_lane_folders_enabled,
+        )
         from app.services.watch_folder_nsfw import (
             build_watch_metadata,
             image_library_subdir,
+            read_watch_sidecar,
+            sidecar_path_for,
             watch_nsfw_tier_subfolders_enabled,
             write_watch_sidecar,
         )
 
-        if cat == "Images" and watch_nsfw_tier_subfolders_enabled():
+        existing = read_watch_sidecar(src) or {}
+
+        if cat in _MEDIA_ONLY_CATEGORIES and not dry_run:
+            src, existing = preprocess_inbox_media(src, existing)
+
+        nsfw_meta = dict(existing) if existing else {}
+        lane_resolved = resolve_lane_from_meta(nsfw_meta)
+        aof_sub = aof_library_subdir(cat, nsfw_meta)
+
+        if aof_sub is not None:
+            # Flat AOF lane folders (includes Unsorted) — skip CLIP/NSFW
+            rel_subdir = aof_sub
+            if lane_resolved:
+                nsfw_meta["lane_key"] = lane_resolved
+                nsfw_meta["lane_folder"] = aof_sub
+                nsfw_meta["route_source"] = "tags"
+            else:
+                nsfw_meta["route_source"] = "unsorted"
+        elif cat == "Images" and watch_nsfw_tier_subfolders_enabled() and not watch_aof_lane_folders_enabled():
+            # Legacy nest only when AOF lane mode is explicitly off
             nsfw_meta = build_watch_metadata(src)
+            if existing:
+                for k, v in existing.items():
+                    if k not in nsfw_meta or nsfw_meta.get(k) in (None, "", "unknown"):
+                        nsfw_meta[k] = v
             rel_subdir = image_library_subdir(cat, src, nsfw_meta)
     except Exception as e:
-        logger.warning("watch nsfw metadata skipped for %s: %s", src.name, e)
+        logger.warning("watch metadata/route skipped for %s: %s", src.name, e)
 
-    dest_dir = library_root.joinpath(*rel_subdir.split("/"))
+    # Flat emoji lane names are a single segment; legacy paths use /
+    sub = str(rel_subdir).replace("\\", "/")
+    dest_dir = library_root.joinpath(*sub.split("/")) if "/" in sub else (library_root / sub)
     dest = _unique_dest(dest_dir / src.name)
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -244,6 +286,8 @@ def organize_file(
     if nsfw_meta:
         record["nsfw_tier"] = nsfw_meta.get("nsfw_tier")
         record["nsfw_class"] = nsfw_meta.get("top_class")
+        record["lane_key"] = nsfw_meta.get("lane_key")
+        record["route_source"] = nsfw_meta.get("route_source")
         niche = nsfw_meta.get("niche") or {}
         if isinstance(niche, dict):
             record["niche_slug"] = niche.get("primary_slug") or (niche.get("clip") or {}).get("top_slug")
@@ -254,8 +298,16 @@ def organize_file(
         _append_log(log_path, record)
         return True, f"would move -> {dest}", dest
     try:
+        from app.services.watch_folder_nsfw import sidecar_path_for, write_watch_sidecar
+
         dest_dir.mkdir(parents=True, exist_ok=True)
+        old_sidecar = sidecar_path_for(src)
         shutil.move(str(src), str(dest))
+        if old_sidecar.is_file():
+            try:
+                shutil.move(str(old_sidecar), str(sidecar_path_for(dest)))
+            except OSError:
+                pass
         if nsfw_meta:
             write_watch_sidecar(dest, nsfw_meta)
     except OSError as e:
@@ -420,7 +472,7 @@ def run_watch_loop(
     observer.schedule(Handler(), str(inbox), recursive=False)
     observer.start()
     logger.info(
-        "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s media_only=%s reject_dir=%s nsfw_tier=%s nsfw_class=%s clip_niche=%s vision_llm=%s",
+        "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s media_only=%s reject_dir=%s aof_lanes=%s aof_preprocess=%s nsfw_tier=%s nsfw_class=%s clip_niche=%s vision_llm=%s",
         inbox,
         library_root,
         debounce_s,
@@ -428,6 +480,12 @@ def run_watch_loop(
         len(_CATEGORY_OVERRIDES),
         media_only,
         str(reject_dir) if reject_dir else "-",
+        _is_truthy_env(os.environ.get("TBCC_WATCH_AOF_LANE_FOLDERS"))
+        if (os.environ.get("TBCC_WATCH_AOF_LANE_FOLDERS") or "").strip()
+        else True,
+        _is_truthy_env(os.environ.get("TBCC_WATCH_AOF_PREPROCESS"))
+        if (os.environ.get("TBCC_WATCH_AOF_PREPROCESS") or "").strip()
+        else True,
         _is_truthy_env(os.environ.get("TBCC_WATCH_NSFW_TIER_SUBFOLDERS")),
         _is_truthy_env(os.environ.get("TBCC_WATCH_NSFW_CLASS_SUBFOLDERS")),
         bool((os.environ.get("TBCC_CLIP_CATEGORIZE_URL") or "").strip()),

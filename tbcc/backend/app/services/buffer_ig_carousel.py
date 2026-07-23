@@ -151,7 +151,9 @@ def slide1_cta_text() -> str:
 
     custom = (os.getenv("TBCC_BUFFER_IG_SLIDE1_CTA_TEXT") or "").strip()
     if custom:
-        return custom[:120]
+        from app.data.aof_telegram_links import normalize_telegram_me_brand
+
+        return normalize_telegram_me_brand(custom)[:120]
     hub = aof_mainhub_display()
     return f"link in bio · {hub} · allmylinks.com/aof69"
 

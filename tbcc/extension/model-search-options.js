@@ -1031,18 +1031,114 @@ function renderReverseSites(cfg, enabledMap) {
 })();
 
 const STORAGE_TBCC_INTERNAL_KEY = "tbccInternalApiKey";
+const STORAGE_TBCC_API_BASE = "tbccApiBase";
+const ISLAND_PUBLIC_API = "http://5.161.53.91:8000";
 (function () {
-  const el = document.getElementById("tbccInternalApiKey");
-  if (!el) return;
-  chrome.storage.local.get([STORAGE_TBCC_INTERNAL_KEY], (data) => {
-    el.value = data[STORAGE_TBCC_INTERNAL_KEY] || "";
-  });
-  el.addEventListener("blur", () => {
-    chrome.storage.local.set({ [STORAGE_TBCC_INTERNAL_KEY]: (el.value || "").trim() }, () => {
-      setStatus("Saved.");
-      setTimeout(() => setStatus(""), 1600);
+  const keyEl = document.getElementById("tbccInternalApiKey");
+  const baseEl = document.getElementById("tbccApiBase");
+  const statusEl = document.getElementById("tbccApiBaseStatus");
+  const applySeedBtn = document.getElementById("tbccApplyIslandSeed");
+  const setIslandBtn = document.getElementById("tbccSetIslandBase");
+
+  function saveApiFields(done) {
+    const payload = {
+      [STORAGE_TBCC_INTERNAL_KEY]: String((keyEl && keyEl.value) || "").trim(),
+      [STORAGE_TBCC_API_BASE]: String((baseEl && baseEl.value) || "").trim().replace(/\/+$/, ""),
+    };
+    chrome.storage.local.set(payload, () => {
+      if (typeof setStatus === "function") {
+        setStatus("Saved.");
+        setTimeout(() => setStatus(""), 1600);
+      }
+      void probeApiBase();
+      if (typeof done === "function") done();
     });
+  }
+
+  async function applySeedFromClipboard() {
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+      if (statusEl) statusEl.textContent = "Clipboard blocked — paste key manually, then blur the field.";
+      return false;
+    }
+    const raw = String(text || "").trim();
+    if (!raw) {
+      if (statusEl) statusEl.textContent = "Clipboard empty — run set-extension-island-api.ps1 first.";
+      return false;
+    }
+    if (raw.startsWith("TBCC_SEED|")) {
+      const parts = raw.split("|");
+      const base = String(parts[1] || "").trim().replace(/\/+$/, "");
+      const key = String(parts.slice(2).join("|") || "").trim();
+      if (baseEl && base) baseEl.value = base;
+      if (keyEl && key) keyEl.value = key;
+      saveApiFields();
+      if (statusEl) statusEl.textContent = "Applied island seed from clipboard.";
+      return true;
+    }
+    // Bare key paste
+    if (raw.length >= 16 && !/^https?:\/\//i.test(raw) && !/\s/.test(raw)) {
+      if (keyEl) keyEl.value = raw;
+      if (baseEl && !String(baseEl.value || "").trim()) baseEl.value = ISLAND_PUBLIC_API;
+      saveApiFields();
+      if (statusEl) statusEl.textContent = "Applied internal key from clipboard.";
+      return true;
+    }
+    if (statusEl) {
+      statusEl.textContent = "Clipboard is not a TBCC_SEED|… payload or bare key.";
+    }
+    return false;
+  }
+
+  chrome.storage.local.get([STORAGE_TBCC_INTERNAL_KEY, STORAGE_TBCC_API_BASE], (data) => {
+    if (keyEl) keyEl.value = data[STORAGE_TBCC_INTERNAL_KEY] || "";
+    if (baseEl) baseEl.value = data[STORAGE_TBCC_API_BASE] || "";
+    void probeApiBase();
+    if (new URLSearchParams(location.search).get("apply-island-seed") === "1" ||
+        /apply-island-seed/i.test(location.hash || "")) {
+      void applySeedFromClipboard();
+    }
   });
+  if (keyEl) {
+    keyEl.addEventListener("blur", () => saveApiFields());
+  }
+  if (baseEl) {
+    baseEl.addEventListener("blur", () => saveApiFields());
+  }
+  applySeedBtn?.addEventListener("click", () => {
+    void applySeedFromClipboard();
+  });
+  setIslandBtn?.addEventListener("click", () => {
+    if (baseEl) baseEl.value = ISLAND_PUBLIC_API;
+    saveApiFields();
+  });
+  async function probeApiBase() {
+    if (!statusEl) return;
+    const bases = [];
+    const custom = String((baseEl && baseEl.value) || "").trim().replace(/\/+$/, "");
+    if (custom) bases.push(custom);
+    bases.push(ISLAND_PUBLIC_API, "http://127.0.0.1:8000", "http://localhost:8000");
+    const key = String((keyEl && keyEl.value) || "").trim();
+    statusEl.textContent = "Checking API…";
+    for (const base of bases) {
+      try {
+        const headers = {};
+        if (key) headers["X-TBCC-Internal-Key"] = key;
+        const r = await fetch(base + "/health", { method: "GET", headers });
+        if (r.ok) {
+          statusEl.textContent = "API OK @ " + base + (key ? " (with internal key)" : "");
+          return;
+        }
+        if (r.status === 403) {
+          statusEl.textContent = "403 @ " + base + " — paste Internal API key (island requires it).";
+          return;
+        }
+      } catch (_) {}
+    }
+    statusEl.textContent = "API offline — set island base + key above (home Postgres not required for intel push).";
+  }
 })();
 
 (function () {

@@ -8,7 +8,12 @@ import random
 from collections import deque
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from PIL import Image, ImageDraw, ImageFont
+
+if TYPE_CHECKING:
+    from app.services.loot_card_frame_styles import StampLayout
 
 # Card-face inventory bands (not 10 per-tier pools).
 CENTER_BAND_LOW = "low"  # tiers 1–5
@@ -168,11 +173,58 @@ def list_clean_frame_paths() -> list[Path]:
     return out
 
 
+def list_blank_plate_frame_paths() -> list[Path]:
+    """Blank-plate chroma-keyed frames (mag-*.png) — no baked tier/name text."""
+    return [p for p in list_clean_frame_paths() if p.name.lower().startswith("mag-")]
+
+
+def _frame_chroma_halo_frac(path: Path) -> float:
+    """Fraction of top chrome band that is near-black opaque (chroma-key residue)."""
+    try:
+        im = Image.open(path).convert("RGBA")
+        if max(im.size) > 512:
+            im = im.resize((512, 512), Image.Resampling.BILINEAR)
+        w, h = im.size
+        band_h = max(1, h // 7)
+        px = im.load()
+        dark_opaque = total = 0
+        for y in range(band_h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if a < 40:
+                    continue
+                total += 1
+                if r < 28 and g < 28 and b < 28:
+                    dark_opaque += 1
+        return dark_opaque / max(1, total)
+    except Exception:
+        return 1.0
+
+
 def list_reveal_frame_paths() -> list[Path]:
-    """Frames to actually composite from: the curated clean/ pool when present,
-    else the raw top-level pool (back-compat / fresh checkouts without clean/)."""
+    """Frames to composite: blank-plate mag-* when present, else clean/, else raw."""
+    blank = list_blank_plate_frame_paths()
+    # Drop mag frames with heavy chroma-key halos (black scribbles in top band).
+    if blank:
+        good = [p for p in blank if _frame_chroma_halo_frac(p) < 0.06]
+        if len(good) >= 8:
+            return good
+        if good:
+            return good
     clean = list_clean_frame_paths()
     return clean if clean else list_frame_paths()
+
+
+def reveal_frame_pool_kind() -> str:
+    """Label for build_reveal_card_png notes: blank | clean | raw."""
+    blank = list_blank_plate_frame_paths()
+    if blank:
+        good = [p for p in blank if _frame_chroma_halo_frac(p) < 0.06]
+        reveal = list_reveal_frame_paths()
+        if reveal and all(p.name.lower().startswith("mag-") for p in reveal):
+            return "blank"
+    clean = list_clean_frame_paths()
+    return "clean" if clean else "raw"
 
 
 def _is_placeholder_center(path: Path) -> bool:
@@ -351,6 +403,36 @@ def sanitize_frame_alpha(frame: Image.Image) -> Image.Image:
             mean = (r + g + b) // 3
             if mx - mn < 28 and 50 <= mean <= 220:
                 px[x, y] = (r, g, b, 0)
+
+    # Chroma-key halos: near-black opaque pixels touching real transparency.
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a < 40 or r > 32 or g > 32 or b > 32:
+                continue
+            touches_void = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and px[nx, ny][3] < 40:
+                    touches_void = True
+                    break
+            if touches_void:
+                px[x, y] = (r, g, b, 0)
+
+    # Band scrub: kill near-black speckle/trails in top/bottom chrome (not colored neon).
+    band_h = max(8, h // 8)
+    for y in range(h):
+        in_band = y < band_h or y >= h - band_h
+        if not in_band:
+            continue
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a < 80 or r > 38 or g > 38 or b > 38:
+                continue
+            mx, mn = max(r, g, b), min(r, g, b)
+            if mx - mn > 35:
+                continue
+            px[x, y] = (r, g, b, 0)
     return im
 
 
@@ -464,10 +546,14 @@ def _draw_text_outlined(
     *,
     font: ImageFont.ImageFont,
     fill: tuple[int, int, int, int] = (245, 245, 245, 255),
-    outline: tuple[int, int, int, int] = (0, 0, 0, 200),
+    outline: tuple[int, int, int, int] = (0, 0, 0, 140),
+    thin: bool = False,
 ) -> None:
     x, y = xy
-    for ox, oy in ((-1, 0), (1, 0), (0, -1), (0, 1), (1, 1), (-1, -1)):
+    offsets = ((-1, 0), (1, 0), (0, -1), (0, 1)) if thin else (
+        (-1, 0), (1, 0), (0, -1), (0, 1), (1, 1), (-1, -1)
+    )
+    for ox, oy in offsets:
         draw.text((x + ox, y + oy), text, font=font, fill=outline)
     draw.text((x, y), text, font=font, fill=fill)
 
@@ -549,6 +635,66 @@ def _fit_font(
     return _try_font(min_size)
 
 
+def _band_chrome_bbox(
+    frame_rgba: Image.Image, region: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    """Opaque chrome bbox within a frame sub-rectangle (for plate-aware stamps)."""
+    x0, y0, x1, y1 = region
+    w, h = frame_rgba.size
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return region
+    sub = frame_rgba.crop((x0, y0, x1, y1))
+    alpha = sub.getchannel("A").point(lambda a: 255 if a >= 40 else 0)
+    bb = alpha.getbbox()
+    if not bb:
+        return region
+    return (x0 + bb[0], y0 + bb[1], x0 + bb[2], y0 + bb[3])
+
+
+def _scrub_chrome_black_trails(
+    rgb: Image.Image,
+    *,
+    protect: tuple[int, int, int, int] | None = None,
+) -> Image.Image:
+    """Remove near-black trail pixels on chrome (outside the photo window)."""
+    out = rgb.convert("RGB")
+    w, h = out.size
+    px = out.load()
+    if protect:
+        px0, py0, px1, py1 = protect
+    else:
+        px0 = py0 = px1 = py1 = -1
+
+    def in_window(x: int, y: int) -> bool:
+        return px0 <= x < px1 and py0 <= y < py1
+
+    for y in range(h):
+        for x in range(w):
+            if in_window(x, y):
+                continue
+            r, g, b = px[x, y]
+            if r > 42 or g > 42 or b > 42:
+                continue
+            mx, mn = max(r, g, b), min(r, g, b)
+            if mx - mn > 30:
+                continue
+            neigh: list[tuple[int, int, int]] = []
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < w and 0 <= ny < h and not in_window(nx, ny):
+                    nr, ng, nb = px[nx, ny]
+                    if (nr + ng + nb) // 3 > 58:
+                        neigh.append((nr, ng, nb))
+            if len(neigh) >= 2:
+                sr = sum(c[0] for c in neigh) // len(neigh)
+                sg = sum(c[1] for c in neigh) // len(neigh)
+                sb = sum(c[2] for c in neigh) // len(neigh)
+                px[x, y] = (sr, sg, sb)
+    return out
+
+
 def _stamp_tier_chrome(
     canvas: Image.Image,
     *,
@@ -557,6 +703,10 @@ def _stamp_tier_chrome(
     name: str,
     tagline: str,
     chrome_bbox: tuple[int, int, int, int] | None = None,
+    bottom_plate: tuple[int, int, int, int] | None = None,
+    badge_plate: tuple[int, int, int, int] | None = None,
+    stamp_brand: bool = True,
+    layout: StampLayout | None = None,
 ) -> None:
     """
     Reference-style plates (see LOOT ROOM CARDS examples):
@@ -576,32 +726,56 @@ def _stamp_tier_chrome(
     flavor_font = _try_font(max(12, ch // 40))
     hub_font = _try_font(max(10, ch // 52))
 
-    # top-left brand — fit within the left ~48% so it never runs into the badge.
-    brand_x = x0 + int(cw * 0.05)
-    brand_y = y0 + int(ch * 0.04)
-    brand_font = _fit_font(draw, "AOF LOOT", int(cw * 0.48), max(20, ch // 13), 14)
-    _draw_text_outlined(draw, (brand_x, brand_y), "AOF LOOT", font=brand_font)
+    # top-left brand — blank-plate frames only; skip when frame bakes its own wordmark.
+    if stamp_brand:
+        if layout:
+            brand_x = x0 + int(cw * layout.brand_x)
+            brand_y = y0 + int(ch * layout.brand_y)
+            brand_max = int(cw * layout.brand_max_w)
+            brand_start = max(layout.brand_min_font, int(ch * layout.brand_font_h))
+            brand_font = _fit_font(draw, "AOF LOOT", brand_max, brand_start, layout.brand_min_font)
+        else:
+            brand_x = x0 + int(cw * 0.05)
+            brand_y = y0 + int(ch * 0.04)
+            brand_font = _fit_font(draw, "AOF LOOT", int(cw * 0.48), max(20, ch // 13), 14)
+        _draw_text_outlined(draw, (brand_x, brand_y), "AOF LOOT", font=brand_font, thin=True)
 
-    hub = "t.me/aofmainhub"
-    hub_y = brand_y + max(18, ch // 18)
-    _draw_text_outlined(
-        draw,
-        (brand_x, hub_y),
-        hub,
-        font=hub_font,
-        fill=(180, 180, 180, 230),
-    )
+        show_hub = layout.show_hub if layout else True
+        if show_hub:
+            hub = "@aof_lootgod_bot"
+            hub_y = brand_y + max(16, ch // 20)
+            _draw_text_outlined(
+                draw,
+                (brand_x, hub_y),
+                hub,
+                font=hub_font,
+                fill=(180, 180, 180, 230),
+                thin=True,
+            )
 
-    # top-right tier badge
+    # top-right tier badge — plate detection, else style layout fractions.
     world_s = (world or "").strip()
     tier_label = f"TIER {tier}"
     tw = _text_width(draw, tier_label, tier_font)
     badge_pad_x, badge_pad_y = 10, 6
-    # Keep the badge fully inside the card's right edge (was clipping on Linux).
-    bx1 = min(x1 - int(cw * 0.05), w - max(6, int(cw * 0.02)))
-    by0 = y0 + int(ch * 0.05)
-    bx0 = bx1 - tw - badge_pad_x * 2
-    by1 = by0 + max(22, ch // 20) + badge_pad_y
+    badge_h = max(22, int(ch * layout.badge_h)) + badge_pad_y if layout else max(22, ch // 20) + badge_pad_y
+    if badge_plate and badge_plate[2] > badge_plate[0] + 20:
+        px0, py0, px1, py1 = badge_plate
+        pw, ph = px1 - px0, py1 - py0
+        bx0 = px0 + max(4, (pw - tw - badge_pad_x * 2) // 2)
+        by0 = py0 + max(2, (ph - badge_h) // 2)
+        bx1 = bx0 + tw + badge_pad_x * 2
+        by1 = by0 + badge_h
+    elif layout:
+        bx1 = min(x0 + int(cw * layout.badge_x1), w - 4)
+        by0 = y0 + int(ch * layout.badge_y0)
+        bx0 = bx1 - tw - badge_pad_x * 2
+        by1 = by0 + badge_h
+    else:
+        bx1 = min(x1 - int(cw * 0.05), w - max(6, int(cw * 0.02)))
+        by0 = y0 + int(ch * 0.05)
+        bx0 = bx1 - tw - badge_pad_x * 2
+        by1 = by0 + badge_h
     # neon-ish plate
     draw.rounded_rectangle(
         (bx0, by0, bx1, by1),
@@ -616,6 +790,7 @@ def _stamp_tier_chrome(
         tier_label,
         font=tier_font,
         fill=(240, 255, 245, 255),
+        thin=True,
     )
     if world_s:
         ww = _text_width(draw, world_s, hub_font)
@@ -630,7 +805,8 @@ def _stamp_tier_chrome(
     # bottom name + flavor — stacked and bottom-anchored so the tagline never
     # lands on the name's descenders (they used to overlap).
     name_u = (name or f"Tier {tier}").strip().upper() or f"TIER {tier}"
-    name_font = _fit_font(draw, name_u, int(cw * 0.86), max(24, ch // 11), 16)
+    name_start = max(16, int(ch * layout.name_font_h)) if layout else max(24, ch // 11)
+    name_font = _fit_font(draw, name_u, int(cw * 0.86), name_start, 16)
     nw = _text_width(draw, name_u, name_font)
     nb = draw.textbbox((0, 0), name_u, font=name_font)
     nh = nb[3] - nb[1]
@@ -641,13 +817,23 @@ def _stamp_tier_chrome(
         th = tb[3] - tb[1]
     gap = max(4, ch // 80)
     block_h = nh + (gap + th if tl else 0)
-    bottom_pad = max(10, ch // 24)
-    by = max(y0, y1 - bottom_pad - block_h)
-    nx = x0 + max(8, (cw - nw) // 2)
-    _draw_text_outlined(draw, (nx, by), name_u, font=name_font)
+    if bottom_plate and bottom_plate[2] > bottom_plate[0] + 20:
+        px0, py0, px1, py1 = bottom_plate
+        pw, ph = px1 - px0, py1 - py0
+        nx = px0 + max(8, (pw - nw) // 2)
+        by = py0 + max(4, (ph - block_h) // 2)
+    else:
+        bottom_pad = max(10, ch // 24)
+        by = max(y0, y1 - bottom_pad - block_h)
+        nx = x0 + max(8, (cw - nw) // 2)
+    _draw_text_outlined(draw, (nx, by), name_u, font=name_font, thin=True)
     if tl:
         lw = _text_width(draw, tl, flavor_font)
-        lx = x0 + max(8, (cw - lw) // 2)
+        if bottom_plate and bottom_plate[2] > bottom_plate[0] + 20:
+            px0, _, px1, _ = bottom_plate
+            lx = px0 + max(8, (px1 - px0 - lw) // 2)
+        else:
+            lx = x0 + max(8, (cw - lw) // 2)
         _draw_text_outlined(
             draw,
             (lx, by + nh + gap),
@@ -673,7 +859,8 @@ def _frame_layout_score(path: Path) -> float:
         mid_o = sum(1 for v in mid.getdata() if v > 200) / max(1, mid.size[0] * mid.size[1])
         # true hole in the window is a strong positive signal (remove.bg plates)
         hole_bonus = 0.8 if mid_o < 0.15 else 0.0
-        return float(top_o + bot_o - mid_o * 0.5 + hole_bonus)
+        halo_penalty = _frame_chroma_halo_frac(path) * 4.0
+        return float(top_o + bot_o - mid_o * 0.5 + hole_bonus - halo_penalty)
     except Exception:
         return 0.0
 
@@ -802,43 +989,70 @@ def compose_reveal_card(
 
     canvas.alpha_composite(frame)
 
-    if stamp_chrome:
-        try:
-            from app.services.loot_tier_catalog import TIER_META
-
-            meta = TIER_META.get(t) or {}
-        except Exception:
-            meta = {}
-        _stamp_tier_chrome(
-            canvas,
-            tier=t,
-            world=world if world is not None else str(meta.get("world") or ""),
-            name=name if name is not None else str(meta.get("name") or f"Tier {t}"),
-            tagline=tagline if tagline is not None else str(meta.get("tagline") or ""),
-            chrome_bbox=chrome_bbox,
-        )
-
     # Flatten to solid black RGB, scrub baked checker outside the art window, trim.
     base = Image.new("RGB", canvas.size, (0, 0, 0))
     base.paste(canvas.convert("RGBA"), mask=canvas.split()[-1])
     base = _scrub_checker_to_black(base, protect=(x0, y0, x1, y1))
+    crop_ox, crop_oy = 0, 0
     cx0, cy0, cx1, cy1 = _solid_chrome_bbox(frame)
     if (cx1 - cx0) >= 64 and (cy1 - cy0) >= 64 and (cx1 - cx0) < int(size * 0.98):
+        crop_ox, crop_oy = cx0, cy0
         base = base.crop((cx0, cy0, cx1, cy1))
     else:
         pad_x = max(24, int((x1 - x0) * 0.14))
         pad_y = max(24, int((y1 - y0) * 0.14))
+        crop_ox = max(0, x0 - pad_x)
+        crop_oy = max(0, y0 - pad_y)
         base = base.crop(
             (
-                max(0, x0 - pad_x),
-                max(0, y0 - pad_y),
+                crop_ox,
+                crop_oy,
                 min(canvas.size[0], x1 + pad_x),
                 min(canvas.size[1], y1 + pad_y),
             )
         )
     tx0, ty0, tx1, ty1 = _content_trim_bbox(base)
     if tx1 - tx0 >= 32 and ty1 - ty0 >= 32:
+        crop_ox += tx0
+        crop_oy += ty0
         base = base.crop((tx0, ty0, tx1, ty1))
+
+    win_protect = (x0 - crop_ox, y0 - crop_oy, x1 - crop_ox, y1 - crop_oy)
+    base = _scrub_chrome_black_trails(base, protect=win_protect)
+
+    # Stamp AFTER all cropping so label positions are relative to the final card.
+    if stamp_chrome:
+        from app.services.loot_card_frame_styles import layout_for_frame
+
+        try:
+            from app.services.loot_tier_catalog import TIER_META
+
+            meta = TIER_META.get(t) or {}
+        except Exception:
+            meta = {}
+        stamp_layout = layout_for_frame(frame, path=fp)
+        stamp_rgba = base.convert("RGBA")
+        fw, fh = frame.size
+        bottom_plate = _band_chrome_bbox(frame, (0, int(fh * 0.74), fw, fh))
+        badge_plate = _band_chrome_bbox(frame, (int(fw * 0.50), 0, fw, int(fh * 0.24)))
+
+        def _shift(bb: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+            return (bb[0] - crop_ox, bb[1] - crop_oy, bb[2] - crop_ox, bb[3] - crop_oy)
+
+        sw, sh = stamp_rgba.size
+        _stamp_tier_chrome(
+            stamp_rgba,
+            tier=t,
+            world=world if world is not None else str(meta.get("world") or ""),
+            name=name if name is not None else str(meta.get("name") or f"Tier {t}"),
+            tagline=tagline if tagline is not None else str(meta.get("tagline") or ""),
+            chrome_bbox=(0, 0, sw, sh),
+            bottom_plate=_shift(bottom_plate),
+            badge_plate=_shift(badge_plate),
+            stamp_brand=fp.name.lower().startswith("mag-"),
+            layout=stamp_layout,
+        )
+        base = _scrub_chrome_black_trails(stamp_rgba.convert("RGB"), protect=win_protect)
     # Telegram send_photo must get opaque bytes — no alpha channel, ever.
     if base.mode != "RGB":
         base = base.convert("RGB")
@@ -868,8 +1082,7 @@ def build_reveal_card_png(
 
     frames = list_reveal_frame_paths()
     centers = list_center_paths(t)
-    band = center_band_for_tier(t)
-    pool = "clean" if list_clean_frame_paths() else "raw"
+    pool = reveal_frame_pool_kind()
     if frames:
         data = compose_reveal_card(
             t,
@@ -879,6 +1092,7 @@ def build_reveal_card_png(
             tagline=str(meta_tag) if meta_tag else None,
         )
         if data:
+            band = center_band_for_tier(t)
             return (
                 data,
                 f"composite pool={pool} frames={len(frames)} centers={len(centers)} "
@@ -889,3 +1103,25 @@ def build_reveal_card_png(
     if legacy is not None:
         return legacy.read_bytes(), f"static:{legacy.name}"
     return None, "missing"
+
+
+def build_reveal_card_mp4(
+    tier: int,
+    *,
+    rng: random.Random | None = None,
+    preview: dict | None = None,
+) -> tuple[bytes | None, str]:
+    """
+    Animated reveal: composited JPEG card muxed over a looping background MP4.
+
+    Returns (mp4_bytes_or_none, note). Requires TBCC_LOOT_REVEAL_VIDEO=1 and ffmpeg.
+    """
+    card_bytes, card_note = build_reveal_card_png(tier, rng=rng, preview=preview)
+    if not card_bytes:
+        return None, "no_card"
+    from app.services.loot_reveal_video import compose_reveal_card_mp4
+
+    mp4, vnote = compose_reveal_card_mp4(card_bytes, rng=rng)
+    if not mp4:
+        return None, f"{vnote} card={card_note}"
+    return mp4, f"{vnote} card={card_note}"

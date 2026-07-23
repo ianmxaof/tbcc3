@@ -225,6 +225,10 @@ public static class TbccWin32Ui {
     int X, int Y, int cx, int cy, uint uFlags);
   [DllImport("user32.dll")]
   public static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+  public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+  public const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+  [DllImport("dwmapi.dll")]
+  public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
 }
 
 public class TbccSupForm : Form {
@@ -393,6 +397,65 @@ function Set-TbccFormAlwaysOnTop {
   }
 }
 
+function Ensure-TbccDwmCaptionTypes {
+  if ("TbccDwmCaption" -as [type]) { return }
+  try {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class TbccDwmCaption {
+  public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+  public const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+  [DllImport("dwmapi.dll")]
+  public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+}
+"@ -ErrorAction Stop
+  } catch {}
+}
+
+function Invoke-TbccFormDarkCaptionCore {
+  param(
+    [Parameter(Mandatory = $true)]$Form,
+    [bool]$Enabled = $true
+  )
+  if (-not $Form -or $Form.IsDisposed -or -not $Form.IsHandleCreated) { return }
+  Ensure-TbccDwmCaptionTypes
+  if (-not ("TbccDwmCaption" -as [type])) { return }
+  $val = if ($Enabled) { 1 } else { 0 }
+  foreach ($attr in @(
+      [TbccDwmCaption]::DWMWA_USE_IMMERSIVE_DARK_MODE,
+      [TbccDwmCaption]::DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1
+    )) {
+    try { [void][TbccDwmCaption]::DwmSetWindowAttribute($Form.Handle, $attr, [ref]$val, 4) } catch {}
+  }
+}
+
+function Set-TbccFormDarkCaption {
+  <# Win11/10 dark native caption — matches Cursor/Electron chrome; call on HandleCreated. #>
+  param(
+    [Parameter(Mandatory = $true)]$Form,
+    [bool]$Enabled = $true
+  )
+  if (-not $Form -or $Form.IsDisposed) { return }
+  Ensure-TbccDwmCaptionTypes
+  if (-not ("TbccDwmCaption" -as [type])) { return }
+  # Never `& $localScriptBlock` from a deferred event — locals die after return and produce
+  # "expression after '&' ... was not valid". Call a named function instead.
+  if ($Form.IsHandleCreated) {
+    Invoke-TbccFormDarkCaptionCore -Form $Form -Enabled:$Enabled
+  } else {
+    [void]$Form.Add_HandleCreated({
+      param($s, $e)
+      try { Invoke-TbccFormDarkCaptionCore -Form $s -Enabled:$true } catch {}
+    })
+  }
+}
+
+function Register-TbccFormChrome {
+  param([Parameter(Mandatory = $true)]$Form)
+  Set-TbccFormDarkCaption -Form $Form -Enabled:$true
+}
+
 function Get-TbccNetworkSample {
   param($Prev = $null)
   $now = Get-Date
@@ -483,15 +546,46 @@ function Open-TbccErrorHubAtLine {
   }
 }
 
+function Get-TbccSupMeltdownStyle {
+  <# Softer throttle strip: amber band, not nuclear red. Detail explains why HTTP/WMI backed off. #>
+  param($Snap)
+  $heat = 46.0
+  $detail = ""
+  if ($Snap -and $Snap.HealthErr -match 'API poll') {
+    $detail = "API"
+    $heat = 50
+  } elseif ($Snap -and $Snap.Host) {
+    $cpu = if ($null -ne $Snap.Host.CpuPct) { [double]$Snap.Host.CpuPct } else { 0 }
+    $ram = if ($null -ne $Snap.Host.RamPct) { [double]$Snap.Host.RamPct } else { 0 }
+    if ($cpu -ge 82) {
+      $detail = ("CPU {0}%" -f [int]$cpu)
+      $heat = [Math]::Min(68, 42 + ($cpu - 82) * 1.8)
+    } elseif ($ram -ge 88) {
+      $detail = ("RAM {0}%" -f [int]$ram)
+      $heat = [Math]::Min(68, 42 + ($ram - 88) * 1.8)
+    } else {
+      $detail = "host"
+      $heat = 44
+    }
+  }
+  $prefix = if ($detail) { "THROTTLE $detail" } else { "THROTTLE" }
+  return @{
+    Prefix     = $prefix
+    HeatPct    = $heat
+    MiniPrefix = "THR"
+  }
+}
+
 function New-TbccSupSparkline {
   param(
     [string]$Label,
     $Theme,
     [System.Drawing.Color]$LineColor,
-    [int]$MaxPoints = 60
+    [int]$MaxPoints = 60,
+    [int]$RowHeight = 28
   )
   $wrap = New-Object System.Windows.Forms.Panel
-  $wrap.Height = 25
+  $wrap.Height = $RowHeight
   $wrap.Dock = [System.Windows.Forms.DockStyle]::Bottom
   $wrap.BackColor = $Theme.ModuleBg
   $wrap.Margin = New-Object System.Windows.Forms.Padding(0, 1, 0, 0)
@@ -513,10 +607,13 @@ function New-TbccSupSparkline {
     Max       = $MaxPoints
     Theme     = $Theme
     LineColor = $LineColor
+    Mode      = "bars"
   }
   $canvas.Add_Paint({
     param($sender, $e)
     $g = $e.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
     $tag = $sender.Tag
     $w = $sender.Width
     $h = $sender.Height
@@ -525,22 +622,34 @@ function New-TbccSupSparkline {
     $g.FillRectangle($bgBrush, 0, 0, $w, $h)
     $bgBrush.Dispose()
     $vals = @($tag.Values)
-    if ($vals.Count -lt 2) { return }
-    $maxV = 100.0
-    $minV = 0.0
-    $pts = New-Object System.Collections.Generic.List[System.Drawing.PointF]
-    for ($i = 0; $i -lt $vals.Count; $i++) {
-      $x = [single](($i / [Math]::Max(1, ($vals.Count - 1))) * ($w - 2) + 1)
-      $norm = ([double]$vals[$i] - $minV) / ($maxV - $minV)
-      $norm = [Math]::Max(0, [Math]::Min(1, $norm))
-      $y = [single](($h - 2) * (1.0 - $norm) + 1)
-      $pts.Add([System.Drawing.PointF]::new($x, $y))
-    }
-    if ($pts.Count -ge 2) {
-      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-      $pen = New-Object System.Drawing.Pen($tag.LineColor, 1.2)
-      $g.DrawLines($pen, $pts.ToArray())
-      $pen.Dispose()
+    if ($vals.Count -lt 1) { return }
+    $pad = 1
+    $innerW = [Math]::Max(1, $w - ($pad * 2))
+    $innerH = [Math]::Max(1, $h - ($pad * 2))
+    $count = $vals.Count
+    $barW = [Math]::Max(1, [int][Math]::Floor($innerW / $count))
+    $base = $tag.LineColor
+    $dim = [System.Drawing.Color]::FromArgb(
+      [int][Math]::Round($base.R * 0.48),
+      [int][Math]::Round($base.G * 0.48),
+      [int][Math]::Round($base.B * 0.48))
+    for ($i = 0; $i -lt $count; $i++) {
+      $norm = [Math]::Max(0, [Math]::Min(1, [double]$vals[$i] / 100.0))
+      $barH = [int][Math]::Max(1, [Math]::Round($norm * $innerH))
+      $x = $pad + ($i * $barW)
+      if ($x + $barW -gt $w - $pad) { $barW = [Math]::Max(1, $w - $pad - $x) }
+      $y = $pad + ($innerH - $barH)
+      $isLast = ($i -eq ($count - 1))
+      $fill = if ($isLast) { $base } else { $dim }
+      $barBrush = New-Object System.Drawing.SolidBrush($fill)
+      $g.FillRectangle($barBrush, $x, $y, $barW, $barH)
+      $barBrush.Dispose()
+      if ($isLast -and $barH -ge 2) {
+        $flashBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(170, 255, 255, 255))
+        $capH = [Math]::Min(2, $barH)
+        $g.FillRectangle($flashBrush, $x, $y, $barW, $capH)
+        $flashBrush.Dispose()
+      }
     }
   })
   $wrap.Controls.Add($canvas)
@@ -555,6 +664,15 @@ function Push-TbccSupSparklineSample {
   [void]$list.Add($Value)
   while ($list.Count -gt $Canvas.Tag.Max) { $list.RemoveAt(0) }
   $Canvas.Invalidate()
+}
+
+function Get-TbccHubEntryText {
+  param($Entry)
+  if ($null -eq $Entry) { return "" }
+  if ($Entry -is [string]) { return [string]$Entry }
+  $prop = $Entry.PSObject.Properties['Text']
+  if ($prop) { return [string]$prop.Value }
+  return [string]$Entry
 }
 
 function Get-TbccHubLineSeverity {
@@ -668,7 +786,7 @@ function Get-TbccHubFootHint {
   }
   $sample = $null
   foreach ($entry in @($HubLines)) {
-    $txt = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $txt = Get-TbccHubEntryText -Entry $entry
     $sev = Get-TbccHubLineSeverity -Line $txt
     if ($sev -eq "crit") { $sample = $txt; break }
     if ($sev -eq "warn" -and -not $sample) { $sample = $txt }
@@ -678,6 +796,87 @@ function Get-TbccHubFootHint {
     [void]$parts.Add((Get-TbccHubLineHint -Line $sample))
   }
   return ($parts -join "`n")
+}
+
+function Test-TbccSupMeltdownMode {
+  <# Phase 2: under API-down backoff or host saturation, skip HTTP/WMI thrash; keep port/process LEDs. #>
+  param($HostSnap = $null)
+  if ($script:TbccSupHealthFailAt -and ((Get-Date) - $script:TbccSupHealthFailAt).TotalSeconds -lt 60) {
+    return $true
+  }
+  if ($HostSnap) {
+    if ($null -ne $HostSnap.CpuPct -and [double]$HostSnap.CpuPct -ge 82) { return $true }
+    if ($null -ne $HostSnap.RamPct -and [double]$HostSnap.RamPct -ge 88) { return $true }
+  }
+  return $false
+}
+
+function Get-TbccSupCoreServiceIdSet {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$FullStack
+  )
+  $set = @{}
+  foreach ($svc in @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack)) {
+    if ($svc.Id) { $set[[string]$svc.Id] = $true }
+  }
+  return $set
+}
+
+function Get-TbccSupFilteredServiceIds {
+  param($Cache, [string]$Filter, $CoreIdSet)
+  if (-not $Cache -or -not $Cache.ById) { return @() }
+  $ids = @($Cache.Services | ForEach-Object { [string]$_.Id })
+  switch ($Filter) {
+    'core' {
+      if ($CoreIdSet) {
+        $ids = @($ids | Where-Object { $CoreIdSet.ContainsKey($_) })
+      }
+    }
+    'off' {
+      $ids = @($ids | Where-Object {
+          $row = $Cache.ById[$_]
+          $row -and -not [bool]$row.UserEnabled
+        })
+    }
+    'down' {
+      $ids = @($ids | Where-Object {
+          $row = $Cache.ById[$_]
+          $row -and [bool]$row.UserEnabled -and [string]$row.Status -ne 'up'
+        })
+    }
+    default { }
+  }
+  return $ids
+}
+
+function Invoke-TbccSupDisableOptionalServices {
+  param(
+    [Parameter(Mandatory = $true)][string]$TbccRoot,
+    [switch]$FullStack,
+    [scriptblock]$OnNotify
+  )
+  $core = Get-TbccSupCoreServiceIdSet -TbccRoot $TbccRoot -FullStack:$FullStack
+  $n = 0
+  foreach ($svc in @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog)) {
+    $id = [string]$svc.Id
+    if ($core.ContainsKey($id)) { continue }
+    Set-TbccServiceUserEnabled -ServiceId $id -Enabled $false -TbccRoot $TbccRoot
+    $n++
+  }
+  if ($OnNotify) { & $OnNotify ("Disabled $n optional services (core stack unchanged).") }
+  return $n
+}
+
+function Invoke-TbccSupCycleSvcFilter {
+  param($Ui)
+  if (-not $Ui) { return 'all' }
+  $order = @('all', 'core', 'down', 'off')
+  $idx = [array]::IndexOf($order, [string]$Ui.SvcFilter)
+  if ($idx -lt 0) { $idx = 0 } else { $idx = ($idx + 1) % $order.Count }
+  $Ui.SvcFilter = $order[$idx]
+  $Ui.SvcCellIdKey = $null
+  return $Ui.SvcFilter
 }
 
 function Get-TbccSupervisorHealthSnapshot {
@@ -703,20 +902,24 @@ function Get-TbccSupervisorHealthSnapshot {
     Host          = Get-TbccHostMetrics -NetPrev $NetPrev -Lite:$Lite
     UpdatedAt     = $now
     HeavyAt       = $now
+    Meltdown      = $false
   }
+  $meltdown = Test-TbccSupMeltdownMode -HostSnap $snap.Host
+  $snap.Meltdown = $meltdown
+  $cacheTtlSec = if ($meltdown) { 5 } else { 8 }
   # Mini path: host graphs every tick; stack/hub/API only every ~8s (reuse cache).
   $cacheFresh = $script:TbccSupSvcCache -and $script:TbccSupSvcCacheAt -and `
-    (($now - $script:TbccSupSvcCacheAt).TotalSeconds -lt 8)
+    (($now - $script:TbccSupSvcCacheAt).TotalSeconds -lt $cacheTtlSec)
   if (-not $cacheFresh -and -not $Lite) {
     try {
-      $script:TbccSupSvcCache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog
+      $script:TbccSupSvcCache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog -Meltdown:$meltdown
       $script:TbccSupSvcCacheAt = $now
     } catch {}
   } elseif (-not $cacheFresh -and $Lite) {
     # Soften mini overload: defer heavy process enum unless cache is empty.
     if (-not $script:TbccSupSvcCache) {
       try {
-        $script:TbccSupSvcCache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog
+        $script:TbccSupSvcCache = Update-TbccServiceStatusCache -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog -Meltdown:$meltdown
         $script:TbccSupSvcCacheAt = $now
       } catch {}
     }
@@ -733,6 +936,33 @@ function Get-TbccSupervisorHealthSnapshot {
       $snap.HubLines = @(Read-TbccErrorHubTail -Path $hubPath -MaxLines 24)
       $script:TbccSupHubLiteLines = $snap.HubLines
       $script:TbccSupHubLiteAt = $now
+    }
+    return $snap
+  }
+
+  if ($meltdown) {
+    if ($snap.Cache -and $snap.Cache.Ports) {
+      $snap.Ports = $snap.Cache.Ports
+    } else {
+      try { $snap.Ports = Get-TbccListeningPortSet } catch {}
+    }
+    $hubPath = Join-Path $TbccRoot ".tbcc-run\error-hub.log"
+    $hubMeltdownFresh = $script:TbccSupHubMeltdownAt -and (($now - $script:TbccSupHubMeltdownAt).TotalSeconds -lt 10)
+    if ($hubMeltdownFresh -and $script:TbccSupHubMeltdownLines) {
+      $snap.HubLines = $script:TbccSupHubMeltdownLines
+    } else {
+      $snap.HubLines = @(Read-TbccErrorHubTail -Path $hubPath -MaxLines 20)
+      $script:TbccSupHubMeltdownLines = $snap.HubLines
+      $script:TbccSupHubMeltdownAt = $now
+    }
+    $snap.HealthOk = $false
+    if ($script:TbccSupHealthFailAt) {
+      $snap.HealthErr = "meltdown: API poll paused"
+    } else {
+      $snap.HealthErr = "meltdown: host hot (HTTP/WMI throttled)"
+    }
+    if ($script:TbccSupLastHealthSnap) {
+      $snap.Health = $script:TbccSupLastHealthSnap.Health
     }
     return $snap
   }
@@ -765,6 +995,7 @@ function Get-TbccSupervisorHealthSnapshot {
       $snap.HealthOk = $true
       if ($h.ok -eq $false) { $snap.HealthOk = $false }
       $script:TbccSupHealthFailAt = $null
+      $script:TbccSupLastHealthSnap = @{ Health = $snap.Health }
     } catch {
       $snap.HealthErr = $_.Exception.Message
       $script:TbccSupHealthFailAt = $now
@@ -772,7 +1003,10 @@ function Get-TbccSupervisorHealthSnapshot {
     if ($snap.HealthOk) {
       try {
         $r = Invoke-RestMethod -Uri "http://127.0.0.1:8000/ops/alerts/poll" -Method GET -TimeoutSec 2
-        if ($r -and $r.alerts) { $snap.OpsAlerts = @($r.alerts) }
+        if ($r -and $r.alerts) {
+          $snap.OpsAlerts = @($r.alerts)
+          if ($script:TbccSupLastHealthSnap) { $script:TbccSupLastHealthSnap.OpsAlerts = $snap.OpsAlerts }
+        }
       } catch {}
     }
   }
@@ -846,8 +1080,15 @@ function Start-TbccSupSnapshotProducer {
           $script:TbccSupSvcCacheAt = $null
           $lastHeavyAt = [datetime]::MinValue
         }
+        $hostForMeltdown = if ($lastFull -and $lastFull.Host) { $lastFull.Host } else { $null }
+        $meltdownLoop = Test-TbccSupMeltdownMode -HostSnap $hostForMeltdown
+        $heavyIntervalMs = if ($meltdownLoop) {
+          [Math]::Max(5000, [int]$Shared.HeavyIntervalMs)
+        } else {
+          [int]$Shared.HeavyIntervalMs
+        }
         $doHeavy = (-not $lastFull) -or `
-          (($now - $lastHeavyAt).TotalMilliseconds -ge [double]$Shared.HeavyIntervalMs)
+          (($now - $lastHeavyAt).TotalMilliseconds -ge [double]$heavyIntervalMs)
         if ($doHeavy) {
           $snap = Get-TbccSupervisorHealthSnapshot -TbccRoot $Shared.TbccRoot `
             -FullStack:([bool]$Shared.FullStack) -NetPrev $netPrev
@@ -951,22 +1192,157 @@ function Get-TbccSupProducerSnapshot {
   }
 }
 
+function Get-TbccDiamondMosaicShade {
+  <# Champagne-LED style: base heat hue + per-gem luminance flutter (+ optional white sparkle). #>
+  param(
+    [System.Drawing.Color]$Base,
+    [double]$Brightness = 1.0,
+    [double]$Sparkle = 0.0
+  )
+  $b = [Math]::Max(0.28, [Math]::Min(1.35, $Brightness))
+  $sp = [Math]::Max(0.0, [Math]::Min(1.0, $Sparkle))
+  $r = [int][Math]::Round([Math]::Min(255, $Base.R * $b))
+  $g = [int][Math]::Round([Math]::Min(255, $Base.G * $b))
+  $bl = [int][Math]::Round([Math]::Min(255, $Base.B * $b))
+  if ($sp -gt 0.02) {
+    $r = [int][Math]::Round($r + (255 - $r) * $sp)
+    $g = [int][Math]::Round($g + (255 - $g) * $sp)
+    $bl = [int][Math]::Round($bl + (255 - $bl) * $sp)
+  }
+  return [System.Drawing.Color]::FromArgb($r, $g, $bl)
+}
+
+function Invoke-TbccSupPaintDiamondMetricBar {
+  <# 3-row micro diamond mosaic (FYP–AOF glyph vibe) on pure black.
+     Only lit gems painted — no empty placeholders. Calm drift; heat speeds flicker. #>
+  param($Sender, $Graphics)
+  $g = $Graphics
+  $tag = $Sender.Tag
+  $w = [Math]::Max(1, $Sender.Width)
+  $h = [Math]::Max(1, $Sender.Height)
+  $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+  $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+  # Pure black track — high contrast like the emoji sheets.
+  $bgBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Black)
+  $g.FillRectangle($bgBrush, 0, 0, $w, $h)
+  $bgBrush.Dispose()
+
+  $pct = [double]$tag.Pct
+  if ($pct -lt 0) { return }
+  $pct = [Math]::Max(0.0, [Math]::Min(100.0, $pct))
+  if ($pct -le 0.05) { return }
+
+  $rows = 3
+  # Micro gems: pack 3 rows flush in the track (tip-to-tip).
+  $half = [int][Math]::Floor($h / (2.0 * $rows))
+  if ($half -lt 2) { $half = 2 }
+  if ($half -gt 3) { $half = 3 }
+  $step = $half * 2
+  $gridH = $step * $rows
+  $y0 = [int][Math]::Floor(($h - $gridH) / 2.0) + $half
+  # Flush left — first tip sits on x=0 so the fill matches the solid bars below.
+  $cols = [Math]::Max(6, [int][Math]::Floor(($w - 0.5) / [double]$step))
+  $lit = [int][Math]::Floor($cols * ($pct / 100.0) + 0.0001)
+  if ($pct -gt 0 -and $lit -lt 1) { $lit = 1 }
+  if ($lit -gt $cols) { $lit = $cols }
+
+  # Heat northstar: calm baseline; hotter = faster (hard-capped below prior erratic rates).
+  $heatT = $pct / 100.0
+  $speed = 0.28 + 0.72 * [Math]::Pow($heatT, 1.35)
+  if ($speed -gt 1.0) { $speed = 1.0 }
+  $tick = [Environment]::TickCount / 1000.0
+  $traj = 0.0
+  if ($null -ne $tag.Trajectory) { $traj = [double]$tag.Trajectory }
+  # Angular rates (rad/s-ish): ~5–10x slower than the first diamond pass.
+  $flutterRate = 0.55 * $speed
+  $spotRate = 0.32 * $speed
+  $shadowRate = 0.38 * $speed
+  $sparkRate = 0.85 * $speed
+  # Percentage-anchored drift so patterns slowly walk with load.
+  $drift = $tick * (0.12 + 0.22 * $heatT) + ($pct * 0.031)
+
+  $gems = New-Object System.Collections.Generic.List[object]
+  for ($r = 0; $r -lt $rows; $r++) {
+    $rowPhase = $r * 2.15
+    $cy = $y0 + ($r * $step)
+    for ($i = 0; $i -lt $lit; $i++) {
+      $cx = $half + ($i * $step)
+      if ($cx + $half -gt $w) { break }
+      $pts = @(
+        [System.Drawing.Point]::new($cx, $cy - $half),
+        [System.Drawing.Point]::new($cx + $half, $cy),
+        [System.Drawing.Point]::new($cx, $cy + $half),
+        [System.Drawing.Point]::new($cx - $half, $cy)
+      )
+      $localPct = [Math]::Min(100.0, $pct * (0.62 + 0.38 * (($i + 1.0) / [Math]::Max(1.0, $lit))))
+      $base = if ($tag.InvertHeat) {
+        Get-TbccHeatColor -Pct $localPct -Invert
+      } else {
+        Get-TbccHeatColor -Pct $localPct
+      }
+      # Darker overall tones vs emoji sheet (still heat-linked).
+      $base = [System.Drawing.Color]::FromArgb(
+        [int][Math]::Round($base.R * 0.78),
+        [int][Math]::Round($base.G * 0.78),
+        [int][Math]::Round($base.B * 0.78))
+
+      $seed = (($i * 7919) + ($r * 104729) + 17) % 1000
+      $phase = ($seed / 1000.0) * [Math]::PI * 2.0 + $rowPhase
+      # Sparse "spots" — darker gems across the lit field (F-glyph negative space).
+      $spotWave = 0.5 + 0.5 * [Math]::Sin($tick * $spotRate + $phase + $drift + $r * 0.9)
+      $isSpot = ((($seed + [int]($drift * 7 + $r * 13)) % 100) -lt (14 + [int](8 * $heatT))) -or ($spotWave -gt 0.88)
+      $flutter = 0.78 + 0.14 * [Math]::Sin($tick * $flutterRate + $phase + $drift * 0.6)
+      if ($isSpot) { $flutter = 0.34 + 0.10 * [Math]::Sin($tick * $spotRate * 1.3 + $phase) }
+
+      $edge = if ($lit -gt 1) { 1.0 - ([Math]::Abs($i - ($lit - 1)) / [Math]::Max(1.0, $lit * 0.4)) } else { 1.0 }
+      $edge = [Math]::Max(0.0, [Math]::Min(1.0, $edge))
+      $spark = $edge * (0.06 + 0.14 * [Math]::Max(0.0, $traj) + 0.10 * $heatT) *
+        (0.4 + 0.6 * (0.5 + 0.5 * [Math]::Sin($tick * $sparkRate + $phase)))
+      if ($isSpot) { $spark = 0 }
+
+      $col = Get-TbccDiamondMosaicShade -Base $base -Brightness $flutter -Sparkle $spark
+      $brush = New-Object System.Drawing.SolidBrush($col)
+      $g.FillPolygon($brush, $pts)
+      $brush.Dispose()
+      [void]$gems.Add(@{ Pts = $pts; Row = $r; Phase = $phase })
+    }
+  }
+
+  # Oscillating shadow wash, masked to diamond shapes — staggered per row, heat-timed.
+  if ($gems.Count -gt 0) {
+    foreach ($gem in $gems) {
+      $row = [int]$gem.Row
+      $shadowWave = 0.5 + 0.5 * [Math]::Sin($tick * $shadowRate + $gem.Phase + $drift + $row * 1.7)
+      # Calm alpha band; hotter load lifts the ceiling a little (still soft).
+      $alpha = [int][Math]::Round((18 + 28 * $shadowWave) * (0.55 + 0.45 * $speed))
+      if ($alpha -lt 8) { $alpha = 8 }
+      if ($alpha -gt 52) { $alpha = 52 }
+      $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb($alpha, 0, 0, 0))
+      $g.FillPolygon($shadowBrush, $gem.Pts)
+      $shadowBrush.Dispose()
+    }
+  }
+}
+
 function New-TbccSupMetricBar {
   param(
     [string]$Label,
     [double]$Pct,
     $Theme,
-    [System.Drawing.Color]$FillColor
+    [System.Drawing.Color]$FillColor,
+    [ValidateSet('Solid', 'Diamond')][string]$Style = 'Solid',
+    [switch]$InvertHeat
   )
   $row = New-Object System.Windows.Forms.Panel
-  $row.Height = 25
+  $row.Height = $(if ($Style -eq 'Diamond') { 20 } else { 25 })
   $row.Dock = [System.Windows.Forms.DockStyle]::Top
   $row.Margin = New-Object System.Windows.Forms.Padding(0, 0, 0, 2)
   $row.BackColor = $Theme.ModuleBg
 
   $lbl = New-Object System.Windows.Forms.Label
   $lbl.Text = $Label
-  $lbl.Width = 58
+  # Diamond meters share the narrow "C/R" spark label width so tracks align flush left.
+  $lbl.Width = $(if ($Style -eq 'Diamond') { 32 } else { 58 })
   $lbl.Dock = [System.Windows.Forms.DockStyle]::Left
   $lbl.ForeColor = $Theme.Muted
   $lbl.Font = $Theme.FontMicro
@@ -975,43 +1351,70 @@ function New-TbccSupMetricBar {
 
   $barHost = New-Object System.Windows.Forms.Panel
   $barHost.Dock = [System.Windows.Forms.DockStyle]::Fill
-  $barHost.BackColor = $Theme.ModuleBg
+  $barHost.BackColor = $(if ($Style -eq 'Diamond') { [System.Drawing.Color]::Black } else { $Theme.ModuleBg })
   $row.Controls.Add($barHost)
 
+  $barH = if ($Style -eq 'Diamond') { 18 } else { 9 }
   $barBg = New-Object System.Windows.Forms.Panel
-  $barBg.Height = 9
+  $barBg.Height = $barH
   $barBg.Width = 100
-  $barBg.BackColor = $Theme.BarBg
-  $barBg.Tag = @{ Pct = $Pct; Fill = $FillColor; Theme = $Theme; BarBg = $barBg; Row = $row }
-  $barBg.Add_Paint({
-    param($sender, $e)
-    $g = $e.Graphics
-    $tag = $sender.Tag
-    $w = $sender.Width
-    $h = $sender.Height
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
-    $bgBrush = New-Object System.Drawing.SolidBrush($tag.Theme.BarBg)
-    $g.FillRectangle($bgBrush, 0, 0, $w, $h)
-    $bgBrush.Dispose()
-    $pct = [Math]::Max(0, [Math]::Min(100, [double]$tag.Pct))
-    $fw = [int](($w - 1) * ($pct / 100.0))
-    if ($fw -gt 0) {
-      $fillBrush = New-Object System.Drawing.SolidBrush($tag.Fill)
-      $g.FillRectangle($fillBrush, 0, 0, $fw, $h)
-      $fillBrush.Dispose()
-    }
-  })
+  $barBg.BackColor = $(if ($Style -eq 'Diamond') { [System.Drawing.Color]::Black } else { $Theme.BarBg })
+  $barBg.Tag = @{
+    Pct         = $Pct
+    Fill        = $FillColor
+    Theme       = $Theme
+    BarBg       = $barBg
+    Row         = $row
+    Style       = $Style
+    InvertHeat  = [bool]$InvertHeat
+    PrevPct     = $Pct
+    Trajectory  = 0.0
+  }
+  if ($Style -eq 'Diamond') {
+    $barBg.Add_Paint({
+      param($sender, $e)
+      try { Invoke-TbccSupPaintDiamondMetricBar -Sender $sender -Graphics $e.Graphics } catch {}
+    })
+  } else {
+    $barBg.Add_Paint({
+      param($sender, $e)
+      $g = $e.Graphics
+      $tag = $sender.Tag
+      $w = $sender.Width
+      $h = $sender.Height
+      $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+      $bgBrush = New-Object System.Drawing.SolidBrush($tag.Theme.BarBg)
+      $g.FillRectangle($bgBrush, 0, 0, $w, $h)
+      $bgBrush.Dispose()
+      $pct = [Math]::Max(0, [Math]::Min(100, [double]$tag.Pct))
+      $fw = [int](($w - 1) * ($pct / 100.0))
+      if ($fw -gt 0) {
+        $fillBrush = New-Object System.Drawing.SolidBrush($tag.Fill)
+        $g.FillRectangle($fillBrush, 0, 0, $fw, $h)
+        $fillBrush.Dispose()
+      }
+    })
+  }
   $barHost.Controls.Add($barBg)
+  $isDiamond = ($Style -eq 'Diamond')
   $barHost.Add_Resize({
     param($s, $ev)
     foreach ($c in $s.Controls) {
       if ($c -is [System.Windows.Forms.Panel]) {
-        $c.Width = [Math]::Max(40, $s.Width - 44)
+        # Diamond meters: full track width, flush left (match spark bars). Solid keeps legacy inset.
+        if ($s.Tag -and $s.Tag.FullBleed) {
+          $c.Width = [Math]::Max(40, $s.Width)
+        } else {
+          $c.Width = [Math]::Max(40, $s.Width - 44)
+        }
         $c.Top = [int](($s.Height - $c.Height) / 2)
         $c.Left = 0
       }
     }
-  })
+  }.GetNewClosure())
+  if ($isDiamond) {
+    $barHost.Tag = @{ FullBleed = $true }
+  }
 
   $val = New-Object System.Windows.Forms.Label
   $val.Width = 36
@@ -1028,6 +1431,16 @@ function New-TbccSupMetricBar {
 function Set-TbccSupMetricBarValue {
   param($Bar, [double]$Pct, $Theme, $FillColor)
   if (-not $Bar) { return }
+  $prev = if ($null -ne $Bar.Tag.PrevPct) { [double]$Bar.Tag.PrevPct } else { [double]$Bar.Tag.Pct }
+  $delta = $Pct - $prev
+  # Soft trajectory: rising load → sparkle at tip; falling → quieter.
+  $traj = [Math]::Max(-1.0, [Math]::Min(1.0, $delta / 6.0))
+  if ([Math]::Abs($traj) -lt 0.08) {
+    $old = if ($null -ne $Bar.Tag.Trajectory) { [double]$Bar.Tag.Trajectory } else { 0.0 }
+    $traj = $old * 0.72
+  }
+  $Bar.Tag.PrevPct = $Pct
+  $Bar.Tag.Trajectory = $traj
   $Bar.Tag.Pct = $Pct
   $Bar.Tag.Fill = $FillColor
   $Bar.Invalidate()
@@ -1035,6 +1448,33 @@ function Set-TbccSupMetricBarValue {
   if ($row -and $row.Controls.Count -ge 3) {
     $row.Controls[2].Text = if ($Pct -ge 0) { ("{0:N0}%" -f $Pct) } else { "-" }
   }
+}
+
+function Start-TbccSupDiamondSparkleTimer {
+  <# Lightweight Invalidate loop so mosaic flutter continues between host sample ticks. #>
+  param($Ui)
+  if (-not $Ui) { return }
+  if ($script:TbccSupDiamondSparkleTimer -and -not $script:TbccSupDiamondSparkleTimer.Enabled) {
+    try { $script:TbccSupDiamondSparkleTimer.Start() } catch {}
+    return
+  }
+  if ($script:TbccSupDiamondSparkleTimer) { return }
+  $t = New-Object System.Windows.Forms.Timer
+  # Calm refresh — paint uses TickCount for drift; ~7fps is enough for therapeutic flutter.
+  $t.Interval = 140
+  [void]$t.Add_Tick({
+    $ui = $script:TbccSupUi
+    if (-not $ui -or -not $ui.HostBars) { return }
+    $form = $script:TbccSupPanelForm
+    if ($form -and (Test-TbccFormInteractionPaused -Form $form)) { return }
+    foreach ($bar in @($ui.HostBars)) {
+      if ($bar -and -not $bar.IsDisposed -and $bar.Tag -and $bar.Tag.Style -eq 'Diamond') {
+        try { $bar.Invalidate() } catch {}
+      }
+    }
+  })
+  $script:TbccSupDiamondSparkleTimer = $t
+  $t.Start()
 }
 
 function New-TbccSupLedRow {
@@ -1227,8 +1667,18 @@ function Update-TbccSupPanelUi {
   }
 
   if ($cache -and $cache.ById) {
-    $ids = @($cache.Services | ForEach-Object { $_.Id })
-    $idKey = ($ids -join ',')
+    $filter = if ($ui.SvcFilter) { [string]$ui.SvcFilter } else { 'all' }
+    $ids = @(Get-TbccSupFilteredServiceIds -Cache $cache -Filter $filter -CoreIdSet $ui.SvcCoreIdSet)
+    $idKey = ($filter + '|' + ($ids -join ','))
+    if ($ui.ModSvcHeader) {
+      $filterLbl = switch ($filter) {
+        'core' { 'CORE' }
+        'down' { 'DOWN' }
+        'off' { 'OFF' }
+        default { 'ALL' }
+      }
+      $ui.ModSvcHeader.Text = ("SERVICES {0} ({1})" -f $filterLbl, $ids.Count).ToUpper()
+    }
     # Build the service cells once (keyed by id). Rebuild only when the service set itself
     # changes (rare) — never every tick — so the 2s refresh no longer leaks window handles.
     if ($ui.SvcCellIdKey -ne $idKey) {
@@ -1318,7 +1768,7 @@ function Update-TbccSupPanelUi {
   $hubWarn = 0
   $hubLastTxt = ""
   foreach ($entry in @($Snap.HubLines)) {
-    $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $line = Get-TbccHubEntryText -Entry $entry
     $sev = Get-TbccHubLineSeverity -Line $line
     if ($sev -eq "crit") { $hubCrit++ } elseif ($sev -eq "warn") { $hubWarn++ }
     $hubLastTxt = $line
@@ -1327,7 +1777,7 @@ function Update-TbccSupPanelUi {
   if ($ui.LastHubSig -ne $hubSig) {
     $ui.HubList.Items.Clear()
     foreach ($entry in @($Snap.HubLines)) {
-      $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+      $line = Get-TbccHubEntryText -Entry $entry
       if ($entry.LineNumber) {
         [void]$ui.HubList.Items.Add($entry)
       } else {
@@ -1356,7 +1806,12 @@ function Update-TbccSupPanelUi {
       [void]$alertItems.Add(("[$sev] {0}" -f $msg))
     }
   } elseif ($Snap.HealthErr) {
-    [void]$alertItems.Add("[CRIT] API down")
+    if ($Snap.Meltdown -and [string]$Snap.HealthErr -match '^meltdown:') {
+      $throttleMsg = [string]$Snap.HealthErr -replace '^meltdown:\s*', ''
+      [void]$alertItems.Add(("[WARN] Throttle - {0}" -f $throttleMsg))
+    } else {
+      [void]$alertItems.Add("[CRIT] API down")
+    }
   } else {
     [void]$alertItems.Add("No conflicts")
   }
@@ -1387,7 +1842,15 @@ function Update-TbccSupPanelUi {
     else { 40 }
   $overall = Get-TbccHeatColor -Pct $overallHeat
   if ($ui.StatusLbl) {
-    $ui.StatusLbl.Text = ("{0} | {1}" -f (Get-Date -Format "HH:mm:ss"), $ui.TbccRoot)
+    $stamp = Get-Date -Format "HH:mm:ss"
+    if ($Snap.Meltdown) {
+      $ms = Get-TbccSupMeltdownStyle -Snap $Snap
+      $ui.StatusLbl.Text = ("{0} | {1} | {2}" -f $ms.Prefix, $stamp, $ui.TbccRoot)
+      $ui.StatusLbl.ForeColor = Get-TbccHeatColor -Pct $ms.HeatPct
+    } else {
+      $ui.StatusLbl.Text = ("{0} | {1}" -f $stamp, $ui.TbccRoot)
+      $ui.StatusLbl.ForeColor = $ui.Theme.Muted
+    }
   }
   $ui.LblStackSum.ForeColor = $overall
 }
@@ -1438,6 +1901,7 @@ function Show-TbccSupervisorMiniPanel {
 
   $form = New-TbccSupervisorForm
   $form.Text = "TBCC Mini"
+  Register-TbccFormChrome -Form $form
   $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::None
   $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
   $form.MaximizeBox = $false
@@ -1529,10 +1993,9 @@ function Show-TbccSupervisorMiniPanel {
   $sparkRow = New-Object System.Windows.Forms.Panel
   $sparkRow.Dock = [System.Windows.Forms.DockStyle]::Fill
   $sparkRow.BackColor = $theme.ModuleBg
-  $cpuSpark = New-TbccSupSparkline -Label "CPU" -Theme $theme -LineColor $theme.Ok
+  $cpuSpark = New-TbccSupSparkline -Label "CPU" -Theme $theme -LineColor $theme.Ok -RowHeight 28
   $cpuSpark.Wrap.Dock = [System.Windows.Forms.DockStyle]::Top
-  $cpuSpark.Wrap.Height = 25
-  $ramSpark = New-TbccSupSparkline -Label "RAM" -Theme $theme -LineColor ([System.Drawing.Color]::FromArgb(96, 165, 250))
+  $ramSpark = New-TbccSupSparkline -Label "RAM" -Theme $theme -LineColor ([System.Drawing.Color]::FromArgb(96, 165, 250)) -RowHeight 28
   $ramSpark.Wrap.Dock = [System.Windows.Forms.DockStyle]::Fill
   $sparkRow.Controls.Add($ramSpark.Wrap)
   $sparkRow.Controls.Add($cpuSpark.Wrap)
@@ -1777,7 +2240,7 @@ function Update-TbccSupMiniUi {
   $hubCrit = 0
   $hubWarn = 0
   foreach ($entry in @($Snap.HubLines)) {
-    $txt = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $txt = Get-TbccHubEntryText -Entry $entry
     $sev = Get-TbccHubLineSeverity -Line $txt
     if ($sev -eq "crit") { $hubCrit++ } elseif ($sev -eq "warn") { $hubWarn++ }
   }
@@ -1792,6 +2255,13 @@ function Update-TbccSupMiniUi {
   if ($hubWarn -gt 0) { $heat = [Math]::Max($heat, [Math]::Min(72, 48 + $hubWarn)) }
   if ($hubCrit -gt 0) { $heat = [Math]::Max($heat, [Math]::Min(100, 84 + $hubCrit * 4)) }
   $script:TbccSupMiniUi.Foot.Text = ("HUB {0}w {1}c  |  {2}" -f $hubWarn, $hubCrit, $netTxt)
+  if ($Snap.Meltdown) {
+    $ms = Get-TbccSupMeltdownStyle -Snap $Snap
+    $script:TbccSupMiniUi.Foot.Text = ($ms.MiniPrefix + " | " + $script:TbccSupMiniUi.Foot.Text)
+    if ($hubCrit -eq 0) {
+      $heat = [Math]::Min(68, [Math]::Max($heat, $ms.HeatPct))
+    }
+  }
   $script:TbccSupMiniUi.Foot.ForeColor = Get-TbccHeatColor -Pct $heat
   if ($script:TbccSupMiniUi.Tip -and $script:TbccSupMiniUi.Foot) {
     $hint = Get-TbccHubFootHint -HubLines $Snap.HubLines -HubWarn $hubWarn -HubCrit $hubCrit -CpuPct $cpuPct
@@ -1844,6 +2314,7 @@ function Show-TbccSupervisorPanel {
 
   $form = New-TbccSupervisorForm
   $form.Text = "TBCC Supervisor"
+  Register-TbccFormChrome -Form $form
   $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::None
   $form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
   $form.MaximizeBox = $false
@@ -1915,6 +2386,55 @@ function Show-TbccSupervisorPanel {
   })
   $toolStrip.Controls.Add($btnHubLog)
 
+  $btnSvcFilter = New-Object System.Windows.Forms.Button
+  $btnSvcFilter.Text = "Flt"
+  $btnSvcFilter.Width = 30
+  $btnSvcFilter.Height = 18
+  $btnSvcFilter.Top = 2
+  $btnSvcFilter.Left = 142
+  $btnSvcFilter.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+  $btnSvcFilter.BackColor = $theme.ModuleBg
+  $btnSvcFilter.ForeColor = $theme.Text
+  $btnSvcFilter.Font = $theme.FontMicro
+  [void]$btnSvcFilter.Add_Click({
+    param($sender, $e)
+    $ui = $script:TbccSupUi
+    if (-not $ui) { return }
+    $f = Invoke-TbccSupCycleSvcFilter -Ui $ui
+    if ($sender -and $sender.PSObject.Properties['Text']) {
+      $sender.Text = switch ($f) { 'core' { 'Core' } 'down' { 'Dn' } 'off' { 'Off' } default { 'All' } }
+    }
+    if ($ui.OnRefreshCache) { & $ui.OnRefreshCache }
+  })
+  $toolStrip.Controls.Add($btnSvcFilter)
+
+  $btnOptOff = New-Object System.Windows.Forms.Button
+  $btnOptOff.Text = "Opt-"
+  $btnOptOff.Width = 36
+  $btnOptOff.Height = 18
+  $btnOptOff.Top = 2
+  $btnOptOff.Left = 176
+  $btnOptOff.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+  $btnOptOff.BackColor = $theme.ModuleBg
+  $btnOptOff.ForeColor = $theme.Warn
+  $btnOptOff.Font = $theme.FontMicro
+  [void]$btnOptOff.Add_Click({
+    $ui = $script:TbccSupUi
+    if (-not $ui -or [string]::IsNullOrWhiteSpace($ui.TbccRoot)) { return }
+    try {
+      [void](Invoke-TbccSupDisableOptionalServices -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack) -OnNotify $ui.OnNotify)
+      $script:TbccSupSvcCache = $null
+      $script:TbccSupSvcCacheAt = $null
+      if ($script:TbccSupProducer -and $script:TbccSupProducer.Shared) {
+        $script:TbccSupProducer.Shared.ForceRefresh = $true
+      }
+      if ($ui.OnRefreshCache) { & $ui.OnRefreshCache }
+    } catch {
+      if ($ui.OnNotify) { & $ui.OnNotify ("Opt- failed: " + $_.Exception.Message) }
+    }
+  })
+  $toolStrip.Controls.Add($btnOptOff)
+
   $root = New-Object System.Windows.Forms.TableLayoutPanel
   $root.Dock = [System.Windows.Forms.DockStyle]::Fill
   $root.BackColor = $theme.Bg
@@ -1923,7 +2443,7 @@ function Show-TbccSupervisorPanel {
   $root.Padding = New-Object System.Windows.Forms.Padding(1)
   [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
   [void]$root.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50)))
-  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 67)))
+  [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 78)))
   [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 52)))
   # Services + Hub grow with the window (Absolute Services used to clip/overflow on resize).
   [void]$root.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 42)))
@@ -1961,8 +2481,8 @@ function Show-TbccSupervisorPanel {
       @{ L = "CPU"; K = "CpuPct" },
       @{ L = "RAM"; K = "RamPct" }
     )) {
-    $b = New-TbccSupMetricBar -Label $pair.L -Pct -1 -Theme $theme -FillColor $theme.Ok
-    $b.Row.Height = 18
+    $b = New-TbccSupMetricBar -Label $pair.L -Pct -1 -Theme $theme -FillColor $theme.Ok -Style Diamond
+    $b.Row.Height = 20
     $b.BarFill.Tag.HostKey = $pair.K
     $modHost.Body.Controls.Add($b.Row)
     $hostBars += $b.BarFill
@@ -1974,12 +2494,10 @@ function Show-TbccSupervisorPanel {
   $lblHostSub.Font = $theme.FontMicro
   $modHost.Body.Controls.Add($lblHostSub)
 
-  $cpuSparkFull = New-TbccSupSparkline -Label "C" -Theme $theme -LineColor $theme.Ok
-  $cpuSparkFull.Wrap.Height = 18
+  $cpuSparkFull = New-TbccSupSparkline -Label "C" -Theme $theme -LineColor $theme.Ok -RowHeight 26
   $cpuSparkFull.Wrap.Dock = [System.Windows.Forms.DockStyle]::Bottom
   $modHost.Body.Controls.Add($cpuSparkFull.Wrap)
-  $ramSparkFull = New-TbccSupSparkline -Label "R" -Theme $theme -LineColor ([System.Drawing.Color]::FromArgb(96, 165, 250))
-  $ramSparkFull.Wrap.Height = 18
+  $ramSparkFull = New-TbccSupSparkline -Label "R" -Theme $theme -LineColor ([System.Drawing.Color]::FromArgb(96, 165, 250)) -RowHeight 26
   $ramSparkFull.Wrap.Dock = [System.Windows.Forms.DockStyle]::Bottom
   $modHost.Body.Controls.Add($ramSparkFull.Wrap)
 
@@ -2033,7 +2551,7 @@ function Show-TbccSupervisorPanel {
     param($sender, $e)
     if ($e.Index -lt 0) { return }
     $entry = $sender.Items[$e.Index]
-    $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $line = Get-TbccHubEntryText -Entry $entry
     $sev = Get-TbccHubLineSeverity -Line $line
     $t = if ($script:TbccSupUi -and $script:TbccSupUi.Theme) { $script:TbccSupUi.Theme } else { Get-TbccSupervisorTheme }
     $fg = Get-TbccHubInkColor -Severity $sev -Theme $t
@@ -2081,7 +2599,7 @@ function Show-TbccSupervisorPanel {
     if ($script:TbccSupHubTipIdx -eq $idx) { return }
     $script:TbccSupHubTipIdx = $idx
     $entry = $sender.Items[$idx]
-    $line = if ($entry.Text) { [string]$entry.Text } else { [string]$entry }
+    $line = Get-TbccHubEntryText -Entry $entry
     $ui.Tip.SetToolTip($sender, (Get-TbccHubLineHint -Line $line))
   })
   $modHub.Body.Controls.Add($hubList)
@@ -2133,6 +2651,10 @@ function Show-TbccSupervisorPanel {
     AlertList    = $alertList
     StatusLbl    = $statusLbl
     ChkPin       = $chkTop
+    ModSvcHeader = $modSvc.Header
+    SvcFilter    = 'all'
+    SvcCoreIdSet = (Get-TbccSupCoreServiceIdSet -TbccRoot $TbccRoot -FullStack:$FullStack)
+    BtnSvcFilter = $btnSvcFilter
     ServiceRows  = @{}
     InfraRows    = (New-Object System.Collections.Generic.List[object])
     SvcCells     = @{}
@@ -2192,7 +2714,13 @@ function Show-TbccSupervisorPanel {
             $ui.StatusLbl.Text = ("STALE {0}s | {1} | {2}" -f $ageSec, (Get-Date -Format "HH:mm:ss"), $ui.TbccRoot)
             $ui.StatusLbl.ForeColor = if ($ageSec -ge 20 -or ($prod -and -not $prod.Producing)) { $ui.Theme.Crit } else { $ui.Theme.Warn }
           } else {
-            $ui.StatusLbl.ForeColor = $ui.Theme.Muted
+            if ($snap.Meltdown) {
+              $ms = Get-TbccSupMeltdownStyle -Snap $snap
+              $ui.StatusLbl.Text = ("{0} | {1} | {2}" -f $ms.Prefix, (Get-Date -Format "HH:mm:ss"), $ui.TbccRoot)
+              $ui.StatusLbl.ForeColor = Get-TbccHeatColor -Pct $ms.HeatPct
+            } else {
+              $ui.StatusLbl.ForeColor = $ui.Theme.Muted
+            }
           }
         }
       }
@@ -2215,6 +2743,9 @@ function Show-TbccSupervisorPanel {
     $script:TbccSupPanelClosing = $true
     $t = $script:TbccSupPanelRefreshTimer
     if ($t) { $t.Stop() }
+    if ($script:TbccSupDiamondSparkleTimer) {
+      try { $script:TbccSupDiamondSparkleTimer.Stop() } catch {}
+    }
   })
   $form.Add_FormClosed({
     $script:TbccSupPanelClosing = $true
@@ -2227,6 +2758,11 @@ function Show-TbccSupervisorPanel {
       try { $t.Stop() } catch {}
       try { $t.Dispose() } catch {}
       $script:TbccSupPanelRefreshTimer = $null
+    }
+    if ($script:TbccSupDiamondSparkleTimer) {
+      try { $script:TbccSupDiamondSparkleTimer.Stop() } catch {}
+      try { $script:TbccSupDiamondSparkleTimer.Dispose() } catch {}
+      $script:TbccSupDiamondSparkleTimer = $null
     }
     $ui = $script:TbccSupUi
     if ($ui -and $ui.Tip) {
@@ -2249,12 +2785,16 @@ function Show-TbccSupervisorPanel {
     if ($ui -and $ui.ChkPin -and $ui.ChkPin.Checked -and $script:TbccSupPanelForm) {
       Set-TbccFormAlwaysOnTop -Form $script:TbccSupPanelForm -Enabled:$true
     }
+    if ($script:TbccSupPanelForm) {
+      Set-TbccFormDarkCaption -Form $script:TbccSupPanelForm -Enabled:$true
+    }
     if ($ui) {
       foreach ($sc in @($ui.SvcGrid, $ui.HubList, $ui.AlertList)) {
         Hide-TbccControlScrollBars -Control $sc
       }
       # Kick off the off-thread acquisition producer; the first cheap tick applies its data.
       [void](Start-TbccSupSnapshotProducer -TbccRoot $ui.TbccRoot -FullStack:([bool]$ui.FullStack))
+      Start-TbccSupDiamondSparkleTimer -Ui $ui
     }
     $t = $script:TbccSupPanelRefreshTimer
     if (-not $t) { return }
@@ -2262,13 +2802,15 @@ function Show-TbccSupervisorPanel {
     $t.Start()
   })
 
-  $tip.SetToolTip($chkTop, "Always on top + keep active title color (Pin)")
+  $tip.SetToolTip($chkTop, "Always on top + dark title bar (Pin)")
   $tip.SetToolTip($btnMini, "Compact monitor - parks this panel so sparks keep updating")
   $tip.SetToolTip($btnHubLog, "Open error-hub.log in Notepad")
   $tip.SetToolTip($barStackObj.Row, "Enabled services that are up")
   $tip.SetToolTip($lblStackSub, "StackWatch process audit (from .tbcc-run\process-audit.json, ~60s refresh)")
-  $tip.SetToolTip($modHost.Outer, "CPU/RAM bars and sparkline history")
-  $tip.SetToolTip($modSvc.Outer, "Click row: enable/disable | Ctrl+click: restart | wheel scrolls")
+  $tip.SetToolTip($modHost.Outer, "CPU/RAM champagne mosaic meters (heat + sparkle) and sparkline history")
+  $tip.SetToolTip($btnSvcFilter, "Cycle filter: All / Core / Down / Off")
+  $tip.SetToolTip($btnOptOff, "Disable all optional (non-core) services")
+  $tip.SetToolTip($modSvc.Outer, "Click row: enable/disable | Ctrl+click: restart | wheel scrolls | Flt filters list")
   $tip.SetToolTip($modAlert.Outer, "Conflicts and ops alerts")
   $tip.SetToolTip($hubList, "Hover a line for CAUSE/FIX · Double-click jumps in Notepad · wheel scrolls")
 

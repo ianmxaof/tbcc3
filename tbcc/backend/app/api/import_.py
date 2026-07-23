@@ -809,6 +809,183 @@ async def import_watermark_bytes(
     )
 
 
+# Soft cap for extension SW → R2 (avoids OOM); larger assets use CLI/organizer.
+_R2_UPLOAD_MAX_BYTES = 80 * 1024 * 1024
+
+
+@router.post("/watermark-upload-r2")
+async def import_watermark_upload_r2(
+    file: UploadFile = File(...),
+    media_type: str = Form("photo"),
+    destination: str = Form("library"),
+    filename: str = Form(""),
+    skip_watermark: str = Form("false"),
+):
+    """
+    Watermark media bytes then upload to Cloudflare R2 (aof-media).
+
+    destination: ``library`` → ``library/`` or ``sfw_x_promo`` → ``sfw-x-promo/``
+    """
+    from fastapi.responses import JSONResponse
+
+    from app.services.r2_promo_upload import resolve_prefix, upload_bytes_to_r2
+
+    raw = await file.read()
+    if not raw:
+        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+    if len(raw) > _R2_UPLOAD_MAX_BYTES:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"file too large ({len(raw)} bytes); max {_R2_UPLOAD_MAX_BYTES} for SW R2 upload",
+            },
+            status_code=413,
+        )
+
+    dest_raw = (destination or "library").strip().lower()
+    try:
+        prefix = resolve_prefix(dest_raw)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    skip = _truthy_flag(skip_watermark)
+    mt = (media_type or "photo").lower()
+    if mt not in ("photo", "video"):
+        mt = "photo"
+    out = maybe_apply_media_watermark(raw, mt, force_skip=skip)
+    watermarked = (not skip) and out != raw
+
+    kind, ext = sniff_media_kind(out)
+    if kind == "video" or mt == "video":
+        mime = "video/mp4"
+        default_name = "media.mp4"
+        leaf_ext = "mp4"
+    elif ext == "png":
+        mime = "image/png"
+        default_name = "media.png"
+        leaf_ext = "png"
+    elif ext == "gif":
+        mime = "image/gif"
+        default_name = "media.gif"
+        leaf_ext = "gif"
+    elif ext == "webp":
+        mime = "image/webp"
+        default_name = "media.webp"
+        leaf_ext = "webp"
+    else:
+        mime = "image/jpeg"
+        default_name = "media.jpg"
+        leaf_ext = "jpg"
+
+    leaf = (filename or "").strip() or (file.filename or "").strip() or default_name
+    if "." not in leaf.rsplit("/", 1)[-1]:
+        leaf = f"{leaf}.{leaf_ext}"
+    leaf = leaf.rsplit("/", 1)[-1]
+
+    try:
+        from app.services.aof_lane_tag_map import build_aof_filename, is_aof_branded_filename
+        import random
+
+        if not is_aof_branded_filename(leaf):
+            stem = leaf.rsplit(".", 1)[0] if "." in leaf else leaf
+            leaf = build_aof_filename(
+                name=stem or "media",
+                index=random.randint(10000, 99999),
+                ext=leaf_ext,
+            )
+    except Exception:
+        pass
+
+    try:
+        result = upload_bytes_to_r2(
+            out,
+            filename=leaf,
+            prefix=prefix,
+            content_type=mime,
+            timeout=180.0,
+        )
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    except Exception as e:
+        logger.exception("watermark-upload-r2 failed")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    return {
+        "ok": True,
+        "direct_url": result["direct_url"],
+        "object_key": result["object_key"],
+        "bucket": result.get("bucket"),
+        "provider": result.get("provider", "r2"),
+        "watermarked": watermarked,
+        "destination": "sfw_x_promo" if prefix == "sfw-x-promo" else "library",
+        "filename": leaf,
+    }
+
+
+@router.post("/zip-flywheel")
+async def import_zip_flywheel(
+    file: UploadFile = File(...),
+    action: str = Form("host_gated"),
+    host: str = Form("auto"),
+    prefer_r2: str = Form("false"),
+    filename: str = Form(""),
+    label: str = Form(""),
+    plan_id: str = Form(""),
+    source_note: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """
+    Hybrid zip/media flywheel: R2 (small) or Pixeldrain (large) → gate wrap →
+    optional loot modifier / Curated Pack shop bundle attach.
+
+    actions: host_gated | loot_modifier | shop_bundle
+    host: auto | r2 | pixeldrain
+    downloads_promo is client-only (extension rename matrix).
+    """
+    from fastapi.responses import JSONResponse
+
+    from app.services.pixeldrain_upload import PixeldrainUploadError
+    from app.services.zip_flywheel import run_zip_flywheel
+
+    raw = await file.read()
+    if not raw:
+        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
+
+    leaf = (filename or file.filename or "pack.zip").strip() or "pack.zip"
+    act = (action or "host_gated").strip().lower()
+    if act not in ("host_gated", "loot_modifier", "shop_bundle"):
+        return JSONResponse({"ok": False, "error": "invalid_action"}, status_code=400)
+    host_mode = (host or "auto").strip().lower()
+    if host_mode not in ("auto", "r2", "pixeldrain"):
+        return JSONResponse({"ok": False, "error": "invalid_host"}, status_code=400)
+    prefer = (prefer_r2 or "").strip().lower() in ("1", "true", "yes", "on")
+    pid: int | None = None
+    if (plan_id or "").strip().isdigit():
+        pid = int(plan_id.strip())
+
+    try:
+        result = run_zip_flywheel(
+            db,
+            raw,
+            filename=leaf,
+            action=act,  # type: ignore[arg-type]
+            host=host_mode,  # type: ignore[arg-type]
+            prefer_r2=prefer,
+            label=(label or "").strip() or None,
+            plan_id=pid,
+            source_note=(source_note or "").strip() or "import_zip_flywheel",
+        )
+    except PixeldrainUploadError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.exception("zip-flywheel failed")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    return result.as_dict()
+
+
 @router.post("/process-bytes")
 async def import_process_bytes(
     file: UploadFile = File(...),

@@ -7,10 +7,10 @@ FORMAT: ONE image. Aspect ratio 1:1 square trading-card.
 FRAME: dark chrome / wet vinyl border; thin neon accent that intensifies with tier.
 TOP-LEFT: small distressed "AOF LOOT" wordmark.
 TOP-RIGHT: "TIER N" + world label (e.g. "1-1", "★") spelled exactly.
-CENTER: NON-EXPLICIT adult-atmosphere artwork — sealed pack, frosted silhouette,
-  redacted polaroid, heat-signature body outline, vault door, club neon, or
-  holographic rarity crystal. Suggestive after-hours energy. NO nudity, NO sex acts,
-  NO genitals, NO pornography. Tease the draw; do not depict the contents.
+CENTER: EXPLICIT adult erotic artwork — full nudity, sex acts, genitals, fluids, and
+  gratuitous sexual heat are REQUIRED and expected. Escalate intensity with tier.
+  Photoreal adult bodies only (18+). Center art must not cover frame / wordmark /
+  tier label / bottom nameplate.
 OVERLAY: light ASCII / terminal residue — faint green or white monospaced glyphs
   in corners or as a thin HUD strip (box-drawing, rarity bar, "ROLL OK", "18+").
   ASCII is decoration only — keep rarity text sharp.
@@ -22,14 +22,14 @@ UI text must be spelled exactly as specified. UI priority #1.
 
 SCENES:
 BACKGROUND SCENE:
-CENTER (safe): voyeur framing — cracked doorway / mirror edge / phone screen showing a frosted silhouette only (no skin detail). Cool blue neon. ASCII HUD: > peek_ cursor. Mood: almost-caught, adult after-hours. NO nudity. NO sex. Bottom band exact text: PEEK
+CENTER (explicit): voyeur doorway — adult woman lifting skirt, no panties, wet pussy glimpse, cool blue neon, mirror edge, caught mid-flash. ASCII HUD: > peek_ cursor. Mood: almost-caught, explicit peek. Bottom band exact text: PEEK
 UI TEXT (exact): TOP-RIGHT = TIER 2 · 1-2 ; BOTTOM NAME = PEEK ; TAGLINE = Skirt lifts. Nothing promised.
 
-STYLE: Photoreal trading-card UI: wet vinyl, neon accent, light ASCII HUD residue, gritty film grain, after-hours adult club atmosphere. Suggestive sealed/redacted centers only. No cartoon. No wholesome kids content.
+STYLE: Photoreal trading-card UI: wet vinyl, neon accent, light ASCII HUD residue, gritty film grain, after-hours adult club atmosphere. EXPLICIT erotic center art (nudity/sex OK). No cartoon. No minors.
 
-Generate now. Same locked card UI. Vary only the center motif + neon intensity by tier.
+Generate now. Same locked card UI. Vary only the center erotic motif + neon intensity by tier.
 
-AVOID: nudity, sex acts, genitals, pornography, lingerie close-ups with skin, QR codes, t.me links, cute/wholesome tone, cartoon, misspelled tier names, ASCII covering important UI text, watermark, wrong aspect ratio, duplicate identical scenes, childlike or non-adult subjects.
+AVOID: minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, ASCII covering important UI text, watermark, wrong aspect ratio, duplicate identical scenes, softcore-only tease when explicit sex is requested.
 
 # NEGATIVE
-nudity, sex acts, genitals, pornography, QR codes, t.me links, cute/wholesome tone, cartoon, misspelled tier names, watermark, wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text
+minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, softcore-only when explicit requested, wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text

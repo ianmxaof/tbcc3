@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.36.1",
+  "version": "1.40.35",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -86,21 +86,42 @@
       "all_frames": false
     },
     {
-      "matches": ["*://erome.com/*", "*://www.erome.com/*"],
-      "js": ["tbcc-module-gate.js", "erome-enhancer.js", "erome-transport-overlay.js"],
+      "matches": ["*://erome.com/*", "*://*.erome.com/*"],
+      "js": ["tbcc-module-gate.js", "tbcc-suite-rail.js", "tbcc-abbrev-number.js", "tbcc-browse-intel-common.js", "erome-enhancer.js", "erome-transport-overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://motherless.com/*",
+        "*://*.motherless.com/*",
+        "*://motherless.xxx/*",
+        "*://*.motherless.xxx/*"
+      ],
+      "js": ["tbcc-module-gate.js", "tbcc-suite-rail.js", "tbcc-browse-intel-common.js", "motherless-infinite-scroll.js", "motherless-enhancer.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["*://thisvid.com/*", "*://*.thisvid.com/*"],
-      "js": ["tbcc-module-gate.js", "thisvid-enhancer.js"],
+      "js": ["tbcc-module-gate.js", "tbcc-suite-rail.js", "tbcc-abbrev-number.js", "tbcc-browse-intel-common.js", "thisvid-infinite-scroll.js", "thisvid-enhancer.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["*://fetlife.com/*", "*://www.fetlife.com/*"],
-      "js": ["tbcc-module-gate.js", "fetlife-suite.bundle.js"],
+      "js": ["tbcc-module-gate.js", "tbcc-suite-rail.js", "tbcc-browse-intel-common.js", "fetlife-suite.bundle.js"],
       "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://perchance.org/*",
+        "*://*.perchance.org/*",
+        "*://image-generation.perchance.org/*"
+      ],
+      "js": ["tbcc-module-gate.js", "perchance-suite.bundle.js"],
+      "run_at": "document_start",
       "all_frames": false
     },
     {

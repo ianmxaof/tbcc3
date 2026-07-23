@@ -66,9 +66,9 @@ Goal: mirror the local `Invoke-Tbcc*` start/stop/status the panel calls today on
 3. **[P1] Producer teardown.** `FormClosed` signals the loop to stop and disposes the PowerShell/runspace instance — no orphan netstat thread after close.
 4. **[P1] Graceful fallback.** If the producer fails to *start*, fall back to the existing synchronous in-tick snapshot so a runspace bug can never fully brick the panel.
 5. **[P1] Dedup the double `netstat`.** Return `Ports` from `Update-TbccServiceStatusCache` and reuse it for infra LEDs instead of a second `Get-TbccListeningPortSet` call.
-6. **[P2] Meltdown mode.** When the API is down / host is saturated, drop the expensive HTTP + WMI cadence and keep process/port LEDs alive within 5s (cheap netstat + cached process list only).
-7. **[P2] Services density.** Pagination or virtualization for large service sets; global enable/disable if missing.
-8. **[P3] Remote-deploy design + thin spike.** Design doc mapping remote start/stop to local `Invoke-Tbcc*`; safe read-only `Status` spike over Tailscale SSH; single-writer interlock to avoid 409s.
+6. **[P2] Meltdown mode.** **Shipped** in `tbcc-supervisor-panel.ps1` (`Test-TbccSupMeltdownMode`, `THROTTLE` UI, skip HTTP, longer WMI cache via `Update-TbccServiceStatusCache -Meltdown`). Remaining work = operator smoke + polish on fail — not greenfield.
+7. **[P2] Services density.** Filter / disable-optional helpers present; further pagination only if needed.
+8. **[P3] Remote-deploy design + thin spike.** Design doc mapping remote start/stop to local `Invoke-Tbcc*`; safe read-only `Status` spike over Tailscale SSH; single-writer interlock to avoid 409s. Revenue bots cutover is a separate dedicated VPS island (`docs/REVENUE_ISLAND.md`), not scrape e2-micro.
 
 ## Verification
 

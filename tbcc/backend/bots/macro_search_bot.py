@@ -160,17 +160,16 @@ def _telegram_bootstrap_retries() -> int:
         return 5
 
 
-def main() -> None:
-    token = _token()
-    if not token:
-        print("Set TBCC_MACRO_SEARCH_BOT_TOKEN in tbcc/.env — see .env.example")
-        return
+def build_application(token: str | None = None) -> Application | None:
+    """Build macro_search Application without polling (Zeus co-host ready)."""
+    tok = (token if token is not None else _token()).strip()
+    if not tok:
+        return None
 
     t = _telegram_http_timeout_seconds()
-    br = _telegram_bootstrap_retries()
     b = (
         Application.builder()
-        .token(token)
+        .token(tok)
         .post_init(_post_init)
         .connect_timeout(t)
         .read_timeout(t)
@@ -219,6 +218,16 @@ def main() -> None:
     for h in build_forum_handlers(_get_runtime_settings, _patch_macro_custom_sources):
         app.add_handler(h)
 
+    return app
+
+
+def main() -> None:
+    app = build_application()
+    if app is None:
+        print("Set TBCC_MACRO_SEARCH_BOT_TOKEN in tbcc/.env — see .env.example")
+        return
+
+    br = _telegram_bootstrap_retries()
     print(
         "Macro search bot running. Commands: /start, /macrosearch, /inbox, /suggestsource, "
         "/macroaddsource, forum topic bridge (see TBCC_MACRO_SEARCH_FORUM_* env)"

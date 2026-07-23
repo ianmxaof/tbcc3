@@ -337,9 +337,17 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
             db.commit()
         out["route"] = route
 
+        from app.services.media_gatekeeper import (
+            apply_gatekeeper_after_ingest,
+            should_attempt_storage_auto_approve,
+        )
         from app.services.storage_deposit_auto_approve import maybe_auto_approve_storage_deposit_media
 
-        out["auto_approve"] = maybe_auto_approve_storage_deposit_media(db, media_id, out)
+        apply_gatekeeper_after_ingest(db, media_id, enrich=out)
+        if should_attempt_storage_auto_approve(db, media_id):
+            out["auto_approve"] = maybe_auto_approve_storage_deposit_media(db, media_id, out)
+        else:
+            out["auto_approve"] = {"applied": False, "reason": "gatekeeper_or_scrape_skip"}
 
         topic_count = _count_non_rule_tags(db, media_id)
         if _should_enqueue_llm(

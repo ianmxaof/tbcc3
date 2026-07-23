@@ -8,6 +8,9 @@
   const FLAG_KEY = 'tbcc_pc_suite_flags_v1';
   const DEFAULTS = {
     adsBypass: true,
+    leanGenerator: true,
+    imageHoverPreview: true,
+    lootGodLab: true,
     lazyQueue: true,
     promptBridge: true,
     jobsPanel: true,
@@ -17,6 +20,9 @@
 
   const LABELS = {
     adsBypass: 'Ads bypass (Fuck Ads port)',
+    leanGenerator: 'Lean page (kill gallery/comments · NSFW on)',
+    imageHoverPreview: 'Hover preview (full-res + Ctrl+wheel zoom)',
+    lootGodLab: 'Loot God Card Lab (border + primer + Δ)',
     lazyQueue: 'Lazy iframe queue',
     promptBridge: 'Last-prompt metadata bridge',
     jobsPanel: 'Gemini-parity job presets',
@@ -61,10 +67,14 @@
     });
   }
 
-  // Ads bypass must run as early as possible
+  // Ads bypass + lean chrome must run as early as possible
   if (PC.features && PC.features.adsBypass && flags.get('adsBypass')) {
     PC.features.adsBypass.start();
     running.adsBypass = true;
+  }
+  if (PC.features && PC.features.leanGenerator && flags.get('leanGenerator')) {
+    PC.features.leanGenerator.start();
+    running.leanGenerator = true;
   }
 
   if (document.readyState === 'loading') {

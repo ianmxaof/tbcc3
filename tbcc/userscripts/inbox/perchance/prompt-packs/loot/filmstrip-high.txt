@@ -1,0 +1,53 @@
+# preset=filmstrip-high format=filmstrip-5-cards aspect=9:16
+
+OUTPUT: ONE tall image. FIVE complete AOF LOOT cards stacked top to bottom (Telegram scroll filmstrip).
+Each panel: full card UI. Overall composite: tall portrait strip.
+NOT 2×2 grid. Panels full width, stacked vertically.
+
+LAYOUT LOCK — AOF LOOT CARD (identical structure every tier):
+FORMAT: ONE image. Aspect ratio 1:1 square trading-card.
+FRAME: dark chrome / wet vinyl border; thin neon accent that intensifies with tier.
+TOP-LEFT: small distressed "AOF LOOT" wordmark.
+TOP-RIGHT: "TIER N" + world label (e.g. "1-1", "★") spelled exactly.
+CENTER: EXPLICIT adult erotic artwork — full nudity, sex acts, genitals, fluids, and
+  gratuitous sexual heat are REQUIRED and expected. Escalate intensity with tier.
+  Photoreal adult bodies only (18+). Center art must not cover frame / wordmark /
+  tier label / bottom nameplate.
+OVERLAY: light ASCII / terminal residue — faint green or white monospaced glyphs
+  in corners or as a thin HUD strip (box-drawing, rarity bar, "ROLL OK", "18+").
+  ASCII is decoration only — keep rarity text sharp.
+BOTTOM BAND: tier NAME in bold distressed type + short nasty tagline (exact spelling).
+OPTIONAL BADGES: "RESTRICTED" / "SPOILER" / "SEALED" / "ADULT LANE" as UI chrome only.
+NO QR. NO t.me links in the image.
+NO cartoon cute. Gritty film grain, cyberpunk club, velvet-rope heat.
+UI text must be spelled exactly as specified. UI priority #1.
+
+SCENES:
+PANEL-1 — Soak · World 3-1 (tier-06):
+CENTER (explicit): adult couple mid-sex against VIP corridor wall, orange neon, penetration visible, mixed fluids, velvet rope behind. Box-drawing ASCII ╔══╗ SOAK. Mood: denser haul, soaked. Bottom band exact text: SOAK
+UI TEXT (exact): TOP-RIGHT = TIER 6 · 3-1 ; BOTTOM NAME = SOAK ; TAGLINE = Mixed media. Density climbing.
+
+PANEL-2 — Filth · World 4-1 (tier-07):
+CENTER (explicit): toxic-green vault light, adult woman on knees covered in cum, open mouth, tits glazed, 'RESTRICTED' chrome badge, absolute filth. ASCII ⌂ FILTH ⌂. Mood: forbidden archive, filthy. Bottom band exact text: FILTH
+UI TEXT (exact): TOP-RIGHT = TIER 7 · 4-1 ; BOTTOM NAME = FILTH ; TAGLINE = Vault opens. Packs may follow.
+
+PANEL-3 — Ruin · World 5-1 (tier-08):
+CENTER (explicit): chaotic aftercare mess — adult bodies fucked raw, purple/gold chrome, creampie visible, ruined makeup, ticket stub confetti mixed with fluids. ASCII ♛ RUIN ♛. Mood: no soft landing. Bottom band exact text: RUIN
+UI TEXT (exact): TOP-RIGHT = TIER 8 · 5-1 ; BOTTOM NAME = RUIN ; TAGLINE = Density spikes. No soft landing.
+
+PANEL-4 — Blackout · World 6-1 (tier-09):
+CENTER (explicit): near-black room, ultraviolet slash across adult woman in extreme bondage / CNC-aesthetic consensual scene, explicit anatomy lit by UV, glitch HUD BLACKOUT. ASCII ▓░█ BLACKOUT █░▓. Mood: mythic, mean, explicit. Bottom band exact text: BLACKOUT
+UI TEXT (exact): TOP-RIGHT = TIER 9 · 6-1 ; BOTTOM NAME = BLACKOUT ; TAGLINE = Near-mythic. Modifiers stack mean.
+
+PANEL-5 — Godroll · World ★ (tier-10):
+CENTER (explicit): boss-drop orgy energy — adult woman gold body-paint accents, multiple partners implied, blood-red + gold chrome, cumshot finale, *** GODROLL *** stamp as UI only. Mood: max dopamine porn jackpot. Bottom band exact text: GODROLL
+UI TEXT (exact): TOP-RIGHT = TIER 10 · ★ ; BOTTOM NAME = GODROLL ; TAGLINE = MAX TIER — screenshot the mess.
+
+STYLE: Five stacked extreme explicit loot cards, VIP to godroll.
+
+Generate now. Same locked card UI. Vary only the center erotic motif + neon intensity by tier.
+
+AVOID: minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, ASCII covering important UI text, watermark, wrong aspect ratio, duplicate identical scenes, softcore-only tease when explicit sex is requested.
+
+# NEGATIVE
+minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, softcore-only when explicit requested, wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text

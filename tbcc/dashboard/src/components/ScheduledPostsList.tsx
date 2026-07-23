@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { useApiTarget } from "../context/ApiTargetContext";
 import { useState, useEffect, useMemo } from "react";
 import { SchedulePromoSlots } from "./SchedulePromoSlots";
 import { ApprovedMediaPickerStrip } from "./ApprovedMediaPickerStrip";
@@ -16,9 +17,6 @@ import { CaptionLlmRewriteFields } from "./CaptionLlmRewriteFields";
 import { SilentTelegramSendOption } from "./SilentTelegramSendOption";
 import { SchedulerOverviewBand } from "./SchedulerOverviewBand";
 import { SchedulerIntervalCountdown, useSchedulerClock } from "./SchedulerIntervalCountdown";
-import {
-  type SchedulingStackHealth,
-} from "../utils/schedulerIntervalCountdown";
 import {
   classifySchedulerPost,
   computeTransportStats,
@@ -131,27 +129,6 @@ function datetimeLocalToIso(local: string): string {
 
 const SCHED_COLS = 9;
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-
-async function fetchSchedulingHealth(): Promise<SchedulingStackHealth> {
-  try {
-    const r = await fetch(`${API}/health/system`, { cache: "no-store" });
-    const data = (await r.json()) as { scheduling?: Record<string, unknown> };
-    const s = data.scheduling || {};
-    return {
-      beatRunning: Boolean(s.beat_running),
-      celeryPostRunning: Boolean(s.celery_post_worker_running),
-      celeryPostSchedulerRunning: Boolean(
-        s.celery_post_scheduler_worker_running ?? s.celery_post_worker_running
-      ),
-      schedulingPaused: Boolean(s.scheduling_paused_by_focus),
-      focusProfile: typeof s.focus_profile === "string" ? s.focus_profile : undefined,
-    };
-  } catch {
-    return { beatRunning: false, celeryPostRunning: false, celeryPostSchedulerRunning: false, schedulingPaused: false };
-  }
-}
-
 /** Match Scheduler.tsx interval presets for edit modal */
 const EDIT_INTERVAL_OPTIONS = [15, 30, 60, 120, 180, 240, 360, 720];
 
@@ -192,6 +169,7 @@ type Props = {
 
 export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWeekDayClick }: Props) {
   const queryClient = useQueryClient();
+  const { target } = useApiTarget();
 
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<Record<string, unknown> | null>(null);
@@ -247,8 +225,8 @@ export function ScheduledPostsList({ compactRecurringOnly, weekPosts = [], onWee
     queryFn: () => api.channels.list(),
   });
   const { data: schedulingHealth } = useQuery({
-    queryKey: ["health", "scheduling"],
-    queryFn: fetchSchedulingHealth,
+    queryKey: ["health", "scheduling", target],
+    queryFn: () => api.healthScheduling(),
     refetchInterval: 15_000,
   });
   const schedulerNowMs = useSchedulerClock();

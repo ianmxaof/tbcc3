@@ -16,6 +16,40 @@ from app.services.telegram_album_plan import TELEGRAM_ALBUM_MAX, chunk_sequence_
 logger = logging.getLogger(__name__)
 
 
+def _post_media_ingest(
+    db: Session,
+    record: Media,
+    *,
+    caption: str = "",
+    message=None,
+    source_label: str | None = None,
+) -> None:
+    """Run gatekeeper verdict then optional Storage Hub auto-approve."""
+    try:
+        from app.services.media_gatekeeper import (
+            apply_gatekeeper_after_ingest,
+            should_attempt_storage_auto_approve,
+        )
+        from app.services.storage_deposit_auto_approve import maybe_auto_approve_storage_deposit_media
+
+        apply_gatekeeper_after_ingest(
+            db,
+            int(record.id),
+            caption=caption,
+            message=message,
+            source_label=source_label,
+        )
+        db.refresh(record)
+        if should_attempt_storage_auto_approve(db, int(record.id), source_label=source_label):
+            maybe_auto_approve_storage_deposit_media(
+                db,
+                int(record.id),
+                source_label=source_label,
+            )
+    except Exception:
+        logger.exception("post_media_ingest failed media_id=%s", getattr(record, "id", "?"))
+
+
 class ForwardRestrictedStorageError(Exception):
     """Channel forbids forwarding; scraper must skip (no download_media fallback)."""
 
@@ -855,13 +889,16 @@ class TelegramStorage:
             )
             if rec is not None:
                 try:
-                    from app.services.storage_deposit_auto_approve import (
-                        maybe_auto_approve_storage_deposit_media,
+                    cap = getattr(message, "message", None) or getattr(message, "text", None) or ""
+                    _post_media_ingest(
+                        db,
+                        rec,
+                        caption=str(cap),
+                        message=message,
+                        source_label=source,
                     )
-
-                    maybe_auto_approve_storage_deposit_media(db, int(rec.id))
                 except Exception:
-                    logger.debug("storage deposit auto-approve skipped media_id=%s", rec.id, exc_info=True)
+                    logger.debug("post_media_ingest skipped media_id=%s", rec.id, exc_info=True)
             return rec
 
         if apply_watermark:
@@ -997,11 +1034,16 @@ class TelegramStorage:
             except Exception:
                 logger.debug("ingest thumb cache failed media_id=%s", record.id, exc_info=True)
         try:
-            from app.services.storage_deposit_auto_approve import maybe_auto_approve_storage_deposit_media
-
-            maybe_auto_approve_storage_deposit_media(db, int(record.id))
+            cap = getattr(message, "message", None) or getattr(message, "text", None) or ""
+            _post_media_ingest(
+                db,
+                record,
+                caption=str(cap),
+                message=message,
+                source_label=source_label,
+            )
         except Exception:
-            logger.debug("storage deposit auto-approve skipped media_id=%s", record.id, exc_info=True)
+            logger.debug("post_media_ingest skipped media_id=%s", record.id, exc_info=True)
         return record
 
     async def _index_message(self, msg, source: str, pool_id: int, db: Session):
@@ -1054,11 +1096,15 @@ class TelegramStorage:
             from app.services.media_tagging import apply_auto_tags_for_new_media
 
             apply_auto_tags_for_new_media(db, record.id)
+            cap = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
+            _post_media_ingest(
+                db,
+                record,
+                caption=str(cap),
+                message=msg,
+                source_label=source,
+            )
             from app.services.auto_tag_enrich import enqueue_auto_tag_enrich_if_enabled
-            from app.services.storage_deposit_auto_approve import maybe_auto_approve_storage_deposit_media
-
-            maybe_auto_approve_storage_deposit_media(db, record.id)
-            enqueue_auto_tag_enrich_if_enabled(record.id)
             from app.services.auto_tag_enrich import enrich_pipeline_enabled
             from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
 

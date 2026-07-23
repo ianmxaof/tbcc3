@@ -21,7 +21,7 @@ _LEGACY_LV_SLUG_DEST: dict[str, str] = {
     "irj3uxd3iYV": "https://t.me/+hMQzGsBFjF02MDkx",
     "7XeubkKSFA8j": "https://t.me/addlist/r-7_7CGIkExhMDcx",
     "XeuokKSFA8j": "https://t.me/addlist/r-7_7CGIkExhMDcx",
-    "DgIo85a7oux0": "https://t.me/aofmainhub",
+    "DgIo85a7oux0": "https://telegram.me/aofmainhub",
 }
 
 _WRAP_CACHE: dict[tuple[str, str], str] = {}

@@ -1,6 +1,6 @@
 /**
 
- * TBCC X profile gallery overlay — Comic Looms-style grid on profile pages.
+ * TBCC X profile gallery overlay — on-page media grid for profile / feed pages.
 
  * Requires x-profile-harvest.js + x-profile-looms-shared.js.
 
@@ -104,6 +104,17 @@
       return mode === "following" ? "TBCC — Following feed gallery" : "TBCC — For you feed gallery";
     }
     return "TBCC — profile media gallery";
+  }
+
+  function formatVideoDuration(ms) {
+    var n = Number(ms);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    var totalSec = Math.max(1, Math.round(n / 1000));
+    var h = Math.floor(totalSec / 3600);
+    var m = Math.floor((totalSec % 3600) / 60);
+    var s = totalSec % 60;
+    if (h > 0) return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    return m + ":" + String(s).padStart(2, "0");
   }
 
 
@@ -233,6 +244,7 @@
       "#tbcc-x-profile-gallery-root .tbcc-x-tile img,#tbcc-x-profile-gallery-root .tbcc-x-tile video{width:100%;height:100%;object-fit:cover;display:block;min-height:120px}" +
 
       "#tbcc-x-profile-gallery-root .tbcc-x-tile .badge{position:absolute;left:4px;top:4px;background:rgba(0,0,0,.65);padding:2px 5px;border-radius:4px;font-size:10px}" +
+      "#tbcc-x-profile-gallery-root .tbcc-x-tile .dur{position:absolute;right:4px;bottom:4px;background:rgba(0,0,0,.72);padding:2px 6px;border-radius:4px;font-size:11px;font-variant-numeric:tabular-nums;letter-spacing:.02em}" +
 
       "#tbcc-x-profile-gallery-root .tbcc-x-empty{padding:24px;text-align:center;opacity:.8}";
 
@@ -384,6 +396,20 @@
 
         if (item.media_type === "video") {
 
+          var durLabel = formatVideoDuration(item.duration_ms);
+
+          if (durLabel) {
+
+            var dur = document.createElement("span");
+
+            dur.className = "dur";
+
+            dur.textContent = durLabel;
+
+            tile.appendChild(dur);
+
+          }
+
           var vid = document.createElement("video");
 
           vid.muted = true;
@@ -395,6 +421,34 @@
           vid.poster = item.thumbnail_url || "";
 
           vid.src = item.thumbnail_url || item.url;
+
+          if (!durLabel) {
+
+            vid.addEventListener(
+
+              "loadedmetadata",
+
+              function () {
+
+                if (!(vid.duration > 0) || !isFinite(vid.duration)) return;
+
+                if (tile.querySelector(".dur")) return;
+
+                var d2 = document.createElement("span");
+
+                d2.className = "dur";
+
+                d2.textContent = formatVideoDuration(vid.duration * 1000);
+
+                tile.appendChild(d2);
+
+              },
+
+              { once: true }
+
+            );
+
+          }
 
           tile.appendChild(vid);
 

@@ -139,6 +139,21 @@ def _clean_frame_at(path: Path, size: int = 256) -> None:
     im.save(path)
 
 
+def test_reveal_pool_prefers_blank_plates_when_present(tmp_path: Path, monkeypatch):
+    from app.services import loot_tier_card_assets as A
+
+    monkeypatch.setenv("TBCC_LOOT_TIER_CARD_DIR", str(tmp_path))
+    frames = tmp_path / "frames" / "clean"
+    frames.mkdir(parents=True)
+    _clean_frame_at(frames / "frame-094.png")
+    _clean_frame_at(frames / "mag-001.png")
+    _clean_frame_at(frames / "mag-002.png")
+
+    reveal = A.list_reveal_frame_paths()
+    assert all(p.name.lower().startswith("mag-") for p in reveal)
+    assert A.reveal_frame_pool_kind() == "blank"
+
+
 def test_reveal_pool_prefers_clean_when_present(tmp_path: Path, monkeypatch):
     from app.services import loot_tier_card_assets as A
 

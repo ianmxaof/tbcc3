@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:island": "vite --mode island",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",

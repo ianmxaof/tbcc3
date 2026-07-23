@@ -94,13 +94,15 @@ def gumroad_vip_url() -> str:
     return GUMROAD_VIP_PRODUCT_URL
 
 
-def gumroad_vip_link_html(*, label: str = "AOF VIP on Gumroad") -> str:
+def gumroad_vip_link_html(*, label: str | None = None) -> str:
+    from app.services.fiat_checkout_labels import fiat_vip_link_label
+
     url = gumroad_vip_url()
     if not url:
         return ""
     from app.services.aof_growth_hub import _a_tag
 
-    return _a_tag(url, label)
+    return _a_tag(url, label or fiat_vip_link_label())
 
 
 def donation_link_html(*, label: str = "Buy me a coffee") -> str:

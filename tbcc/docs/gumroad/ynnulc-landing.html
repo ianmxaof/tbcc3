@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title data-gumroad-field="name">AOF VIP</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 0; }
+    .hero {
+      background:
+        radial-gradient(ellipse at 20% 0%, rgba(236,72,153,.25), transparent 50%),
+        radial-gradient(ellipse at 80% 20%, rgba(168,85,247,.2), transparent 45%),
+        #0c0a12;
+      min-height: 100vh;
+    }
+    @media (prefers-color-scheme: light) {
+      .hero {
+        background:
+          radial-gradient(ellipse at 20% 0%, rgba(236,72,153,.15), transparent 50%),
+          #faf7fb;
+      }
+      .ink { color: #1a1225 !important; }
+      .muted { color: #5b5168 !important; }
+      .card { background: #fff !important; border-color: #e8e0ef !important; }
+      .card:hover { background: #fdf9ff !important; }
+    }
+    a.buy-card {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="hero text-white ink">
+  <main class="mx-auto max-w-3xl px-5 py-12 sm:py-16">
+    <p class="text-sm uppercase tracking-[0.2em] text-pink-300/90">Altar of Flesh</p>
+    <h1 class="mt-3 text-4xl font-semibold tracking-tight sm:text-5xl" data-gumroad-field="name">
+      AOF VIP — All Lanes
+    </h1>
+    <p class="muted mt-4 max-w-xl text-base leading-relaxed text-white/75" data-gumroad-field="description">
+      Telegram VIP — all lanes, loot priority, bot-delivered access. Not a file download.
+    </p>
+
+    <div class="mt-8 flex flex-wrap gap-3">
+      <a
+        class="rounded-full bg-pink-500 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-pink-500/30 no-underline"
+        data-gumroad-action="buy"
+        data-gumroad-recurrence="monthly"
+      >Start monthly · $6</a>
+      <a
+        class="rounded-full border border-white/25 px-6 py-3 text-sm font-semibold no-underline text-inherit"
+        href="https://t.me/aofsubscriptions_bot"
+        target="_blank"
+        rel="noopener noreferrer"
+      >Open Telegram bot first</a>
+    </div>
+
+    <section class="mt-12 grid gap-3 sm:grid-cols-2">
+      <a
+        class="buy-card card rounded-2xl border border-white/10 bg-white/5 p-5 transition hover:bg-white/10"
+        data-gumroad-action="buy"
+        data-gumroad-recurrence="monthly"
+      >
+        <div class="text-xs uppercase tracking-wide text-pink-300">Impulse</div>
+        <div class="mt-1 text-xl font-semibold">1 Month · $6</div>
+        <div class="muted mt-1 text-sm text-white/60">500⭐ · best for trying VIP</div>
+      </a>
+
+      <a
+        class="buy-card card rounded-2xl border border-white/10 bg-white/5 p-5 transition hover:bg-white/10"
+        data-gumroad-action="buy"
+        data-gumroad-recurrence="quarterly"
+      >
+        <div class="text-xs uppercase tracking-wide text-pink-300">Save ~17%</div>
+        <div class="mt-1 text-xl font-semibold">3 Months · $15</div>
+        <div class="muted mt-1 text-sm text-white/60">1250⭐ · vs $18 month-to-month</div>
+      </a>
+
+      <a
+        class="buy-card card rounded-2xl border border-white/10 bg-white/5 p-5 transition hover:bg-white/10"
+        data-gumroad-action="buy"
+        data-gumroad-recurrence="biannually"
+      >
+        <div class="text-xs uppercase tracking-wide text-pink-300">Save ~17%</div>
+        <div class="mt-1 text-xl font-semibold">6 Months · $30</div>
+        <div class="muted mt-1 text-sm text-white/60">2500⭐</div>
+      </a>
+
+      <a
+        class="buy-card card rounded-2xl border border-white/10 bg-white/5 p-5 transition hover:bg-white/10"
+        data-gumroad-action="buy"
+        data-gumroad-recurrence="yearly"
+      >
+        <div class="text-xs uppercase tracking-wide text-pink-300">Save 25%</div>
+        <div class="mt-1 text-xl font-semibold">1 Year · $54</div>
+        <div class="muted mt-1 text-sm text-white/60">4500⭐ · best annual value</div>
+      </a>
+
+      <a
+        class="buy-card card rounded-2xl border border-pink-400/40 bg-pink-500/10 p-5 transition hover:bg-pink-500/20 sm:col-span-2"
+        data-gumroad-action="buy"
+        data-gumroad-recurrence="every_two_years"
+      >
+        <div class="text-xs uppercase tracking-wide text-pink-300">Max loyalty · ~31% off</div>
+        <div class="mt-1 text-xl font-semibold">2 Years · $100</div>
+        <div class="muted mt-1 text-sm text-white/60">8334⭐ · longest term</div>
+      </a>
+    </section>
+
+    <ol class="muted mt-12 list-decimal space-y-2 pl-5 text-sm text-white/70">
+      <li>Prefer starting in <strong class="text-white">@aofsubscriptions_bot</strong> so access binds to your Telegram ID.</li>
+      <li>Pay here with the same term you picked in the bot.</li>
+      <li>Keep the bot chat open — VIP invite DMs after Gumroad confirms.</li>
+      <li>Tips only: <a class="underline" href="https://aof69.gumroad.com/coffee">coffee</a> (not VIP).</li>
+    </ol>
+  </main>
+</body>
+</html>

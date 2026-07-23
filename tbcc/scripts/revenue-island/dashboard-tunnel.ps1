@@ -1,11 +1,12 @@
 # Open a local dashboard tunnel to the revenue-island API (island Postgres + scheduler).
 # Home :8000 without this tunnel is a DIFFERENT database — not what the VM is posting.
 #
-#   .\scripts\revenue-island\dashboard-tunnel.ps1
-#   .\scripts\revenue-island\dashboard-tunnel.ps1 -HostName root@5.161.53.91 -LocalPort 8000
+# Prefer (no SSH tunnel):  .\scripts\revenue-island\start-dashboard-island.ps1
+#   → npm run dev:island proxies /island-api → https://api.powercore.app
 #
-# Leave this window open. Then:
-#   npm run dev  (dashboard)  OR browse http://127.0.0.1:8000/health
+# Legacy tunnel (maps local :8000 to VM API — dashboard must stay on Local target):
+#   .\scripts\revenue-island\dashboard-tunnel.ps1
+#   npm run dev
 # Stop: Ctrl+C in this window.
 
 param(

@@ -2,35 +2,40 @@
 
 Perchance replaces the **Gemini image model call**. Downstream contracts stay the same.
 
+**Delivery:** TBCC Chrome extension content script (`perchance-suite.bundle.js`). No Tampermonkey.
+
 ## Promo / X flywheel
 
 ```text
 Perchance (tbcc-aof-gen or stock T2I)
-  → TBCC Perchance Suite: apply job → generate
-  → TBCC extension canvas capture (perchance-aware)
-  → Gallery download / export
-  → py -3.13 scripts/upload_x_promo_pool.py   # or generate_aof_promo_gemini.py --upload path for R2
-  → app/data/aof_x_promo_image_pool.json
-  → Buffer native refill / flywheel (image_url)
+  → TBCC extension Perchance suite: apply job → generate
+    → TBCC page overlay / capture (perchance-aware)
+    → Gallery download / export
+    → py -3.13 scripts/upload_x_promo_pool.py
+    → app/data/aof_x_promo_image_pool.json
+    → Buffer native refill / flywheel (image_url)
 ```
 
 Operator tips:
 
-1. Apply a **promo** job in the suite panel (Gemini-parity prompt).
-2. Set shape closest to aspect hint (Portrait for 9:16 / 3:4).
-3. Generate → use TBCC overlay/capture on winning canvases.
-4. Upload winners into the X promo pool (existing R2/ImgBB scripts).
+1. Reload TBCC extension after `npm run build` in `tbcc/userscripts`.
+2. Apply a **promo** job in the suite jobs panel (Gemini-parity prompt), or use Card Lab for loot.
+3. Set shape closest to aspect hint (Portrait for 9:16 / 3:4; Square for loot 1:1).
+4. Generate → capture winners → upload into the X promo pool.
 
-## Loot tier cards
+## Loot tier cards (Loot God Card Lab)
 
 ```text
-Perchance loot tier job
-  → capture/download PNG
+Perchance + FAB "Loot Cards"
+  → Compose + Apply (border + hyperreal primer + subject + Δ)
+  → generate / capture PNG
   → save as tbcc/backend/app/data/loot_tier_cards/tier-N.png
-  → loot bot key-roll reveal (loot_tier_card_assets / loot_preview_delivery)
+  → loot bot key-roll reveal
 ```
 
-Use jobs labeled `Loot tier N` or preset `loot-tier-0N-*`.
+See [`LOOT_GOD_PROMPT_LAB.md`](LOOT_GOD_PROMPT_LAB.md).
+
+Legacy SFW/tease jobs labeled `Loot tier N` still exist in the jobs panel if you need sealed-pack centers.
 
 ## Gemini fallback
 
@@ -44,7 +49,7 @@ py -3.13 scripts\generate_aof_loot_card_gemini.py --tier 7 --execute
 
 Do not delete Gemini scripts; Perchance is primary $0 lane only.
 
-## Regenerate prompt packs / jobs
+## Regenerate prompt packs / rebuild extension suite
 
 ```powershell
 cd tbcc\backend
@@ -53,4 +58,4 @@ cd ..\userscripts
 npm run build
 ```
 
-Then Tampermonkey → Check for updates (`npm run serve` on :8765).
+Then **reload the TBCC extension** in Chrome.

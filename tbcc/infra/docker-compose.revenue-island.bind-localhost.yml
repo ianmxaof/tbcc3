@@ -1,0 +1,10 @@
+# Overlay: bind API to localhost only (use with Cloudflare Tunnel / Tailscale).
+#   docker compose -f docker-compose.revenue-island.yml -f docker-compose.revenue-island.bind-localhost.yml \
+#     --env-file .env.revenue-island up -d --force-recreate --no-deps api
+#
+# Apply only AFTER api.aof-forum.com (or Tailscale) reaches the API — closes public :8000.
+
+services:
+  api:
+    ports: !override
+      - "127.0.0.1:8000:8000"

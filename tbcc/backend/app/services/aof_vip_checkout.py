@@ -503,9 +503,14 @@ def merge_checkout_buttons(
                 gr_key = gr_url.strip().lower().rstrip("/")
                 if gr_key and gr_key not in existing_urls:
                     gr_label = (
-                        os.getenv("TBCC_GUMROAD_CHECKOUT_BUTTON_LABEL") or "💳 Gumroad — from $6"
-                    ).strip()[:64]
-                    out.append({"text": gr_label, "url": gr_url[:512]})
+                        os.getenv("TBCC_FIAT_CHECKOUT_BUTTON_LABEL")
+                        or os.getenv("TBCC_GUMROAD_CHECKOUT_BUTTON_LABEL")
+                    )
+                    if not gr_label or re.search(r"gumroad", gr_label, re.I):
+                        from app.services.fiat_checkout_labels import fiat_checkout_button_label
+
+                        gr_label = fiat_checkout_button_label()
+                    out.append({"text": str(gr_label).strip()[:64], "url": gr_url[:512]})
     except Exception:
         logger.debug("checkout: gumroad button skipped", exc_info=True)
 

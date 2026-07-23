@@ -10,6 +10,7 @@ from app.data.aof_x_buffer_armory import AOF_X_BUFFER_ARMORY_TEMPLATES
 from app.models.listening_relay_settings import ListeningRelaySettings
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.services.aof_social_links import fill_armory_template, gravatar_avatar_image_url, buffer_ig_default_image_url
+from app.services.buffer_x_hashtags import append_x_hashtags
 from app.services.buffer_x_caption import finalize_buffer_x_caption, should_fit_for_x
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ def build_armory_queue_items(*, db=None) -> list[dict]:
         if not raw:
             continue
         text = finalize_buffer_x_caption(raw, db=db, advance_link_cycle=True) if should_fit_for_x() else raw
+        text = append_x_hashtags(text, max_chars=280)
         if len(text) > 280:
             text = text[:277].rstrip() + "…"
         entry: dict = {"text": text}

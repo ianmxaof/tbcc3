@@ -49,7 +49,20 @@ def test_build_flywheel_x_caption_includes_erome(monkeypatch):
         erome_album_url="https://www.erome.com/a/abc123",
         telegram_invite="https://t.me/+lane",
     )
-    assert "Erome" in text or "erome.com" in text
+    assert "preview on Erome" in text
     assert "erome.com/a/abc123" in text
-    assert "t.me/+lane" in text
+    assert "#erome" in text
+    assert len(text) <= 280
+
+
+def test_build_flywheel_x_caption_no_erome_claim_without_url(monkeypatch):
+    monkeypatch.setenv("TBCC_X_USE_LINKVERTISE", "0")
+    monkeypatch.setenv("TBCC_AOF_HUB_INVITE_URL", "https://t.me/+hub")
+    text = build_flywheel_x_caption(
+        "AOF BIG TITS",
+        telegram_invite="https://t.me/+lane",
+    )
+    assert "Erome" not in text
+    assert "#erome" not in text
+    assert "Hub map" in text or "Telegram" in text
     assert len(text) <= 280

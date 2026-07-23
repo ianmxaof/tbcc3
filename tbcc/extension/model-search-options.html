@@ -71,10 +71,10 @@
   </section>
 
   <section id="x-profile-looms" class="card">
-    <h1>X profile overlay (Comic Looms)</h1>
+    <h1>X profile overlay</h1>
     <p class="sub" style="margin:0 0 12px">
       Thread and timeout limits for the on-page X profile grid and ZIP handoff to the TBCC gallery.
-      Matches Comic Looms <strong>Global Twitter | X</strong> defaults (2 / 4 / 4 / 9s). Each thread count is clamped 1–4.
+      Defaults: idle 2 · browse 4 · download 8 · timeout 20s. Idle/browse threads clamp 1–4; download 1–12.
     </p>
     <div class="tbcc-looms-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:12px">
       <label class="row2 tbcc-looms-stepper">Idle threads
@@ -124,7 +124,7 @@
     </label>
     <label class="row2"><input type="checkbox" id="loomsZipSkipWatermark" checked /> Skip promo watermark on harvest / overlay ZIP (faster; original bytes)</label>
     <p style="margin:12px 0 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <button type="button" id="loomsResetDefaults" class="tbcc-btn-secondary">Reset Comic Looms defaults</button>
+      <button type="button" id="loomsResetDefaults" class="tbcc-btn-secondary">Reset defaults</button>
       <span id="loomsSettingsStatus" class="sub" style="margin:0"></span>
     </p>
   </section>
@@ -140,8 +140,20 @@
         <strong>Daemon (recommended):</strong> <code>cd tbcc\tools</code> then <code>.\tbcc-launch-daemon.ps1</code> — leave the window open or add a logon task. In the sidebar <strong>Tools</strong> panel: <strong>Start tray supervisor</strong> and <strong>Launch full stack (cold)</strong>.
       </p>
       <p class="sub" style="margin:0 0 10px; font-size:12px">
-        <strong>API fallback:</strong> if the daemon is not running but Uvicorn is on :8000, the extension calls the API. When <code>TBCC_INTERNAL_API_KEY</code> is set in <code>tbcc/.env</code>, paste the same value below.
+        <strong>API base:</strong> prefer Tailscale MagicDNS or <code>https://api.&lt;aof-forum-domain&gt;</code> (not bare public IP). Leave blank to try custom → localhost.
+        When <code>TBCC_INTERNAL_API_KEY</code> / <code>TBCC_API_REQUIRE_INTERNAL=1</code> is on, paste the same key below.
       </p>
+      <label class="row" style="flex-wrap:wrap">
+        <span style="min-width:140px">API base URL</span>
+        <input
+          type="url"
+          id="tbccApiBase"
+          class="tbcc-input"
+          autocomplete="off"
+          placeholder="http://tbcc-revenue-island:8000"
+          style="min-width:260px"
+        />
+      </label>
       <label class="row" style="flex-wrap:wrap">
         <span style="min-width:140px">TBCC internal key</span>
         <input
@@ -152,6 +164,19 @@
           placeholder="(optional)"
         />
       </label>
+      <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:10px">
+        <button type="button" id="tbccApplyIslandSeed" class="tbcc-btn-secondary">
+          Apply island seed (clipboard)
+        </button>
+        <button type="button" id="tbccSetIslandBase" class="tbcc-btn-secondary">
+          Set API base → island IP
+        </button>
+      </div>
+      <p class="sub" style="margin:8px 0 0;font-size:12px">
+        Seed format from <code>scripts/set-extension-island-api.ps1</code>:
+        <code>TBCC_SEED|&lt;apiBase&gt;|&lt;internalKey&gt;</code>. Home Postgres is optional — lean home can push intel to island only.
+      </p>
+      <p id="tbccApiBaseStatus" class="sub" style="margin:8px 0 0">Checking API…</p>
     </fieldset>
   </section>
 

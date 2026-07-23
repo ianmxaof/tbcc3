@@ -34,20 +34,28 @@ def buffer_x_overflow_suffix(url: str) -> str:
 
 def resolve_overflow_url(*, post: ScheduledTextPost | None = None, db: Session | None = None) -> str:
     from app.services.aof_social_links import x_linkvertise_enabled, x_outbound_url
+    from app.services.buffer_x_outbound_guard import buffer_x_require_gate_wrap, wrap_url_for_x_outbound
+
+    if buffer_x_require_gate_wrap() or x_linkvertise_enabled():
+        from app.data.aof_manual_gate_links import manual_gate_url
+
+        gated = (manual_gate_url("mainhub") or manual_gate_url("main") or "").strip()
+        if gated:
+            return gated
 
     if not x_linkvertise_enabled():
         direct = x_outbound_url()
         if direct:
-            return direct
+            return wrap_url_for_x_outbound(direct, gate_key="mainhub")
     env = (os.environ.get("TBCC_BUFFER_X_OVERFLOW_URL") or "").strip()
     if env:
-        return env
+        return wrap_url_for_x_outbound(env, gate_key="mainhub")
     if post is not None and db is not None:
         ch = db.query(Channel).filter(Channel.id == post.channel_id).first()
         if ch:
             link = (getattr(ch, "invite_link", None) or "").strip()
             if link:
-                return link
+                return wrap_url_for_x_outbound(link, gate_key="mainhub")
     return ""
 
 
@@ -120,9 +128,20 @@ def finalize_buffer_x_caption(
     db: Session | None = None,
     overflow_url: str | None = None,
     advance_link_cycle: bool = False,
+    network_key: str | None = None,
+    strict: bool = False,
 ) -> str:
-    """Apply link-order cycling then X length limit."""
+    """Apply link-order cycling then X length limit; wrap bare Telegram URLs."""
     from app.services.buffer_x_link_order import apply_buffer_x_link_cycle
+    from app.services.buffer_x_outbound_guard import enforce_buffer_x_caption_urls
 
     body = apply_buffer_x_link_cycle(plain, db=db, advance=advance_link_cycle)
-    return fit_plaintext_for_x(body, overflow_url=overflow_url)
+    body, errors = enforce_buffer_x_caption_urls(body, network_key=network_key, strict=strict)
+    if strict and errors:
+        raise ValueError(errors[0])
+    overflow = overflow_url
+    if overflow:
+        from app.services.buffer_x_outbound_guard import wrap_url_for_x_outbound
+
+        overflow = wrap_url_for_x_outbound(overflow, gate_key=network_key or "mainhub")
+    return fit_plaintext_for_x(body, overflow_url=overflow)

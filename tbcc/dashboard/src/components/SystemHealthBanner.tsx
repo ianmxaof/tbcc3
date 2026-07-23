@@ -1,33 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import { api, type SystemHealth, type SystemHealthConflict } from "../api";
+import { useApiTarget } from "../context/ApiTargetContext";
 import { calmToastStyle, type ToastSeverityKind } from "../utils/severityToastColors";
 
-type Conflict = {
-  code: string;
-  severity: string;
-  message: string;
-  action?: string;
-  action_label?: string;
-};
-
-type FocusState = {
-  state?: { profile?: string; reason?: string; since?: string; auto?: boolean };
-  evaluation?: { suggested_profile?: string | null; lock_events?: number };
-};
-
-type SystemHealth = {
-  ok?: boolean;
-  conflicts?: Conflict[];
-  recommendations?: string[];
-  import_pipeline?: { active_jobs?: number };
-  ports?: Record<string, boolean | number>;
-  fixable_count?: number;
-  focus?: FocusState | null;
-};
-
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const DISMISS_KEY = "tbcc:dismissedHealthFingerprint";
 
-function conflictFingerprint(conflicts: Conflict[]): string {
+function conflictFingerprint(conflicts: SystemHealthConflict[]): string {
   return conflicts
     .map((c) => c.code)
     .sort()
@@ -65,6 +43,7 @@ function bannerSeverityKind(criticalCount: number, total: number): ToastSeverity
 }
 
 export function SystemHealthBanner() {
+  const { target } = useApiTarget();
   const [health, setHealth] = useState<SystemHealth | null>(null);
   const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(() =>
     readDismissedFingerprint()
@@ -73,8 +52,7 @@ export function SystemHealthBanner() {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/health/system`, { cache: "no-store" });
-      const data = (await r.json()) as SystemHealth;
+      const data = await api.healthSystem();
       setHealth(data);
       const fp = conflictFingerprint(data.conflicts || []);
       if (data.ok && (data.conflicts || []).length === 0) {
@@ -90,12 +68,15 @@ export function SystemHealthBanner() {
           {
             code: "api_unreachable",
             severity: "critical",
-            message: "TBCC API not reachable — restart from the TBCC tray or run start.ps1",
+            message:
+              target === "island"
+                ? "Island API not reachable — check api.powercore.app and TBCC_INTERNAL_API_KEY in tbcc/.env"
+                : "TBCC API not reachable — restart from the TBCC tray or run start.ps1",
           },
         ],
       });
     }
-  }, []);
+  }, [target]);
 
   useEffect(() => {
     void load();
@@ -106,12 +87,8 @@ export function SystemHealthBanner() {
   const applyFocus = async (profile: string) => {
     setFixing(`focus:${profile}`);
     try {
-      const r = await fetch(`${API}/ops/focus`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile, reason: "Dashboard focus apply" }),
-      });
-      if (r.ok) await load();
+      await api.opsFocus(profile);
+      await load();
     } catch {
       /* ignore */
     } finally {
@@ -122,24 +99,17 @@ export function SystemHealthBanner() {
   const runRemediate = async (codes?: string[]) => {
     setFixing(codes?.join(",") ?? "all");
     try {
-      const r = await fetch(`${API}/health/system/remediate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(codes?.length ? { codes } : {}),
-      });
-      if (r.ok) {
-        const data = (await r.json()) as { health?: SystemHealth };
-        if (data.health) {
-          setHealth(data.health);
-          const fp = conflictFingerprint(data.health.conflicts || []);
-          if (data.health.ok && (data.health.conflicts || []).length === 0) {
-            clearDismissedFingerprint();
-            setDismissedFingerprint(null);
-          } else if (fp && fp === readDismissedFingerprint()) {
-            setDismissedFingerprint(fp);
-          }
-        } else await load();
-      }
+      const data = await api.healthSystemRemediate(codes);
+      if (data.health) {
+        setHealth(data.health);
+        const fp = conflictFingerprint(data.health.conflicts || []);
+        if (data.health.ok && (data.health.conflicts || []).length === 0) {
+          clearDismissedFingerprint();
+          setDismissedFingerprint(null);
+        } else if (fp && fp === readDismissedFingerprint()) {
+          setDismissedFingerprint(fp);
+        }
+      } else await load();
     } catch {
       /* API may be down */
     } finally {

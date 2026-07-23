@@ -144,13 +144,39 @@ TIER_CARD_FRAMES: dict[int, tuple[str, str]] = {
 }
 
 
-def tier_card_frame_lines(tier: int) -> tuple[str, str]:
+# Default monospace width for tier opening frames (Telegram <code> blocks).
+TIER_CARD_FRAME_WIDTH = 32
+
+
+def build_centered_card_frame(label: str, *, width: int = TIER_CARD_FRAME_WIDTH) -> tuple[str, str]:
+    """Build ╔═══ label ═══╗ / ╚═══ │││ ═══╝ with label centered in fixed width."""
+    label = (label or "").strip().lower()
+    core = f" {label} " if label else " "
+    usable = max(8, width - 2)
+    if len(core) > usable:
+        core = core[: max(1, usable - 2)] + " "
+    pad = max(0, usable - len(core))
+    left = pad // 2
+    right = pad - left
+    top = f"╔{'═' * left}{core}{'═' * right}╗"
+    mid = "│││"
+    mid_pad = max(0, usable - len(mid))
+    ml = mid_pad // 2
+    mr = mid_pad - ml
+    bottom = f"╚{'═' * ml}{mid}{'═' * mr}╝"
+    return top, bottom
+
+
+def tier_card_frame_lines(tier: int, *, width: int = TIER_CARD_FRAME_WIDTH) -> tuple[str, str]:
     t = max(1, min(10, int(tier)))
-    return TIER_CARD_FRAMES.get(t, TIER_CARD_FRAMES[1])
+    from app.services.loot_tier_catalog import tier_meta
+
+    name = tier_meta(t).get("name") or f"tier-{t}"
+    return build_centered_card_frame(str(name), width=width)
 
 
-def wrap_tier_card_body(tier: int, body: str) -> str:
-    top, bottom = tier_card_frame_lines(tier)
+def wrap_tier_card_body(tier: int, body: str, *, width: int = TIER_CARD_FRAME_WIDTH) -> str:
+    top, bottom = tier_card_frame_lines(tier, width=width)
     return f"<code>{html.escape(top)}</code>\n{body}\n<code>{html.escape(bottom)}</code>"
 
 

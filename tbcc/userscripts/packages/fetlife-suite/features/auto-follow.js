@@ -14,7 +14,13 @@
   };
 
   const CFG_KEY = 'tbcc_fl_autofollow_cfg_v1';
-  const DEFAULT_CFG = { speed: 'fast', skipMale: true, autoStartOnKinksters: true };
+  const DEFAULT_CFG = {
+    speed: 'fast',
+    skipMale: true,
+    autoStartOnKinksters: true,
+    /** Open auto-follow panel on /search (global search) pages. */
+    openOnSearch: true,
+  };
 
   let MIN_DELAY = 50;
   let MAX_DELAY = 200;
@@ -59,6 +65,10 @@
   }
 
   function cardForButton(btn) {
+    return FL.genderFilter?.resolveMemberCard?.(btn) || fallbackCardForButton(btn);
+  }
+
+  function fallbackCardForButton(btn) {
     let el = btn;
     for (let i = 0; i < 8 && el; i++) {
       if (el.querySelector?.('a[href*="/users/"]')) return el;
@@ -69,11 +79,23 @@
 
   function findFollowButtons() {
     const cfg = loadCfg();
+    const gfCfg = FL.genderFilter?.loadCfg?.() || {};
     const buttons = [];
+    // Re-apply ASL hide before each scan so newly scrolled cards are gone.
+    try {
+      FL.genderFilter?.apply?.();
+    } catch (_) { /* ignore */ }
+
     document.querySelectorAll('button').forEach((btn) => {
       if (buttonLabel(btn) !== 'Follow') return;
-      if (cfg.skipMale && FL.genderFilter?.isMaleCard?.(cardForButton(btn))) return;
-      if (cardForButton(btn).getAttribute?.('data-tbcc-fl-gender-hidden') === '1') return;
+      const card = cardForButton(btn);
+      if (!card) return;
+      if (card.getAttribute?.('data-tbcc-fl-gender-hidden') === '1') return;
+      if (card.closest?.('[data-tbcc-fl-gender-hidden="1"]')) return;
+      if (cfg.skipMale) {
+        if (FL.genderFilter?.shouldSkipFollow?.(card, gfCfg)) return;
+        if (FL.genderFilter?.isFilteredCard?.(card)) return;
+      }
       buttons.push(btn);
     });
     return buttons;
@@ -81,8 +103,18 @@
 
   async function followUser(button, retryCount = 0) {
     if (buttonLabel(button) !== 'Follow') return false;
+    const cfg = loadCfg();
+    const gfCfg = FL.genderFilter?.loadCfg?.() || {};
+    const card = cardForButton(button);
+    if (cfg.skipMale && FL.genderFilter?.shouldSkipFollow?.(card, gfCfg)) {
+      return false;
+    }
     button.focus();
     await sleep(10 + Math.random() * 15);
+    // Final gate immediately before click — vitals may have painted late.
+    if (cfg.skipMale && FL.genderFilter?.shouldSkipFollow?.(cardForButton(button), gfCfg)) {
+      return false;
+    }
     button.click();
     await sleep(75 + Math.random() * 50);
     const newText = buttonLabel(button);
@@ -157,6 +189,11 @@
     return /\/kinksters/i.test(location.pathname);
   }
 
+  function isSearchPage() {
+    const path = location.pathname || '';
+    return /\/search/i.test(path) || /[?&]q=/i.test(location.search || '');
+  }
+
   FL.autoFollow = {
     SPEED_PRESETS,
     loadCfg,
@@ -167,6 +204,13 @@
     getCount: () => followCount,
     onProgress: null,
     onState: null,
+    /** @deprecated use FL.placeNav.goPlace */
+    goSanJoseFemales() {
+      return FL.placeNav?.goPlace?.('San Jose', { syncAsl: true });
+    },
+    goPlace(placeName, opts) {
+      return FL.placeNav?.goPlace?.(placeName, opts);
+    },
   };
 
   FL.features = FL.features || {};
@@ -176,18 +220,18 @@
       started = true;
       const cfg = loadCfg();
       applySpeed(cfg.speed);
-      // Auto-open suite overlay + optionally start on kinksters
-      if (isKinkstersPage()) {
-        setTimeout(() => {
+      const maybeOpen = () => {
+        if (isKinkstersPage()) {
           FL.overlay?.open?.('autofollow');
-          if (cfg.autoStartOnKinksters && !isRunning) {
-            startAutoFollow();
-          }
-        }, 800);
-      }
-      this._unsubSpa = S.spa.onChange(() => {
-        if (isKinkstersPage()) setTimeout(() => FL.overlay?.open?.('autofollow'), 400);
-      });
+          if (cfg.autoStartOnKinksters && !isRunning) startAutoFollow();
+          return;
+        }
+        if (cfg.openOnSearch !== false && isSearchPage()) {
+          FL.overlay?.open?.('autofollow');
+        }
+      };
+      setTimeout(maybeOpen, 800);
+      this._unsubSpa = S.spa.onChange(() => setTimeout(maybeOpen, 400));
     },
     stop() {
       started = false;

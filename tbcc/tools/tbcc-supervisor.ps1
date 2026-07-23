@@ -798,7 +798,7 @@ function Start-TbccSupervisorStatusCacheRefreshAsync {
   if (-not (Test-TbccSupervisorStatusCacheStale -MaxAgeSec $MaxAgeSec)) { return }
   $script:tbccStatusRefreshInFlight = $true
   $root = $tbccDir
-  [void][System.Threading.Tasks.Task]::Run({
+  [void][System.Threading.Tasks.Task]::Run([System.Action]{
     try {
       $cache = Update-TbccServiceStatusCache -TbccRoot $root -FullStack -MenuCatalog
       $ui = $script:supervisorForm

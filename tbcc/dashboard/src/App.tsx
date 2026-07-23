@@ -12,6 +12,7 @@ import { MasterArchivePanel } from "./panels/MasterArchivePanel";
 import { DashboardSettingsPanel } from "./panels/DashboardSettingsPanel";
 import { DashboardHeaderToolbar } from "./components/DashboardHeaderToolbar";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ApiTargetBanner } from "./components/ApiTargetBanner";
 import { SystemHealthBanner } from "./components/SystemHealthBanner";
 import { OpsAlertsPoller } from "./components/OpsAlertsPoller";
 import { ScrapeRunBanner } from "./components/ScrapeRunBanner";
@@ -36,6 +37,7 @@ function AppShell() {
     <BrowserRouter>
       <TbccClipboardInit />
       <div className="min-h-screen flex flex-col">
+        <ApiTargetBanner />
         <SystemHealthBanner />
         <OpsAlertsPoller />
         <ScrapeRunBanner />

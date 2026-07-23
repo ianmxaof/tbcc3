@@ -1,0 +1,37 @@
+OUTPUT: ONE image. Aspect ratio 1:1 square. Single complete AOF LOOT trading card. No grid. No filmstrip. No collage. No stacked panels. No sheet of mini-cards.
+
+LAYOUT LOCK — AOF LOOT GOD CARD (same chrome every tier; center sells value):
+FORMAT: 1:1 square trading-card.
+FRAME: dark chrome / wet vinyl border with thin neon accent (listed per tier).
+TOP-LEFT: small distressed "AOF LOOT" wordmark if readable — else blank metal plate.
+TOP-RIGHT: try exact "TIER N · WORLD" — if typography fails, blank dark plate (NO gibberish).
+CENTER WINDOW ONLY: EXPLICIT adult erotic SUBJECT fills the inner window (nudity/sex OK for adults).
+  Do not let the subject cover the frame, wordmark, tier plate, or bottom nameplate.
+OVERLAY: light ASCII / terminal residue in corners only (box-drawing, rarity pips, "ROLL OK") — never cover UI.
+BOTTOM BAND: try exact NAME + TAGLINE — if typography fails, leave a blank dark nameplate (NO fake letters).
+OPTIONAL BADGES: "RESTRICTED" / "SPOILER" / "ADULT LANE" as chrome only.
+NO QR. NO t.me / telegram.me links in the image.
+NO cartoon. NO childish / underage subjects. Gritty film grain OK.
+Adults only (18+).
+
+TIER BLOCK (spell exactly when text is attempted; blank plate OK if typography fails):
+TOP-RIGHT = TIER 9 · 6-1
+BOTTOM NAME = BLACKOUT
+TAGLINE = Near-mythic. Modifiers stack mean.
+NEON / FRAME ACCENT: ultraviolet slash on near-black
+MOOD CUE: mythic extreme
+LOOT VALUE BAND: godroll
+
+QUALITY BAND = NEAR-GODROLL: almost-surreal photoreal, UV wet chrome, mean modifiers, extreme consensual adult scene.
+
+SUBJECT (center window only — this is the loot, not a sealed pack tease):
+{near-black room ultraviolet slash across extreme consensual bondage scene, explicit anatomy|mythic blackout sex, UV wet chrome, mean modifiers stacked|glitch-lit extreme adult scene, almost unseen then revealed}
+
+VARIATION (optional Perchance braces — pick one path per Generate):
+Lighting: {harsh flash|fluorescent buzz|club neon split|rim-only darkness|warm practical lamp|ultraviolet accent}
+Camera: {phone selfie angle|voyeur doorway|tight window crop|medium card-hero|macro on skin inside window}
+Wear/finish: {sweat sheen|wet vinyl|messy sheets|steam film|fingerprint on chrome frame}
+
+Generate now. ONE card. Explicit center matches band godroll. Lock chrome. Prefer blank nameplate over gibberish.
+
+NEGATIVE: grid of cards, filmstrip, collage, stacked panels, sheet of mini-cards, gibberish text, fake latin letters, misspelled tier names, wrong tier number, QR codes, t.me links, telegram.me links, cartoon, anime, childish subjects, child, children, minor, underage, teen, loli, watermark, logo spam, blurry UI mush covering chrome, softcore-only when explicit was requested, frosted silhouette only, sealed void pack only, playful confetti without body

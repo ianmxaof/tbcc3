@@ -1,5 +1,7 @@
 # TBCC Remote Worker — offload Celery `scrape` queue to a cloud VM
 
+> **Not the revenue plane.** Payment + loot + API for money live on a **dedicated VPS** — see [`REVENUE_ISLAND.md`](REVENUE_ISLAND.md). Do not stack bots on this scrape micro.
+
 ## Setup vs routine launch
 
 | | **One-time setup** | **Routine launch** (every `start.ps1`) |

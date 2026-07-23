@@ -1,0 +1,412 @@
+{
+  "version": 2,
+  "lane": "loot-god",
+  "aspect": "1:1",
+  "shapeHint": "Square = 512x512",
+  "filenamePattern": "tier-{n}.png",
+  "outputBlock": "OUTPUT: ONE image. Aspect ratio 1:1 square. Single complete AOF LOOT trading card. No grid. No filmstrip. No collage.",
+  "borderStyle": "LAYOUT LOCK — AOF LOOT GOD CARD (identical chrome every tier; center sells value):\nFORMAT: 1:1 square trading-card.\nFRAME: dark chrome / wet vinyl border with thin neon accent (intensity listed per tier).\nTOP-LEFT: small distressed \"AOF LOOT\" wordmark if readable — else blank metal plate.\nTOP-RIGHT: try exact \"TIER N · WORLD\" — if typography fails, blank dark plate (NO gibberish letters).\nCENTER WINDOW ONLY: EXPLICIT adult erotic SUBJECT fills the inner window (nudity/sex OK); do not let the subject cover the frame or nameplate.\nOVERLAY: light ASCII / terminal residue in corners only (box-drawing, rarity pips, \"ROLL OK\") — never cover UI.\nBOTTOM BAND: try exact NAME + TAGLINE — if typography fails, blank dark nameplate (NO fake letters).\nOPTIONAL BADGES: \"RESTRICTED\" / \"SPOILER\" / \"ADULT LANE\" as chrome only.\nNO QR. NO t.me / telegram.me links in the image.\nNO cartoon. NO childish subjects. Gritty film grain OK. Adults only (18+).",
+  "borderOnlyPrompt": "CRITICAL OVERRIDE — EMPTY CARD FRAME ONLY.\nIgnore every character / NSFW / persona / lingerie / pose / extras dropdown. Those plugins MUST NOT appear in the image.\n\nOUTPUT: ONE image. Aspect ratio 1:1 square. PNG with TRANSPARENT (alpha) center AND transparent outer background.\n\nPURPOSE: reusable AOF LOOT card FRAME only — to be composited in code over any photo.\n\nDRAW ONLY THE CHROME:\n- Dark chrome / wet vinyl rectangular card border with thin neon accent (hot-pink + cyan).\n- TOP-LEFT: small distressed \"AOF LOOT\" wordmark on the frame.\n- TOP-RIGHT: empty tier plate (blank dark metal rectangle) for code to stamp later.\n- BOTTOM BAND: empty nameplate strip (blank) for code to stamp later.\n- Thin ASCII corner ticks only (no readable sentences).\n- OPTIONAL faint badges outlines: RESTRICTED / ADULT LANE as chrome lines only.\n\nCENTER WINDOW: must be FULLY TRANSPARENT (true alpha hole). If the model cannot output alpha, fill the center with pure chroma green #00FF00 flat (no texture) for keying.\nOUTER BACKGROUND outside the card: also transparent (or #00FF00 if alpha unsupported).\n\nDO NOT draw: any person, woman, man, face, body, skin, tits, nude, sex act, object, sealed pack, room, toilet, furniture, text inside the window, QR, t.me links, filled artwork in the center.\n\nSTYLE: photoreal UI chrome product shot, wet vinyl, sharp edges, clean cutout, empty window, 8K border detail.\nAVOID: opaque center fill (unless #00FF00 key), subjects, people, nudes, smut, martyrs, cartoon, blurry edges, wrong aspect.",
+  "borderOnlyNegative": "person, people, woman, man, girl, face, body, nude, nudes, naked, tits, breasts, pussy, penis, sex, porn, smut, lingerie, pose, toilet, room, furniture, sealed pack, object in center, opaque center, filled artwork, photograph of human, portrait, character, anime, cartoon, watermark, QR, t.me, collage, filmstrip, grid",
+  "borderOnlyDropdowns": {
+    "howManyPics": "4",
+    "shape": "Square",
+    "guidance": "8",
+    "artStyle": "Default",
+    "persona": "Default",
+    "ethnicity": "Default",
+    "age": "Default",
+    "hairColour": "Default",
+    "hairStyle": "Default",
+    "naughtyPose": "Default",
+    "expression": "Default",
+    "extras1": "Default",
+    "extras2": "Default",
+    "extras3": "Default",
+    "extras4": "Default",
+    "extras5": "Default",
+    "location": "Default",
+    "position": "Default",
+    "view": "Default",
+    "bodyType": "Default",
+    "lingerie": "Default",
+    "cosplay": "Default",
+    "underwear": "Default",
+    "dress": "Default",
+    "skirts": "Default",
+    "note": "All character plugins → Default so they cannot inject smut into a frame-only gen."
+  },
+  "qualityPrimerDefault": "QUALITY: adult explicit photoreal center art. Keep card chrome sharp. No minors. No cartoon.",
+  "qualityPrimersByBand": {
+    "trash": "QUALITY BAND = TRASH LOOT (tiers 1–2): phone-cam / dirty mirror energy, awkward crop, soft focus or slight blur OK, harsh flash or fluorescent buzz, imperfect skin, cheap motel/bathroom grit. Looks like throwaway garbage content — still explicit adult, still readable card chrome. NOT a masterpiece. NOT studio 8K.",
+    "low": "QUALITY BAND = LOW LOOT (tiers 3–4): amateur leak / locker-cam, decent enough to recognize bodies, still gritty, imperfect lighting, phone aesthetic. Explicit. Not premium.",
+    "mid": "QUALITY BAND = MID LOOT (tiers 5–6): club/VIP heat, cleaner lighting, wet vinyl, readable anatomy, hotter framing. Explicit. Rising value.",
+    "high": "QUALITY BAND = HIGH LOOT (tiers 7–8): cinematic adult production, sharp skin microtexture, strong neon, dense explicit action, premium filth.",
+    "godroll": "QUALITY BAND = GODROLL (tiers 9–10): hyper-realistic photographic masterpiece, almost-surreal photorealism, 8K detail, razor-sharp pores when visible, cinematic rim light, physically plausible fluids/chrome, max dopamine explicit finale."
+  },
+  "negative": "misspelled tier names, wrong tier number, QR codes, t.me links, telegram.me links, cartoon, anime, childish subjects, child, children, minor, underage, teen, loli, schoolgirl uniform on underage, gibberish HUD covering text, watermark, logo spam, duplicate panels, filmstrip, collage, cropped nameplate, blurry UI text on chrome, softcore-only when explicit was requested",
+  "generatorDefaults": {
+    "howManyPics": "15",
+    "shape": "Square",
+    "artStyle": "NSFW - Realistic",
+    "persona": "Default",
+    "ethnicity": "Default",
+    "age": "32",
+    "hairColour": "Default",
+    "hairStyle": "Default",
+    "imageSeed": ""
+  },
+  "generatorPresets": {
+    "1": {
+      "band": "trash",
+      "label": "Trash pool — bathroom garbage",
+      "guidance": "7",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Default",
+      "extras5": "Toilet",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Fill the trash pool. Ugly rooms, toilet grit, low guidance = messier. Keep chrome."
+    },
+    "2": {
+      "band": "trash",
+      "label": "Trash pool — voyeur peek",
+      "guidance": "8",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Default",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Doorway / mirror peek trash. Still low value."
+    },
+    "3": {
+      "band": "low",
+      "label": "Low — leak cam",
+      "guidance": "9",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Amateur leak energy. Better than trash, not VIP."
+    },
+    "4": {
+      "band": "low",
+      "label": "Low — throb macro",
+      "guidance": "10",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Default",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Body-heat closeups. Explicit anatomy."
+    },
+    "5": {
+      "band": "mid",
+      "label": "Mid — drip club",
+      "guidance": "11",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Sticky club mid-tier. Rising value."
+    },
+    "6": {
+      "band": "mid",
+      "label": "Mid — soak VIP",
+      "guidance": "11",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Coupled / denser haul. VIP corridor heat."
+    },
+    "7": {
+      "band": "high",
+      "label": "High — filth vault",
+      "guidance": "12",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Vault-open filth. Production value up."
+    },
+    "8": {
+      "band": "high",
+      "label": "High — ruin mess",
+      "guidance": "12",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "No soft landing. Dense explicit mess."
+    },
+    "9": {
+      "band": "godroll",
+      "label": "Near-mythic blackout",
+      "guidance": "13",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "UV mythic. High guidance locks the prompt."
+    },
+    "10": {
+      "band": "godroll",
+      "label": "Godroll max",
+      "guidance": "13",
+      "naughtyPose": "Filthy",
+      "expression": "Horny",
+      "extras1": "Natural tits",
+      "extras2": "Wet hair an body",
+      "extras3": "Default",
+      "extras4": "Side boob",
+      "extras5": "Default",
+      "location": "Default",
+      "position": "Default",
+      "view": "Default",
+      "bodyType": "Default",
+      "note": "Max tier. Keep 8K godroll primer."
+    }
+  },
+  "tiers": {
+    "1": {
+      "name": "Crumb",
+      "world": "1-1",
+      "tagline": "Barely a taste. Still counts.",
+      "neon": "dull grey-green neon, sparse dust accents",
+      "mood": "trash loot — still filthy"
+    },
+    "2": {
+      "name": "Peek",
+      "world": "1-2",
+      "tagline": "Skirt lifts. Nothing promised.",
+      "neon": "cool blue neon, voyeur edge glow",
+      "mood": "almost-caught trash peek"
+    },
+    "3": {
+      "name": "Leak",
+      "world": "1-3",
+      "tagline": "Someone left the door cracked.",
+      "neon": "sickly amber neon, steam haze",
+      "mood": "leaked file, low-tier heat"
+    },
+    "4": {
+      "name": "Throb",
+      "world": "2-1",
+      "tagline": "The room starts breathing with you.",
+      "neon": "pulse red neon, heartbeat rim",
+      "mood": "body heat rising"
+    },
+    "5": {
+      "name": "Drip",
+      "world": "2-2",
+      "tagline": "Mid-heat. You're not leaving yet.",
+      "neon": "hot-pink neon on wet vinyl",
+      "mood": "sticky club mid-tier"
+    },
+    "6": {
+      "name": "Soak",
+      "world": "3-1",
+      "tagline": "Mixed media. Density climbing.",
+      "neon": "orange blaze neon, VIP corridor",
+      "mood": "denser haul"
+    },
+    "7": {
+      "name": "Filth",
+      "world": "4-1",
+      "tagline": "Vault opens. Packs may follow.",
+      "neon": "toxic-green vault spill",
+      "mood": "forbidden archive"
+    },
+    "8": {
+      "name": "Ruin",
+      "world": "5-1",
+      "tagline": "Density spikes. No soft landing.",
+      "neon": "purple/gold chrome overload",
+      "mood": "victory mess"
+    },
+    "9": {
+      "name": "Blackout",
+      "world": "6-1",
+      "tagline": "Near-mythic. Modifiers stack mean.",
+      "neon": "ultraviolet slash on near-black",
+      "mood": "mythic extreme"
+    },
+    "10": {
+      "name": "Godroll",
+      "world": "★",
+      "tagline": "MAX TIER — screenshot the mess.",
+      "neon": "blood-red + gold chrome max",
+      "mood": "boss-drop jackpot"
+    }
+  },
+  "subjectSeedsByTier": {
+    "1": [
+      "ugly fluorescent bathroom, adult woman on dirty toilet lid, awkward phone flash, trashy nude, bored-horny face, litter on floor",
+      "cheap motel bathroom mirror selfie, adult woman half-nude, toothpaste spit on sink, bad angle, explicit but garbage vibe",
+      "filthy bathroom stall, adult woman pants around ankles, phone cam from above, harsh light, trash loot energy"
+    ],
+    "2": [
+      "door cracked, voyeur peek of adult woman lifting skirt no panties, cool blue hallway light, phone grain",
+      "mirror edge side-boob flash, adult woman startled, almost-caught, cheap apartment",
+      "window blinds peek, adult woman changing, sideboob + hip, trash voyeur still"
+    ],
+    "3": [
+      "locker room steam, adult woman nude towel dropped, amber light, leaked-nudes aesthetic",
+      "bathroom steam leak cam, adult athletic woman full frontal, wet tile",
+      "phone propped recording, adult woman stripping, amateur scandal heat"
+    ],
+    "4": [
+      "extreme close-up aroused wet pussy or erect cock, pulse-red practical light, precum/wet gloss",
+      "adult body heat macro, sweat sheen, throbbing need, shallow DOF",
+      "hands spreading, explicit genital focus, heartbeat mood"
+    ],
+    "5": [
+      "adult woman on black vinyl, legs spread dripping, hot-pink neon, club mid-tier",
+      "wet hair and body, natural tits, filthy pose on sticky couch, neon drip",
+      "club bathroom sink fuck tease escalating to explicit, mid heat"
+    ],
+    "6": [
+      "adult couple fucking VIP corridor, orange neon, penetration visible, velvet rope",
+      "soaked mixed fluids, denser haul energy, after-hours VIP",
+      "two adults against wall, clothes half-on, explicit density climbing"
+    ],
+    "7": [
+      "toxic-green vault light, adult woman on knees cum-covered, open mouth, tits glazed",
+      "RESTRICTED vault door open, explicit filth archive, packs implied behind",
+      "kneeling blowjob aftermath in vault spill light, high production filth"
+    ],
+    "8": [
+      "chaotic aftercare mess, creampie visible, purple/gold chrome, ruined makeup",
+      "no soft landing — fucked-raw adults, ticket stubs + fluids, density spike",
+      "orgy aftermath pile, explicit ruin, victory mess of bodies"
+    ],
+    "9": [
+      "near-black room ultraviolet slash across extreme consensual bondage scene, explicit anatomy",
+      "mythic blackout sex, UV wet chrome, mean modifiers stacked",
+      "glitch-lit extreme adult scene, almost unseen then revealed"
+    ],
+    "10": [
+      "godroll finale — adult woman gold body paint, multi-partner cumshot, blood-red + gold chrome",
+      "max tier screenshot-the-mess orgy energy, explicit jackpot",
+      "boss-drop porn flex, covered in cum, victory smirk, 8K chrome"
+    ]
+  },
+  "subjectSeeds": [
+    "adult woman 30s nude, bedroom phone-cam, masturbating, looking at viewer, explicit",
+    "adult couple fucking against frosted hotel glass, steam, neon bleed, penetration visible",
+    "extreme close-up wet pussy and fingers, adult, sweat sheen, shallow DOF",
+    "adult woman arched on black vinyl couch, full nude, club neon, legs spread",
+    "voyeur doorway: adult woman bent over undressing, pussy/ass visible, cool blue light",
+    "adult woman rain-soaked, dress hiked, fucking on chrome car hood, night street",
+    "locker-room steam, adult athletic woman nude, towel dropped, full frontal, amber light",
+    "adult woman on knees, blowjob POV, velvet, gold jewelry, cinematic rim light, spit strings",
+    "bath overflow, adult woman fucking in tub, water + fluids, porcelain tile",
+    "adult woman pressed to shower glass, being fucked from behind, condensation, UV accent",
+    "messy hotel sheets, adult woman creampie afterglow, cum on thighs, warm lamp",
+    "adult woman latex gloves, open shirt, tits out, vault-green spill, fingering",
+    "two adult women scissoring / oral, club purple/gold chrome reflections, explicit",
+    "adult woman doggy, spine sweat, blackout ultraviolet slash, anal or vaginal penetration",
+    "godroll: adult woman gold body paint, covered in cum, multi-partner aftermath, victory smirk"
+  ],
+  "deltaBanks": {
+    "lighting": [
+      "soft window daylight, gentle fill",
+      "harsh practical lamp from the side",
+      "club neon magenta/cyan split",
+      "candle-warm low key",
+      "cold moonlight through blinds",
+      "fluorescent bathroom buzz",
+      "gold rim + smoke haze",
+      "ultraviolet accent on wet chrome"
+    ],
+    "pose": [
+      "three-quarter facing viewer",
+      "over-the-shoulder glance",
+      "reclined hips toward camera",
+      "standing weight on one hip",
+      "kneeling upright, hands on thighs",
+      "pressed against glass",
+      "lying prone, chin on forearms",
+      "seated edge-of-bed lean"
+    ],
+    "framing": [
+      "tight portrait crop inside the card window",
+      "medium shot waist-up",
+      "environmental wide inside the window only",
+      "detail crop (hands/skin/fabric)",
+      "low-angle hero framing",
+      "high-angle voyeur framing"
+    ],
+    "wardrobe": [
+      "nothing — fully nude",
+      "open crotch lingerie only",
+      "wet white shirt cling, no bottoms",
+      "latex harness, genitals exposed",
+      "jewelry and heels only",
+      "sports bra mid-strip, bottoms off",
+      "ripped fishnets crotchless",
+      "velvet dress hiked to waist, no panties"
+    ]
+  }
+}

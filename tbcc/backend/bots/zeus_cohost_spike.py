@@ -1,13 +1,13 @@
-"""Opt-in Zeus co-host spike: secretary + llm_chat on one event loop.
+"""Opt-in Zeus co-host: secretary + macro_search on one event loop (Phase 2).
 
-NOT wired into tray. Do not run while tray ``llm_chat`` (or a second secretary)
-is already polling — same token → Telegram 409.
+Tray-wired when ``TBCC_ZEUS_COHOST_SPIKE=1`` (secretary service runs this module).
+Keep tray ``macro_search`` Off while co-hosted — same token → Telegram 409.
 
   set TBCC_ZEUS_COHOST_SPIKE=1
   cd tbcc/backend
   python -m bots.zeus_cohost_spike
 
-Stop with Ctrl+C.
+Stop with Ctrl+C. Or enable via tray secretary after setting the env flag.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if str(_backend_root) not in sys.path:
 
 from bots import __init__ as _bots_env  # noqa: F401 — loads tbcc/.env
 
-from bots.llm_chat_bot import build_application as build_llm_chat
+from bots.macro_search_bot import build_application as build_macro_search
 from bots.secretary_bot import build_application as build_secretary
 from bots.zeus_multi_app import run_applications_sync
 
@@ -38,25 +38,26 @@ def main() -> None:
     flag = (os.getenv("TBCC_ZEUS_COHOST_SPIKE") or "").strip().lower()
     if flag not in ("1", "true", "yes", "on"):
         print(
-            "Refusing to start: set TBCC_ZEUS_COHOST_SPIKE=1 to run the co-host spike.\n"
-            "Stop tray llm_chat (and any duplicate secretary) first to avoid 409."
+            "Refusing to start: set TBCC_ZEUS_COHOST_SPIKE=1 to run the co-host.\n"
+            "Stop tray macro_search (standalone) first to avoid 409."
         )
         raise SystemExit(2)
 
     secretary = build_secretary()
-    llm = build_llm_chat()
+    macro = build_macro_search()
     if secretary is None:
         print("Missing TBCC_SECRETARY_BOT_TOKEN")
         raise SystemExit(2)
-    if llm is None:
-        print("Missing TBCC_LLM_CHAT_BOT_TOKEN — co-host spike needs a second Bot-API token")
+    if macro is None:
+        print("Missing TBCC_MACRO_SEARCH_BOT_TOKEN — co-host needs macro_search token")
         raise SystemExit(2)
 
     logger.info(
-        "Zeus co-host spike: secretary + llm_chat on one process (not tray-managed)"
+        "Zeus co-host: secretary + macro_search on one process "
+        "(tray: keep macro_search Off)"
     )
-    print("Co-host running (secretary + llm_chat). Ctrl+C to stop.")
-    run_applications_sync([secretary, llm])
+    print("Co-host running (secretary + macro_search). Ctrl+C to stop.")
+    run_applications_sync([secretary, macro])
 
 
 if __name__ == "__main__":

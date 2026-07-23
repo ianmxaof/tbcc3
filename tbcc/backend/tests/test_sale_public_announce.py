@@ -43,6 +43,37 @@ def test_sale_announce_enabled_default_on(monkeypatch):
     assert sale_announce_enabled() is False
 
 
+def test_sale_announce_skip_keys(monkeypatch):
+    from app.services import sale_public_announce as spa
+
+    monkeypatch.delenv("TBCC_SALE_ANNOUNCE_SKIP_KEYS", raising=False)
+    assert spa.sale_announce_skip_keys() == set()
+    monkeypatch.setenv("TBCC_SALE_ANNOUNCE_SKIP_KEYS", "main, packs")
+    assert spa.sale_announce_skip_keys() == {"main", "packs"}
+
+
+def test_announce_network_respects_skip_keys(monkeypatch, db):
+    from app.data.aof_network import MAIN_GROUP_IDENT
+    from app.models.channel import Channel
+    from app.services.sale_public_announce import announce_sale_to_telegram_network
+
+    main = Channel(name="Main", identifier=MAIN_GROUP_IDENT)
+    ai = Channel(name="AI", identifier="-1003997525573")
+    db.add_all([main, ai])
+    db.commit()
+
+    monkeypatch.setenv("TBCC_SALE_ANNOUNCE_SKIP_KEYS", "main")
+    with patch(
+        "app.services.sale_public_announce.queue_post_scheduler",
+        return_value={"ok": True},
+    ) as q:
+        out = announce_sale_to_telegram_network(db, html_body="<b>hi</b>")
+    keys = {row["key"] for row in out.get("queued") or []}
+    assert "main" not in keys
+    assert "ai" in keys
+    assert q.called
+
+
 def test_queue_public_sale_announce_starts_thread(monkeypatch):
     monkeypatch.setenv("TBCC_SALE_ANNOUNCE_ENABLED", "1")
     started: list[str] = []

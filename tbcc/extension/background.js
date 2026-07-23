@@ -9,7 +9,8 @@ importScripts(
   "tbcc-webp-convert.js",
   "tbcc-extension-modules.js",
   "launch-full-stack.js",
-  "severity-toast-colors.js"
+  "severity-toast-colors.js",
+  "tbcc-zip-naming.js"
 );
 
 const API_URL = "http://localhost:8000/import/url";
@@ -62,6 +63,22 @@ const STORAGE_LAST_COPIED_USERNAME = "tbccLastCopiedUsername";
 const STORAGE_PAGE_MENU_ITEMS = "tbccPageMenuItems";
 const TBCC_CTX_MENU_SYNC_ALARM = "tbcc-ctx-menu-sync";
 const STORAGE_AOF_POOLS = "tbccAofPoolsCache";
+const STORAGE_STORAGE_HUB_TOPICS = "tbccStorageHubTopicsCache";
+/** Offline fallback — keep in sync with aof_storage_hub_map.AOF_STORAGE_TOPIC_MAP */
+const TBCC_STORAGE_HUB_TOPICS_FALLBACK = [
+  { network_key: "abg", message_thread_id: 3387, short_label: "ABG/LBFM", menu_label: "🥡 ABG/LBFM" },
+  { network_key: "ai", message_thread_id: 5978, short_label: "AI", menu_label: "🤖 AI" },
+  { network_key: "ass", message_thread_id: 3779, short_label: "ASS", menu_label: "🍑 ASS" },
+  { network_key: "big_tits", message_thread_id: 5752, short_label: "BIG TITS", menu_label: "🍒 BIG TITS" },
+  { network_key: "blowjob", message_thread_id: 9505, short_label: "BLOWJOB", menu_label: "💋 BLOWJOB" },
+  { network_key: "bop", message_thread_id: 9501, short_label: "BOP", menu_label: "🤠 BOP" },
+  { network_key: "full_length", message_thread_id: 11281, short_label: "FULL LENGTH", menu_label: "🎬 FULL LENGTH" },
+  { network_key: "goon", message_thread_id: 2934, short_label: "GOON", menu_label: "🤡 GOON" },
+  { network_key: "milf", message_thread_id: 5972, short_label: "MILF/GILF", menu_label: "🧜‍♀️ MILF/GILF" },
+  { network_key: "packs", message_thread_id: 5980, short_label: "PACKS", menu_label: "📦 PACKS" },
+  { network_key: "taboo", message_thread_id: 2919, short_label: "TABOO 18+", menu_label: "🔞 TABOO 18+" },
+  { network_key: "voyeur", message_thread_id: 3058, short_label: "PUBLIC / VOYEUR", menu_label: "👀 PUBLIC / VOYEUR" },
+];
 const STORAGE_MODEL_SEARCH_HISTORY = "tbccModelSearchHistory";
 /** Per-source hit/miss tallies from macro probes. */
 const STORAGE_MODEL_SEARCH_SITE_STATS = "tbccModelSearchSiteStats";
@@ -943,7 +960,7 @@ function tbccFetchTimeoutMs(url) {
   return 45000;
 }
 
-/** Comic Looms stall timeout — abort if no bytes arrive for stallMs (resets per chunk). */
+/** Stall timeout — abort if no bytes arrive for stallMs (resets per chunk). */
 async function readResponseArrayBufferWithStall(res, stallMs) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   if (!res.body || typeof res.body.getReader !== "function") return await res.arrayBuffer();
@@ -1584,7 +1601,7 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId, opts) {
     if (h.includes("onlyfans.com")) base.Referer = "https://onlyfans.com/";
     else if (/(^|\.)fetlife\.com$/i.test(h) || h.includes("fetlife")) base.Referer = "https://fetlife.com/";
     else if (h.includes("motherless") || h.endsWith("motherlessmedia.com"))
-      base.Referer = "https://motherless.com/";
+      base.Referer = h.includes(".xxx") ? "https://motherless.xxx/" : "https://motherless.com/";
     else if (/(^|\.)coomer\.(st|party)$/.test(h) || /^n\d+\.coomer\.(st|party)$/i.test(h))
       base.Referer = "https://coomer.st/";
     else if (/(^|\.)kemono\.(party|su|si)$/.test(h) || /^n\d+\.kemono\.(party|su|si)$/i.test(h))
@@ -1930,14 +1947,240 @@ async function fetchCoomerPostJson(postPageUrl) {
   return await res.json();
 }
 
+
+function tbccIsMotherlessHostName(hostname) {
+  return /(^|\.)motherless\.(com|xxx)$/i.test(String(hostname || ""));
+}
+
+function tbccIsMotherlessGalleryPageUrl(raw) {
+  try {
+    const u = new URL(String(raw || "").trim());
+    if (!tbccIsMotherlessHostName(u.hostname)) return false;
+    const path = u.pathname.replace(/\/+$/, "") || "/";
+    // /G2949A47, /G2949A47/ITEM, /gallery/…
+    if (/^\/G[A-Za-z0-9]{4,}(\/|$)/i.test(path)) return true;
+    if (/^\/gallery\//i.test(path)) return true;
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Collect Motherless gallery media ids from the open tab (nested /Gxxx/MEDIA or /MEDIA links).
+ */
+async function tbccCollectMotherlessGalleryMediaFromTab(tabId) {
+  if (tabId == null) return { ok: false, error: "No tab", items: [] };
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["capture.js"],
+    });
+  } catch (_) {}
+  const inj = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const reserved = {
+        g: 1,
+        images: 1,
+        groups: 1,
+        videos: 1,
+        search: 1,
+        members: 1,
+        login: 1,
+        register: 1,
+        upload: 1,
+        rules: 1,
+        privacy: 1,
+        dmca: 1,
+        help: 1,
+        faq: 1,
+        about: 1,
+        contact: 1,
+        categories: 1,
+        tags: 1,
+        boards: 1,
+        store: 1,
+        chat: 1,
+        galleries: 1,
+        shouts: 1,
+        girls: 1,
+        porn: 1,
+      };
+      const path = (location.pathname || "").replace(/\/+$/, "");
+      const galleryMatch = path.match(/^\/(G[A-Za-z0-9]{4,})/i);
+      const galleryId = galleryMatch ? galleryMatch[1].toUpperCase() : "";
+      const out = [];
+      const seen = new Set();
+      const pushId = (mediaId, href, thumb) => {
+        const id = String(mediaId || "").trim();
+        if (!id || id.length < 4) return;
+        if (reserved[id.toLowerCase()]) return;
+        // Skip bare gallery root id (G…) when it matches this gallery
+        if (galleryId && id.toUpperCase() === galleryId) return;
+        if (/^G[A-Za-z0-9]{4,}$/i.test(id) && !href.includes("/" + id + "/") && href.replace(/\/+$/, "").endsWith("/" + id)) {
+          // likely another gallery card — skip
+          if (/^G/i.test(id)) return;
+        }
+        const key = id.toUpperCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        const detailUrl = location.origin + "/" + id + "?full";
+        out.push({
+          mediaId: id,
+          motherlessDetailUrl: detailUrl,
+          url: thumb || detailUrl,
+          mediaType: "image",
+          source: "motherless:gallery",
+        });
+      };
+      document.querySelectorAll("a[href]").forEach((a) => {
+        let href = a.getAttribute("href") || "";
+        try {
+          href = new URL(href, location.href).pathname;
+        } catch (_) {
+          return;
+        }
+        // /Gxxx/MEDIAID or /MEDIAID
+        let m = href.match(/^\/(G[A-Za-z0-9]{4,})\/([A-Za-z0-9]{4,})\/?$/i);
+        if (m) {
+          pushId(m[2], href, (a.querySelector("img") && a.querySelector("img").src) || "");
+          return;
+        }
+        m = href.match(/^\/([A-Za-z0-9]{6,})\/?$/i);
+        if (m) {
+          const id = m[1];
+          if (/^G/i.test(id)) return; // gallery hub cards
+          pushId(id, href, (a.querySelector("img") && a.querySelector("img").src) || "");
+        }
+      });
+      // thumbnail containers with data-codename
+      document.querySelectorAll("[data-image-view-modal-codename], [data-codename]").forEach((el) => {
+        const id = el.getAttribute("data-image-view-modal-codename") || el.getAttribute("data-codename") || "";
+        if (/^[A-Za-z0-9]{4,}$/.test(id) && !/^G/i.test(id)) {
+          const img = el.querySelector && el.querySelector("img");
+          pushId(id, "/" + id, (img && img.src) || "");
+        }
+      });
+      return {
+        ok: true,
+        galleryId,
+        pageUrl: location.href.split("#")[0],
+        items: out,
+      };
+    },
+  });
+  const res = inj && inj[0] && inj[0].result;
+  if (!res || !res.ok) return { ok: false, error: "Collect failed", items: [] };
+  return res;
+}
+
+async function tbccResolveMotherlessDetailUrls(detailUrls) {
+  const unique = [...new Set((detailUrls || []).filter(Boolean))];
+  const map = {};
+  const CONC = 4;
+  for (let i = 0; i < unique.length; i += CONC) {
+    const chunk = unique.slice(i, i + CONC);
+    await Promise.all(
+      chunk.map(async (du) => {
+        try {
+          const html = await fetchMotherlessHtml(du);
+          const media = parseMotherlessMediaFromHtml(html);
+          if (media) map[du] = media;
+        } catch (e) {
+          console.warn("tbccResolveMotherlessDetailUrls", du, e);
+        }
+      })
+    );
+  }
+  return map;
+}
+
+/**
+ * mode: "zip" | "download"
+ */
+async function tbccMotherlessGalleryBulkFromTab(tab, mode) {
+  if (!tab || tab.id == null) throw new Error("No tab");
+  const pageUrl = String(tab.url || "").trim();
+  if (!tbccIsMotherlessGalleryPageUrl(pageUrl)) {
+    throw new Error("Open a Motherless gallery page (/G… ) first.");
+  }
+  notify("TBCC Motherless", mode === "zip" ? "Collecting gallery for ZIP…" : "Collecting gallery for download…");
+  const collected = await tbccCollectMotherlessGalleryMediaFromTab(tab.id);
+  const rawItems = (collected && collected.items) || [];
+  if (!rawItems.length) throw new Error("No media found on this gallery page.");
+
+  const detailUrls = rawItems.map((it) => it.motherlessDetailUrl).filter(Boolean);
+  notify("TBCC Motherless", `Resolving ${detailUrls.length} media URL(s)…`);
+  const map = await tbccResolveMotherlessDetailUrls(detailUrls);
+
+  const items = [];
+  const seen = new Set();
+  for (const it of rawItems) {
+    const resolved = map[it.motherlessDetailUrl];
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+    const isVideo = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(resolved);
+    items.push({
+      url: resolved,
+      thumbUrl: it.url && it.url !== it.motherlessDetailUrl ? it.url : undefined,
+      mediaType: isVideo ? "video" : "image",
+      tagName: isVideo ? "video" : "img",
+      source: "motherless:gallery",
+      width: 0,
+      height: 0,
+      naturalWidth: 0,
+      naturalHeight: 0,
+      tbccZipProfileName: collected.galleryId || "motherless",
+    });
+  }
+  if (!items.length) throw new Error("Could not resolve any full media URLs (login/CDN?).");
+
+  const mergePayload = {
+    action: "tbcc-gallery-merge-harvest",
+    items,
+    sourceUrl: collected.pageUrl || pageUrl,
+    adapter: "motherless-gallery",
+    autoZip: mode === "zip",
+    autoDownload: mode === "download",
+    mergeId: "mlg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    selectAll: true,
+    sourceTabId: tab.id,
+  };
+
+  tbccTryOpenGallerySidePanelSync(tab);
+  try {
+    await chrome.storage.session.set({ tbccPendingGalleryMerge: mergePayload });
+  } catch (_) {}
+  tbccPostGalleryPanelMessage(mergePayload);
+
+  notify(
+    "TBCC Motherless",
+    mode === "zip"
+      ? `ZIP packing ${items.length} file(s) — check gallery panel.`
+      : `Downloading ${items.length} file(s) — check gallery panel.`
+  );
+  return { ok: true, count: items.length, galleryId: collected.galleryId || "" };
+}
+
 async function fetchMotherlessHtml(detailUrl) {
   let u = detailUrl.trim();
   if (u.indexOf("?") < 0) u = `${u}?full`;
   else if (u.toLowerCase().indexOf("full") < 0) u = `${u}${u.includes("?") ? "&" : "?"}full`;
-  const cookieHeader = await mergeCookiesForUrls([u, "https://motherless.com/", "https://www.motherless.com/"]);
+  const cookieHeader = await mergeCookiesForUrls([
+    u,
+    "https://motherless.com/",
+    "https://www.motherless.com/",
+    "https://motherless.xxx/",
+    "https://www.motherless.xxx/",
+  ]);
+  let referer = "https://motherless.com/";
+  try {
+    if (/\.xxx$/i.test(new URL(u).hostname || "")) referer = "https://motherless.xxx/";
+  } catch (_) {}
   const headers = {
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    Referer: "https://motherless.com/",
+    Referer: referer,
     "User-Agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   };
@@ -2980,6 +3223,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
     return true;
   }
+  if (msg.action === "tbcc-motherless-gallery-bulk") {
+    (async () => {
+      try {
+        let tab = _sender && _sender.tab;
+        if (!tab || tab.id == null) {
+          const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          tab = active;
+        }
+        const mode = msg.mode === "download" ? "download" : "zip";
+        const r = await tbccMotherlessGalleryBulkFromTab(tab, mode);
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
   if (msg.action === "tbcc-x-profile-merge-to-gallery") {
     let panelOpenErr = null;
     if (msg.openPanel !== false) {
@@ -3031,7 +3291,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.action === "tbcc-sync-context-menu-settings") {
-    void Promise.all([tbccSyncExtensionContextMenuSettings(), tbccSyncAofPools()]).then(([ok]) =>
+    void Promise.all([
+      tbccSyncExtensionContextMenuSettings(),
+      tbccSyncAofPools(),
+      tbccSyncStorageHubTopics(),
+    ]).then(([ok]) =>
       sendResponse({ ok: !!ok })
     );
     return true;
@@ -3398,6 +3662,56 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         sendResponse({ ok: true, ...data });
       } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-list-storage-hub-topics") {
+    (async () => {
+      try {
+        await tbccSyncStorageHubTopics();
+        const topics = await tbccGetStorageHubTopics();
+        sendResponse({ ok: true, topics });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e), topics: TBCC_STORAGE_HUB_TOPICS_FALLBACK });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-page-menu-storage-hub") {
+    (async () => {
+      try {
+        const url = String(msg.url || "").trim();
+        const tid = parseInt(msg.messageThreadId, 10);
+        if (!url) {
+          sendResponse({ ok: false, error: "No URL." });
+          return;
+        }
+        if (!Number.isFinite(tid) || tid < 1) {
+          sendResponse({ ok: false, error: "Invalid topic." });
+          return;
+        }
+        const tabId =
+          _sender && _sender.tab && _sender.tab.id != null
+            ? _sender.tab.id
+            : msg.tabId != null
+              ? msg.tabId
+              : null;
+        const result = await tbccSendUrlToStorageHubTopic({
+          url,
+          messageThreadId: tid,
+          networkKey: msg.networkKey || "",
+          refererPageUrl: msg.refererPageUrl || (_sender && _sender.tab && _sender.tab.url) || "",
+          tabId,
+        });
+        const topics = await tbccGetStorageHubTopics();
+        const row = topics.find((t) => parseInt(t.message_thread_id, 10) === tid);
+        const label = (row && (row.short_label || row.menu_label)) || `topic ${tid}`;
+        notify("TBCC Storage Hub", `Sent → ${label}`);
+        sendResponse({ ok: true, ...result, label });
+      } catch (e) {
+        notify("TBCC Storage Hub failed", String((e && e.message) || e));
         sendResponse({ ok: false, error: String(e.message || e) });
       }
     })();
@@ -3794,16 +4108,78 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           return;
         }
         const url = normalizeTbccMediaUrlForImport(rawUrl);
-        const fn = String(msg.filename || "media")
-          .replace(/[\\/:*?"<>|\r\n]/g, "_")
-          .slice(0, 120);
-        const filename = fn.indexOf("tbcc/") === 0 ? fn : `tbcc/${fn}`;
-        const dlOpts = { filename, saveAs: false, conflictAction: "uniquify" };
+        const referer =
+          String(msg.refererPageUrl || "").trim() ||
+          (_sender && _sender.tab && _sender.tab.url) ||
+          "https://x.com/";
+        const kind = tbccGuessMediaKind(url, "");
+        const extHint =
+          kind === "video"
+            ? "mp4"
+            : (() => {
+                try {
+                  const p = new URL(url).pathname.toLowerCase();
+                  if (/\.png(\?|$)/i.test(p)) return "png";
+                  if (/\.webp(\?|$)/i.test(p)) return "webp";
+                  if (/\.gif(\?|$)/i.test(p)) return "gif";
+                } catch (_) {}
+                return "jpg";
+              })();
+        const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+        const profileHint = String(msg.profileHint || "").trim().replace(/^@+/, "");
+        let profile =
+          (naming && naming.sanitizeSegment ? naming.sanitizeSegment(profileHint) : "") ||
+          (naming && naming.profileNameFromSourceUrl
+            ? naming.profileNameFromSourceUrl(referer) || naming.profileNameFromSourceUrl(url)
+            : "") ||
+          "media";
+        const indexHint = Number(msg.indexHint);
+        const index =
+          Number.isFinite(indexHint) && indexHint >= 1
+            ? Math.floor(indexHint)
+            : Math.floor(10000 + Math.random() * 90000);
+        const fileName =
+          naming && naming.buildZipFilename
+            ? naming.buildZipFilename(naming.DEFAULT_TEMPLATE, { name: profile, index, ext: extHint })
+            : tbccBuildAofDownloadName(url, referer, extHint);
+        const prefix = await tbccGetWatchInboxPrefix();
+        const relMedia = `${prefix}/${fileName}`.replace(/\/+/g, "/");
+        const sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
+        const relSidecar = `${prefix}/${sidecarName}`.replace(/\/+/g, "/");
+        const meta = {
+          tags: [],
+          source_url: url,
+          page_url: referer,
+          aof_preprocessed: false,
+          watermark_applied: false,
+          defer_preprocess: true,
+          name: profile,
+          source_file: fileName,
+          route_hint: "x_feed_download",
+        };
+        const dlOpts = { filename: relMedia, saveAs: false, conflictAction: "uniquify" };
+
+        async function writeInboxSidecar() {
+          try {
+            const metaJson = JSON.stringify(meta, null, 2);
+            const metaDataUrl =
+              "data:application/json;base64," + btoa(unescape(encodeURIComponent(metaJson)));
+            await tbccChromeDownloadsDownload({
+              url: metaDataUrl,
+              filename: relSidecar,
+              saveAs: false,
+              conflictAction: "uniquify",
+            });
+          } catch (sideErr) {
+            console.warn("[TBCC] x feed inbox sidecar skipped", sideErr);
+          }
+        }
 
         // Path A — direct CDN URL (XEnhancer GM_download parity; works in MV3 SW).
         try {
           const id = await tbccChromeDownloadsDownload({ ...dlOpts, url });
-          sendResponse({ ok: true, downloadId: id, via: "direct" });
+          await writeInboxSidecar();
+          sendResponse({ ok: true, downloadId: id, via: "direct", filename: relMedia });
           return;
         } catch (directErr) {
           console.warn("[TBCC] x direct download failed, trying session fetch", directErr);
@@ -3811,10 +4187,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
         // Path B — session fetch then data: URL (no createObjectURL in service workers).
         const tabId = await tbccResolveSessionTabId(_sender, msg);
-        const referer =
-          String(msg.refererPageUrl || "").trim() ||
-          (_sender && _sender.tab && _sender.tab.url) ||
-          "https://x.com/";
         const ab = await fetchUrlWithBrowserSession(url, referer, tabId, { stallTimeoutMs: 45000 });
         const prep = await tbccPrepareImportArrayBuffer(ab, url);
         const dataUrl = tbccArrayBufferToDataUrl(prep.buffer, prep.type);
@@ -3827,7 +4199,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           return;
         }
         const id = await tbccChromeDownloadsDownload({ ...dlOpts, url: dataUrl });
-        sendResponse({ ok: true, downloadId: id, via: "data-url" });
+        await writeInboxSidecar();
+        sendResponse({ ok: true, downloadId: id, via: "data-url", filename: relMedia });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
       }
@@ -3950,6 +4323,136 @@ async function tbccSyncAofPools() {
   }
 }
 
+async function tbccSyncStorageHubTopics() {
+  try {
+    const bases = await tbccResolveApiBases();
+    for (const base of bases) {
+      try {
+        const r = await fetch(base.replace(/\/+$/, "") + "/extension/storage-hub", { cache: "no-store" });
+        if (!r.ok) continue;
+        const data = await r.json();
+        const topics = Array.isArray(data.topics) ? data.topics : [];
+        if (!topics.length) continue;
+        await chrome.storage.local.set({
+          [STORAGE_STORAGE_HUB_TOPICS]: topics,
+          tbccStorageHubTopicsSyncedAt: Date.now(),
+        });
+        installContextMenus();
+        return true;
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function tbccGetStorageHubTopics() {
+  try {
+    const data = await chrome.storage.local.get(STORAGE_STORAGE_HUB_TOPICS);
+    const topics = Array.isArray(data[STORAGE_STORAGE_HUB_TOPICS]) ? data[STORAGE_STORAGE_HUB_TOPICS] : [];
+    if (topics.length) return topics;
+  } catch (_) {}
+  return TBCC_STORAGE_HUB_TOPICS_FALLBACK.slice();
+}
+
+function tbccInstallStorageHubContextMenus(mac) {
+  mac({
+    id: "tbccStorageHubParent",
+    title: "TBCC: Send to Storage Hub",
+    contexts: ["image", "video", "link"],
+  });
+  void tbccGetStorageHubTopics().then((topics) => {
+    for (const t of topics) {
+      const tid = parseInt(t.message_thread_id, 10);
+      if (!Number.isFinite(tid) || tid < 1) continue;
+      const title = String(t.menu_label || t.short_label || t.topic_title || `Topic ${tid}`).slice(0, 64);
+      mac({
+        id: `tbccStorageHub_${tid}`,
+        parentId: "tbccStorageHubParent",
+        title,
+        contexts: ["image", "video", "link"],
+      });
+    }
+    if (!topics.length) {
+      mac({
+        id: "tbccStorageHub_empty",
+        parentId: "tbccStorageHubParent",
+        title: "(No Storage Hub topics)",
+        contexts: ["image", "video", "link"],
+        enabled: false,
+      });
+    }
+  });
+}
+
+/**
+ * Fetch media → optional watermark → POST to Storage Hub forum topic.
+ */
+async function tbccSendUrlToStorageHubTopic(opts) {
+  const raw = String((opts && opts.url) || "").trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) throw new Error("Only http(s) media URLs supported.");
+  const tid = parseInt(opts && opts.messageThreadId, 10);
+  if (!Number.isFinite(tid) || tid < 1) throw new Error("Invalid Storage Hub topic id.");
+  let downloadUrl = normalizeTbccMediaUrlForImport(raw);
+  const refererPageUrl = String((opts && opts.refererPageUrl) || "").trim();
+  const tabId = opts && opts.tabId != null ? opts.tabId : null;
+  const networkKey = String((opts && opts.networkKey) || "").trim();
+
+  let ab = await fetchUrlWithBrowserSession(downloadUrl, refererPageUrl || downloadUrl, tabId, {
+    stallTimeoutMs: 45000,
+  });
+  if (!ab || !ab.byteLength) throw new Error("Empty media body");
+  let prep;
+  try {
+    prep = await tbccPrepareImportArrayBuffer(ab, downloadUrl);
+  } catch (_) {
+    prep = { buffer: ab, type: "application/octet-stream" };
+  }
+  let body = (prep && prep.buffer) || ab;
+  const mime = (prep && prep.type) || "";
+  const kind = tbccGuessMediaKind(downloadUrl, mime);
+  let skipWatermark = false;
+  try {
+    const wm = await tbccApplySaveAofWatermark(body, kind, mime);
+    if (wm && wm.buffer && wm.buffer.byteLength) {
+      body = wm.buffer;
+      skipWatermark = true; // already burned in
+    }
+  } catch (e) {
+    console.warn("[TBCC] Storage Hub pre-watermark skipped", e);
+    // Backend may still watermark; continue with original bytes
+    skipWatermark = false;
+  }
+
+  const bases = await tbccResolveApiBases();
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const blob = new Blob([body], {
+        type: kind === "video" ? "video/mp4" : mime || "application/octet-stream",
+      });
+      const form = new FormData();
+      form.append("file", blob, kind === "video" ? "media.mp4" : "media.jpg");
+      form.append("media_type", kind === "video" ? "video" : "photo");
+      form.append("message_thread_id", String(tid));
+      form.append("skip_watermark", skipWatermark ? "true" : "false");
+      if (networkKey) form.append("network_key", networkKey);
+      const r = await fetch(base.replace(/\/+$/, "") + "/extension/storage-hub/send", {
+        method: "POST",
+        body: form,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) {
+        lastErr = new Error((data && data.error) || `HTTP ${r.status} @ ${base}`);
+        continue;
+      }
+      return { ok: true, messageThreadId: tid, networkKey, via: base, result: data };
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("Storage Hub send unreachable — is backend on :8000?");
+}
+
 async function tbccAofPoolLabel(poolId) {
   const data = await chrome.storage.local.get(STORAGE_AOF_POOLS);
   const pools = Array.isArray(data[STORAGE_AOF_POOLS]) ? data[STORAGE_AOF_POOLS] : [];
@@ -4021,7 +4524,23 @@ function installContextMenus() {
       });
     };
     mac({ id: "sendToTBCC", title: "TBCC: Save to pool (default)", contexts: ["image", "video", "link"] });
+    mac({
+      id: "saveAofWatch",
+      title: "TBCC: Save AOF (watermark + watch)",
+      contexts: ["image", "video", "link"],
+    });
+    mac({
+      id: "uploadR2Library",
+      title: "TBCC: Watermark → R2 aof-media (library)",
+      contexts: ["image", "video", "link"],
+    });
+    mac({
+      id: "uploadR2SfwXPromo",
+      title: "TBCC: Watermark → R2 SFW X promo",
+      contexts: ["image", "video", "link"],
+    });
     tbccInstallAofPoolContextMenus(mac);
+    tbccInstallStorageHubContextMenus(mac);
     mac({ id: "sendToSaved", title: "TBCC: Saved Messages", contexts: ["image", "video", "link"] });
     mac({ id: "sendPageToTBCC", title: "TBCC: Save to pool (this tab URL)", contexts: ["page", "frame"] });
     mac({ id: "sendPageToSaved", title: "TBCC: Saved Messages (this tab URL)", contexts: ["page", "frame"] });
@@ -4051,6 +4570,28 @@ function installContextMenus() {
       id: "tbccCaptureTabReverse",
       title: "TBCC: Capture tab for reverse search",
       contexts: ["page", "frame"],
+    });
+    mac({
+      id: "tbccMotherlessGalleryZip",
+      title: "TBCC: Motherless gallery → ZIP",
+      contexts: ["page", "frame", "link"],
+      documentUrlPatterns: [
+        "*://motherless.com/*",
+        "*://*.motherless.com/*",
+        "*://motherless.xxx/*",
+        "*://*.motherless.xxx/*",
+      ],
+    });
+    mac({
+      id: "tbccMotherlessGalleryDownload",
+      title: "TBCC: Motherless gallery → download files",
+      contexts: ["page", "frame", "link"],
+      documentUrlPatterns: [
+        "*://motherless.com/*",
+        "*://*.motherless.com/*",
+        "*://motherless.xxx/*",
+        "*://*.motherless.xxx/*",
+      ],
     });
     mac({
       id: "tbccDockGallery",
@@ -4283,6 +4824,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm && alarm.name === TBCC_CTX_MENU_SYNC_ALARM) {
     void tbccSyncExtensionContextMenuSettings();
     void tbccSyncAofPools();
+    void tbccSyncStorageHubTopics();
     return;
   }
   if (alarm && alarm.name === TBCC_OPS_ALERTS_ALARM) {
@@ -4312,6 +4854,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   tbccEnsureContextMenuSyncAlarm();
   void tbccSyncExtensionContextMenuSettings();
   void tbccSyncAofPools();
+  void tbccSyncStorageHubTopics();
   void tbccPollOpsAlerts();
   void tbccBootstrapImportJobRecovery();
   if (details && details.reason === "update") {
@@ -4366,6 +4909,7 @@ chrome.runtime.onStartup.addListener(() => {
   tbccEnsureContextMenuSyncAlarm();
   void tbccSyncExtensionContextMenuSettings();
   void tbccSyncAofPools();
+  void tbccSyncStorageHubTopics();
   void tbccPollOpsAlerts();
   void tbccBootstrapImportJobRecovery();
   void (async () => {
@@ -4702,6 +5246,7 @@ async function tbccExtensionPageMenuBlocked(id) {
     id === "tbccCaptureTabReverse" ||
     id === "tbccDockGallery" ||
     String(id).startsWith("tbccAofPool_") ||
+    String(id).startsWith("tbccStorageHub_") ||
     String(id).startsWith("tbccms_");
   if (!pageIds) return false;
   const map = await TBCC_EXT_MODULES.getEnabledMap();
@@ -4840,6 +5385,649 @@ async function tbccBuildAutoTagPayloadAsync(url, refererPageUrl, tabId) {
   if (tagLine) caption = caption ? `${caption}\n\n${tagLine}` : tagLine;
   caption = caption.trim().slice(0, 900);
   return { tagsCsv: csv, caption };
+}
+
+
+const STORAGE_WATCH_INBOX_PREFIX = "tbccWatchInboxPrefix";
+const STORAGE_SAVE_AOF_ON_DOWNLOAD = "tbccSaveAofOnDownload";
+const STORAGE_API_BASE = "tbccApiBase";
+const API_WATERMARK_BYTES_PATH = "/import/watermark-bytes";
+const API_WATERMARK_UPLOAD_R2 = "http://localhost:8000/import/watermark-upload-r2";
+const API_ZIP_FLYWHEEL = "http://localhost:8000/import/zip-flywheel";
+/** Soft size gate for SW data: URL downloads after watermark (bytes). */
+const TBCC_SAVE_AOF_MAX_DATA_URL = 55 * 1024 * 1024;
+/** Soft size gate for SW → R2 multipart upload (bytes). */
+const TBCC_R2_UPLOAD_MAX_BYTES = 80 * 1024 * 1024;
+/** Soft size gate for SW → zip flywheel (bytes). Large packs need Pixeldrain on API. */
+const TBCC_ZIP_FLYWHEEL_MAX_BYTES = 200 * 1024 * 1024;
+const TBCC_WM_TEXT = "telegram.me/aofmainhub";
+
+async function tbccResolveApiBases() {
+  // Prefer operator custom (Tailscale / https://api.aof-forum…) — never hardcode public VPS IP.
+  const bases = ["http://127.0.0.1:8000", "http://localhost:8000"];
+  try {
+    const d = await chrome.storage.local.get(STORAGE_API_BASE);
+    const custom = String(d[STORAGE_API_BASE] || "").trim().replace(/\/+$/, "");
+    if (custom && /^https?:\/\//i.test(custom)) bases.unshift(custom);
+  } catch (_) {}
+  return [...new Set(bases)];
+}
+
+async function tbccInternalApiHeaders() {
+  const h = { "Content-Type": "application/json" };
+  try {
+    const d = await chrome.storage.local.get("tbccInternalApiKey");
+    const key = String(d.tbccInternalApiKey || "").trim();
+    if (key) h["X-TBCC-Internal-Key"] = key;
+  } catch (_) {}
+  return h;
+}
+
+/**
+ * POST browse-intel rows. Resolves ingest URL from hint or Options tbccApiBase.
+ * Runs in SW so HTTPS pages (erome.com) are not blocked by mixed-content on http://127.0.0.1.
+ */
+async function tbccPushBrowseIntelRows(rows, urlHint) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) throw new Error("No intel rows to push");
+
+  const hint = String(urlHint || "").trim().replace(/\/$/, "");
+  const candidates = [];
+  if (hint && /^https?:\/\//i.test(hint)) candidates.push(hint);
+
+  const bases = await tbccResolveApiBases();
+  for (const base of bases) {
+    candidates.push(`${String(base).replace(/\/+$/, "")}/analytics/erome-browse-intel`);
+  }
+  const urls = [...new Set(candidates.filter(Boolean))];
+  const headers = await tbccInternalApiHeaders();
+  let lastErr = "unreachable";
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ rows: list }),
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {}
+      if (res.ok) {
+        return {
+          ok: true,
+          url,
+          appended: data.appended != null ? data.appended : list.length,
+          scanned: data.scanned != null ? data.scanned : list.length,
+          data,
+        };
+      }
+      const detail = data.detail || data.error || `HTTP ${res.status}`;
+      lastErr = `${url} → ${detail}`;
+      if (res.status === 403) {
+        lastErr =
+          `${url} → 403 Forbidden — set Internal API key in extension Options ` +
+          `(island has TBCC_API_REQUIRE_INTERNAL=1)`;
+      }
+    } catch (e) {
+      lastErr = `${url} → ${(e && e.message) || e}`;
+    }
+  }
+  throw new Error(
+    `TBCC API unreachable (${lastErr}). Start tray backend on :8000, or set Options → API base ` +
+      `(e.g. island) + Internal key. Export JSONL as backup.`
+  );
+}
+
+/**
+ * GET browse-intel /summary via SW — avoids Brave/Chrome "access other apps/local network"
+ * prompts when HTTPS pages (erome.com) would otherwise fetch http://127.0.0.1 directly.
+ */
+async function tbccFetchBrowseIntelSummary(urlHint, days) {
+  const d = Math.max(1, Math.min(90, Number(days) || 30));
+  const hint = String(urlHint || "").trim().replace(/\/$/, "");
+  const candidates = [];
+  const pushSummary = (ingestBase) => {
+    const b = String(ingestBase || "").trim().replace(/\/$/, "");
+    if (!b || !/^https?:\/\//i.test(b)) return;
+    candidates.push(`${b}/summary?days=${d}`);
+  };
+  pushSummary(hint);
+  const bases = await tbccResolveApiBases();
+  for (const base of bases) {
+    pushSummary(`${String(base).replace(/\/+$/, "")}/analytics/erome-browse-intel`);
+  }
+  const urls = [...new Set(candidates.filter(Boolean))];
+  const headers = await tbccInternalApiHeaders();
+  let lastErr = "unreachable";
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { method: "GET", headers, cache: "no-store" });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch (_) {}
+      if (res.ok) return { ok: true, url, data };
+      lastErr = `${url} → ${data.detail || data.error || `HTTP ${res.status}`}`;
+    } catch (e) {
+      lastErr = `${url} → ${(e && e.message) || e}`;
+    }
+  }
+  throw new Error(`Intel summary unreachable (${lastErr})`);
+}
+
+async function tbccWatermarkBytesViaApi(arrayBuffer, mediaTypeHint) {
+  const bases = await tbccResolveApiBases();
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const blob = new Blob([arrayBuffer], {
+        type: mediaTypeHint === "video" ? "video/mp4" : "application/octet-stream",
+      });
+      const form = new FormData();
+      form.append("file", blob, mediaTypeHint === "video" ? "media.mp4" : "media.jpg");
+      form.append("media_type", mediaTypeHint === "video" ? "video" : "photo");
+      form.append("skip_watermark", "false");
+      const r = await fetch(base.replace(/\/+$/, "") + API_WATERMARK_BYTES_PATH, {
+        method: "POST",
+        body: form,
+      });
+      if (!r.ok) {
+        lastErr = new Error(`watermark-bytes HTTP ${r.status} @ ${base}`);
+        continue;
+      }
+      const ab = await r.arrayBuffer();
+      if (ab && ab.byteLength) return ab;
+      lastErr = new Error(`empty watermark response @ ${base}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("watermark-bytes unreachable");
+}
+
+/** SW-local image burn-in when API is down (photos only). */
+async function tbccWatermarkImageBytesLocal(arrayBuffer, mimeHint) {
+  if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
+    throw new Error("OffscreenCanvas unavailable");
+  }
+  const mime = String(mimeHint || "image/jpeg").split(";")[0] || "image/jpeg";
+  const blob = new Blob([arrayBuffer], { type: mime.startsWith("image/") ? mime : "image/jpeg" });
+  const bmp = await createImageBitmap(blob);
+  try {
+    const w = bmp.width || 1;
+    const h = bmp.height || 1;
+    const canvas = new OffscreenCanvas(w, h);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d context missing");
+    ctx.drawImage(bmp, 0, 0);
+    const fontSize = Math.max(14, Math.round(Math.min(w, h) * 0.032));
+    ctx.font = `700 ${fontSize}px system-ui,Segoe UI,sans-serif`;
+    ctx.textBaseline = "bottom";
+    ctx.lineWidth = Math.max(2, Math.round(fontSize / 8));
+    ctx.strokeStyle = "rgba(0,0,0,0.72)";
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    const pad = Math.round(fontSize * 0.55);
+    const x = pad;
+    const y = h - pad;
+    ctx.strokeText(TBCC_WM_TEXT, x, y);
+    ctx.fillText(TBCC_WM_TEXT, x, y);
+    const outType = mime.includes("png") ? "image/png" : "image/jpeg";
+    const outBlob = await canvas.convertToBlob(
+      outType === "image/png" ? { type: outType } : { type: "image/jpeg", quality: 0.92 }
+    );
+    return await outBlob.arrayBuffer();
+  } finally {
+    try {
+      bmp.close();
+    } catch (_) {}
+  }
+}
+
+async function tbccApplySaveAofWatermark(body, kind, mime) {
+  const asVideo = kind === "video";
+  try {
+    const wm = await tbccWatermarkBytesViaApi(body, asVideo ? "video" : "photo");
+    if (wm && wm.byteLength) return { buffer: wm, applied: true, via: "api" };
+  } catch (e) {
+    console.warn("[TBCC] Save AOF API watermark failed", e);
+    if (asVideo) {
+      throw new Error(
+        `Video watermark needs TBCC backend (127.0.0.1:8000): ${e && e.message ? e.message : e}`
+      );
+    }
+  }
+  if (!asVideo) {
+    try {
+      const local = await tbccWatermarkImageBytesLocal(body, mime);
+      if (local && local.byteLength) return { buffer: local, applied: true, via: "local" };
+    } catch (e) {
+      console.warn("[TBCC] Save AOF local image watermark failed", e);
+      throw new Error(
+        `Image watermark failed (API + local): ${e && e.message ? e.message : e}`
+      );
+    }
+  }
+  throw new Error("Watermark produced empty body");
+}
+
+/** Low-CPU tags: URL semantics + page hints only (no /tags/enrich-send). */
+async function tbccBuildLocalPageTagsAsync(url, refererPageUrl, tabId) {
+  const tags = new Set();
+  const ref = String(refererPageUrl || "").trim();
+  const primary = ref && /^https?:\/\//i.test(ref) ? ref : String(url || "").trim();
+  tbccCollectSemanticTagsFromUrl(primary, tags);
+  if (tabId != null) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["media-url-guards.js", "auto-tag-utils.js", "capture.js"],
+      });
+      const exec = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () =>
+          typeof window.__tbccCollectTagHints === "function" ? window.__tbccCollectTagHints() : [],
+      });
+      const hints = exec && exec[0] && exec[0].result;
+      if (Array.isArray(hints)) {
+        for (const h of hints) {
+          if (tbccIsTraceSourceLabel(h)) continue;
+          const tok = tbccNormalizeAutoTagToken(h);
+          if (tok) tags.add(tok);
+        }
+      }
+    } catch (_) {}
+  }
+  return [...tags].filter((x) => !tbccIsTraceSourceLabel(x));
+}
+
+async function tbccGetWatchInboxPrefix() {
+  try {
+    const d = await chrome.storage.local.get(STORAGE_WATCH_INBOX_PREFIX);
+    const raw = String(d[STORAGE_WATCH_INBOX_PREFIX] || "tbcc/inbox").trim().replace(/\\/g, "/");
+    return raw.replace(/^\/+|\/+$/g, "") || "tbcc/inbox";
+  } catch (_) {
+    return "tbcc/inbox";
+  }
+}
+
+function tbccGuessMediaKind(url, mime) {
+  const m = String(mime || "").toLowerCase();
+  if (m.startsWith("video/")) return "video";
+  const path = String(url || "").toLowerCase();
+  if (/\.(mp4|webm|mov|mkv|m4v)(\?|$)/i.test(path)) return "video";
+  return "photo";
+}
+
+function tbccBuildAofDownloadName(url, refererPageUrl, extHint) {
+  const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+  let name = "media";
+  if (naming) {
+    name =
+      naming.profileNameFromSourceUrl(refererPageUrl || "") ||
+      naming.profileNameFromSourceUrl(url || "") ||
+      "media";
+  }
+  const ext =
+    (extHint || "").replace(/^\./, "") ||
+    (() => {
+      try {
+        const p = new URL(url).pathname;
+        const base = (p.split("/").pop() || "").split("?")[0];
+        const dot = base.lastIndexOf(".");
+        if (dot > 0) return base.slice(dot + 1).toLowerCase().replace(/[^\w]/g, "").slice(0, 5);
+      } catch (_) {}
+      return "jpg";
+    })();
+  const index = Math.floor(10000 + Math.random() * 90000);
+  if (naming && naming.buildZipFilename) {
+    return naming.buildZipFilename(naming.DEFAULT_TEMPLATE, { name, index, ext });
+  }
+  const seg = String(name || "media").replace(/[^\w.\-]+/g, "_").slice(0, 64) || "media";
+  return `AOF_${seg}_${String(index).padStart(5, "0")}_telegram.me_aofmainhub.${ext || "jpg"}`;
+}
+
+/**
+ * Fetch → watermark (when small enough) → AOF name → Downloads/{inboxPrefix}/ + sidecar.
+ * Large / failed watermark: still drop file with aof_preprocessed:false for organizer.
+ */
+async function tbccSaveAofMediaToWatch(opts) {
+  const raw = String((opts && opts.url) || "").trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) throw new Error("Only http(s) media URLs supported.");
+  let downloadUrl = normalizeTbccMediaUrlForImport(raw);
+  const preferFull = !opts || opts.preferFull !== false;
+  const refererPageUrl = String((opts && opts.refererPageUrl) || "").trim();
+  const tabId = opts && opts.tabId != null ? opts.tabId : null;
+
+  try {
+    const u = new URL(downloadUrl);
+    const isRedgifs = /(^|\.)redgifs\.com$/i.test(u.hostname || "");
+    const hasRedItem = /^\/(?:watch|ifr|gifs)\/[^/?#]+/i.test(u.pathname || "") || !!redgifsIdFromAnyUrl(downloadUrl);
+    if (preferFull && isRedgifs) {
+      const candidate = hasRedItem ? downloadUrl : refererPageUrl;
+      const resolved = candidate ? await fetchRedgifsMediaViaApi(candidate) : "";
+      if (resolved && /^https?:\/\//i.test(resolved)) downloadUrl = normalizeTbccMediaUrlForImport(resolved);
+    }
+  } catch (_) {}
+
+  const tags = await tbccBuildLocalPageTagsAsync(downloadUrl, refererPageUrl, tabId);
+  const prefix = await tbccGetWatchInboxPrefix();
+  let ab = null;
+  let mime = "";
+  try {
+    ab = await fetchUrlWithBrowserSession(downloadUrl, refererPageUrl || downloadUrl, tabId, {
+      stallTimeoutMs: 45000,
+    });
+  } catch (e) {
+    throw new Error(`Fetch failed: ${e && e.message ? e.message : e}`);
+  }
+  if (!ab || !ab.byteLength) throw new Error("Empty media body");
+
+  let prep;
+  try {
+    prep = await tbccPrepareImportArrayBuffer(ab, downloadUrl);
+  } catch (_) {
+    prep = { buffer: ab, type: "application/octet-stream" };
+  }
+  mime = (prep && prep.type) || "";
+  let body = (prep && prep.buffer) || ab;
+  const kind = tbccGuessMediaKind(downloadUrl, mime);
+  let watermarkApplied = false;
+  let preprocessed = false;
+  let watermarkVia = "";
+
+  // Always watermark before AOF name drop (images: API then local canvas; video: API required).
+  // Soft size gate: huge videos still try API once; on failure defer to organizer with clear flag.
+  const tooBigForSwWm = kind === "video" && body.byteLength >= 40 * 1024 * 1024;
+  if (!tooBigForSwWm) {
+    try {
+      const wm = await tbccApplySaveAofWatermark(body, kind, mime);
+      body = wm.buffer;
+      watermarkApplied = !!wm.applied;
+      watermarkVia = wm.via || "";
+      preprocessed = watermarkApplied;
+      if (wm.via === "local" && mime && !mime.includes("png")) {
+        mime = "image/jpeg";
+      }
+    } catch (e) {
+      console.warn("[TBCC] Save AOF watermark failed", e);
+      if (kind === "video") {
+        // Fall through: CDN download + sidecar defer so watch organizer can burn-in when API is up
+        watermarkApplied = false;
+        preprocessed = false;
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  const extHint =
+    kind === "video"
+      ? "mp4"
+      : mime.includes("png")
+        ? "png"
+        : mime.includes("webp")
+          ? "webp"
+          : mime.includes("gif")
+            ? "gif"
+            : "jpg";
+  const fileName = tbccBuildAofDownloadName(downloadUrl, refererPageUrl, extHint);
+
+  const relMedia = `${prefix}/${fileName}`.replace(/\/+/g, "/");
+  const sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
+  const relSidecar = `${prefix}/${sidecarName}`.replace(/\/+/g, "/");
+
+  const meta = {
+    tags,
+    source_url: downloadUrl,
+    page_url: refererPageUrl || "",
+    aof_preprocessed: !!watermarkApplied,
+    watermark_applied: !!watermarkApplied,
+    watermark_via: watermarkVia || undefined,
+    name: (typeof TbccZipNaming !== "undefined" && TbccZipNaming.profileNameFromSourceUrl
+      ? TbccZipNaming.profileNameFromSourceUrl(refererPageUrl || downloadUrl)
+      : "") || "media",
+    source_file: fileName,
+    route_hint: "extension_save_aof",
+  };
+
+  const useDataUrl = watermarkApplied && body && body.byteLength;
+  let dataUrl = "";
+  if (useDataUrl) {
+    dataUrl = tbccArrayBufferToDataUrl(body, mime || (kind === "video" ? "video/mp4" : "image/jpeg"));
+  }
+  if (!useDataUrl || dataUrl.length > TBCC_SAVE_AOF_MAX_DATA_URL) {
+    // Unwatermarked or too large for SW — direct CDN download + sidecar; organizer post-processes
+    meta.aof_preprocessed = false;
+    meta.watermark_applied = false;
+    meta.defer_preprocess = true;
+    await tbccChromeDownloadsDownload({
+      url: downloadUrl,
+      filename: relMedia,
+      saveAs: false,
+      conflictAction: "uniquify",
+    });
+  } else {
+    await tbccChromeDownloadsDownload({
+      url: dataUrl,
+      filename: relMedia,
+      saveAs: false,
+      conflictAction: "uniquify",
+    });
+  }
+
+  const metaJson = JSON.stringify(meta, null, 2);
+  const metaDataUrl =
+    "data:application/json;base64," +
+    btoa(unescape(encodeURIComponent(metaJson)));
+  await tbccChromeDownloadsDownload({
+    url: metaDataUrl,
+    filename: relSidecar,
+    saveAs: false,
+    conflictAction: "uniquify",
+  });
+
+  return {
+    ok: true,
+    filename: relMedia,
+    tags,
+    watermarkApplied: meta.watermark_applied,
+    preprocessed: meta.aof_preprocessed,
+    watermarkVia,
+    deferred: !!meta.defer_preprocess,
+  };
+}
+
+async function tbccClipboardWriteText(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(t);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || tab.id == null) return false;
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      args: [t],
+      func: async (value) => {
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch (_) {
+          const ta = document.createElement("textarea");
+          ta.value = value;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+        }
+      },
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * POST zip/media blob → /import/zip-flywheel (hybrid R2/Pixeldrain → gate → modifier/SKU).
+ * action: host_gated | loot_modifier | shop_bundle
+ */
+async function tbccZipFlywheelUpload(opts) {
+  const blob = opts && opts.blob;
+  if (!blob || !(blob instanceof Blob) || !blob.size) throw new Error("Empty zip blob");
+  if (blob.size > TBCC_ZIP_FLYWHEEL_MAX_BYTES) {
+    throw new Error(
+      `Zip too large for flywheel (${Math.round(blob.size / (1024 * 1024))} MB); max ~200 MB via extension`
+    );
+  }
+  const action = String((opts && opts.action) || "host_gated").trim() || "host_gated";
+  const host = String((opts && opts.host) || "auto").trim() || "auto";
+  const preferR2 = !!(opts && opts.preferR2);
+  const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+  let filename = String((opts && opts.filename) || "").trim();
+  if (!filename && naming && typeof naming.buildDestinationFilename === "function") {
+    filename = naming.buildDestinationFilename(action === "shop_bundle" ? "shop_bundle" : "host_gated", {
+      name: (opts && opts.name) || "",
+      profileName: (opts && opts.profileName) || "",
+      sourceUrl: (opts && opts.sourceUrl) || "",
+      ext: "zip",
+    });
+  }
+  if (!filename) filename = `pack_${Date.now()}.zip`;
+  if (!/\.zip$/i.test(filename)) filename += ".zip";
+  // Quiet leaf for object storage (strip tbcc/ prefix)
+  filename = filename.replace(/^tbcc\//i, "").split("/").pop() || filename;
+
+  const form = new FormData();
+  form.append("file", blob, filename);
+  form.append("action", action);
+  form.append("host", host);
+  form.append("prefer_r2", preferR2 ? "true" : "false");
+  form.append("filename", filename);
+  if (opts && opts.label) form.append("label", String(opts.label).slice(0, 200));
+  if (opts && opts.planId) form.append("plan_id", String(opts.planId));
+  form.append("source_note", String((opts && opts.sourceNote) || "ext_zip_flywheel").slice(0, 200));
+
+  const r = await fetch(API_ZIP_FLYWHEEL, { method: "POST", body: form });
+  let data = null;
+  try {
+    data = await r.json();
+  } catch (_) {
+    data = null;
+  }
+  if (!r.ok || !data || !data.ok) {
+    const err = (data && data.error) || `zip-flywheel HTTP ${r.status}`;
+    throw new Error(err);
+  }
+  const primary = String(data.primary_url || data.destination_url || "").trim();
+  if (primary) {
+    try {
+      await tbccClipboardWriteText(primary);
+    } catch (_) {}
+  }
+  try {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: "TBCC zip flywheel",
+      message: `${action} · ${data.host || "?"} · ${(primary || "").slice(0, 80)}`,
+    });
+  } catch (_) {}
+  return data;
+}
+
+/**
+ * Fetch → watermark via API → upload to R2 (library/ or sfw-x-promo/).
+ * Context menus: Watermark → R2 aof-media (library) / R2 SFW X promo.
+ */
+async function tbccWatermarkUploadToR2(opts) {
+  const raw = String((opts && opts.url) || "").trim();
+  if (!raw || !/^https?:\/\//i.test(raw)) throw new Error("Only http(s) media URLs supported.");
+  let downloadUrl = normalizeTbccMediaUrlForImport(raw);
+  const preferFull = !opts || opts.preferFull !== false;
+  const refererPageUrl = String((opts && opts.refererPageUrl) || "").trim();
+  const tabId = opts && opts.tabId != null ? opts.tabId : null;
+  const destination = String((opts && opts.destination) || "library").trim() || "library";
+
+  try {
+    const u = new URL(downloadUrl);
+    const isRedgifs = /(^|\.)redgifs\.com$/i.test(u.hostname || "");
+    const hasRedItem = /^\/(?:watch|ifr|gifs)\/[^/?#]+/i.test(u.pathname || "") || !!redgifsIdFromAnyUrl(downloadUrl);
+    if (preferFull && isRedgifs) {
+      const candidate = hasRedItem ? downloadUrl : refererPageUrl;
+      const resolved = candidate ? await fetchRedgifsMediaViaApi(candidate) : "";
+      if (resolved && /^https?:\/\//i.test(resolved)) downloadUrl = normalizeTbccMediaUrlForImport(resolved);
+    }
+  } catch (_) {}
+
+  let ab = null;
+  let mime = "";
+  try {
+    ab = await fetchUrlWithBrowserSession(downloadUrl, refererPageUrl || downloadUrl, tabId, {
+      stallTimeoutMs: 45000,
+    });
+  } catch (e) {
+    throw new Error(`Fetch failed: ${e && e.message ? e.message : e}`);
+  }
+  if (!ab || !ab.byteLength) throw new Error("Empty media body");
+  if (ab.byteLength > TBCC_R2_UPLOAD_MAX_BYTES) {
+    throw new Error(
+      `File too large for R2 upload (${Math.round(ab.byteLength / (1024 * 1024))} MB); max ~80 MB via extension`
+    );
+  }
+
+  let prep;
+  try {
+    prep = await tbccPrepareImportArrayBuffer(ab, downloadUrl);
+  } catch (_) {
+    prep = { buffer: ab, type: "application/octet-stream" };
+  }
+  mime = (prep && prep.type) || "";
+  const body = (prep && prep.buffer) || ab;
+  const kind = tbccGuessMediaKind(downloadUrl, mime);
+  const fileName = tbccBuildAofDownloadName(
+    downloadUrl,
+    refererPageUrl,
+    kind === "video" ? "mp4" : mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg"
+  );
+
+  const form = new FormData();
+  form.append(
+    "file",
+    new Blob([body], { type: mime || (kind === "video" ? "video/mp4" : "application/octet-stream") }),
+    fileName
+  );
+  form.append("media_type", kind === "video" ? "video" : "photo");
+  form.append("destination", destination);
+  form.append("filename", fileName);
+  form.append("skip_watermark", "false");
+
+  const r = await fetch(API_WATERMARK_UPLOAD_R2, { method: "POST", body: form });
+  const text = await r.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_) {}
+  if (!r.ok || data.ok === false) {
+    throw new Error((data && data.error) || text || `HTTP ${r.status}`);
+  }
+  const directUrl = String((data && data.direct_url) || "").trim();
+  if (!directUrl) throw new Error("R2 upload returned no public URL");
+
+  const clipped = await tbccClipboardWriteText(directUrl);
+  return {
+    ok: true,
+    directUrl,
+    objectKey: data.object_key || "",
+    watermarked: !!data.watermarked,
+    destination: data.destination || destination,
+    filename: data.filename || fileName,
+    clipped,
+  };
 }
 
 async function tbccApplyTagsToImportedMediaIds(mediaIds, tagsCsv) {
@@ -5693,8 +6881,127 @@ async function tbccContextMenuClickedAsync(info, tab) {
     return;
   }
 
+  if (id === "tbccMotherlessGalleryZip" || id === "tbccMotherlessGalleryDownload") {
+    let targetTab = tab;
+    if ((!targetTab || targetTab.id == null) && info && info.linkUrl) {
+      // opened from a link — use active tab on motherless if possible
+      const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      targetTab = active;
+    }
+    // Prefer navigating to linkUrl gallery when context is a gallery link
+    if (info && info.linkUrl && tbccIsMotherlessGalleryPageUrl(info.linkUrl)) {
+      try {
+        if (targetTab && targetTab.id != null) {
+          await chrome.tabs.update(targetTab.id, { url: info.linkUrl });
+          await new Promise((r) => setTimeout(r, 1800));
+          targetTab = await chrome.tabs.get(targetTab.id);
+        }
+      } catch (_) {}
+    }
+    try {
+      const mode = id === "tbccMotherlessGalleryZip" ? "zip" : "download";
+      await tbccMotherlessGalleryBulkFromTab(targetTab, mode);
+    } catch (e) {
+      notify("TBCC Motherless", String((e && e.message) || e));
+    }
+    return;
+  }
+
+  if (id === "saveAofWatch") {
+    const url = resolveUrlFromContextClick(info, tab);
+    if (!url) {
+      notify("TBCC", "No media URL — right-click the image or video directly.");
+      return;
+    }
+    try {
+      const result = await tbccSaveAofMediaToWatch({
+        url,
+        refererPageUrl: (tab && tab.url) || "",
+        tabId: tab && tab.id != null ? tab.id : null,
+        preferFull: true,
+      });
+      const tagN = (result.tags && result.tags.length) || 0;
+      notify(
+        "TBCC Save AOF",
+        `${result.filename} · ${tagN} tag(s)` +
+          (result.watermarkApplied
+            ? ` · watermarked${result.watermarkVia ? " (" + result.watermarkVia + ")" : ""}`
+            : result.deferred
+              ? " · deferred (backend/watch for video)"
+              : " · pending watermark")
+      );
+    } catch (e) {
+      notify("TBCC Save AOF failed", String((e && e.message) || e));
+    }
+    return;
+  }
+
+  if (id === "uploadR2Library" || id === "uploadR2SfwXPromo") {
+    const url = resolveUrlFromContextClick(info, tab);
+    if (!url) {
+      notify("TBCC", "No media URL — right-click the image or video directly.");
+      return;
+    }
+    const destination = id === "uploadR2SfwXPromo" ? "sfw_x_promo" : "library";
+    const label = destination === "sfw_x_promo" ? "R2 SFW X promo" : "R2 library";
+    try {
+      notify(`TBCC ${label}`, "Uploading…");
+      const result = await tbccWatermarkUploadToR2({
+        url,
+        destination,
+        refererPageUrl: (tab && tab.url) || "",
+        tabId: tab && tab.id != null ? tab.id : null,
+        preferFull: true,
+      });
+      notify(
+        `TBCC ${label}`,
+        `${result.directUrl}` +
+          (result.watermarked ? " · watermarked" : "") +
+          (result.clipped ? " · copied" : ""),
+        result.directUrl ? { type: "url", url: result.directUrl } : null
+      );
+    } catch (e) {
+      notify(`TBCC ${label} failed`, String((e && e.message) || e));
+    }
+    return;
+  }
+
   if (id === "tbccAofPool_empty") {
     notify("TBCC", "AOF pools not loaded — is the backend running on :8000? Reload the extension.");
+    return;
+  }
+
+  if (id === "tbccStorageHub_empty") {
+    notify("TBCC", "Storage Hub topics missing — reload the extension.");
+    return;
+  }
+
+  if (String(id).startsWith("tbccStorageHub_")) {
+    const tid = parseInt(String(id).slice("tbccStorageHub_".length), 10);
+    const url = resolveUrlFromContextClick(info, tab);
+    if (!url) {
+      notify("TBCC", "No media URL — right-click the image or video directly.");
+      return;
+    }
+    if (!Number.isFinite(tid) || tid < 1) {
+      notify("TBCC", "Unknown Storage Hub topic — reload the extension.");
+      return;
+    }
+    const topics = await tbccGetStorageHubTopics();
+    const row = topics.find((t) => parseInt(t.message_thread_id, 10) === tid);
+    const label = (row && (row.short_label || row.menu_label)) || `topic ${tid}`;
+    try {
+      await tbccSendUrlToStorageHubTopic({
+        url,
+        messageThreadId: tid,
+        networkKey: (row && row.network_key) || "",
+        refererPageUrl: (tab && tab.url) || "",
+        tabId: tab && tab.id != null ? tab.id : null,
+      });
+      notify("TBCC Storage Hub", `Sent → ${label}`);
+    } catch (e) {
+      notify("TBCC Storage Hub failed", String((e && e.message) || e));
+    }
     return;
   }
 
@@ -5802,9 +7109,152 @@ async function tbccContextMenuClickedAsync(info, tab) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.action === "tbcc-download-url-from-page-menu") {
+  if (msg.action === "tbcc-intel-export-jsonl") {
     (async () => {
       try {
+        const text = String(msg.text || "");
+        const filename = String(msg.filename || "browse-intel.jsonl")
+          .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+          .slice(0, 180) || "browse-intel.jsonl";
+        // MV3 SW: no createObjectURL — data URL (UTF-8 via base64)
+        const bytes = new TextEncoder().encode(text);
+        let binary = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+        }
+        const dataUrl = `data:application/x-ndjson;base64,${btoa(binary)}`;
+        const id = await tbccChromeDownloadsDownload({
+          url: dataUrl,
+          filename,
+          saveAs: true,
+          conflictAction: "uniquify",
+        });
+        sendResponse({ ok: true, downloadId: id, filename });
+      } catch (e) {
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-browse-intel-push") {
+    (async () => {
+      try {
+        const result = await tbccPushBrowseIntelRows(msg.rows || [], msg.url || "");
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-browse-intel-summary") {
+    (async () => {
+      try {
+        const result = await tbccFetchBrowseIntelSummary(msg.url || "", msg.days);
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-watermark-upload-r2") {
+    (async () => {
+      try {
+        const url = String(msg.url || "").trim();
+        if (!url || !/^https?:\/\//i.test(url)) {
+          sendResponse({ ok: false, error: "Only http(s) media URLs supported." });
+          return;
+        }
+        const destination = String(msg.destination || "library").trim() || "library";
+        const tabId =
+          msg.tabId != null
+            ? msg.tabId
+            : _sender && _sender.tab && _sender.tab.id != null
+              ? _sender.tab.id
+              : null;
+        const result = await tbccWatermarkUploadToR2({
+          url,
+          destination,
+          refererPageUrl: String(msg.refererPageUrl || (_sender && _sender.tab && _sender.tab.url) || "").trim(),
+          tabId,
+          preferFull: msg.preferFull !== false,
+        });
+        sendResponse({ ok: true, ...result });
+      } catch (e) {
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-zip-flywheel") {
+    (async () => {
+      try {
+        let blob = msg.blob || null;
+        if (!blob && msg.arrayBuffer) {
+          blob = new Blob([msg.arrayBuffer], { type: "application/zip" });
+        }
+        if (!blob && Array.isArray(msg.bytes)) {
+          blob = new Blob([new Uint8Array(msg.bytes)], { type: "application/zip" });
+        }
+        const data = await tbccZipFlywheelUpload({
+          blob,
+          action: msg.flywheelAction || msg.actionDest || "host_gated",
+          host: msg.host || "auto",
+          preferR2: !!msg.preferR2,
+          filename: msg.filename || "",
+          name: msg.name || "",
+          profileName: msg.profileName || "",
+          sourceUrl: msg.sourceUrl || "",
+          label: msg.label || "",
+          planId: msg.planId || "",
+          sourceNote: msg.sourceNote || "ext_gallery_zip",
+        });
+        sendResponse({ ok: true, ...data });
+      } catch (e) {
+        sendResponse({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-download-url-from-page-menu" || msg.action === "tbcc-save-aof-to-watch") {
+    (async () => {
+      try {
+        let useAof = msg.action === "tbcc-save-aof-to-watch" || msg.saveAof === true;
+        if (!useAof) {
+          try {
+            const d = await chrome.storage.local.get(STORAGE_SAVE_AOF_ON_DOWNLOAD);
+            useAof = d[STORAGE_SAVE_AOF_ON_DOWNLOAD] !== false;
+          } catch (_) {
+            useAof = true;
+          }
+        }
+        if (useAof) {
+          const tabId =
+            _sender && _sender.tab && _sender.tab.id != null
+              ? _sender.tab.id
+              : msg.tabId != null
+                ? msg.tabId
+                : null;
+          const result = await tbccSaveAofMediaToWatch({
+            url: msg.url,
+            refererPageUrl: msg.refererPageUrl || (_sender && _sender.tab && _sender.tab.url) || "",
+            tabId,
+            preferFull: msg.preferFull !== false,
+          });
+          notify(
+            "TBCC Save AOF",
+            `${result.filename}` +
+              (result.watermarkApplied
+                ? ` · watermarked${result.watermarkVia ? " (" + result.watermarkVia + ")" : ""}`
+                : result.deferred
+                  ? " · deferred (start backend / watch for video burn-in)"
+                  : " · pending watermark")
+          );
+          sendResponse({ ok: true, ...result });
+          return;
+        }
         const raw = String(msg.url || "").trim();
         if (!raw || !/^https?:\/\//i.test(raw)) {
           sendResponse({ ok: false, error: "Only http(s) URLs can be downloaded." });
@@ -5817,7 +7267,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         try {
           const u = new URL(finalUrl);
           const isRedgifs = /(^|\.)redgifs\.com$/i.test(u.hostname || "");
-          const hasRedItem = /^\/(?:watch|ifr|gifs)\/[^/?#]+/i.test(u.pathname || "") || !!redgifsIdFromAnyUrl(finalUrl);
+          const hasRedItem =
+            /^\/(?:watch|ifr|gifs)\/[^/?#]+/i.test(u.pathname || "") || !!redgifsIdFromAnyUrl(finalUrl);
           if (preferFull && isRedgifs) {
             const candidate = hasRedItem ? finalUrl : refererPageUrl;
             const resolved = candidate ? await fetchRedgifsMediaViaApi(candidate) : "";
@@ -5856,6 +7307,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+
   if (msg.action === "tbcc-import-url-from-page-menu") {
     (async () => {
       try {

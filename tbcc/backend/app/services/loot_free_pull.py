@@ -28,6 +28,7 @@ def build_free_pull_preview(
     *,
     telegram_user_id: int,
     seed: int | None = None,
+    exclude_media_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     rng = random.Random(seed)
     operator = is_loot_operator(telegram_user_id)
@@ -70,6 +71,11 @@ def build_free_pull_preview(
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
+        # Island delivery needs Saved Messages download (or local: file_id).
+        Media.telegram_message_id.isnot(None),
+        Media.telegram_message_id > 0,
+        # Skip home-only disk blobs — island has no local media volume.
+        ~Media.file_id.like("local:%"),
     )
     seen_ids = [
         int(x[0])
@@ -79,6 +85,9 @@ def build_free_pull_preview(
     ]
     if seen_ids and not operator:
         q = q.filter(~Media.id.in_(seen_ids))
+    ban = [int(x) for x in (exclude_media_ids or []) if x is not None]
+    if ban:
+        q = q.filter(~Media.id.in_(ban))
 
     candidates = q.all()
     if not candidates:

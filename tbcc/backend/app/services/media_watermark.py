@@ -120,11 +120,15 @@ def _active_config(override: WatermarkApplyConfig | None = None) -> WatermarkApp
 
 def _default_env_config() -> WatermarkApplyConfig:
     text = watermark_text()
-    texts = tuple(t for t in (
-        text,
-        (os.getenv("TBCC_WATERMARK_TEXT_SECONDARY") or "").strip()[:120],
-        (os.getenv("TBCC_WATERMARK_TEXT_TERTIARY") or "").strip()[:120],
-    ) if t)
+    texts = tuple(
+        t
+        for t in (
+            text,
+            _normalize_wm_brand((os.getenv("TBCC_WATERMARK_TEXT_SECONDARY") or "").strip()),
+            _normalize_wm_brand((os.getenv("TBCC_WATERMARK_TEXT_TERTIARY") or "").strip()),
+        )
+        if t
+    )
     strip = (os.getenv("TBCC_WATERMARK_STRIP_PREVIOUS") or "0").strip().lower() in ("1", "true", "yes", "on")
     return WatermarkApplyConfig(
         enabled=watermark_enabled(),
@@ -143,14 +147,28 @@ def watermark_enabled() -> bool:
     return bool((watermark_text() or "").strip())
 
 
+def _normalize_wm_brand(text: str) -> str:
+    try:
+        from app.data.aof_telegram_links import normalize_telegram_me_brand
+
+        return normalize_telegram_me_brand(text)[:120]
+    except Exception:
+        return (text or "").replace("t.me/", "telegram.me/")[:120]
+
+
 def watermark_text() -> str:
     explicit = (os.getenv("TBCC_WATERMARK_TEXT") or "").strip()
     if explicit:
-        return explicit[:120]
+        return _normalize_wm_brand(explicit)
     base = (os.getenv("TBCC_PUBLIC_BASE_URL") or os.getenv("TBCC_PROMO_PUBLIC_BASE_URL") or "").strip()
     if base:
-        return base.replace("https://", "").replace("http://", "").split("/")[0][:120]
-    return ""
+        return _normalize_wm_brand(base.replace("https://", "").replace("http://", "").split("/")[0])
+    try:
+        from app.data.aof_telegram_links import AOF_WATERMARK_DEFAULT
+
+        return _normalize_wm_brand(AOF_WATERMARK_DEFAULT)
+    except Exception:
+        return "telegram.me/aofmainhub"
 
 
 def watermark_mode() -> str:
@@ -631,6 +649,21 @@ def maybe_apply_media_watermark(
     if force_skip or _skip_ctx.get() or cfg.skip or not cfg.enabled or not cfg.texts:
         return data
 
+    # Hard-rewrite any stale t.me brand still sitting on a caller's config.
+    norm_texts = tuple(t for t in (_normalize_wm_brand(x) for x in cfg.texts) if t)
+    if not norm_texts:
+        return data
+    if norm_texts != cfg.texts:
+        cfg = WatermarkApplyConfig(
+            enabled=cfg.enabled,
+            texts=norm_texts,
+            opacity=cfg.opacity,
+            color_hex=cfg.color_hex,
+            mode=cfg.mode,
+            position=cfg.position,
+            strip_previous=cfg.strip_previous,
+            skip=cfg.skip,
+        )
     kind, _ext = sniff_media_kind(data)
     hint = (media_type_hint or "photo").lower()
     if kind == "document":

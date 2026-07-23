@@ -367,7 +367,10 @@
     var downloadUrl = largeSrc;
     var mediaType = "image";
     var filename = media.id_str + "-" + baseSrc.split("/").pop() + "." + ext;
+    var durationMs = null;
     if (media.video_info) {
+      var dm = Number(media.video_info.duration_millis);
+      if (Number.isFinite(dm) && dm > 0) durationMs = Math.round(dm);
       var mp4 = bestVideoUrl(media);
       if (mp4) {
         downloadUrl = mp4;
@@ -385,6 +388,7 @@
       filename: filename,
       href: href,
       tweet_media_id: media.id_str,
+      duration_ms: durationMs,
     };
   }
 

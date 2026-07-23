@@ -76,7 +76,7 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
         "image": "",
     },
     {
-        "text": "VIP ladder on Gumroad — card/PayPal when Stars feel cursed. {gumroad_vip} · hub {hub}",
+        "text": "VIP ladder — card / USD when Stars feel cursed. {gumroad_vip} · hub {hub}",
         "image": "",
     },
     {

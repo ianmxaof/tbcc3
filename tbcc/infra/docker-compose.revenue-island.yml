@@ -83,13 +83,23 @@ services:
       celery -A app.workers.celery_app worker
       -l info
       -P solo
-      -Q celery,subscription,telegram
+      -Q celery,subscription,telegram,ops_growth
       -n island@%h
       --without-gossip
       --without-mingle
     environment:
       PYTHONPATH: /app
       TELEGRAM_SESSION_PATH: /sessions/admin
+      # Storage Hub → pool → SENT CACHE (telegram queue). Absolute path survives cwd=/app.
+      TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
+      TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
+      # Beat seed (ops_growth until next GHCR bake routes seed → telegram).
+      TBCC_STORAGE_POOL_SEED_ENABLED: "1"
+      TBCC_STORAGE_POOL_SEED_BATCH: "12"
+      TBCC_STORAGE_POOL_SEED_HOURS: "2"
+      # Old AOF Main is restricted — mirroring burns the solo telegram worker.
+      TBCC_DEPOSIT_TOPIC_MIRROR: "0"
+      TBCC_TOPIC_MIRROR_ENABLED: "0"
     volumes:
       - /opt/tbcc/sessions:/sessions:rw
     depends_on:

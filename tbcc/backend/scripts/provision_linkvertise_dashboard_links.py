@@ -22,6 +22,14 @@ from app.utils.load_tbcc_dotenv import load_tbcc_dotenv
 
 load_tbcc_dotenv()
 
+# Optional: point Playwright provision at island Postgres (HOME browser, island DB).
+# Example: TBCC_DATABASE_URL_OVERRIDE=postgresql://postgres:***@5.161.53.91:5432/tbcc
+import os as _os
+
+_db_override = (_os.getenv("TBCC_DATABASE_URL_OVERRIDE") or "").strip()
+if _db_override:
+    _os.environ["DATABASE_URL"] = _db_override
+
 from app.database.session import SessionLocal
 from app.models.loot import LootModifier
 from app.services.linkvertise_dashboard_provision import (
