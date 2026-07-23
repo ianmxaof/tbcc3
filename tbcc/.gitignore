@@ -1,7 +1,33 @@
 # Secrets — never commit
 .env
 .env.local
+.env.island
+.env.revenue-island
+infra/.env.revenue-island
 *.pem
+
+# Local scratch / accidental artifacts
+backend/=
+backend/_flywheel_smoke.zip
+backend/scripts/_island_*.py
+backend/scripts/_parse_pc_*.py
+backend/scripts/_post_mainhub_checkout_now.py
+
+# Loot card art scratch (regenerate via import_loot_card_frames / Card Lab)
+backend/app/data/loot_tier_cards/_inbox/
+backend/app/data/loot_tier_cards/_preview/
+backend/app/data/loot_tier_cards/_import_bgclean/
+backend/app/data/loot_tier_cards/_spike_*
+backend/app/data/loot_tier_cards/frames/_source/
+backend/app/data/loot_tier_cards/frames/frame-*.png
+
+# Emoji pack build outputs (keep manifest + compose script in repo)
+assets/emoji/**/pack_unique/
+assets/emoji/**/tile_*.png
+assets/emoji/**/master*.png
+assets/emoji/**/*.webm
+assets/emoji/**/ai_vibe_ref.png
+assets/emoji/**/glyphs/
 
 # Python
 __pycache__/
