@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -87,3 +87,35 @@ def effective_link_resolver_tier(db: Session, telegram_user_id: int) -> str:
     if _active_rows(db, int(telegram_user_id)):
         return "premium"
     return "free"
+
+
+def compensate_loot_key_card_failure(db: Session, telegram_user_id: int) -> dict:
+    """
+    When a paid key roll delivers loot but the tier card reveal fails, extend the
+    active loot-section subscription by 24h so the user is not shorted on key time.
+    """
+    uid = int(telegram_user_id)
+    now = datetime.utcnow()
+    rows = (
+        db.query(Subscription)
+        .join(SubscriptionPlan, Subscription.plan_id == SubscriptionPlan.id)
+        .filter(
+            Subscription.telegram_user_id == uid,
+            Subscription.status == "active",
+            SubscriptionPlan.bot_section == "loot",
+        )
+        .all()
+    )
+    for sub in rows:
+        exp = sub.expires_at
+        if exp is not None and exp <= now:
+            continue
+        base = max(exp, now) if exp is not None else now
+        sub.expires_at = base + timedelta(hours=24)
+        db.commit()
+        return {
+            "ok": True,
+            "subscription_id": int(sub.id),
+            "extended_until": sub.expires_at.isoformat(),
+        }
+    return {"ok": False, "reason": "no_active_loot_subscription"}

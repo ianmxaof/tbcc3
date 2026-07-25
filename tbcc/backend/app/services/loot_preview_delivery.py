@@ -33,7 +33,13 @@ from app.services.loot_roll_presentation import (
     wrap_tier_card_body,
 )
 from app.services.loot_tier_banner import build_tier_flavor_html, build_tier_opening_html
-from app.services.loot_tier_card_assets import build_reveal_card_png
+from app.services.loot_tier_card_assets import (
+    _bytes_to_center_jpeg,
+    build_reveal_border_still_jpeg,
+    build_reveal_card_mp4,
+    build_reveal_card_png,
+    roll_reveal_rng,
+)
 from app.services.loot_tier_catalog import tier_display_name
 from app.services.local_media_storage import is_local_pool_media, read_local_media_bytes
 from app.services.media_sniff import sniff_media_kind
@@ -45,33 +51,49 @@ from app.utils.telegram_promo_url import is_public_https_for_telegram
 logger = logging.getLogger(__name__)
 
 
-async def _encode_reveal_card_mp4(card_bytes: bytes, preview: dict[str, Any]) -> tuple[bytes | None, str]:
+async def _encode_reveal_card_mp4(
+    card_bytes: bytes,
+    preview: dict[str, Any],
+    *,
+    center_jpeg: bytes | None = None,
+) -> tuple[bytes | None, str]:
     """Thread or Celery offload for ffmpeg mux (falls back to JPEG path when None)."""
     from app.services.loot_reveal_video import (
-        compose_reveal_card_mp4,
         loot_reveal_video_celery_enabled,
         loot_reveal_video_enabled,
         reveal_video_encode_timeout_s,
     )
+    from app.services.loot_border_reveal import loot_border_reveal_enabled
 
     if not loot_reveal_video_enabled():
         return None, "disabled"
 
-    seed_raw = preview.get("seed")
-    seed_int: int | None = None
-    if seed_raw is not None:
-        try:
-            seed_int = int(seed_raw)
-        except (TypeError, ValueError):
-            seed_int = None
-    rng = random.Random(seed_int) if seed_int is not None else None
+    tier = int(preview.get("rarity_tier") or 1)
+    rng = roll_reveal_rng(preview)
+    video_preview = dict(preview)
+    if center_jpeg:
+        video_preview["center_jpeg_b64"] = base64.b64encode(center_jpeg).decode("ascii")
+
+    if loot_border_reveal_enabled():
+        # Border mux needs the rolled center bytes on the API host — skip Celery.
+        return await asyncio.to_thread(
+            build_reveal_card_mp4, tier, rng=rng, preview=video_preview
+        )
+
+    from app.services.loot_reveal_video import compose_reveal_card_mp4
 
     if loot_reveal_video_celery_enabled():
-        from app.workers.loot_reveal_video_worker import compose_reveal_card_mp4_task
-
         timeout = reveal_video_encode_timeout_s() + 3
 
         def _celery_encode() -> tuple[bytes | None, str]:
+            from app.workers.loot_reveal_video_worker import compose_reveal_card_mp4_task
+
+            seed_int = None
+            if preview.get("seed") is not None:
+                try:
+                    seed_int = int(preview.get("seed"))
+                except (TypeError, ValueError):
+                    seed_int = None
             result = compose_reveal_card_mp4_task.apply_async(
                 args=[card_bytes],
                 kwargs={"seed": seed_int},
@@ -81,10 +103,12 @@ async def _encode_reveal_card_mp4(card_bytes: bytes, preview: dict[str, Any]) ->
             return None, str(result.get("reason") or "celery_fail")
 
         try:
-            return await asyncio.to_thread(_celery_encode)
+            mp4, note = await asyncio.to_thread(_celery_encode)
+            if mp4:
+                return mp4, note
+            logger.warning("loot reveal video celery empty: %s", note)
         except Exception as e:
             logger.warning("loot reveal video celery failed: %s", e)
-            return None, f"celery:{e}"
 
     return await asyncio.to_thread(compose_reveal_card_mp4, card_bytes, rng=rng)
 
@@ -119,11 +143,16 @@ async def _send_reveal_with_effects(
         }
         if media_kind == "animation":
             send_kwargs["animation"] = InputFile(media_buf, filename=filename)
+            send_fn = bot.send_animation
+        elif media_kind == "video":
+            send_kwargs["video"] = InputFile(media_buf, filename=filename)
+            send_kwargs["supports_streaming"] = True
+            send_fn = bot.send_video
         else:
             send_kwargs["photo"] = InputFile(media_buf, filename=filename)
+            send_fn = bot.send_photo
         if attempt_effect:
             send_kwargs["message_effect_id"] = attempt_effect
-        send_fn = bot.send_animation if media_kind == "animation" else bot.send_photo
         try:
             await send_fn(**send_kwargs)
             if attempt_effect:
@@ -430,7 +459,7 @@ async def send_loot_preview_to_chat(
     """
     Order: tier card reveal → divider → flavor → media (modifiers + affiliate in caption) → ZIPs last.
     """
-    delivery: dict[str, Any] = {"albums_sent": 0, "media_sent": 0, "notes": []}
+    delivery: dict[str, Any] = {"albums_sent": 0, "media_sent": 0, "notes": [], "tier_card_delivered": False}
 
     if not preview.get("ok"):
         await bot.send_message(
@@ -470,24 +499,84 @@ async def _send_loot_preview_to_chat_inner(
     delivery: dict[str, Any],
 ) -> dict[str, Any]:
     tier = int(preview.get("rarity_tier") or 1)
-    card_bytes, card_note = build_reveal_card_png(tier, preview=preview)
-    if card_bytes:
+    from app.services.loot_border_reveal import loot_border_reveal_enabled
+
+    border_mode = loot_border_reveal_enabled()
+    center_jpeg: bytes | None = None
+    media_preview = preview.get("media") or []
+    for item in media_preview:
+        mid = item.get("id")
+        if mid is None:
+            continue
+        row = db.query(Media).filter(Media.id == int(mid)).first()
+        if not row:
+            continue
+        try:
+            data, _fname = await _load_media_bytes(row)
+            kind, _ext = sniff_media_kind(data)
+            if kind in ("photo", "gif", "video"):
+                center_jpeg = _bytes_to_center_jpeg(data)
+                break
+        except Exception as e:
+            logger.warning("reveal center from roll media skipped media_id=%s: %s", mid, e)
+    if border_mode and not center_jpeg and media_preview:
+        delivery["notes"].append("tier card center:roll_media_missing")
+
+    card_bytes: bytes | None = None
+    card_note = "skipped"
+    if not border_mode:
+        card_bytes, card_note = build_reveal_card_png(tier, preview=preview)
+
+    if border_mode or card_bytes:
         try:
             opening = build_tier_opening_html(db, preview)
             effect_id = loot_roll_effect_id()
-            mp4_bytes, mp4_note = await _encode_reveal_card_mp4(card_bytes, preview)
+            mp4_bytes, mp4_note = await _encode_reveal_card_mp4(
+                card_bytes or b"", preview, center_jpeg=center_jpeg
+            )
             if mp4_bytes:
+                border_video = border_mode
                 await _send_reveal_with_effects(
                     bot,
                     chat_id=chat_id,
                     opening=opening,
                     effect_id=effect_id,
                     delivery=delivery,
-                    media_kind="animation",
+                    media_kind="video" if border_video else "animation",
                     media_bytes=mp4_bytes,
                     filename=f"loot-tier-{tier}.mp4",
                 )
                 delivery["notes"].append(f"tier card video:{mp4_note}")
+                delivery["tier_card_delivered"] = True
+            elif border_mode:
+                still_bytes, still_note = await asyncio.to_thread(
+                    build_reveal_border_still_jpeg,
+                    tier,
+                    preview=preview,
+                    center_jpeg=center_jpeg,
+                )
+                if still_bytes:
+                    await _send_reveal_with_effects(
+                        bot,
+                        chat_id=chat_id,
+                        opening=opening,
+                        effect_id=effect_id,
+                        delivery=delivery,
+                        media_kind="photo",
+                        media_bytes=still_bytes,
+                        filename=f"loot-tier-{tier}.jpg",
+                    )
+                    delivery["notes"].append(f"tier card still:{still_note}")
+                    delivery["tier_card_delivered"] = True
+                else:
+                    delivery["notes"].append(f"border reveal failed:{mp4_note};still:{still_note}")
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=opening,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                    delivery["notes"].append("tier banner fallback")
             else:
                 if mp4_note and mp4_note != "disabled":
                     delivery["notes"].append(f"tier card video skipped:{mp4_note}")
@@ -502,6 +591,7 @@ async def _send_loot_preview_to_chat_inner(
                     filename=f"loot-tier-{tier}.jpg",
                 )
                 delivery["notes"].append(f"tier card image:{card_note}")
+                delivery["tier_card_delivered"] = True
         except Exception as e:
             logger.warning("loot tier card image failed tier=%s: %s", tier, e)
             delivery["notes"].append(f"tier card image failed: {e}")

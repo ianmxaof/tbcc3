@@ -636,11 +636,24 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup=finale_markup,
             )
             return
+        card_ok = bool(result.get("tier_card_delivered") or delivery.get("tier_card_delivered"))
+        comp = result.get("key_compensation") or {}
+        comp_line = ""
+        if not card_ok and comp.get("ok"):
+            comp_line = (
+                "\n\n<b>Card reveal missed — your Loot Room key was extended 24h.</b>"
+                f"\n<i>New expiry: {html.escape(str(comp.get('extended_until') or 'updated'))}</i>"
+            )
+        elif not card_ok:
+            comp_line = (
+                "\n\n<b>Card reveal missed this pull.</b> Tap <b>/roll</b> again — your key time was not consumed."
+            )
         await _safe_reply_html(
             msg,
             f"<b>Key roll dealt.</b>\n"
             f"Tier <b>{tier}</b> · {mods} modifier slot(s).\n"
-            "<i>Your Loot Room key unlocked the full ladder.</i>",
+            "<i>Your Loot Room key unlocked the full ladder.</i>"
+            f"{comp_line}",
             disable_web_page_preview=True,
             reply_markup=finale_markup,
         )

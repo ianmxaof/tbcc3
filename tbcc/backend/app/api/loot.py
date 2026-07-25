@@ -30,7 +30,7 @@ from app.services.loot_preview_delivery import send_loot_free_pull_to_chat, send
 from app.services.loot_creator_submit import submit_creator_profile
 from app.services.loot_player_modifiers import record_modifiers_seen
 from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining, record_roll
-from app.services.subscription_access import is_loot_key_holder
+from app.services.subscription_access import compensate_loot_key_card_failure, is_loot_key_holder
 from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_referral import (
     bonus_free_pulls_for,
@@ -908,6 +908,11 @@ def claim_key_roll(
             worker_db.close()
 
     delivery = _run_loot_async(_run())
+    card_ok = bool(delivery.get("tier_card_delivered"))
+    compensation: dict | None = None
+    if not card_ok and not operator:
+        compensation = compensate_loot_key_card_failure(db, uid)
+        delivery.setdefault("notes", []).append(f"key_compensation:{compensation}")
     if int(delivery.get("media_sent") or 0) > 0:
         record_roll(db, uid)
         media_ids = [int(m["id"]) for m in (preview.get("media") or []) if m.get("id") is not None]
@@ -926,6 +931,8 @@ def claim_key_roll(
         "sent_to": uid,
         "preview": preview,
         "delivery": delivery,
+        "tier_card_delivered": card_ok,
+        "key_compensation": compensation,
     }
 
 
