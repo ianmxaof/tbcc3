@@ -539,6 +539,143 @@ def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont)
     return int(box[2] - box[0])
 
 
+def _text_height(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    box = draw.textbbox((0, 0), text, font=font)
+    return int(box[3] - box[1])
+
+
+def _world_coord_compact(world_s: str) -> str:
+    """'World 4-1' → '4-1' for compact badge subtitle."""
+    import re
+
+    s = (world_s or "").strip()
+    if not s:
+        return ""
+    m = re.match(r"^(?:world\s+)?(\d+)\s*-\s*(\d+)\s*$", s, re.I)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    m = re.match(r"^(\d+)\s*-\s*(\d+)\s*$", s)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return s
+
+
+def _world_badge_lines(world_s: str) -> tuple[str, str]:
+    """Split 'World 2-1' → ('World', '2  -  1') for stacked badge text."""
+    import re
+
+    s = (world_s or "").strip()
+    if not s:
+        return "", ""
+    m = re.match(r"^(world)\s+(\d+)\s*-\s*(\d+)\s*$", s, re.I)
+    if m:
+        return m.group(1).title(), f"{m.group(2)}  -  {m.group(3)}"
+    m = re.match(r"^(\d+)\s*-\s*(\d+)\s*$", s)
+    if m:
+        return "", f"{m.group(1)}  -  {m.group(2)}"
+    return s, ""
+
+
+def _badge_plate_lines(tier: int, world_s: str) -> list[str]:
+    lines = [f"TIER {tier}"]
+    world_line, coord_line = _world_badge_lines(world_s)
+    if world_line:
+        lines.append(world_line)
+    if coord_line:
+        lines.append(coord_line)
+    elif world_s.strip() and not world_line:
+        lines.append(world_s.strip())
+    return lines
+
+
+def _draw_badge_plate_stack(
+    draw: ImageDraw.ImageDraw,
+    *,
+    plate: tuple[int, int, int, int],
+    tier: int,
+    world_s: str,
+    ch: int,
+) -> None:
+    """Text-only tier/world stack centered inside a border badge plate."""
+    px0, py0, px1, py1 = plate
+    pw, ph = max(1, px1 - px0), max(1, py1 - py0)
+    lines = _badge_plate_lines(tier, world_s)
+    tier_font = _fit_font(draw, lines[0], int(pw * 0.92), max(10, int(ph * 0.18)), 9)
+    sub_font = _fit_font(
+        draw,
+        max((ln for ln in lines[1:]), key=len, default="World"),
+        int(pw * 0.9),
+        max(8, int(ph * 0.12)),
+        8,
+    )
+    gap = max(2, int(ph * 0.035))
+    heights = [_text_height(draw, ln, tier_font if i == 0 else sub_font) for i, ln in enumerate(lines)]
+    block_h = sum(heights) + gap * max(0, len(lines) - 1)
+    y = py0 + max(2, (ph - block_h) // 2)
+    for i, ln in enumerate(lines):
+        font = tier_font if i == 0 else sub_font
+        fill = (240, 255, 245, 255) if i == 0 else (210, 225, 235, 240)
+        lw = _text_width(draw, ln, font)
+        x = px0 + max(2, (pw - lw) // 2)
+        _draw_text_outlined(draw, (x, y), ln, font=font, fill=fill, thin=True)
+        y += heights[i] + gap
+
+
+def _draw_sunken_laser_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    *,
+    font: ImageFont.ImageFont,
+) -> None:
+    """Engraved / laser-etched into metal — dark inset with edge highlight."""
+    x, y = xy
+    draw.text((x + 2, y + 2), text, font=font, fill=(18, 20, 24, 200))
+    draw.text((x + 1, y + 1), text, font=font, fill=(38, 42, 48, 230))
+    draw.text((x - 1, y - 1), text, font=font, fill=(145, 152, 162, 90))
+    draw.text((x, y), text, font=font, fill=(62, 68, 76, 255))
+
+
+def _draw_sunken_badge_plate(
+    draw: ImageDraw.ImageDraw,
+    *,
+    plate: tuple[int, int, int, int],
+    tier: int,
+    world_s: str,
+) -> None:
+    """
+    Border badge: large lasered tier digit + compact world coord (e.g. 7 / 4-1).
+    Text sits in the upper portion of the plate (shield tapers to a point below).
+    """
+    px0, py0, px1, py1 = plate
+    pw, ph = max(1, px1 - px0), max(1, py1 - py0)
+    tier_s = str(max(1, min(10, int(tier))))
+    coord_s = _world_coord_compact(world_s)
+    text_h = max(8, int(ph * 0.62))
+    tier_font = _fit_font(draw, tier_s, int(pw * 0.82), text_h, 12)
+    tier_h = _text_height(draw, tier_s, tier_font)
+    sub_h = 0
+    sub_font = tier_font
+    gap = max(1, int(ph * 0.04))
+    if coord_s:
+        sub_font = _fit_font(draw, coord_s, int(pw * 0.72), max(8, int(ph * 0.14)), 7)
+        sub_h = _text_height(draw, coord_s, sub_font)
+    block_h = tier_h + (gap + sub_h if coord_s else 0)
+    # Upper band — leave tapered point at bottom empty
+    band_bottom = py0 + int(ph * 0.72)
+    y = py0 + max(2, (band_bottom - py0 - block_h) // 2)
+    tw = _text_width(draw, tier_s, tier_font)
+    _draw_sunken_laser_text(draw, (px0 + (pw - tw) // 2, y), tier_s, font=tier_font)
+    if coord_s:
+        sw = _text_width(draw, coord_s, sub_font)
+        _draw_sunken_laser_text(
+            draw,
+            (px0 + (pw - sw) // 2, y + tier_h + gap),
+            coord_s,
+            font=sub_font,
+        )
+
+
 def _draw_text_outlined(
     draw: ImageDraw.ImageDraw,
     xy: tuple[int, int],
@@ -703,9 +840,13 @@ def _stamp_tier_chrome(
     name: str,
     tagline: str,
     chrome_bbox: tuple[int, int, int, int] | None = None,
+    brand_plate: tuple[int, int, int, int] | None = None,
     bottom_plate: tuple[int, int, int, int] | None = None,
+    footer_plate: tuple[int, int, int, int] | None = None,
     badge_plate: tuple[int, int, int, int] | None = None,
     stamp_brand: bool = True,
+    stamp_badge_only: bool = False,
+    badge_style: str = "stack",
     layout: StampLayout | None = None,
 ) -> None:
     """
@@ -713,6 +854,8 @@ def _stamp_tier_chrome(
       top-left  AOF LOOT
       top-right TIER N + world
       bottom    NAME + flavor
+
+    Border animated cards: stamp_badge_only=True, badge_style='sunken' (tier digit + coord only).
     """
     draw = ImageDraw.Draw(canvas)
     w, h = canvas.size
@@ -722,88 +865,122 @@ def _stamp_tier_chrome(
         x0, y0, x1, y1 = 0, 0, w, h
     cw, ch = max(1, x1 - x0), max(1, y1 - y0)
 
-    tier_font = _try_font(max(14, ch // 26))
-    flavor_font = _try_font(max(12, ch // 40))
-    hub_font = _try_font(max(10, ch // 52))
+    tier_font = _try_font(max(12, ch // 30))
+    flavor_font = _try_font(max(10, ch // 52))
+    hub_font = _try_font(max(9, ch // 58))
 
     # top-left brand — blank-plate frames only; skip when frame bakes its own wordmark.
-    if stamp_brand:
-        if layout:
+    if stamp_brand and not stamp_badge_only:
+        show_hub = layout.show_hub if layout else True
+        bh = 0
+        if brand_plate and brand_plate[2] > brand_plate[0] + 20:
+            px0, py0, px1, py1 = brand_plate
+            pw, ph = px1 - px0, py1 - py0
+            brand_start = max(
+                layout.brand_min_font if layout else 10,
+                int(ph * (0.30 if show_hub else 0.44)),
+            )
+            brand_max = int(pw * 0.88)
+            brand_font = _fit_font(
+                draw, "AOF LOOT", brand_max, brand_start, layout.brand_min_font if layout else 10
+            )
+            bw = _text_width(draw, "AOF LOOT", brand_font)
+            bh = _text_height(draw, "AOF LOOT", brand_font)
+            hub_h = _text_height(draw, "@aof_lootgod_bot", hub_font) if show_hub else 0
+            gap_brand_hub = max(2, int(ph * 0.03)) if show_hub else 0
+            block_h = bh + gap_brand_hub + hub_h
+            brand_x = px0 + max(2, (pw - bw) // 2)
+            brand_y = py0 + max(2, (ph - block_h) // 2)
+        elif layout:
             brand_x = x0 + int(cw * layout.brand_x)
             brand_y = y0 + int(ch * layout.brand_y)
             brand_max = int(cw * layout.brand_max_w)
             brand_start = max(layout.brand_min_font, int(ch * layout.brand_font_h))
             brand_font = _fit_font(draw, "AOF LOOT", brand_max, brand_start, layout.brand_min_font)
+            bb = draw.textbbox((0, 0), "AOF LOOT", font=brand_font)
+            bh = bb[3] - bb[1]
         else:
             brand_x = x0 + int(cw * 0.05)
             brand_y = y0 + int(ch * 0.04)
             brand_font = _fit_font(draw, "AOF LOOT", int(cw * 0.48), max(20, ch // 13), 14)
+            bb = draw.textbbox((0, 0), "AOF LOOT", font=brand_font)
+            bh = bb[3] - bb[1]
+            show_hub = True
         _draw_text_outlined(draw, (brand_x, brand_y), "AOF LOOT", font=brand_font, thin=True)
 
-        show_hub = layout.show_hub if layout else True
         if show_hub:
             hub = "@aof_lootgod_bot"
-            hub_y = brand_y + max(16, ch // 20)
+            if brand_plate and brand_plate[2] > brand_plate[0] + 20:
+                gap = max(2, int((brand_plate[3] - brand_plate[1]) * 0.03))
+                hub_y = brand_y + bh + gap
+                hw = _text_width(draw, hub, hub_font)
+                px0, _, px1, _ = brand_plate
+                hub_x = px0 + max(2, (px1 - px0 - hw) // 2)
+            else:
+                hub_y = brand_y + max(12, bh)
+                hub_x = brand_x
             _draw_text_outlined(
                 draw,
-                (brand_x, hub_y),
+                (hub_x, hub_y),
                 hub,
                 font=hub_font,
                 fill=(180, 180, 180, 230),
                 thin=True,
             )
 
-    # top-right tier badge — plate detection, else style layout fractions.
+    # top-right tier badge — text-only when a plate is detected; legacy green chip otherwise.
     world_s = (world or "").strip()
-    tier_label = f"TIER {tier}"
-    tw = _text_width(draw, tier_label, tier_font)
-    badge_pad_x, badge_pad_y = 10, 6
-    badge_h = max(22, int(ch * layout.badge_h)) + badge_pad_y if layout else max(22, ch // 20) + badge_pad_y
     if badge_plate and badge_plate[2] > badge_plate[0] + 20:
-        px0, py0, px1, py1 = badge_plate
-        pw, ph = px1 - px0, py1 - py0
-        bx0 = px0 + max(4, (pw - tw - badge_pad_x * 2) // 2)
-        by0 = py0 + max(2, (ph - badge_h) // 2)
-        bx1 = bx0 + tw + badge_pad_x * 2
-        by1 = by0 + badge_h
-    elif layout:
-        bx1 = min(x0 + int(cw * layout.badge_x1), w - 4)
-        by0 = y0 + int(ch * layout.badge_y0)
-        bx0 = bx1 - tw - badge_pad_x * 2
-        by1 = by0 + badge_h
-    else:
-        bx1 = min(x1 - int(cw * 0.05), w - max(6, int(cw * 0.02)))
-        by0 = y0 + int(ch * 0.05)
-        bx0 = bx1 - tw - badge_pad_x * 2
-        by1 = by0 + badge_h
-    # neon-ish plate
-    draw.rounded_rectangle(
-        (bx0, by0, bx1, by1),
-        radius=6,
-        fill=(10, 40, 18, 230),
-        outline=(40, 220, 90, 255),
-        width=2,
-    )
-    _draw_text_outlined(
-        draw,
-        (bx0 + badge_pad_x, by0 + badge_pad_y // 2),
-        tier_label,
-        font=tier_font,
-        fill=(240, 255, 245, 255),
-        thin=True,
-    )
-    if world_s:
-        ww = _text_width(draw, world_s, hub_font)
+        if badge_style == "sunken":
+            _draw_sunken_badge_plate(draw, plate=badge_plate, tier=tier, world_s=world_s)
+        else:
+            _draw_badge_plate_stack(
+                draw, plate=badge_plate, tier=tier, world_s=world_s, ch=ch
+            )
+    elif not stamp_badge_only:
+        tier_label = f"TIER {tier}"
+        tw = _text_width(draw, tier_label, tier_font)
+        badge_pad_x, badge_pad_y = 8, 5
+        badge_h = max(18, int(ch * layout.badge_h)) + badge_pad_y if layout else max(20, ch // 22) + badge_pad_y
+        if layout:
+            bx1 = min(x0 + int(cw * layout.badge_x1), w - 4)
+            by0 = y0 + int(ch * layout.badge_y0)
+            bx0 = bx1 - tw - badge_pad_x * 2
+            by1 = by0 + badge_h
+        else:
+            bx1 = min(x1 - int(cw * 0.05), w - max(6, int(cw * 0.02)))
+            by0 = y0 + int(ch * 0.05)
+            bx0 = bx1 - tw - badge_pad_x * 2
+            by1 = by0 + badge_h
+        draw.rounded_rectangle(
+            (bx0, by0, bx1, by1),
+            radius=6,
+            fill=(10, 40, 18, 230),
+            outline=(40, 220, 90, 255),
+            width=2,
+        )
         _draw_text_outlined(
             draw,
-            (bx1 - ww, by1 + 4),
-            world_s,
-            font=hub_font,
-            fill=(200, 255, 210, 240),
+            (bx0 + badge_pad_x, by0 + badge_pad_y // 2),
+            tier_label,
+            font=tier_font,
+            fill=(240, 255, 245, 255),
+            thin=True,
         )
+        if world_s:
+            ww = _text_width(draw, world_s, hub_font)
+            _draw_text_outlined(
+                draw,
+                (bx1 - ww, by1 + 4),
+                world_s,
+                font=hub_font,
+                fill=(200, 255, 210, 240),
+            )
 
-    # bottom name + flavor — stacked and bottom-anchored so the tagline never
-    # lands on the name's descenders (they used to overlap).
+    if stamp_badge_only:
+        return
+
+    # bottom name + flavor — name on the nameplate; tagline in footer_plate when set.
     name_u = (name or f"Tier {tier}").strip().upper() or f"TIER {tier}"
     name_start = max(16, int(ch * layout.name_font_h)) if layout else max(24, ch // 11)
     name_font = _fit_font(draw, name_u, int(cw * 0.86), name_start, 16)
@@ -815,13 +992,23 @@ def _stamp_tier_chrome(
     if tl:
         tb = draw.textbbox((0, 0), tl, font=flavor_font)
         th = tb[3] - tb[1]
-    gap = max(4, ch // 80)
-    block_h = nh + (gap + th if tl else 0)
+    gap = max(8, ch // 52) if bottom_plate else max(4, ch // 80)
+    block_h = nh + (gap + th if tl and not footer_plate else 0)
     if bottom_plate and bottom_plate[2] > bottom_plate[0] + 20:
         px0, py0, px1, py1 = bottom_plate
         pw, ph = px1 - px0, py1 - py0
-        nx = px0 + max(8, (pw - nw) // 2)
-        by = py0 + max(4, (ph - block_h) // 2)
+        name_max = int(pw * 0.92)
+        if nw > name_max:
+            name_font = _fit_font(draw, name_u, name_max, name_start, 14)
+            nw = _text_width(draw, name_u, name_font)
+            nb = draw.textbbox((0, 0), name_u, font=name_font)
+            nh = nb[3] - nb[1]
+            block_h = nh + (gap + th if tl and not footer_plate else 0)
+        nx = px0 + (pw - nw) // 2
+        if footer_plate:
+            by = py0 + (ph - nh) // 2
+        else:
+            by = py0 + (ph - block_h) // 2
     else:
         bottom_pad = max(10, ch // 24)
         by = max(y0, y1 - bottom_pad - block_h)
@@ -829,18 +1016,58 @@ def _stamp_tier_chrome(
     _draw_text_outlined(draw, (nx, by), name_u, font=name_font, thin=True)
     if tl:
         lw = _text_width(draw, tl, flavor_font)
-        if bottom_plate and bottom_plate[2] > bottom_plate[0] + 20:
+        if footer_plate and footer_plate[2] > footer_plate[0] + 20:
+            fx0, fy0, fx1, fy1 = footer_plate
+            fw, fh = fx1 - fx0, fy1 - fy0
+            lx = fx0 + (fw - lw) // 2
+            ly = fy0 + max(0, (fh - th) // 2)
+        elif bottom_plate and bottom_plate[2] > bottom_plate[0] + 20:
             px0, _, px1, _ = bottom_plate
-            lx = px0 + max(8, (px1 - px0 - lw) // 2)
+            pw = px1 - px0
+            lx = px0 + (pw - lw) // 2
+            ly = by + nh + gap
         else:
             lx = x0 + max(8, (cw - lw) // 2)
+            ly = by + nh + gap
         _draw_text_outlined(
             draw,
-            (lx, by + nh + gap),
+            (lx, ly),
             tl,
             font=flavor_font,
             fill=(210, 210, 210, 240),
         )
+
+
+def _bytes_to_center_jpeg(data: bytes) -> bytes | None:
+    """Normalize loot media bytes to JPEG for the reveal window."""
+    try:
+        im = Image.open(io.BytesIO(data))
+        im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=90, optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def roll_reveal_rng(preview: dict | None, rng: random.Random | None = None) -> random.Random:
+    if rng is not None:
+        return rng
+    seed_raw = (preview or {}).get("seed")
+    media_ids = [
+        int(m["id"]) for m in ((preview or {}).get("media") or []) if m.get("id") is not None
+    ]
+    mix = 0
+    if seed_raw is not None:
+        try:
+            mix ^= int(seed_raw)
+        except (TypeError, ValueError):
+            pass
+    for mid in media_ids:
+        mix ^= int(mid) * 2654435761
+    if mix:
+        return random.Random(mix & 0xFFFFFFFF)
+    return random.Random()
 
 
 def _frame_layout_score(path: Path) -> float:
@@ -1061,6 +1288,150 @@ def compose_reveal_card(
     return buf.getvalue()
 
 
+def compose_reveal_border_layers(
+    tier: int,
+    *,
+    rng: random.Random | None = None,
+    size: int = 1024,
+    world: str | None = None,
+    name: str | None = None,
+    tagline: str | None = None,
+    frame_path: Path | None = None,
+    center_path: Path | None = None,
+    center_jpeg: bytes | None = None,
+    border_open: Path | None = None,
+    border_stasis: Path | None = None,
+    border_clip: Path | None = None,
+    preview: dict | None = None,
+) -> tuple[bytes, bytes] | None:
+    """
+    Layers for animated border reveal (no static frame chrome):
+      - center JPEG: rolled loot still in the border window
+      - stamp PNG: RGBA text-only overlay aligned to border plates
+    """
+    from app.services.loot_border_plates import plates_for_border_clip
+    from app.services.loot_border_profiles import frac_rect_to_px, profile_for_border
+    from app.services.loot_card_frame_styles import StampLayout
+
+    rng = roll_reveal_rng(preview, rng)
+    t = max(1, min(10, int(tier)))
+    clip = border_clip or border_open or border_stasis
+    profile = profile_for_border(clip)
+    stamp_layout = profile.stamp_layout if profile else None
+    stamp_brand = profile.stamp_brand if profile else True
+
+    if clip and clip.is_file():
+        geom = plates_for_border_clip(clip)
+        x0, y0, x1, y1 = frac_rect_to_px(geom["window"], size)
+        brand_plate = frac_rect_to_px(geom["brand_plate"], size)
+        badge_plate = frac_rect_to_px(geom["badge_plate"], size)
+        bottom_plate = frac_rect_to_px(geom["bottom_plate"], size)
+        footer_plate = None
+        if profile and profile.footer_plate:
+            footer_plate = frac_rect_to_px(profile.footer_plate, size)
+        elif geom.get("bottom_plate"):
+            bx0, _, bx1, by1 = geom["bottom_plate"]
+            footer_plate = frac_rect_to_px((bx0, by1, bx1, min(1.0, by1 + 0.06)), size)
+        if stamp_layout is None:
+            stamp_layout = StampLayout(
+                style_id="auto",
+                brand_x=0.05,
+                brand_y=0.06,
+                brand_max_w=0.34,
+                brand_font_h=0.055,
+                brand_min_font=11,
+                show_hub=True,
+                badge_x1=0.94,
+                badge_y0=0.06,
+                badge_h=0.042,
+                world_below_badge=False,
+                name_font_h=0.062,
+            )
+    elif profile:
+        x0, y0, x1, y1 = frac_rect_to_px(profile.window, size)
+        brand_plate = frac_rect_to_px(profile.brand_plate, size)
+        badge_plate = frac_rect_to_px(profile.badge_plate, size)
+        bottom_plate = frac_rect_to_px(profile.bottom_plate, size)
+        footer_plate = (
+            frac_rect_to_px(profile.footer_plate, size) if profile.footer_plate else None
+        )
+    else:
+        frames = list_reveal_frame_paths()
+        if not frames:
+            return None
+        fp = frame_path or pick_frame_path(rng, frames)
+        if fp is None:
+            return None
+        frame = Image.open(fp).convert("RGBA")
+        if frame.size != (size, size):
+            frame = frame.resize((size, size), Image.Resampling.LANCZOS)
+        frame = sanitize_frame_alpha(frame)
+        mx, my = size // 2, size // 2
+        mr, mg, mb, ma = frame.getpixel((mx, my))
+        if ma > 200 and mr < 22 and mg < 22 and mb < 22:
+            frame = key_near_black_to_alpha(frame)
+        frame = sanitize_frame_alpha(frame)
+        x0, y0, x1, y1 = _window_bbox(frame)
+        fw, fh = frame.size
+        bottom_plate = _band_chrome_bbox(frame, (0, int(fh * 0.74), fw, fh))
+        badge_plate = _band_chrome_bbox(frame, (int(fw * 0.50), 0, fw, int(fh * 0.24)))
+        brand_plate = None
+        footer_plate = None
+        from app.services.loot_card_frame_styles import layout_for_frame
+
+        stamp_layout = layout_for_frame(frame, path=fp)
+        stamp_brand = fp.name.lower().startswith("mag-")
+
+    centers = list_center_paths(t)
+    cp = center_path
+    if cp is None and not center_jpeg and centers:
+        cp = centers[rng.randrange(len(centers))]
+
+    win_w, win_h = max(1, x1 - x0), max(1, y1 - y0)
+    # Exact window fit — no bleed (bleed caused dark fringe under inner chrome).
+    canvas = Image.new("RGB", (size, size), (0, 0, 0))
+    if center_jpeg:
+        center = Image.open(io.BytesIO(center_jpeg)).convert("RGB")
+        fitted = _cover_resize(center.convert("RGBA"), (win_w, win_h))
+        canvas.paste(fitted.convert("RGB"), (x0, y0))
+    elif cp is not None:
+        center = Image.open(cp).convert("RGB")
+        fitted = _cover_resize(center.convert("RGBA"), (win_w, win_h))
+        canvas.paste(fitted.convert("RGB"), (x0, y0))
+    else:
+        ImageDraw.Draw(canvas).rectangle((x0, y0, x1 - 1, y1 - 1), fill=(28, 28, 32))
+
+    center_jpeg = io.BytesIO()
+    canvas.save(center_jpeg, format="JPEG", quality=92, optimize=True)
+
+    stamp_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    try:
+        from app.services.loot_tier_catalog import TIER_META
+
+        meta = TIER_META.get(t) or {}
+    except Exception:
+        meta = {}
+    _stamp_tier_chrome(
+        stamp_layer,
+        tier=t,
+        world=world if world is not None else str(meta.get("world") or ""),
+        name=name if name is not None else str(meta.get("name") or f"Tier {t}"),
+        tagline=tagline if tagline is not None else str(meta.get("tagline") or ""),
+        chrome_bbox=(0, 0, size, size),
+        brand_plate=brand_plate,
+        bottom_plate=bottom_plate,
+        footer_plate=footer_plate,
+        badge_plate=badge_plate,
+        stamp_brand=False,
+        stamp_badge_only=True,
+        badge_style="sunken",
+        layout=stamp_layout,
+    )
+    stamp_png = io.BytesIO()
+    stamp_layer.save(stamp_png, format="PNG")
+    return center_jpeg.getvalue(), stamp_png.getvalue()
+
+
 def build_reveal_card_png(
     tier: int,
     *,
@@ -1101,6 +1472,13 @@ def build_reveal_card_png(
 
     legacy = resolve_tier_card_path(t)
     if legacy is not None:
+        try:
+            from app.services.loot_border_reveal import loot_border_reveal_enabled
+
+            if loot_border_reveal_enabled():
+                return None, "static_blocked:border_reveal"
+        except Exception:
+            pass
         return legacy.read_bytes(), f"static:{legacy.name}"
     return None, "missing"
 
@@ -1112,10 +1490,57 @@ def build_reveal_card_mp4(
     preview: dict | None = None,
 ) -> tuple[bytes | None, str]:
     """
-    Animated reveal: composited JPEG card muxed over a looping background MP4.
+    Animated reveal: single border clip (open+sustain baked in) or background loop fallback.
 
     Returns (mp4_bytes_or_none, note). Requires TBCC_LOOT_REVEAL_VIDEO=1 and ffmpeg.
     """
+    t = max(1, min(10, int(tier)))
+    meta_world = meta_name = meta_tag = None
+    center_jpeg = None
+    if preview:
+        meta_world = preview.get("world_label") or preview.get("world")
+        meta_name = preview.get("tier_name") or preview.get("name")
+        meta_tag = preview.get("tagline")
+        raw_center = preview.get("center_jpeg")
+        if isinstance(raw_center, (bytes, bytearray)) and raw_center:
+            center_jpeg = bytes(raw_center)
+        else:
+            raw_b64 = preview.get("center_jpeg_b64")
+            if isinstance(raw_b64, str) and raw_b64.strip():
+                import base64
+
+                center_jpeg = base64.b64decode(raw_b64)
+
+    rng = roll_reveal_rng(preview, rng)
+
+    from app.services.loot_border_reveal import loot_border_reveal_enabled
+
+    if loot_border_reveal_enabled():
+        from app.services.loot_border_reveal import compose_border_reveal_mp4, pick_border_clip
+        from app.services.loot_reveal_video import reveal_video_size
+
+        dim = reveal_video_size()
+        clip = pick_border_clip(rng)
+        if clip:
+            layers = compose_reveal_border_layers(
+                t,
+                rng=rng,
+                size=dim,
+                world=str(meta_world) if meta_world else None,
+                name=str(meta_name) if meta_name else None,
+                tagline=str(meta_tag) if meta_tag else None,
+                border_clip=clip,
+                center_jpeg=center_jpeg,
+                preview=preview,
+            )
+            if layers:
+                center_jpeg, stamp_png = layers
+                mp4, vnote = compose_border_reveal_mp4(
+                    center_jpeg, stamp_png, rng=rng, border_clip=clip, size=dim
+                )
+                if mp4:
+                    return mp4, vnote
+
     card_bytes, card_note = build_reveal_card_png(tier, rng=rng, preview=preview)
     if not card_bytes:
         return None, "no_card"
@@ -1125,3 +1550,57 @@ def build_reveal_card_mp4(
     if not mp4:
         return None, f"{vnote} card={card_note}"
     return mp4, f"{vnote} card={card_note}"
+
+
+def build_reveal_border_still_jpeg(
+    tier: int,
+    *,
+    rng: random.Random | None = None,
+    preview: dict | None = None,
+    center_jpeg: bytes | None = None,
+) -> tuple[bytes | None, str]:
+    """Static border card fallback when animated reveal encode fails."""
+    t = max(1, min(10, int(tier)))
+    meta_world = meta_name = meta_tag = None
+    if preview:
+        meta_world = preview.get("world_label") or preview.get("world")
+        meta_name = preview.get("tier_name") or preview.get("name")
+        meta_tag = preview.get("tagline")
+        raw_center = preview.get("center_jpeg")
+        if center_jpeg is None and isinstance(raw_center, (bytes, bytearray)) and raw_center:
+            center_jpeg = bytes(raw_center)
+
+    rng = roll_reveal_rng(preview, rng)
+
+    from app.services.loot_border_reveal import (
+        compose_border_reveal_still_jpeg,
+        loot_border_reveal_enabled,
+        pick_border_clip,
+    )
+    from app.services.loot_reveal_video import reveal_video_size
+
+    if not loot_border_reveal_enabled():
+        return None, "disabled"
+
+    dim = reveal_video_size()
+    clip = pick_border_clip(rng)
+    if not clip:
+        return None, "no_border_clips"
+    layers = compose_reveal_border_layers(
+        t,
+        rng=rng,
+        size=dim,
+        world=str(meta_world) if meta_world else None,
+        name=str(meta_name) if meta_name else None,
+        tagline=str(meta_tag) if meta_tag else None,
+        border_clip=clip,
+        center_jpeg=center_jpeg,
+        preview=preview,
+    )
+    if not layers:
+        return None, "no_layers"
+    center_jpeg, stamp_png = layers
+    still = compose_border_reveal_still_jpeg(center_jpeg, stamp_png, clip, size=dim)
+    if not still:
+        return None, f"still_failed:clip={clip.name}"
+    return still, f"border still clip={clip.name}"
