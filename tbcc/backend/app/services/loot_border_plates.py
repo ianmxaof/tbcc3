@@ -22,7 +22,18 @@ _DEFAULT = {
 
 
 def _is_key(r: int, g: int, b: int) -> bool:
-    return (r > 130 and b > 130 and g < 110) or (g > 170 and r < 110 and b < 110)
+    """Chroma / matte pixels (magenta, green, pink gutters, near-magenta sparkles)."""
+    if r > 130 and b > 130 and g < 110:
+        return True
+    if g > 170 and r < 110 and b < 110:
+        return True
+    # Gemini pink/magenta gutters and light magenta haze
+    if r > 150 and b > 110 and g < min(r, b) * 0.55:
+        if abs(r - b) < 90:
+            return True
+    if r > 200 and b > 160 and g < 120 and (r - g) > 80:
+        return True
+    return False
 
 
 def _is_plate(r: int, g: int, b: int) -> bool:
@@ -172,6 +183,89 @@ def _card_crop_from_image(im: Image.Image) -> tuple[float, float, float, float]:
     if x1 <= x0 or y1 <= y0:
         return (0.0, 0.0, 1.0, 1.0)
     return (x0 / w, y0 / h, x1 / w, y1 / h)
+
+
+def card_crop_bbox_px(im: Image.Image) -> tuple[int, int, int, int]:
+    """Pixel bbox (x0, y0, x1, y1) of visible chrome on a reference frame."""
+    w, h = im.size
+    fx0, fy0, fx1, fy1 = _card_crop_from_image(im)
+    return (int(fx0 * w), int(fy0 * h), int(fx1 * w), int(fy1 * h))
+
+
+def _even_dims(x0: int, y0: int, x1: int, y1: int) -> tuple[int, int, int, int]:
+    """YUV420-safe even width/height."""
+    cw = max(2, x1 - x0)
+    ch = max(2, y1 - y0)
+    cw -= cw % 2
+    ch -= ch % 2
+    return x0, y0, x0 + cw, y0 + ch
+
+
+def card_crop_bbox_for_clip(
+    clip: Path,
+    *,
+    offsets_s: tuple[float, ...] = (0.5, 1.5, 3.0),
+) -> tuple[int, int, int, int] | None:
+    """
+    Union chrome bbox across sample frames (handles open vs sustain; drops letterbox).
+    Returns pixel crop (x0, y0, x1, y1) in source video coordinates.
+    """
+    if not clip.is_file():
+        return None
+    boxes: list[tuple[int, int, int, int]] = []
+    for off in offsets_s:
+        ref = extract_reference_frame(clip, offset_s=off)
+        if ref is None:
+            continue
+        try:
+            im = Image.open(ref).convert("RGB")
+            box = card_crop_bbox_px(im)
+            if box[2] - box[0] >= 32 and box[3] - box[1] >= 32:
+                boxes.append(box)
+        except Exception:
+            continue
+    if not boxes:
+        return None
+    x0 = min(b[0] for b in boxes)
+    y0 = min(b[1] for b in boxes)
+    x1 = max(b[2] for b in boxes)
+    y1 = max(b[3] for b in boxes)
+    w, h = x1 - x0, y1 - y0
+    if w < 32 or h < 32:
+        return None
+    # Reject if crop is nearly full frame (no letterbox to remove)
+    try:
+        ref0 = extract_reference_frame(clip, offset_s=offsets_s[0])
+        if ref0:
+            im0 = Image.open(ref0).convert("RGB")
+            fw, fh = im0.size
+            if w > fw * 0.97 and h > fh * 0.97:
+                return None
+    except Exception:
+        pass
+    return _even_dims(x0, y0, x1, y1)
+
+
+def ffmpeg_chrome_crop_scale_chain(
+    crop: tuple[int, int, int, int] | None,
+    *,
+    size: int,
+    fps: int = 24,
+    suffix: str = "",
+) -> str:
+    """
+    ffmpeg vf chain: optional chrome crop → uniform scale → square center crop → fps.
+    """
+    parts: list[str] = []
+    if crop is not None:
+        x0, y0, x1, y1 = crop
+        cw, ch = x1 - x0, y1 - y0
+        parts.append(f"crop={cw}:{ch}:{x0}:{y0}")
+    parts.append(f"scale={size}:{size}:force_original_aspect_ratio=increase")
+    parts.append(f"crop={size}:{size}")
+    parts.append(f"fps={fps}")
+    chain = ",".join(parts)
+    return f"{chain}{suffix}"
 
 
 @lru_cache(maxsize=16)

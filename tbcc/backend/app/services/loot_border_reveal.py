@@ -225,14 +225,24 @@ def border_stasis_play_seconds() -> float:
         return 6.0
 
 
-def _border_chroma_filter(dim: int, label_in: str, label_out: str) -> str:
+def border_auto_crop_enabled() -> bool:
+    raw = (os.getenv("TBCC_LOOT_BORDER_AUTO_CROP") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _border_chroma_filter(
+    dim: int,
+    label_in: str,
+    label_out: str,
+    *,
+    crop: tuple[int, int, int, int] | None = None,
+) -> str:
+    from app.services.loot_border_plates import ffmpeg_chrome_crop_scale_chain
+
     sim = _chroma_similarity()
     blend = _chroma_blend()
-    return (
-        f"[{label_in}:v]scale={dim}:{dim}:force_original_aspect_ratio=increase,"
-        f"crop={dim}:{dim},fps=24,format=rgba,"
-        f"chromakey={CHROMA_KEY}:{sim}:{blend}[{label_out}]"
-    )
+    prep = ffmpeg_chrome_crop_scale_chain(crop, size=dim, fps=24, suffix=",format=rgba")
+    return f"[{label_in}:v]{prep},chromakey={CHROMA_KEY}:{sim}:{blend}[{label_out}]"
 
 
 def mux_border_reveal_mp4(
@@ -263,6 +273,12 @@ def mux_border_reveal_mp4(
     dim = size if size is not None else reveal_video_size()
     timeout = reveal_video_encode_timeout_s() + int(total) + 5
 
+    crop_bbox: tuple[int, int, int, int] | None = None
+    if border_auto_crop_enabled():
+        from app.services.loot_border_plates import card_crop_bbox_for_clip
+
+        crop_bbox = card_crop_bbox_for_clip(clip)
+
     with tempfile.TemporaryDirectory(prefix="tbcc_border_reveal_") as td:
         td_path = Path(td)
         center_path = td_path / "center.jpg"
@@ -273,7 +289,7 @@ def mux_border_reveal_mp4(
 
         filt = (
             f"[0:v]scale={dim}:{dim}:flags=lanczos,fps=24[base];"
-            f"{_border_chroma_filter(dim, '1', 'border')};"
+            f"{_border_chroma_filter(dim, '1', 'border', crop=crop_bbox)};"
             f"[base][border]overlay=0:0:format=auto[card];"
             f"[2:v]scale={dim}:{dim},format=rgba[stamps];"
             f"[card][stamps]overlay=0:0:format=auto[v]"
@@ -345,6 +361,12 @@ def mux_border_reveal_still_jpeg(
     timeout = reveal_video_encode_timeout_s()
     still_t = max(0.5, border_play_seconds(clip) * 0.85)
 
+    crop_bbox: tuple[int, int, int, int] | None = None
+    if border_auto_crop_enabled():
+        from app.services.loot_border_plates import card_crop_bbox_for_clip
+
+        crop_bbox = card_crop_bbox_for_clip(clip)
+
     with tempfile.TemporaryDirectory(prefix="tbcc_border_still_") as td:
         td_path = Path(td)
         center_path = td_path / "center.jpg"
@@ -355,7 +377,7 @@ def mux_border_reveal_still_jpeg(
 
         filt = (
             f"[0:v]scale={dim}:{dim}:flags=lanczos[base];"
-            f"{_border_chroma_filter(dim, '1', 'border')};"
+            f"{_border_chroma_filter(dim, '1', 'border', crop=crop_bbox)};"
             f"[border]trim=duration={still_t},setpts=PTS-STARTPTS[bf];"
             f"[base][bf]overlay=0:0:format=auto[card];"
             f"[2:v]scale={dim}:{dim},format=rgba[stamps];"
