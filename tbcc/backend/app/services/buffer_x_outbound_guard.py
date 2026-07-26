@@ -55,8 +55,13 @@ def _gate_key_for_url(url: str) -> str:
 
 def wrap_url_for_x_outbound(url: str, *, gate_key: str | None = None) -> str:
     """Return gated URL when bare Telegram (or when wrap required); pass-through if already gated."""
+    from app.services.aof_social_links import x_linkvertise_enabled
+
     u = (url or "").strip().rstrip(".,;)")
     if not u or is_gate_host(u):
+        return u
+    # Bare t.me + affiliate-first previews: keep direct Telegram/hub URLs on X unless LV explicitly enabled.
+    if is_bare_telegram_url(u) and not x_linkvertise_enabled():
         return u
     if not is_bare_telegram_url(u) and not buffer_x_require_gate_wrap():
         return u
