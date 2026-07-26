@@ -41,8 +41,16 @@ def queue_listening_relay_post(
     extra: dict[str, Any] | None = None,
 ) -> ListeningRelayPostLog:
     """Persist history row and queue Telegram + social fan-out."""
-    from app.workers.listening_relay_worker import listening_relay_social_fanout
+    from app.services.telegram_bot_api import relay_use_bot_api
+    from app.workers.listening_relay_worker import (
+        listening_relay_social_fanout,
+        post_listening_relay_bot_api,
+    )
     from app.workers.poster_worker import post_listening_relay_message
+
+    merged_extra = dict(extra or {})
+    transport = "bot_api" if relay_use_bot_api() else "telethon"
+    merged_extra["transport"] = transport
 
     log = record_listening_relay_post(
         db,
@@ -52,18 +60,28 @@ def queue_listening_relay_post(
         random_lane=random_lane,
         outbound=outbound,
         send_silent=send_silent,
-        extra=extra,
+        extra=merged_extra,
     )
     followups_json = followups_to_json(outbound.copy_followups)
-    post_listening_relay_message.delay(
-        int(channel_id),
-        outbound.main_html,
-        message_thread_id,
-        bool(send_silent),
-        None,
-        followups_json,
-        log.id,
-    )
+    if transport == "bot_api":
+        post_listening_relay_bot_api.delay(
+            int(channel_id),
+            outbound.main_html,
+            message_thread_id,
+            bool(send_silent),
+            followups_json,
+            log.id,
+        )
+    else:
+        post_listening_relay_message.delay(
+            int(channel_id),
+            outbound.main_html,
+            message_thread_id,
+            bool(send_silent),
+            None,
+            followups_json,
+            log.id,
+        )
     listening_relay_social_fanout.delay(outbound.main_html, followups_json, log.id)
     if outbound.goblin_spawn:
         from app.services.goblin_service import schedule_goblin_drop

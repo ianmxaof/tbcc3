@@ -31,6 +31,10 @@ def test_relay_and_erome_route_to_ops_lanes():
         _queue_for("app.workers.listening_relay_worker.poll_listening_relay_lastfm")
         == "ops_relay"
     )
+    assert (
+        _queue_for("app.workers.listening_relay_worker.post_listening_relay_bot_api")
+        == "ops_relay"
+    )
     assert _queue_for("app.workers.erome_analytics_worker.sync_erome_views") == "ops_erome"
 
 

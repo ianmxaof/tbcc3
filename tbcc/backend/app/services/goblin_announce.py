@@ -6,7 +6,6 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import httpx
 from sqlalchemy.orm import Session
 
 from app.models.channel import Channel
@@ -14,25 +13,10 @@ from app.models.goblin_drop import GoblinDrop
 from app.models.listening_relay_settings import ListeningRelaySettings
 from app.services.aof_social_links import loot_bot_username
 from app.services.loot_bot_settings_effective import resolve_bot_token_raw
+from app.services.telegram_bot_api import tg_post_with_token
 from app.utils.telegram_peer import normalize_telethon_peer_identifier
 
 logger = logging.getLogger(__name__)
-
-
-def _tg_post_with_token(method: str, payload: dict, token: str) -> dict[str, Any]:
-    token = (token or "").strip()
-    if not token:
-        return {"ok": False, "error": "loot_bot_token_unset"}
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    try:
-        with httpx.Client(timeout=20) as client:
-            r = client.post(url, json=payload)
-            data = r.json() if r.content else {}
-            if r.status_code != 200 or not data.get("ok"):
-                return {"ok": False, "error": str(data)[:400], "status": r.status_code}
-            return {"ok": True, "result": data.get("result")}
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:300]}
 
 
 def build_goblin_announce_html(*, claims_cap: int, ttl_seconds: int) -> str:

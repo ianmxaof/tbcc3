@@ -134,6 +134,57 @@ def poll_listening_relay_lastfm():
         db.close()
 
 
+@celery.task(name="app.workers.listening_relay_worker.post_listening_relay_bot_api")
+def post_listening_relay_bot_api(
+    channel_id: int,
+    html_body: str,
+    message_thread_id: int | None = None,
+    send_silent: bool = True,
+    copy_followups_json: str | None = None,
+    relay_log_id: int | None = None,
+):
+    """Bot API relay send — ops_relay queue, no Telethon poster lock."""
+    from app.services.listening_relay_bot_send import send_listening_relay_via_bot_api
+    from app.services.listening_relay_history import mark_relay_post_failed, mark_relay_post_sent
+
+    db = SessionLocal()
+    try:
+        out = send_listening_relay_via_bot_api(
+            db,
+            channel_id=int(channel_id),
+            html_body=html_body,
+            message_thread_id=message_thread_id,
+            send_silent=bool(send_silent),
+            copy_followups_json=copy_followups_json,
+        )
+        if relay_log_id:
+            if out.get("ok"):
+                mark_relay_post_sent(
+                    db,
+                    int(relay_log_id),
+                    telegram_message_id=out.get("message_id"),
+                )
+            else:
+                mark_relay_post_failed(db, int(relay_log_id), str(out.get("error") or "bot_api_failed"))
+            db.commit()
+        if not out.get("ok"):
+            logger.warning(
+                "post_listening_relay_bot_api failed channel_id=%s: %s",
+                channel_id,
+                out.get("error"),
+            )
+    except Exception as e:
+        logger.exception("post_listening_relay_bot_api failed channel_id=%s", channel_id)
+        if relay_log_id:
+            try:
+                mark_relay_post_failed(db, int(relay_log_id), str(e))
+                db.commit()
+            except Exception:
+                db.rollback()
+    finally:
+        db.close()
+
+
 @celery.task(name="app.workers.listening_relay_worker.listening_relay_social_fanout")
 def listening_relay_social_fanout(
     html_body: str,
