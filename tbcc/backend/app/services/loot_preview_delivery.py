@@ -44,7 +44,7 @@ from app.services.loot_tier_catalog import tier_display_name
 from app.services.local_media_storage import is_local_pool_media, read_local_media_bytes
 from app.services.media_sniff import sniff_media_kind
 from app.services.promo_affiliate_rotation import build_loot_roll_affiliate_footer_html
-from app.services.telegram_admin import run_telegram_io
+from app.services.telegram_admin import run_telegram_import_io
 from app.services.telegram_message_effects import FREE_EFFECT_PARTY, loot_roll_effect_id
 from app.utils.telegram_promo_url import is_public_https_for_telegram
 
@@ -205,7 +205,7 @@ async def _download_saved_media_bytes(telegram_message_id: int) -> tuple[bytes, 
         return _bytes_to_filename(data)
 
     # Island Telethon can hang on missing/huge msgs — fail fast so claim can retry.
-    return await asyncio.wait_for(run_telegram_io(_fn), timeout=35.0)
+    return await asyncio.wait_for(run_telegram_import_io(_fn), timeout=35.0)
 
 
 def _bytes_to_filename(data: bytes) -> tuple[bytes, str]:
@@ -239,7 +239,7 @@ async def _download_saved_message_thumb_bytes(telegram_message_id: int) -> tuple
             return None
         return _bytes_to_filename(data)
 
-    return await run_telegram_io(_fn)
+    return await run_telegram_import_io(_fn)
 
 
 async def _load_media_bytes(row: Media) -> tuple[bytes, str]:

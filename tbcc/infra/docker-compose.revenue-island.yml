@@ -64,6 +64,8 @@ services:
       PYTHONPATH: /app
       # Loot media load from Saved Messages (see REVENUE_ISLAND.md). ONE host only.
       TELEGRAM_SESSION_PATH: /sessions/admin
+      TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
+      TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
       TBCC_BUNDLE_DIR: /uploads/bundles
       TBCC_PROMO_DIR: /uploads/promo
     volumes:

@@ -34,12 +34,22 @@ from app.utils.telethon_session import (
 
 logger = logging.getLogger(__name__)
 
-_init_lock = asyncio.Lock()
-_import_lock = asyncio.Lock()
+# asyncio.Lock() must be created on the running loop — loot delivery uses asyncio.run() in a worker thread.
+_loop_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _loop_lock(name: str) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    key = (name, id(loop))
+    lock = _loop_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _loop_locks[key] = lock
+    return lock
+
+
 _client: TelegramClient | None = None
 
-_album_init_lock = asyncio.Lock()
-_album_import_lock = asyncio.Lock()
 _album_client: TelegramClient | None = None
 
 T = TypeVar("T")
@@ -65,7 +75,7 @@ def _telegram_io_backoff_seconds(attempt: int) -> float:
 
 def import_lock() -> asyncio.Lock:
     """Serialize Telegram sends + DB commits that touch the same client."""
-    return _import_lock
+    return _loop_lock("import")
 
 
 def friendly_telegram_error(exc: BaseException) -> str:
@@ -148,12 +158,14 @@ def _is_telethon_recoverable_error(err: BaseException) -> bool:
         return True
     if "event loop must not change" in msg:
         return True
+    if "bound to a different event loop" in msg:
+        return True
     return False
 
 
 async def reset_admin_client() -> None:
     global _client
-    async with _init_lock:
+    async with _loop_lock("admin_init"):
         c = _client
         _client = None
     if c is not None:
@@ -182,7 +194,7 @@ async def _connect_admin_client() -> TelegramClient:
 async def _ensure_admin_client() -> TelegramClient:
     """Single-flight connect/reconnect — never open admin.session from parallel coroutines."""
     global _client
-    async with _init_lock:
+    async with _loop_lock("admin_init"):
         if _client is not None and _client.is_connected():
             return _client
         if _client is not None:
@@ -229,7 +241,7 @@ async def run_telegram_io(
         lock_token = ""
         try:
             lock_token = await acquire_admin_session_lock_async(lock_timeout_s)
-            async with _import_lock:
+            async with _loop_lock("import"):
                 storage = await get_telegram_storage()
                 return await fn(storage)
         except Exception as e:
@@ -320,7 +332,7 @@ def _try_bootstrap_album_from_admin() -> bool:
 
 async def reset_album_client() -> None:
     global _album_client
-    async with _album_init_lock:
+    async with _loop_lock("album_init"):
         c = _album_client
         _album_client = None
     if c is not None:
@@ -351,7 +363,7 @@ async def _connect_album_client() -> TelegramClient:
 
 async def _ensure_album_client() -> TelegramClient:
     global _album_client
-    async with _album_init_lock:
+    async with _loop_lock("album_init"):
         if _album_client is not None and _album_client.is_connected():
             return _album_client
         if _album_client is not None:
@@ -398,7 +410,7 @@ async def run_telegram_album_composer_io(
                 account_token = await acquire_telegram_account_lock_async(
                     album_composer_lock_timeout_s()
                 )
-            async with _album_import_lock:
+            async with _loop_lock("album_import"):
                 storage = await get_album_telegram_storage()
                 return await fn(storage)
         except Exception as e:
@@ -424,8 +436,6 @@ async def run_telegram_album_composer_io(
     raise RuntimeError("Album composer Telegram I/O failed without exception")
 
 
-_import_init_lock = asyncio.Lock()
-_import_work_lock = asyncio.Lock()
 _import_client: TelegramClient | None = None
 
 
@@ -469,7 +479,7 @@ def _try_bootstrap_import_from_admin() -> bool:
 
 async def reset_import_client() -> None:
     global _import_client
-    async with _import_init_lock:
+    async with _loop_lock("import_init"):
         c = _import_client
         _import_client = None
     if c is not None:
@@ -500,7 +510,7 @@ async def _connect_import_client() -> TelegramClient:
 
 async def _ensure_import_client() -> TelegramClient:
     global _import_client
-    async with _import_init_lock:
+    async with _loop_lock("import_init"):
         if _import_client is not None and _import_client.is_connected():
             return _import_client
         if _import_client is not None:
@@ -550,7 +560,7 @@ async def run_telegram_import_io(
         lock_token = ""
         try:
             lock_token = await acquire_import_session_lock_async(lock_timeout_s)
-            async with _import_work_lock:
+            async with _loop_lock("import_work"):
                 storage = await get_import_telegram_storage()
                 return await fn(storage)
         except Exception as e:
@@ -601,7 +611,7 @@ async def run_telegram_client_io(fn: Callable[[TelegramClient], Awaitable[T]]) -
         lock_token = ""
         try:
             lock_token = await acquire_admin_session_lock_async()
-            async with _import_lock:
+            async with _loop_lock("import"):
                 client = await _ensure_admin_client()
                 return await fn(client)
         except Exception as e:

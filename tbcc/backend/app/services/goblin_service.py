@@ -92,18 +92,22 @@ def revoke_goblin_drop(db: Session, *, token: str) -> dict[str, Any]:
 
 
 def _run_loot_async(coro):
-    import asyncio
+    """Run PTB/Telethon delivery off the uvicorn loop (matches app.api.loot._run_loot_async)."""
+    import concurrent.futures
 
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
+    async def _inner():
+        from app.services.telegram_admin import reset_admin_client
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result()
-        return loop.run_until_complete(coro)
-    except RuntimeError:
-        return asyncio.run(coro)
+        await reset_admin_client()
+        return await coro
+
+    def _worker():
+        import asyncio
+
+        return asyncio.run(_inner())
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_worker).result(timeout=300)
 
 
 def _deliver_goblin_pull(db: Session, telegram_user_id: int) -> dict[str, Any]:

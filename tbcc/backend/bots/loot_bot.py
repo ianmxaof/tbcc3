@@ -827,7 +827,8 @@ async def _handle_goblin_claim(msg, context: ContextTypes.DEFAULT_TYPE, user_id:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data.get("effective") or {}
-    arg = (context.args[0] if context.args else "").strip().lower()
+    raw_arg = (context.args[0] if context.args else "").strip()
+    arg = raw_arg.lower()
 
     user = update.effective_user
     msg = update.effective_message
@@ -839,13 +840,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if user and arg.startswith("goblin_"):
-        token = arg[7:].strip()
+        # Token is case-sensitive (secrets.token_urlsafe); do not lower() the payload.
+        token = raw_arg[len("goblin_") :].strip()
         if token:
             await _handle_goblin_claim(msg, context, int(user.id), token)
             return
 
     if user and arg.startswith("lootref_"):
-        code = arg[8:].strip()
+        code = raw_arg[len("lootref_") :].strip()
         if code:
             ok = await _record_loot_referral(int(user.id), code)
             if ok:
