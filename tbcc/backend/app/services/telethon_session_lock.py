@@ -95,18 +95,24 @@ def _acquire_session_lock(
     timeout_s: float | None = None,
     stuck_hint: str,
 ) -> str:
+    start = time.monotonic()
     timeout = _lock_timeout_s() if timeout_s is None else max(1.0, min(1800.0, float(timeout_s)))
     poll = _poll_interval_s()
     token = uuid.uuid4().hex
-    deadline = time.monotonic() + timeout
+    deadline = start + timeout
     r = _redis_client()
     ttl = int(timeout) + 120
     waited_logged = False
     while time.monotonic() < deadline:
         try:
             if r.set(lock_key, token, nx=True, ex=ttl):
-                if waited_logged:
-                    logger.info("%s Telethon session lock acquired after wait", label)
+                wait_s = time.monotonic() - start
+                if waited_logged or wait_s > poll:
+                    logger.info(
+                        "%s Telethon session lock acquired after %.2fs wait",
+                        label,
+                        wait_s,
+                    )
                 return token
         except Exception as e:
             logger.warning("Redis session lock unavailable (%s) — proceeding without lock", e)
@@ -126,6 +132,13 @@ def _acquire_session_lock(
                 )
             waited_logged = True
         time.sleep(poll)
+    wait_s = time.monotonic() - start
+    logger.info(
+        "%s Telethon session lock timed out after %.2fs wait (limit %.0fs)",
+        label,
+        wait_s,
+        timeout,
+    )
     raise TimeoutError(
         f"Timed out after {timeout:.0f}s waiting for the Telegram {label} session. {stuck_hint}"
     )

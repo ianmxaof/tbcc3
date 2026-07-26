@@ -8,7 +8,7 @@ import logging
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -22,13 +22,18 @@ from app.services.listening_relay_ascii import (
     remove_user_ascii_entry,
     validate_ascii_content,
 )
-from app.services.listening_relay_compose import build_relay_outbound
+from app.services.listening_relay_compose import RelayOutbound, build_relay_outbound
 from app.services.listening_relay_lastfm import fetch_recent_track_lastfm_sync
 from app.services.listening_relay_send import followups_to_json
+from app.services.listening_relay_target import (
+    relay_destinations_for_api,
+    relay_has_send_target,
+    relay_random_network_enabled,
+    resolve_listening_relay_send_target,
+)
+from app.services.listening_relay_history import list_listening_relay_posts, queue_listening_relay_post
 from app.services.listening_relay_slot import normalize_slot_extra, slot_extras_for_api
 from app.services.listening_relay_templates import get_copy_block_variations_for_api, get_footer_variations_for_api, get_template_variations_list
-from app.workers.poster_worker import post_listening_relay_message
-from app.workers.listening_relay_worker import listening_relay_social_fanout
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,7 @@ ROW_ID = 1
 class ListeningRelayPatch(BaseModel):
     enabled: bool | None = None
     channel_id: int | None = None
+    relay_random_network_channel: bool | None = None
     message_thread_id: int | None = None
     lastfm_username: str | None = Field(None, max_length=256)
     lastfm_api_key: str | None = Field(None, max_length=128)
@@ -61,6 +67,12 @@ class ListeningRelayPatch(BaseModel):
     buffer_relay_min_interval_minutes: int | None = Field(None, ge=30, le=1440)
     buffer_relay_max_per_day_utc: int | None = Field(None, ge=1, le=50)
     buffer_x_queue: list[dict] | None = None
+    goblin_mode_enabled: bool | None = None
+    goblin_spawn_chance: float | None = Field(None, ge=0.0, le=1.0)
+    goblin_cooldown_minutes: int | None = Field(None, ge=0, le=1440)
+    goblin_announce_ttl_seconds: int | None = Field(None, ge=5, le=300)
+    goblin_claims_cap: int | None = Field(None, ge=1, le=100)
+    goblin_max_per_day_utc: int | None = Field(None, ge=1, le=50)
     clear_lastfm_dedupe: bool | None = None
     clear_webhook_dedupe: bool | None = None
     regenerate_webhook_secret: bool | None = None
@@ -91,6 +103,7 @@ def _row_public(row: ListeningRelaySettings) -> dict[str, Any]:
     return {
         "enabled": bool(row.enabled),
         "channel_id": row.channel_id,
+        "relay_random_network_channel": bool(getattr(row, "relay_random_network_channel", False)),
         "message_thread_id": row.message_thread_id,
         "lastfm_username": row.lastfm_username,
         "lastfm_api_key_masked": _mask(row.lastfm_api_key),
@@ -124,10 +137,37 @@ def _row_public(row: ListeningRelaySettings) -> dict[str, Any]:
         ),
         "buffer_x_queue": row.get_buffer_x_queue(),
         "buffer_x_queue_depth": len(row.get_buffer_x_queue()),
+        "goblin_mode_enabled": bool(getattr(row, "goblin_mode_enabled", False)),
+        "goblin_spawn_chance": float(getattr(row, "goblin_spawn_chance", None) or 0.2),
+        "goblin_cooldown_minutes": int(getattr(row, "goblin_cooldown_minutes", None) or 120),
+        "goblin_announce_ttl_seconds": int(getattr(row, "goblin_announce_ttl_seconds", None) or 45),
+        "goblin_claims_cap": int(getattr(row, "goblin_claims_cap", None) or 5),
+        "goblin_max_per_day_utc": int(getattr(row, "goblin_max_per_day_utc", None) or 3),
+        "goblin_spawns_today": int(getattr(row, "goblin_spawns_today", None) or 0),
+        "goblin_utc_day": getattr(row, "goblin_utc_day", None),
+        "goblin_last_spawn_at": (
+            row.goblin_last_spawn_at.isoformat() + "Z" if getattr(row, "goblin_last_spawn_at", None) else None
+        ),
         "last_poll_at": row.last_poll_at.isoformat() + "Z" if row.last_poll_at else None,
         "has_lastfm_dedupe": row.last_lastfm_signature is not None,
         "has_webhook_dedupe": row.last_webhook_signature is not None,
     }
+
+
+@router.get("/history")
+def get_listening_relay_history(
+    db: Session = Depends(get_db),
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Recent listening-relay posts (Telegram + fan-out metadata)."""
+    return list_listening_relay_posts(db, limit=limit, offset=offset)
+
+
+@router.get("/destinations")
+def get_listening_relay_destinations(db: Session = Depends(get_db)):
+    """Loot Room topics, VIP channel id, and network size for dashboard destination picker."""
+    return relay_destinations_for_api(db)
 
 
 @router.get("")
@@ -167,8 +207,17 @@ def patch_listening_relay_settings(body: ListeningRelayPatch, db: Session = Depe
         row.enabled = bool(data["enabled"])
     if "channel_id" in data:
         row.channel_id = data["channel_id"]
+        if data["channel_id"] is not None:
+            row.relay_random_network_channel = False
+    if "relay_random_network_channel" in data and data["relay_random_network_channel"] is not None:
+        row.relay_random_network_channel = bool(data["relay_random_network_channel"])
+        if row.relay_random_network_channel:
+            row.channel_id = None
+            row.message_thread_id = None
     if "message_thread_id" in data:
         row.message_thread_id = data["message_thread_id"]
+        if row.message_thread_id is not None:
+            row.relay_random_network_channel = False
     if "lastfm_username" in data:
         v = data["lastfm_username"]
         row.lastfm_username = (v.strip() or None) if isinstance(v, str) else v
@@ -291,6 +340,18 @@ def patch_listening_relay_settings(body: ListeningRelayPatch, db: Session = Depe
         from app.api.scheduled_posts import _normalize_buffer_x_queue
 
         row.set_buffer_x_queue(_normalize_buffer_x_queue(data.get("buffer_x_queue")))
+    if "goblin_mode_enabled" in data and data["goblin_mode_enabled"] is not None:
+        row.goblin_mode_enabled = bool(data["goblin_mode_enabled"])
+    if "goblin_spawn_chance" in data and data["goblin_spawn_chance"] is not None:
+        row.goblin_spawn_chance = float(max(0.0, min(1.0, float(data["goblin_spawn_chance"]))))
+    if "goblin_cooldown_minutes" in data and data["goblin_cooldown_minutes"] is not None:
+        row.goblin_cooldown_minutes = int(data["goblin_cooldown_minutes"])
+    if "goblin_announce_ttl_seconds" in data and data["goblin_announce_ttl_seconds"] is not None:
+        row.goblin_announce_ttl_seconds = int(data["goblin_announce_ttl_seconds"])
+    if "goblin_claims_cap" in data and data["goblin_claims_cap"] is not None:
+        row.goblin_claims_cap = int(data["goblin_claims_cap"])
+    if "goblin_max_per_day_utc" in data and data["goblin_max_per_day_utc"] is not None:
+        row.goblin_max_per_day_utc = int(data["goblin_max_per_day_utc"])
 
     db.commit()
     db.refresh(row)
@@ -453,19 +514,35 @@ def buffer_test_post(body: BufferTestPostBody | None = None):
 @router.post("/test-post")
 def test_post(db: Session = Depends(get_db)):
     row = _ensure_row(db)
-    if not row.channel_id:
-        raise HTTPException(status_code=400, detail="Pick a Telegram channel first.")
+    if not relay_has_send_target(row):
+        raise HTTPException(status_code=400, detail="Pick a Telegram channel or random AOF network first.")
+    channel_id, thread_id = resolve_listening_relay_send_target(db, row)
+    if not channel_id:
+        raise HTTPException(status_code=400, detail="Could not resolve relay destination (check AOF channels in DB).")
     html_out = (
         "🎧 <b>Listening relay test</b>\n"
         "<i>If you see this, Telethon can post to this channel.</i>"
     )
-    post_listening_relay_message.delay(
-        int(row.channel_id),
-        html_out,
-        row.message_thread_id,
-        bool(row.send_silent),
+    if relay_random_network_enabled(row):
+        html_out += f"\n<i>Random lane → channel id {channel_id}</i>"
+    outbound = RelayOutbound(
+        main_html=html_out,
+        copy_followups=[],
+        source="test",
+        source_label="Test",
+        title="Listening relay test",
     )
-    return {"ok": True, "queued": True}
+    queue_listening_relay_post(
+        db,
+        trigger="test",
+        channel_id=int(channel_id),
+        message_thread_id=thread_id,
+        random_lane=relay_random_network_enabled(row),
+        outbound=outbound,
+        send_silent=bool(row.send_silent),
+    )
+    db.commit()
+    return {"ok": True, "queued": True, "channel_id": channel_id, "message_thread_id": thread_id}
 
 
 webhook_router = APIRouter()
@@ -484,8 +561,12 @@ async def listening_relay_webhook(secret: str, request: Request, db: Session = D
     if not expected or secret != expected:
         raise HTTPException(status_code=404, detail="Not found")
 
-    if not row.enabled or not row.channel_id:
+    if not row.enabled or not relay_has_send_target(row):
         return {"ok": False, "ignored": True, "reason": "relay disabled or no channel"}
+
+    channel_id, thread_id = resolve_listening_relay_send_target(db, row)
+    if not channel_id:
+        return {"ok": False, "ignored": True, "reason": "could not resolve relay destination"}
 
     title = ""
     url = ""
@@ -541,17 +622,18 @@ async def listening_relay_webhook(secret: str, request: Request, db: Session = D
         source=source,
         source_label=src_label,
         consume=True,
+        db=db,
     )
     row.last_webhook_signature = sig
-    db.commit()
-    followups_json = followups_to_json(outbound.copy_followups)
-    post_listening_relay_message.delay(
-        int(row.channel_id),
-        outbound.main_html,
-        row.message_thread_id,
-        bool(row.send_silent),
-        None,
-        followups_json,
+    queue_listening_relay_post(
+        db,
+        trigger="webhook",
+        channel_id=int(channel_id),
+        message_thread_id=thread_id,
+        random_lane=relay_random_network_enabled(row),
+        outbound=outbound,
+        send_silent=bool(row.send_silent),
+        extra={"webhook_source": source},
     )
-    listening_relay_social_fanout.delay(outbound.main_html, followups_json)
+    db.commit()
     return {"ok": True, "queued": True}

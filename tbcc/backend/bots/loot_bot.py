@@ -731,6 +731,100 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _claim_goblin_drop(telegram_user_id: int, token: str) -> dict:
+    """POST /goblin/claim — cap-limited goblin grant via deep link."""
+    url = f"{API_BASE}/goblin/claim"
+    body = {"token": token.strip(), "telegram_user_id": int(telegram_user_id)}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    if key:
+        headers["X-TBCC-Internal-Key"] = key
+    try:
+        with httpx.Client(timeout=_LOOT_CLAIM_TIMEOUT) as client:
+            r = client.post(url, json=body, headers=headers)
+        if r.status_code == 409:
+            return {"ok": False, "already_claimed": True, "detail": r.json()}
+        if r.status_code == 410:
+            return {"ok": False, "exhausted": True, "detail": r.json()}
+        if r.status_code == 404:
+            return {"ok": False, "not_found": True, "detail": r.json()}
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.exception("goblin claim failed")
+        return {"ok": False, "reason": str(e)}
+
+
+async def _handle_goblin_claim(msg, context: ContextTypes.DEFAULT_TYPE, user_id: int, token: str) -> None:
+    cfg = context.application.bot_data.get("effective") or {}
+    status_msg = await _safe_reply_html(msg, "<b>Goblin claim…</b>", disable_web_page_preview=True)
+    try:
+        result = await asyncio.to_thread(_claim_goblin_drop, int(user_id), token)
+    except Exception:
+        await _drop_transient_msg(status_msg)
+        await _safe_reply_html(
+            msg,
+            "<b>Goblin claim failed</b>\nAPI unreachable — is TBCC backend running?",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+
+    await _drop_transient_msg(status_msg)
+    if result.get("ok"):
+        delivery = result.get("delivery") or {}
+        media_sent = int(delivery.get("media_sent") or 0)
+        finale_markup = _loot_inline_keyboard(cfg)
+        if media_sent <= 0:
+            await _safe_reply_html(
+                msg,
+                "<b>Goblin grant missed delivery.</b> Try again if slots remain.",
+                disable_web_page_preview=True,
+                reply_markup=finale_markup,
+            )
+            return
+        await _safe_reply_html(
+            msg,
+            "<b>👺 Goblin loot claimed!</b>\n"
+            "<i>Complimentary pull — does not use your /roll allowance.</i>",
+            disable_web_page_preview=True,
+            reply_markup=finale_markup,
+        )
+        return
+
+    if result.get("already_claimed"):
+        await _safe_reply_html(
+            msg,
+            "<b>Already claimed</b> this goblin drop.",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+    if result.get("exhausted"):
+        await _safe_reply_html(
+            msg,
+            "<b>Goblin exhausted</b> — cap reached before you tapped.",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+    if result.get("not_found"):
+        await _safe_reply_html(
+            msg,
+            "<b>Invalid goblin link.</b>",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+
+    detail = result.get("detail") or result.get("reason") or "unknown"
+    await _safe_reply_html(
+        msg,
+        f"<b>Goblin claim failed.</b>\n<code>{html.escape(str(detail)[:300])}</code>",
+        disable_web_page_preview=True,
+    )
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data.get("effective") or {}
     arg = (context.args[0] if context.args else "").strip().lower()
@@ -743,6 +837,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if arg == "loot_free":
         await cmd_roll(update, context)
         return
+
+    if user and arg.startswith("goblin_"):
+        token = arg[7:].strip()
+        if token:
+            await _handle_goblin_claim(msg, context, int(user.id), token)
+            return
 
     if user and arg.startswith("lootref_"):
         code = arg[8:].strip()

@@ -5,7 +5,7 @@
 #   subscription — grant_access, subscription_worker, milestones, drop_countdown, network_liveness
 #   telegram     — import/mirror helpers used by fulfillment paths
 #   post_scheduler + post — sale FOMO + scheduled channel posts (worker_post; separate from fulfill)
-# Explicitly EXCLUDED: scrape (GCP micro), ops_* (home/dev).
+# Explicitly EXCLUDED: scrape (GCP micro). ops_relay co-located on island worker (listening relay).
 #
 # Typical bring-up (API only, then bots after home payment/loot stopped):
 #   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d postgres redis api worker worker_post beat
@@ -15,7 +15,7 @@
 
 x-island-image: &island-image
   image: ${TBCC_WORKER_IMAGE:-ghcr.io/ianmxaof/tbcc-worker:latest}
-  pull_policy: always
+  pull_policy: ${TBCC_ISLAND_PULL_POLICY:-if_not_present}
   restart: unless-stopped
   env_file:
     - .env.revenue-island
@@ -34,7 +34,7 @@ services:
     volumes:
       - island_pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-tbcc}"]
       interval: 10s
@@ -83,7 +83,7 @@ services:
       celery -A app.workers.celery_app worker
       -l info
       -P solo
-      -Q celery,subscription,telegram,ops_growth
+      -Q celery,subscription,telegram,ops_growth,ops_relay
       -n island@%h
       --without-gossip
       --without-mingle
@@ -100,6 +100,16 @@ services:
       # Old AOF Main is restricted — mirroring burns the solo telegram worker.
       TBCC_DEPOSIT_TOPIC_MIRROR: "0"
       TBCC_TOPIC_MIRROR_ENABLED: "0"
+      # Buffer X queue stocking (beat + worker_ready startup refill).
+      TBCC_BUFFER_ARMORY_MIN_DEPTH: "2"
+      TBCC_BUFFER_ARMORY_REFILL_HOURS: "24"
+      TBCC_BUFFER_ARMORY_STARTUP_REFILL: "0"
+      TBCC_BUFFER_ARMORY_STARTUP_DELAY_S: "90"
+      TBCC_BUFFER_NATIVE_MIN_DEPTH: "2"
+      TBCC_BUFFER_NATIVE_MAX_SCHEDULED: "8"
+      # Metrics sync hammers Buffer API — run less often on island (refill owns quota).
+      TBCC_BUFFER_METRICS_SYNC_ENABLED: "1"
+      TBCC_BUFFER_METRICS_SYNC_HOURS: "6"
     volumes:
       - /opt/tbcc/sessions:/sessions:rw
     depends_on:

@@ -29,11 +29,12 @@ def build_free_pull_preview(
     telegram_user_id: int,
     seed: int | None = None,
     exclude_media_ids: list[int] | None = None,
+    goblin_bonus: bool = False,
 ) -> dict[str, Any]:
     rng = random.Random(seed)
     operator = is_loot_operator(telegram_user_id)
     remaining_before = free_pulls_remaining(db, telegram_user_id)
-    if remaining_before <= 0 and not operator:
+    if remaining_before <= 0 and not operator and not goblin_bonus:
         return {
             "ok": False,
             "reason": "free_pulls_exhausted",
@@ -42,6 +43,8 @@ def build_free_pull_preview(
             "free_pulls_remaining": 0,
             "free_pull_limit": free_pull_allowance(db, telegram_user_id),
         }
+    if goblin_bonus and remaining_before <= 0 and not operator:
+        remaining_before = 1
     if operator:
         remaining_before = max(remaining_before, 999)
 

@@ -39,6 +39,7 @@ celery.conf.include = [
     "app.workers.media_auto_tag_worker",
     "app.workers.link_resolver_worker",
     "app.workers.listening_relay_worker",
+    "app.workers.goblin_worker",
     "app.workers.loot_promo_worker",
     "app.workers.import_telegram_worker",
     "app.workers.myjd_worker",
@@ -67,7 +68,9 @@ celery.conf.task_routes = {
     "app.workers.scraper_worker.*": {"queue": "scrape"},
     "app.workers.mega_scraper_worker.*": {"queue": "scrape"},
     "app.workers.scrape_scheduler_worker.*": {"queue": "scrape"},
-    "app.workers.scrape_micro_pull_worker.*": {"queue": "scrape"},
+    # Hub forwarding (SCRP → Storage topic) uses import Telethon — must run on telegram lane
+    # (revenue island worker consumes telegram; batch pool scrapes stay on GCP scrape queue).
+    "app.workers.scrape_micro_pull_worker.*": {"queue": "telegram"},
     "app.workers.gatekeeper_review_worker.*": {"queue": "telegram"},
     "app.workers.scheduler_worker.*": {"queue": "celery"},
     # Scheduler lane (Beat due rows + manual Post now) — isolated from pool auto-post.
@@ -83,6 +86,7 @@ celery.conf.task_routes = {
     # Consumed by TBCC-Celery-Ops (-Q ops_growth,ops_relay,ops_erome). If that worker is not
     # running, add these queues to TBCC_CELERY_HOME_QUEUES or the tasks strand in Redis.
     "app.workers.listening_relay_worker.*": {"queue": "ops_relay"},
+    "app.workers.goblin_worker.*": {"queue": "ops_relay"},
     "app.workers.export_flywheel_worker.*": {"queue": "ops_growth"},
     "app.workers.income_poll_worker.*": {"queue": "ops_growth"},
     "app.workers.market_intel_worker.*": {"queue": "ops_growth"},
@@ -123,6 +127,15 @@ def _beat_schedule_minutes() -> str:
     return f"*/{n}"
 
 
+def _buffer_armory_refill_crontab_hours() -> str:
+    raw = (os.getenv("TBCC_BUFFER_ARMORY_REFILL_HOURS") or "2").strip()
+    try:
+        n = max(1, min(12, int(raw)))
+    except ValueError:
+        n = 2
+    return f"*/{n}"
+
+
 celery.conf.beat_schedule = {
     "schedule-posts": {
         "task": "app.workers.scheduler_worker.run_schedule",
@@ -150,7 +163,7 @@ celery.conf.beat_schedule = {
     },
     "buffer-armory-refill": {
         "task": "app.workers.buffer_armory_worker.refill_buffer_armory",
-        "schedule": crontab(minute=15, hour="*/6"),
+        "schedule": crontab(minute=20, hour=_buffer_armory_refill_crontab_hours()),
     },
 }
 
@@ -209,8 +222,8 @@ if (os.getenv("TBCC_SCRAPE_MICRO_PULL_ENABLED") or "0").strip().lower() in (
     "yes",
     "on",
 ):
-    celery.conf.beat_schedule["ass-scrape-micro-pull"] = {
-        "task": "app.workers.scrape_micro_pull_worker.run_ass_micro_pull",
+    celery.conf.beat_schedule["scrape-micro-pull"] = {
+        "task": "app.workers.scrape_micro_pull_worker.run_micro_pull_tick",
         "schedule": crontab(minute=15, hour="*/2"),
     }
 
@@ -317,6 +330,15 @@ if (os.getenv("TBCC_EXPORT_FLYWHEEL_ENABLED") or "1").strip().lower() not in (
     }
 
 
+def _buffer_metrics_sync_crontab_hours() -> str:
+    raw = (os.getenv("TBCC_BUFFER_METRICS_SYNC_HOURS") or "2").strip()
+    try:
+        n = max(2, min(24, int(raw)))
+    except ValueError:
+        n = 2
+    return f"*/{n}"
+
+
 if (os.getenv("TBCC_BUFFER_METRICS_SYNC_ENABLED") or "1").strip().lower() not in (
     "0",
     "false",
@@ -325,7 +347,7 @@ if (os.getenv("TBCC_BUFFER_METRICS_SYNC_ENABLED") or "1").strip().lower() not in
 ):
     celery.conf.beat_schedule["buffer-metrics-sync"] = {
         "task": "app.workers.buffer_metrics_worker.sync_buffer_metrics",
-        "schedule": crontab(minute=45, hour="*/2"),
+        "schedule": crontab(minute=45, hour=_buffer_metrics_sync_crontab_hours()),
     }
 
 

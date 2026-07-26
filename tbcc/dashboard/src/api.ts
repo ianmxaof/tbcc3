@@ -307,9 +307,26 @@ export type LootBotSettingsEffective = {
   bot_token_source: string;
 };
 
+export type ListeningRelayDestinations = {
+  loot_room: {
+    channel_id: number | null;
+    identifier: string;
+    name: string;
+    topics: Array<{ id: number; title: string }>;
+  };
+  vip: {
+    channel_id: number | null;
+    identifier: string;
+    name: string;
+  };
+  network_channel_count: number;
+};
+
 export type ListeningRelaySettings = {
   enabled: boolean;
   channel_id: number | null;
+  /** Each scrobble posts once to a random AOF network channel (main chat). */
+  relay_random_network_channel: boolean;
   message_thread_id: number | null;
   lastfm_username: string | null;
   lastfm_api_key_masked: string | null;
@@ -377,6 +394,44 @@ export type ListeningRelayLastfmPreview = {
   ascii_beat_preview?: boolean;
   tryptych_preview?: boolean;
   detail?: string;
+};
+
+export type ListeningRelayPostDestination = {
+  kind: "random" | "topic" | "main";
+  label: string;
+  thread_id?: number;
+  channel_id?: number;
+  channel_name?: string;
+  channel_identifier?: string;
+  lane?: string;
+};
+
+export type ListeningRelayPostLogItem = {
+  id: number;
+  created_at: string | null;
+  trigger: string;
+  status: string;
+  source: string | null;
+  source_label: string | null;
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+  url: string | null;
+  headline: string;
+  destination: ListeningRelayPostDestination;
+  template_slot: number | null;
+  template_slots_total: number | null;
+  ascii_beat: boolean;
+  tryptych: boolean;
+  copy_followups_count: number;
+  send_silent: boolean;
+  main_html_preview: string | null;
+  telegram_message_id: number | null;
+  telegram_message_url: string | null;
+  buffer_sent: boolean;
+  discord_sent: boolean;
+  error_message: string | null;
+  extra: Record<string, unknown> | null;
 };
 
 export type LootModifier = {
@@ -2352,6 +2407,7 @@ export const api = {
     },
   },
   listeningRelay: {
+    destinations: () => fetchApi<ListeningRelayDestinations>("/listening-relay-settings/destinations"),
     get: () =>
       fetchApi<{ settings: ListeningRelaySettings; webhook_secret?: string }>("/listening-relay-settings"),
     patch: (body: Record<string, unknown>) =>
@@ -2385,6 +2441,15 @@ export const api = {
       fetchApi<{ ok: boolean }>(`/listening-relay-settings/ascii-art/${encodeURIComponent(id)}`, {
         method: "DELETE",
       }),
+    history: (params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit != null) qs.set("limit", String(params.limit));
+      if (params?.offset != null) qs.set("offset", String(params.offset));
+      const q = qs.toString();
+      return fetchApi<{ items: ListeningRelayPostLogItem[]; limit: number; offset: number }>(
+        `/listening-relay-settings/history${q ? `?${q}` : ""}`
+      );
+    },
   },
   loot: {
     listModifiers: (includeInactive = true) =>

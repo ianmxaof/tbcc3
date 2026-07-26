@@ -6,10 +6,15 @@ from app.models.channel import Channel
 from app.models.listening_relay_settings import ListeningRelaySettings
 from app.services.listening_relay_compose import build_relay_outbound
 from app.services.listening_relay_lastfm import fetch_recent_track_lastfm_sync
-from app.services.listening_relay_send import followups_to_json
+from app.services.listening_relay_admission import relay_may_send_now
+from app.services.listening_relay_history import queue_listening_relay_post
 from app.services.listening_relay_templates import get_template_variations_list
+from app.services.listening_relay_target import (
+    relay_has_send_target,
+    relay_random_network_enabled,
+    resolve_listening_relay_send_target,
+)
 from app.workers.celery_app import celery
-from app.workers.poster_worker import post_listening_relay_message
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +42,7 @@ def poll_listening_relay_lastfm():
     db = SessionLocal()
     try:
         row = _ensure_row(db)
-        if not row.enabled or not row.channel_id:
+        if not row.enabled or not relay_has_send_target(row):
             return
         user = (row.lastfm_username or "").strip()
         key = (row.lastfm_api_key or "").strip()
@@ -57,9 +62,14 @@ def poll_listening_relay_lastfm():
         n_templates = len(get_template_variations_list(row))
 
         sig = track.get("signature") or ""
-        ch = db.query(Channel).filter(Channel.id == row.channel_id).first()
+        channel_id, thread_id = resolve_listening_relay_send_target(db, row)
+        if not channel_id:
+            logger.warning("listening relay: could not resolve send target")
+            db.commit()
+            return
+        ch = db.query(Channel).filter(Channel.id == channel_id).first()
         if not ch:
-            logger.warning("listening relay: channel %s missing", row.channel_id)
+            logger.warning("listening relay: channel %s missing", channel_id)
             db.commit()
             return
 
@@ -76,6 +86,10 @@ def poll_listening_relay_lastfm():
             db.commit()
             return
 
+        if not relay_may_send_now(db):
+            db.commit()
+            return {"ok": True, "skipped": "scheduler_overdue"}
+
         outbound = build_relay_outbound(
             row,
             artist=track.get("artist") or "",
@@ -85,28 +99,31 @@ def poll_listening_relay_lastfm():
             source="lastfm",
             source_label="Last.fm",
             consume=True,
+            db=db,
         )
         logger.info(
-            "listening relay Last.fm post channel=%s template_slots=%s copy_followups=%s ascii=%s tryptych=%s",
-            row.channel_id,
+            "listening relay Last.fm post channel=%s thread=%s random=%s template_slots=%s copy_followups=%s ascii=%s tryptych=%s",
+            channel_id,
+            thread_id,
+            relay_random_network_enabled(row),
             n_templates,
             len(outbound.copy_followups),
             outbound.ascii_beat,
             outbound.tryptych,
         )
         row.last_lastfm_signature = sig
-        db.commit()
-        followups_json = followups_to_json(outbound.copy_followups)
-        post_listening_relay_message.delay(
-            int(row.channel_id),
-            outbound.main_html,
-            row.message_thread_id,
-            bool(row.send_silent),
-            None,
-            followups_json,
+        queue_listening_relay_post(
+            db,
+            trigger="lastfm",
+            channel_id=int(channel_id),
+            message_thread_id=thread_id,
+            random_lane=relay_random_network_enabled(row),
+            outbound=outbound,
+            send_silent=bool(row.send_silent),
+            extra={"lastfm_signature": sig},
         )
-        listening_relay_social_fanout.delay(outbound.main_html, followups_json)
-        logger.info("listening relay: queued Last.fm post for channel %s", row.channel_id)
+        db.commit()
+        logger.info("listening relay: queued Last.fm post for channel %s", channel_id)
     except Exception:
         logger.exception("poll_listening_relay_lastfm failed")
         try:
@@ -118,7 +135,11 @@ def poll_listening_relay_lastfm():
 
 
 @celery.task(name="app.workers.listening_relay_worker.listening_relay_social_fanout")
-def listening_relay_social_fanout(html_body: str, copy_block_followup_html: str | None = None):
+def listening_relay_social_fanout(
+    html_body: str,
+    copy_block_followup_html: str | None = None,
+    relay_log_id: int | None = None,
+):
     from app.services.listening_relay_social import run_listening_relay_social_fanout
 
-    run_listening_relay_social_fanout(html_body, copy_block_followup_html)
+    run_listening_relay_social_fanout(html_body, copy_block_followup_html, relay_log_id=relay_log_id)

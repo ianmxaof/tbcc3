@@ -22,6 +22,9 @@ from .caption_snippet import CaptionSnippet
 from .custom_emoji_preset import CustomEmojiPreset
 from .emoji_factory_sketch import EmojiFactorySketchPage
 from .listening_relay_settings import ListeningRelaySettings
+from .listening_relay_post_log import ListeningRelayPostLog
+from .goblin_drop import GoblinDrop
+from .goblin_claim import GoblinClaim
 from .zip_bundle_settings import ZipBundleSettings
 from .gallery_send_promo_settings import GallerySendPromoSettings
 from .main_channel_divider_settings import MainChannelDividerSettings
@@ -92,6 +95,9 @@ __all__ = [
     "CustomEmojiPreset",
     "EmojiFactorySketchPage",
     "ListeningRelaySettings",
+    "ListeningRelayPostLog",
+    "GoblinDrop",
+    "GoblinClaim",
     "ZipBundleSettings",
     "GallerySendPromoSettings",
     "MainChannelDividerSettings",

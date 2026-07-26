@@ -108,6 +108,35 @@ def _record_scheduled_send_metrics(
     return ev
 
 
+def _log_recurring_slot_slippage(post, stamped_at: datetime) -> None:
+    from app.services.post_scheduler import recurring_slot_slippage_seconds
+
+    slippage = recurring_slot_slippage_seconds(post, stamped_at)
+    if slippage is not None and slippage > 0:
+        logger.info(
+            "scheduled_post %s slot_slippage_s=%.1f interval_min=%s",
+            post.id,
+            slippage,
+            post.interval_minutes,
+        )
+
+
+def _stamp_recurring_last_posted(post, sent_at: datetime) -> None:
+    """Success path: grid-aligned last_posted_at (Phase 3) with slippage telemetry."""
+    from app.services.post_scheduler import next_slot_stamp
+
+    _log_recurring_slot_slippage(post, sent_at)
+    stamped = next_slot_stamp(post, sent_at)
+    if stamped != sent_at:
+        logger.info(
+            "scheduled_post %s grid_stamp=%s (sent_at=%s)",
+            post.id,
+            stamped.isoformat(),
+            sent_at.isoformat(),
+        )
+    post.last_posted_at = stamped
+
+
 def _is_recurring_due_now(post, now_utc: datetime) -> bool:
     """Mirror scheduler logic so campaign retries only target currently due siblings."""
     interval = getattr(post, "interval_minutes", None)
@@ -308,6 +337,15 @@ def _poster_drain_lock_timeout_s() -> float:
         return max(10.0, min(300.0, float(raw)))
     except ValueError:
         return 45.0
+
+
+def _relay_poster_lock_timeout_s() -> float:
+    """Bounded wait for relay posts — fail fast so schedulers keep the poster session."""
+    raw = (os.getenv("TBCC_RELAY_POSTER_LOCK_TIMEOUT_S") or "8").strip()
+    try:
+        return max(1.0, min(60.0, float(raw)))
+    except ValueError:
+        return 8.0
 
 
 async def _release_poster_session_lock(token: str) -> None:
@@ -554,9 +592,9 @@ async def _execute_post_scheduled_text(
                         p.caption_rotation_index = leader.caption_rotation_index
                         p.album_carousel_index = leader.album_carousel_index
                         if random_channel and is_recurring:
-                            p.last_posted_at = now
+                            _stamp_recurring_last_posted(p, now)
                         elif int(p.id) in sent_ids and is_recurring:
-                            p.last_posted_at = now
+                            _stamp_recurring_last_posted(p, now)
                         elif int(p.id) in sent_ids:
                             p.sent_at = now
                     ch_map = {
@@ -607,9 +645,22 @@ async def _execute_post_scheduled_text(
                     )
                     leader = siblings[0]
                     if sent_ids and getattr(leader, "buffer_mirror_enabled", False):
-                        _after_telegram_buffer_mirror(
-                            int(leader.id), manual_trigger=manual_trigger
+                        from app.services.buffer_mirror_policy import (
+                            buffer_mirror_allowed_for_telegram_identifier,
                         )
+
+                        ch_ident = None
+                        if leader.channel_id:
+                            ch_row = (
+                                db.query(Channel)
+                                .filter(Channel.id == int(leader.channel_id))
+                                .first()
+                            )
+                            ch_ident = ch_row.identifier if ch_row else None
+                        if buffer_mirror_allowed_for_telegram_identifier(ch_ident):
+                            _after_telegram_buffer_mirror(
+                                int(leader.id), manual_trigger=manual_trigger
+                            )
                     if sent_ids and getattr(leader, "discord_mirror_enabled", False):
                         _after_telegram_discord_mirror(int(leader.id))
                     if sent_ids and getattr(leader, "reddit_mirror_enabled", False):
@@ -664,7 +715,7 @@ async def _execute_post_scheduled_text(
                     )
                     now = datetime.utcnow()
                     if is_recurring:
-                        post.last_posted_at = now
+                        _stamp_recurring_last_posted(post, now)
                     else:
                         post.sent_at = now
                     _clear_auto_pause_fields(post)
@@ -686,9 +737,16 @@ async def _execute_post_scheduled_text(
                         " (reshuffle)" if reshuffle_album else "",
                     )
                     if getattr(post, "buffer_mirror_enabled", False):
-                        _after_telegram_buffer_mirror(
-                            int(post.id), manual_trigger=manual_trigger
+                        from app.services.buffer_mirror_policy import (
+                            buffer_mirror_allowed_for_telegram_identifier,
                         )
+
+                        if buffer_mirror_allowed_for_telegram_identifier(
+                            getattr(channel, "identifier", None)
+                        ):
+                            _after_telegram_buffer_mirror(
+                                int(post.id), manual_trigger=manual_trigger
+                            )
                     if getattr(post, "discord_mirror_enabled", False):
                         _after_telegram_discord_mirror(int(post.id))
                     if getattr(post, "reddit_mirror_enabled", False):
@@ -864,6 +922,7 @@ def post_listening_relay_message(
     send_silent: bool = True,
     copy_block_followup_html: str | None = None,
     copy_followups_json: str | None = None,
+    relay_log_id: int | None = None,
 ):
     """Post listening relay HTML; optional copy follow-up(s) under the link preview (text, media, buttons)."""
     from app.database.session import SessionLocal
@@ -889,7 +948,21 @@ def post_listening_relay_message(
         db = SessionLocal()
         try:
             await _reset_poster_client()
-            lock_token = await _acquire_poster_session_lock()
+            try:
+                lock_token = await _acquire_poster_session_lock(
+                    timeout_s=_relay_poster_lock_timeout_s()
+                )
+            except TimeoutError:
+                if relay_log_id:
+                    from app.services.listening_relay_history import mark_relay_post_failed
+
+                    mark_relay_post_failed(db, int(relay_log_id), "lock_busy")
+                    db.commit()
+                logger.warning(
+                    "post_listening_relay_message: poster lock timeout after %.0fs (relay bounded wait)",
+                    _relay_poster_lock_timeout_s(),
+                )
+                return
             ch = db.query(Channel).filter(Channel.id == channel_id).first()
             if not ch:
                 logger.warning("post_listening_relay_message: channel %s not found", channel_id)
@@ -921,8 +994,22 @@ def post_listening_relay_message(
                             db=db,
                             send_silent=send_silent,
                         )
+                    if relay_log_id:
+                        from app.services.listening_relay_history import mark_relay_post_sent
+
+                        mark_relay_post_sent(
+                            db,
+                            int(relay_log_id),
+                            telegram_message_id=getattr(sent, "id", None),
+                        )
+                        db.commit()
                     break
                 except Exception as send_err:
+                    if relay_log_id and (attempt >= max_attempts or not _is_retryable_telegram_error(send_err)):
+                        from app.services.listening_relay_history import mark_relay_post_failed
+
+                        mark_relay_post_failed(db, int(relay_log_id), str(send_err))
+                        db.commit()
                     if attempt >= max_attempts or not _is_retryable_telegram_error(send_err):
                         raise
                     logger.warning(

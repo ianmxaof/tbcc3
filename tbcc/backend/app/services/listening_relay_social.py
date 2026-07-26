@@ -36,6 +36,8 @@ def _ensure_row(db):
 def run_listening_relay_social_fanout(
     html_body: str,
     copy_block_followup_html: str | None = None,
+    *,
+    relay_log_id: int | None = None,
 ) -> None:
     """Discord (if webhook env set): every event. Buffer: only if enabled + under throttle caps."""
     from app.services.listening_relay_send import followups_from_json
@@ -57,18 +59,29 @@ def run_listening_relay_social_fanout(
     if not plain:
         return
     hook = (os.environ.get("TBCC_DISCORD_LISTENING_RELAY_WEBHOOK_URL") or "").strip()
-    if hook:
-        from app.services.buffer_surface_caption import build_discord_caption
-
-        notify_discord_webhook_text(hook, build_discord_caption(teaser=plain, utm_campaign="relay"))
 
     db = SessionLocal()
+    discord_marked = False
     try:
+        if hook:
+            from app.services.buffer_surface_caption import build_discord_caption
+
+            notify_discord_webhook_text(hook, build_discord_caption(teaser=plain, utm_campaign="relay"))
+            if relay_log_id:
+                from app.services.listening_relay_history import mark_relay_discord_sent
+
+                mark_relay_discord_sent(db, int(relay_log_id))
+                discord_marked = True
+
         row = _ensure_row(db)
         if not getattr(row, "buffer_relay_enabled", False):
+            if discord_marked:
+                db.commit()
             return
         if not buffer_target_channel_ids():
             logger.warning("listening relay buffer: no channel ids in env")
+            if discord_marked:
+                db.commit()
             return
         now = datetime.utcnow()
         day = now.strftime("%Y-%m-%d")
@@ -81,6 +94,8 @@ def run_listening_relay_social_fanout(
 
         if int(row.buffer_relay_posts_today or 0) >= max_day:
             logger.info("listening relay buffer: daily cap %s reached", max_day)
+            if discord_marked:
+                db.commit()
             return
         last = getattr(row, "buffer_relay_last_post_at", None)
         if last:
@@ -91,6 +106,8 @@ def run_listening_relay_social_fanout(
                     min_gap_m,
                     delta_m,
                 )
+                if discord_marked:
+                    db.commit()
                 return
 
         queue = row.get_buffer_x_queue()
@@ -111,6 +128,8 @@ def run_listening_relay_social_fanout(
             )
 
         if not plain:
+            if discord_marked:
+                db.commit()
             return
 
         capped = int(os.environ.get("TBCC_BUFFER_RELAY_MAX_CHANNELS", "6") or 6)
@@ -151,6 +170,10 @@ def run_listening_relay_social_fanout(
             row.set_buffer_x_queue(queue[1:])
         row.buffer_relay_posts_today = int(row.buffer_relay_posts_today or 0) + 1
         row.buffer_relay_last_post_at = now
+        if relay_log_id:
+            from app.services.listening_relay_history import mark_relay_buffer_sent
+
+            mark_relay_buffer_sent(db, int(relay_log_id))
         db.commit()
         logger.info(
             "listening relay buffer: mode=%s source=%s channels=%s queue_remaining=%s",

@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, link_resolver, crawler, jdownloader, caption_snippets, funnel_strategies, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, zeus_v1, extension_context_menu, extension_capture_secret, extension_aof_pools, extension_storage_hub, album_composer_drafts, k2s, lane_drops, click_beacon
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, goblin, link_resolver, crawler, jdownloader, caption_snippets, funnel_strategies, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, zeus_v1, extension_context_menu, extension_capture_secret, extension_aof_pools, extension_storage_hub, album_composer_drafts, k2s, lane_drops, click_beacon
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -24,6 +24,7 @@ from app.models.loot_bot_settings import LootBotSettings  # noqa: F401
 from app.models.caption_snippet import CaptionSnippet  # noqa: F401
 from app.models.emoji_factory_sketch import EmojiFactorySketchPage  # noqa: F401
 from app.models.listening_relay_settings import ListeningRelaySettings  # noqa: F401
+from app.models.listening_relay_post_log import ListeningRelayPostLog  # noqa: F401
 from app.models.zip_bundle_settings import ZipBundleSettings  # noqa: F401
 from app.models.promo_affiliate_link import PromoAffiliateLink  # noqa: F401
 from app.models.promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor  # noqa: F401
@@ -136,8 +137,31 @@ def on_startup():
             "TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION=1 in tbcc/.env, then restart API + Celery."
         )
     url = str(engine.url)
+
+    def _ensure_listening_relay_post_log_table() -> None:
+        """create_all skips new tables on existing DBs in some paths — ensure relay history exists."""
+        try:
+            from sqlalchemy import inspect as sa_inspect
+
+            from app.models.listening_relay_post_log import ListeningRelayPostLog
+
+            insp = sa_inspect(engine)
+            names = insp.get_table_names()
+            if "listening_relay_post_log" in names:
+                cols = {c["name"] for c in insp.get_columns("listening_relay_post_log")}
+                if "trigger" in cols and "trigger_kind" not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(text("DROP TABLE listening_relay_post_log"))
+                    names = [n for n in names if n != "listening_relay_post_log"]
+            if "listening_relay_post_log" not in names:
+                ListeningRelayPostLog.__table__.create(bind=engine)
+                logger.info("Added listening_relay_post_log table (startup migration)")
+        except Exception:
+            logger.exception("Could not ensure listening_relay_post_log table")
+
     if "sqlite" in url:
         Base.metadata.create_all(bind=engine)
+        _ensure_listening_relay_post_log_table()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -545,6 +569,7 @@ def on_startup():
                         ("ascii_art_library_json", "TEXT"),
                         ("tryptych_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
                         ("tryptych_on_ascii_beat", "BOOLEAN NOT NULL DEFAULT 1"),
+                        ("relay_random_network_channel", "BOOLEAN NOT NULL DEFAULT 0"),
                     ):
                         if col not in lr_cols:
                             conn.execute(
@@ -1137,6 +1162,7 @@ def on_startup():
                     ("ascii_art_library_json", "TEXT"),
                     ("tryptych_enabled", "BOOLEAN NOT NULL DEFAULT FALSE"),
                     ("tryptych_on_ascii_beat", "BOOLEAN NOT NULL DEFAULT TRUE"),
+                    ("relay_random_network_channel", "BOOLEAN NOT NULL DEFAULT FALSE"),
                 ):
                     if col not in lr_cols:
                         with engine.begin() as conn:
@@ -1152,6 +1178,8 @@ def on_startup():
                 "PostgreSQL: could not add scheduled_text_posts / listening_relay_settings columns — run: "
                 "cd backend && alembic upgrade head"
             )
+
+        _ensure_listening_relay_post_log_table()
 
         try:
             from sqlalchemy import inspect as sa_inspect
@@ -1227,6 +1255,7 @@ app.include_router(companion.router, prefix="/companion", tags=["companion"])
 app.include_router(payment_bot_settings.router, prefix="/payment-bot-settings", tags=["payment-bot-settings"])
 app.include_router(loot_bot_settings.router, prefix="/loot-bot-settings", tags=["loot-bot-settings"])
 app.include_router(loot.router, prefix="/loot", tags=["loot"])
+app.include_router(goblin.router, prefix="/goblin", tags=["goblin"])
 app.include_router(external_payment_orders.router, prefix="/external-payment-orders", tags=["external-payment-orders"])
 app.include_router(webhooks_payment.router, prefix="/webhooks", tags=["webhooks"])
 app.include_router(webhooks_companion.router, prefix="/webhooks", tags=["webhooks"])
