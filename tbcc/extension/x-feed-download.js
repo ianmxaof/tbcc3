@@ -53,15 +53,38 @@
     }
   }
 
-  function chromeDownload(url, filename) {
+  function profileFromArticleOrUrl(article, fallbackUrl) {
+    try {
+      var href = "";
+      if (article && article.querySelector) {
+        var a = article.querySelector('a[href*="/status/"]');
+        if (a) href = String(a.href || "");
+      }
+      if (!href) href = String(fallbackUrl || location.href || "");
+      var m = href.match(/(?:twitter\.com|x\.com)\/([^/?#]+)\/status\//i);
+      if (!m) return "";
+      var h = String(m[1] || "").toLowerCase();
+      if (["home", "search", "i", "intent", "share", "explore", "notifications", "messages"].indexOf(h) >= 0) {
+        return "";
+      }
+      return h.replace(/^@+/, "").slice(0, 64);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /** SW applies AOF naming + Downloads/{tbcc/inbox}/; watch organizer watermarks. */
+  function chromeDownloadToInbox(url, opts) {
+    opts = opts || {};
     return new Promise(function (resolve, reject) {
       try {
         chrome.runtime.sendMessage(
           {
             action: "tbcc-x-media-download",
             url: url,
-            filename: filename,
             refererPageUrl: location.href.split("#")[0],
+            profileHint: opts.profileHint || "",
+            indexHint: opts.indexHint != null ? opts.indexHint : undefined,
           },
           function (resp) {
             if (chrome.runtime.lastError) {
@@ -207,9 +230,6 @@
         return null;
       }
     },
-    sanitizeFilename: function (name) {
-      return String(name || "media").replace(/[\/\\\?\%\*\:\|\\"<>\r\n]/g, "_").slice(0, 80);
-    },
     setStatus: function (btn, classes, title) {
       if (classes) {
         btn.classList.remove("download", "completed", "loading", "failed");
@@ -316,7 +336,8 @@
       var tabId = await getCurrentTabId();
       var netBefore = (await getNetMp4sForTab(tabId)).length;
 
-      var downloadPromises = uniqueStatusIds.map(async function (statusId) {
+      var profileHint = profileFromArticleOrUrl(article, location.href);
+      var downloadPromises = uniqueStatusIds.map(async function (statusId, i) {
         var media = XDownload.mediaMap.get(statusId);
         if (!media || (!media.video && !media.photo)) {
           media = await self.resolveMediaForStatus(article, statusId, tabId, netBefore);
@@ -324,18 +345,16 @@
         if (!media || (!media.video && !media.photo)) {
           throw new Error("Media data not found for status ID: " + statusId);
         }
-        var filename = self.sanitizeFilename(media.text || media.entityId || statusId);
         var url = media.video;
-        var defaultExt = "mp4";
         if (!url && media.photo) {
           url = upgradeTwitterPhotoUrl(media.photo) || media.photo;
-          defaultExt = "jpg";
         }
         if (!url || !isSafeTwimgUrl(url)) {
           throw new Error("No safe media URL for " + statusId);
         }
-        var ext = self.extFromUrl(url) || defaultExt;
-        await chromeDownload(url, filename + "." + ext);
+        // Prefer last 5 of tweet id so repeated saves stay stable + uniquify-friendly.
+        var indexHint = Number(String(statusId).slice(-5)) || i + 1;
+        await chromeDownloadToInbox(url, { profileHint: profileHint, indexHint: indexHint });
       });
 
       try {
@@ -344,7 +363,7 @@
           return r.status === "fulfilled";
         });
         if (anySuccess) {
-          this.setStatus(btn, ["completed"], "Download complete");
+          this.setStatus(btn, ["completed"], "Saved to TBCC inbox (AOF name)");
         } else {
           var firstErr =
             (results[0] && results[0].reason && results[0].reason.message) ||
@@ -408,7 +427,11 @@
           if (innerBtn) innerBtn.removeAttribute("disabled");
           var svg = btnDownload.querySelector("svg");
           if (svg) svg.innerHTML = SVG;
-          this.setStatus(btnDownload, ["x-master-dl", "download"], "Download media");
+          this.setStatus(
+            btnDownload,
+            ["x-master-dl", "download"],
+            "Save to TBCC inbox (AOF rename → watch folder)"
+          );
           if (btnShare.parentElement === btnGroup) {
             btnGroup.insertBefore(btnDownload, btnShare.nextSibling);
           } else {
@@ -439,7 +462,11 @@
           btnImg.style.cssText = "position: absolute; top: 0; right: 0; z-index: 10; margin: 5px;";
           btnImg.innerHTML =
             '<div><div><svg viewBox="0 0 20 20" width="15" height="15">' + SVG + "</svg></div></div>";
-          XDownloadUI.setStatus(btnImg, ["x-master-dl", "tmd-img", "download"], "Download image");
+          XDownloadUI.setStatus(
+            btnImg,
+            ["x-master-dl", "tmd-img", "download"],
+            "Save image to TBCC inbox (AOF name)"
+          );
           if (img.parentNode) {
             var parent = img.parentNode;
             if (!parent.style.position || parent.style.position === "static") {
@@ -466,7 +493,11 @@
         var btnDownload = document.createElement("div");
         btnDownload.innerHTML =
           '<div><div><svg viewBox="0 0 20 20" width="15" height="15">' + SVG + "</svg></div></div>";
-        self.setStatus(btnDownload, ["x-master-dl", "tmd-media", "download"], "Download media");
+        self.setStatus(
+          btnDownload,
+          ["x-master-dl", "tmd-media", "download"],
+          "Save to TBCC inbox (AOF rename → watch folder)"
+        );
         li.appendChild(btnDownload);
         btnDownload.addEventListener("click", function (e) {
           e.preventDefault();

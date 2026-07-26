@@ -36,7 +36,7 @@ def test_extract_pack_theme_strips_new_format():
 
 def test_build_branded_name_includes_handle_size_files_tail():
     name = build_branded_pack_folder_name("Mihanika", 60.0, file_count=120)
-    assert name.startswith("@AOFMAINHUB")
+    assert name.startswith("telegram.me/aofmainhub")
     assert "60GB" in name
     assert "120 Files" in name
     assert "Mihanika" in name
@@ -51,7 +51,7 @@ def test_target_rename_skips_new_brand():
 def test_target_rename_legacy_pack():
     out = target_branded_pack_rename("Foo-TME AOFMAINHUB", 17.5, file_count=50)
     assert out is not None
-    assert out.startswith("@AOFMAINHUB")
+    assert out.startswith("telegram.me/aofmainhub")
     assert "Foo" in out
 
 

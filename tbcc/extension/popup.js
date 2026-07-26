@@ -1,4 +1,11 @@
-const API_BASE = "http://localhost:8000";
+let API_BASE = "http://localhost:8000";
+(async () => {
+  try {
+    const d = await chrome.storage.local.get("tbccApiBase");
+    const custom = String(d.tbccApiBase || "").trim().replace(/\/+$/, "");
+    if (custom && /^https?:\/\//i.test(custom)) API_BASE = custom;
+  } catch (_) {}
+})();
 
 const inGalleryPanel = typeof window !== "undefined" && window.parent !== window;
 

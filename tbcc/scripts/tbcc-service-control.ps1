@@ -132,6 +132,20 @@ function Read-TbccControlDotEnv {
   return $map
 }
 
+function Test-TbccZeusCohostSpikeEnabled {
+  param(
+    [string]$TbccRoot = "",
+    $DotEnv = $null
+  )
+  $map = $DotEnv
+  if (-not $map) {
+    if (-not $TbccRoot) { return $false }
+    $map = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  }
+  $raw = (($map["TBCC_ZEUS_COHOST_SPIKE"] -as [string]) + "").Trim().ToLower()
+  return @("1", "true", "yes", "on") -contains $raw
+}
+
 function Get-TbccStackProfile {
   param([Parameter(Mandatory = $true)][string]$TbccRoot)
   $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
@@ -414,7 +428,7 @@ function Stop-TbccStrayStackProcesses {
     'uvicorn\s+app\.main',
     'celery\s+-A\s+app\.workers',
     'app\.workers\.celery_app',
-        'bots\.(payment_bot|loot_bot|secretary_bot|companion_bot|macro_search_bot|album_composer_bot|llm_chat_bot)',
+        'bots\.(payment_bot|loot_bot|secretary_bot|zeus_cohost_spike|companion_bot|macro_search_bot|album_composer_bot|llm_chat_bot)',
     'run_nsfw_detect',
     'run_clip_categorize',
     'lustpress',
@@ -545,9 +559,28 @@ function Stop-TbccProcessesByServiceTitle {
   return @($killed | Select-Object -Unique)
 }
 
-$script:TbccMandatoryServiceIds = @('album_composer')
-$script:TbccLeanDefaultOffServiceIds = @('llm_chat', 'watch', 'forum', 'macro_search', 'admin', 'companion')
+# Nothing is forced-on under lean. Full profile may still treat album_composer as optional via toggles.
+$script:TbccMandatoryServiceIds = @()
+# True lean cold-start: API + payment + loot + beat + celery (+ Docker PG/Redis). Everything else Off until toggled.
+$script:TbccLeanDefaultOffServiceIds = @(
+  'llm_chat', 'watch', 'forum', 'macro_search', 'admin', 'companion',
+  'dashboard', 'secretary', 'album_composer',
+  'celery_post', 'celery_post_scheduler', 'celery_ops', 'openclaw'
+)
 $script:TbccFullDefaultOffServiceIds = @('llm_chat', 'watch', 'forum')
+# When Zeus co-host is on, standalone macro_search must stay Off (token owned by secretary process).
+$script:TbccZeusCohostDefaultOffServiceIds = @('macro_search')
+# After revenue-island cutover: home payment/loot default Off so Start stack cannot 409 the island.
+$script:TbccRevenueIslandHomeBotOffIds = @('payment', 'loot')
+
+function Test-TbccRevenueIslandActive {
+  <# True when TBCC_REVENUE_ISLAND_ACTIVE=1 — island owns payment/loot tokens; home bots stay Off by default. #>
+  param([Parameter(Mandatory = $true)][string]$TbccRoot)
+  $dotEnv = Read-TbccControlDotEnv -Path (Join-Path $TbccRoot ".env")
+  $raw = ($dotEnv['TBCC_REVENUE_ISLAND_ACTIVE'] -as [string]).Trim().ToLower()
+  if (-not $raw) { $raw = ($env:TBCC_REVENUE_ISLAND_ACTIVE -as [string]).Trim().ToLower() }
+  return ($raw -match '^(1|true|yes)$')
+}
 
 function Get-TbccOpenClawGatewayPort {
   param($DotEnv = $null)
@@ -709,8 +742,8 @@ function Get-TbccServiceOpsCatalog {
     secretary = @{
       MenuGroup       = "bots"
       MenuLabel       = "Secretary bot"
-      MenuDoes        = "Operator Telegram commands and inbox helpers."
-      MenuRestartWhen = "After secretary-bot code changes. Do not run a second copy."
+      MenuDoes        = "Operator Telegram commands and inbox helpers. With TBCC_ZEUS_COHOST_SPIKE=1 co-hosts macro_search (keep Macro search Off)."
+      MenuRestartWhen = "After secretary-bot / zeus_cohost_spike code changes. Do not run a second copy."
     }
     loot = @{
       MenuGroup       = "bots"
@@ -953,10 +986,19 @@ function Get-TbccStackServices {
         Id = "payment"; Title = "TBCC-PaymentBot"; Port = 0; CommandMatch = "bots\.payment_bot";
         Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.payment_bot')
       })
-    [void]$list.Add([pscustomobject]@{
-        Id = "secretary"; Title = "TBCC-SecretaryBot"; Port = 0; CommandMatch = "bots\.secretary_bot";
-        Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.secretary_bot')
-      })
+    $zeusCohost = Test-TbccZeusCohostSpikeEnabled -DotEnv $dotEnv
+    if ($zeusCohost) {
+      [void]$list.Add([pscustomobject]@{
+          Id = "secretary"; Title = "TBCC-SecretaryBot"; Port = 0;
+          CommandMatch = "bots\.(zeus_cohost_spike|secretary_bot)";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.zeus_cohost_spike')
+        })
+    } else {
+      [void]$list.Add([pscustomobject]@{
+          Id = "secretary"; Title = "TBCC-SecretaryBot"; Port = 0; CommandMatch = "bots\.secretary_bot";
+          Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.secretary_bot')
+        })
+    }
     if (-not $leanStack -or $MenuCatalog) {
       [void]$list.Add([pscustomobject]@{
           Id = "companion"; Title = "TBCC-CompanionBot";
@@ -1467,14 +1509,22 @@ function Test-TbccServiceUserEnabled {
     [Parameter(Mandatory = $true)][string]$TbccRoot
   )
   if ($ServiceId -in $script:TbccMandatoryServiceIds) { return $true }
-  $toggles = Read-TbccServiceToggles -TbccRoot $TbccRoot
-  if (-not $toggles.ContainsKey($ServiceId)) {
-    $profile = Get-TbccStackProfile -TbccRoot $TbccRoot
-    $defaultOff = if ($profile -eq 'full') { $script:TbccFullDefaultOffServiceIds } else { $script:TbccLeanDefaultOffServiceIds }
-    if ($ServiceId -in $defaultOff) { return $false }
-    return $true
+  # Co-host owns macro_search token — never start the standalone process.
+  if ((Test-TbccZeusCohostSpikeEnabled -TbccRoot $TbccRoot) -and ($ServiceId -in $script:TbccZeusCohostDefaultOffServiceIds)) {
+    return $false
   }
-  return [bool]$toggles[$ServiceId]
+  $toggles = Read-TbccServiceToggles -TbccRoot $TbccRoot
+  if ($toggles.ContainsKey($ServiceId)) {
+    return [bool]$toggles[$ServiceId]
+  }
+  $profile = Get-TbccStackProfile -TbccRoot $TbccRoot
+  $defaultOff = if ($profile -eq 'full') { $script:TbccFullDefaultOffServiceIds } else { $script:TbccLeanDefaultOffServiceIds }
+  if ($ServiceId -in $defaultOff) { return $false }
+  # Post-cutover: missing toggle for payment/loot => Off (explicit toggle true still allows emergency restore).
+  if ((Test-TbccRevenueIslandActive -TbccRoot $TbccRoot) -and ($ServiceId -in $script:TbccRevenueIslandHomeBotOffIds)) {
+    return $false
+  }
+  return $true
 }
 
 function Set-TbccServiceUserEnabled {
@@ -1671,11 +1721,13 @@ function Update-TbccServiceStatusCache {
   param(
     [Parameter(Mandatory = $true)][string]$TbccRoot,
     [switch]$FullStack,
-    [switch]$MenuCatalog
+    [switch]$MenuCatalog,
+    [switch]$Meltdown
   )
   $services = @(Get-TbccStackServices -TbccRoot $TbccRoot -FullStack:$FullStack -MenuCatalog:$MenuCatalog)
   $ports = Get-TbccListeningPortSet
-  $procs = @(Get-TbccWin32ProcessListCached)
+  $procMaxAge = if ($Meltdown) { 60 } else { 15 }
+  $procs = @(Get-TbccWin32ProcessListCached -MaxAgeSec $procMaxAge)
   $byId = @{}
   $up = 0
   $enabled = 0
@@ -2670,6 +2722,15 @@ function Get-TbccSecretaryStackService {
   $token = ($dotEnv["TBCC_SECRETARY_BOT_TOKEN"] -as [string]).Trim()
   if (-not $token) { $token = ($dotEnv["SECRETARY_BOT_TOKEN"] -as [string]).Trim() }
   if (-not $token) { return $null }
+  if (Test-TbccZeusCohostSpikeEnabled -DotEnv $dotEnv) {
+    return [pscustomobject]@{
+      Id = "secretary"
+      Title = "TBCC-SecretaryBot"
+      Port = 0
+      CommandMatch = "bots\.(zeus_cohost_spike|secretary_bot)"
+      Command = ('cd /d "' + $backendDir + '" & ' + $py + ' -m bots.zeus_cohost_spike')
+    }
+  }
   return [pscustomobject]@{
     Id = "secretary"
     Title = "TBCC-SecretaryBot"

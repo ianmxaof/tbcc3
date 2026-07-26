@@ -93,6 +93,8 @@ def suggest_env_key(*, value: str, page_url: str = "") -> str | None:
         return "REPLICATE_API_TOKEN"
     if re.match(r"^(ghp_|gho_|github_pat_)", text, re.I):
         return "TBCC_GHCR_TOKEN"
+    if "pixeldrain" in url:
+        return "TBCC_PIXELDRAIN_API_KEY"
     if re.match(r"^[a-f0-9]{32}$", text, re.I):
         return "TBCC_R2_ACCOUNT_ID"
     return None
@@ -151,6 +153,11 @@ _KEY_ALIASES = {
     "S3_API": "TBCC_R2_S3_ENDPOINT",
     "S3_ENDPOINT": "TBCC_R2_S3_ENDPOINT",
     "R2_S3_API": "TBCC_R2_S3_ENDPOINT",
+    "TBCC_PD": "TBCC_PIXELDRAIN_API_KEY",
+    "PD_KEY": "TBCC_PIXELDRAIN_API_KEY",
+    "PIXELDRAIN_API_KEY": "TBCC_PIXELDRAIN_API_KEY",
+    "PIXELDRAIN_KEY": "TBCC_PIXELDRAIN_API_KEY",
+    "PIXELDRAIN_API_KEY_071726": "TBCC_PIXELDRAIN_API_KEY",
 }
 
 

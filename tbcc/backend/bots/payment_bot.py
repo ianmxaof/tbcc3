@@ -1101,6 +1101,156 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def send_stars_bait_trap_message(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    product=None,
+) -> None:
+    """Competitor-style hook + single CTA → real Stars checkout (no fake Telegram UI)."""
+    from app.database.session import SessionLocal
+    from app.services.stars_bait_copy import (
+        pick_stars_bait_variation,
+        stars_bait_inline_keyboard,
+        checkout_start_payload,
+        resolve_bait_plan_ids,
+        _payment_bot_username,
+    )
+
+    if not msg:
+        return
+    db = SessionLocal()
+    try:
+        if product is None:
+            product = StarsBaitProduct.SUBSCRIPTION
+        variation = pick_stars_bait_variation(db, product=product)
+        plan_ids = resolve_bait_plan_ids(db)
+        checkout_payload = checkout_start_payload(product, plan_ids)
+        keyboard = stars_bait_inline_keyboard(variation)
+        # Second row: direct Stars checkout when plan id known
+        rows = list(keyboard.get("inline_keyboard") or [])
+        from app.services.stars_bait_copy import _payment_bot_username
+
+        pay = _payment_bot_username()
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "⭐ Subscribe — Stars",
+                    url=f"https://t.me/{pay}?start={checkout_payload}",
+                )
+            ]
+        )
+        await msg.reply_text(
+            variation.html,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+    finally:
+        db.close()
+
+
+async def send_human_gate_prompt(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    target: str = "loot_room",
+    source: str | None = None,
+) -> None:
+    """Offer channel access behind 'I'm not a robot' ack → DM outreach opt-in."""
+    from app.database.session import SessionLocal
+    from app.services.human_gate_pacing import (
+        ack_success_html,
+        gate_prompt_html,
+        get_consent,
+        human_ack_callback_data,
+        human_gate_enabled,
+        record_human_ack,
+    )
+
+    if not msg or not human_gate_enabled():
+        return
+    user = msg.from_user or getattr(msg, "chat", None)
+    uid = getattr(user, "id", None)
+    db = SessionLocal()
+    try:
+        if uid:
+            existing = get_consent(db, int(uid))
+            if existing:
+                await msg.reply_text(
+                    ack_success_html(existing.gate_target, already=True),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                return
+        await msg.reply_text(
+            gate_prompt_html(target),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "✅ I'm not a robot",
+                            callback_data=human_ack_callback_data(target),
+                        )
+                    ]
+                ]
+            ),
+        )
+    finally:
+        db.close()
+
+
+async def handle_human_gate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    from app.database.session import SessionLocal
+    from app.services.human_gate_pacing import (
+        ack_success_html,
+        parse_human_ack_callback,
+        record_human_ack,
+    )
+
+    target = parse_human_ack_callback(query.data)
+    if target is None:
+        return
+    user = query.from_user
+    if not user:
+        await query.answer("User missing", show_alert=True)
+        return
+    db = SessionLocal()
+    try:
+        row = record_human_ack(
+            db,
+            telegram_user_id=int(user.id),
+            gate_target=target,
+            source=query.data,
+            username=user.username,
+            first_name=user.first_name,
+        )
+        await query.answer("Verified")
+        await query.message.reply_text(
+            ack_success_html(row.gate_target),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    finally:
+        db.close()
+
+
+async def cmd_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Human gate — confirm not a robot to unlock group invite + paced deal DMs."""
+    msg = update.effective_message
+    args = context.args or []
+    payload = args[0] if args else "gate_loot"
+    from app.services.human_gate_pacing import parse_gate_start_payload
+
+    target = parse_gate_start_payload(payload) or "loot_room"
+    await send_human_gate_prompt(msg, context, target=target, source=payload)
+
+
 async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Dedicated Loot Room menu + plans from bot_section=loot."""
     if not msg:
@@ -1153,6 +1303,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             context.args = [username]
             await cmd_videofind(update, context)
             return
+
+    from app.services.stars_bait_copy import parse_bait_start_payload, stars_bait_welcome_enabled
+
+    bait_product = parse_bait_start_payload(payload)
+    if bait_product is not None:
+        await send_stars_bait_trap_message(msg, context, product=bait_product)
+        return
+
+    from app.services.human_gate_pacing import human_gate_enabled, parse_gate_start_payload
+
+    gate_target = parse_gate_start_payload(payload)
+    if gate_target is not None and human_gate_enabled():
+        await send_human_gate_prompt(msg, context, target=gate_target, source=payload)
+        return
 
     if payload.startswith("ref_"):
         referrer_id = await resolve_referrer_id_from_start_payload(payload)
@@ -1223,6 +1387,20 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 user.id,
                 plan,
             )
+        return
+
+    from app.services.stars_bait_copy import stars_bait_welcome_enabled
+
+    if stars_bait_welcome_enabled() and not payload:
+        from app.database.session import SessionLocal
+        from app.services.stars_bait_copy import pick_stars_bait_variation
+
+        db = SessionLocal()
+        try:
+            bait = pick_stars_bait_variation(db, seed=int(user.id) % 31)
+            await send_stars_bait_trap_message(msg, context, product=bait.product)
+        finally:
+            db.close()
         return
 
     try:
@@ -1435,9 +1613,16 @@ def _plan_checkout_keyboard_rows(
                 ]
             )
         if _plan_show_gumroad_checkout(p):
-            gr_label = "💳 Gumroad (card)"
+            from app.services.fiat_checkout_labels import (
+                fiat_checkout_button_label,
+                fiat_checkout_plan_button_label,
+            )
+
+            gr_label = fiat_checkout_button_label()
             if multi_term:
-                gr_label = f"💳 Gumroad · {_subscription_duration_badge(p.get('duration_days', 30))}"
+                gr_label = fiat_checkout_plan_button_label(
+                    _subscription_duration_badge(p.get("duration_days", 30))
+                )
             rows.append(
                 [
                     InlineKeyboardButton(
@@ -1485,7 +1670,9 @@ async def send_simple_plan_checkout(
     if len(plans) == 1:
         text = str(plans[0].get("name") or "").strip() or "·"
     elif multi_term:
-        text = "💎 <b>AOF VIP</b> — same ladder as Gumroad. Pick a term:"
+        from app.services.fiat_checkout_labels import fiat_vip_ladder_intro_html
+
+        text = fiat_vip_ladder_intro_html()
     else:
         text = "·"
     await msg.reply_text(text, parse_mode="HTML" if multi_term else None, reply_markup=kb)
@@ -1788,8 +1975,16 @@ async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.
         recurrence_for_plan,
     )
 
+    from app.services.fiat_checkout_labels import (
+        fiat_checkout_disabled_message,
+        fiat_checkout_not_configured_message,
+        fiat_checkout_pay_instructions_html,
+        fiat_open_pay_button_label,
+        html_escape as fiat_html_escape,
+    )
+
     if not gumroad_checkout_enabled():
-        await msg.reply_text("Gumroad checkout is not enabled right now. Use Stars or crypto.")
+        await msg.reply_text(fiat_checkout_disabled_message())
         return
 
     plan = await fetch_plan_by_id(pid)
@@ -1806,10 +2001,7 @@ async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.
 
     base_url = product_url_for_plan(pid)
     if not base_url:
-        await msg.reply_text(
-            "Gumroad product URL not configured. Set TBCC_GUMROAD_PRODUCT_URL "
-            "(or TBCC_GUMROAD_PLAN_URLS) in tbcc/.env."
-        )
+        await msg.reply_text(fiat_checkout_not_configured_message())
         return
 
     result, order_err = await api_create_external_order(user.id, pid)
@@ -1827,34 +2019,29 @@ async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.
     rec = recurrence_for_plan(plan)
     if rec:
         pay_url = append_vip_checkout_hints(pay_url, recurrence=rec)
-    title = html.escape(str(plan.get("name") or "Gumroad checkout"))
-    term_hint = ""
-    if rec:
-        term_hint = (
-            f"\n3) On Gumroad choose <b>{html.escape(rec.replace('_', ' '))}</b> "
-            f"to match this term\n"
-        )
+    title = fiat_html_escape(str(plan.get("name") or "AOF VIP"))
+    rec_hint = rec.replace("_", " ") if rec else None
     kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(_truncate_btn("Open Gumroad → pay", 64), url=str(pay_url)[:512])]]
+        [[InlineKeyboardButton(_truncate_btn(fiat_open_pay_button_label(), 64), url=str(pay_url)[:512])]]
     )
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
     body = (
-        f"<b>{title}</b>\n"
-        f"Order <code>{html.escape(str(ref))}</code>\n\n"
-        "1) Tap <b>Open Gumroad</b> and complete payment\n"
-        "2) Keep this chat open — VIP invite DMs here after Gumroad confirms"
-        f"{term_hint}"
-        "\n<i>Do not share this link — it is tied to your Telegram account.</i>"
+        fiat_checkout_pay_instructions_html(title=title, tier_hint=rec_hint)
+        + f"\n\nOrder <code>{fiat_html_escape(str(ref))}</code>"
+        + "\n<i>Do not share this link — it is tied to your Telegram account.</i>"
     )
     try:
         await msg.reply_text(body, parse_mode="HTML", reply_markup=kb)
     except BadRequest as e:
-        logger.warning("gumroad pay button message failed: %s", e)
+        logger.warning("fiat checkout pay button message failed: %s", e)
         eu = html.escape(str(pay_url), quote=True)
-        await msg.reply_text(f'{body}\n<a href="{eu}">Open Gumroad</a>', parse_mode="HTML")
+        await msg.reply_text(
+            f"{body}\n<a href=\"{eu}\">{fiat_html_escape(fiat_open_pay_button_label())}</a>",
+            parse_mode="HTML",
+        )
 
 
 async def handle_external_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2473,6 +2660,7 @@ def main() -> None:
     app.add_handler(MessageHandler(shop_cmd, cmd_shop))
     app.add_handler(MessageHandler(shop_channel, cmd_shop))
     app.add_handler(CommandHandler("loot", cmd_loot))
+    app.add_handler(CommandHandler("gate", cmd_gate))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("packs", cmd_packs))
     app.add_handler(CommandHandler("referral", cmd_referral))
@@ -2515,6 +2703,9 @@ def main() -> None:
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/packs(@\w+)?\s*$"),
             cmd_packs,
         )
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|referral|status)$")

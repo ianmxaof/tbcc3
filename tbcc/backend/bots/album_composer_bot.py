@@ -1461,6 +1461,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
     sess = _session(context)
+    from bots.remixer_cover import cover_help_blurb
+
     await update.message.reply_text(
         "<b>TBCC Album Composer</b>\n\n"
         "Send photos and videos here to build an album (lite extension).\n\n"
@@ -1469,7 +1471,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "2. Use the <b>workshop menu</b> below — caption, buttons, crop, post\n"
         "3. <b>Split to emojis</b> on the menu for emoji-pack grids\n"
         "4. <b>Preview post</b> before you send · <b>Make album(s)</b> to split large batches\n\n"
-        "<b>Commands</b> /menu · /preview · /caption · /crop · /clear · /emoji_pack\n"
+        f"{cover_help_blurb()}\n\n"
+        "<b>Commands</b> /menu · /cover · /compose · /preview · /caption · /crop · /clear · /emoji_pack\n"
         "The menu stays pinned at the bottom while you work.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
@@ -1539,6 +1542,8 @@ async def cmd_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 def _apply_watermark_phrase(sess: ComposerSession, phrase: str) -> str:
+    from app.data.aof_telegram_links import normalize_telegram_me_brand
+
     raw = (phrase or "").strip()
     low = raw.lower()
     if not raw or low in ("status", "?"):
@@ -1563,17 +1568,17 @@ def _apply_watermark_phrase(sess: ComposerSession, phrase: str) -> str:
         sess.watermark_skip = False
         return f"Watermark color: {sess.watermark_color}"
     if low.startswith("2 "):
-        sess.watermark_text_secondary = raw.split(maxsplit=1)[1].strip()[:120]
+        sess.watermark_text_secondary = normalize_telegram_me_brand(raw.split(maxsplit=1)[1].strip())[:120]
         sess.watermark_skip = False
         return f"Secondary watermark: {sess.watermark_text_secondary}"
     if low.startswith("3 "):
-        sess.watermark_text_tertiary = raw.split(maxsplit=1)[1].strip()[:120]
+        sess.watermark_text_tertiary = normalize_telegram_me_brand(raw.split(maxsplit=1)[1].strip())[:120]
         sess.watermark_skip = False
         return f"Tertiary watermark: {sess.watermark_text_tertiary}"
     if low in ("strip on", "strip off"):
         sess.watermark_strip_previous = low.endswith("on")
         return f"Strip previous watermark bands: {'on' if sess.watermark_strip_previous else 'off'}"
-    sess.watermark_text = raw[:120]
+    sess.watermark_text = normalize_telegram_me_brand(raw)[:120]
     sess.watermark_skip = False
     sess.watermark_enabled = True
     return f"Primary watermark: {sess.watermark_text}"
@@ -1587,7 +1592,7 @@ async def cmd_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not text:
         await update.message.reply_text(
             "<b>Promo watermark</b> (burn-in on photos/videos at send)\n\n"
-            "• <code>/watermark t.me/aofmainhub</code> — primary text\n"
+            "• <code>/watermark telegram.me/aofmainhub</code> — primary text\n"
             "• <code>/watermark 2 extra.link</code> — secondary\n"
             "• <code>/watermark 3 third.link</code> — tertiary\n"
             "• <code>/watermark opacity 0.65</code>\n"
@@ -2264,11 +2269,50 @@ async def _safe_edit_callback_panel(
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    data = (query.data or "") if query else ""
+    if data.startswith("gk:"):
+        from bots.gatekeeper_review_handlers import on_gatekeeper_review_callback
+
+        if await on_gatekeeper_review_callback(update, context):
+            return
+
     if await _deny_unauthorized(update):
         return
-    query = update.callback_query
-    data = query.data or ""
     sess = _session(context)
+
+    if data.startswith("ac:cover:"):
+        from bots.remixer_cover import (
+            cover_keyboard,
+            send_last_cover_to_channel,
+            set_cover_mode,
+        )
+
+        if data == "ac:cover:off":
+            set_cover_mode(context, False)
+            await query.answer("Compose mode")
+            await query.message.reply_text("Compose mode ON — album workshop as usual.")
+            return
+        if data == "ac:cover:echo":
+            await query.answer("Send/forward media to echo again")
+            return
+        if data == "ac:cover:sendch":
+            if not sess.channel_id:
+                await query.answer("Select a channel in Post first", show_alert=True)
+                return
+            await send_last_cover_to_channel(
+                update,
+                context,
+                channel_id=int(sess.channel_id),
+                channel_name=str(sess.channel_name or ""),
+            )
+            return
+        await query.answer()
+        await query.message.reply_text(
+            "Cover mode",
+            reply_markup=cover_keyboard(has_channel=bool(sess.channel_id)),
+        )
+        return
 
     if data == "ac:preview":
         ok, msg = await _preview_post(context, query.message.chat_id, sess)
@@ -2745,9 +2789,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _deny_unauthorized(update):
         return
-    await_mode = context.chat_data.pop(AWAIT_KEY, None)
+    await_mode = context.chat_data.get(AWAIT_KEY)
     if not await_mode:
+        from bots.remixer_cover import handle_cover_inbound
+
+        sess = _session(context)
+        if await handle_cover_inbound(
+            update,
+            context,
+            deny=_deny_unauthorized,
+            channel_id=sess.channel_id,
+            channel_name=str(sess.channel_name or ""),
+        ):
+            return
         return
+    context.chat_data.pop(AWAIT_KEY, None)
     text = (update.message.text or "").strip()
     sess = _session(context)
     if await_mode == "caption":
@@ -2800,6 +2856,17 @@ async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     caption = (message.caption or "").strip()
     if caption.startswith("/emoji_pack"):
         await cmd_emoji_pack(update, context)
+        return
+    from bots.remixer_cover import handle_cover_inbound
+
+    sess_cover = _session(context)
+    if await handle_cover_inbound(
+        update,
+        context,
+        deny=_deny_unauthorized,
+        channel_id=sess_cover.channel_id,
+        channel_name=str(sess_cover.channel_name or ""),
+    ):
         return
     try:
         detected = _detect_kind(message)
@@ -3369,8 +3436,20 @@ def main() -> None:
         .build()
     )
 
+    async def _cmd_cover(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from bots.remixer_cover import cmd_cover
+
+        await cmd_cover(update, context, deny=_deny_unauthorized)
+
+    async def _cmd_compose(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from bots.remixer_cover import cmd_compose
+
+        await cmd_compose(update, context, deny=_deny_unauthorized)
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("cover", _cmd_cover))
+    app.add_handler(CommandHandler("compose", _cmd_compose))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -3395,6 +3474,12 @@ def main() -> None:
             on_media,
         )
     )
+    try:
+        from bots.leave_message_cleanup import register_leave_cleanup_handler
+
+        register_leave_cleanup_handler(app, bot_label="album-composer-bot")
+    except Exception as e:
+        logger.warning("leave-message cleanup not registered: %s", e)
 
     logger.info("Album Composer bot starting (API %s, pool %s)", API_BASE, _pool_id())
     app.run_polling(allowed_updates=Update.ALL_TYPES)

@@ -41,6 +41,12 @@ def sale_announce_targets() -> set[str]:
     return parts or {"network", "buffer"}
 
 
+def sale_announce_skip_keys() -> set[str]:
+    """Comma network keys to omit (e.g. ``main`` while CHAT_RESTRICTED)."""
+    raw = (os.getenv("TBCC_SALE_ANNOUNCE_SKIP_KEYS") or "").strip().lower()
+    return {p.strip() for p in raw.replace(";", ",").split(",") if p.strip()}
+
+
 def sale_announce_min_interval_s() -> int:
     raw = (os.getenv("TBCC_SALE_ANNOUNCE_MIN_INTERVAL_S") or "45").strip()
     try:
@@ -121,7 +127,7 @@ def build_sale_announce_html(
             f"🔑 <b>Loot Room key sold{html.escape(via)}.</b>\n\n"
             "Someone just unlocked 24h access — real purchase, not a tease.\n"
             f"Grab yours: <a href=\"https://t.me/{html.escape(pay)}?start=loot\">@{html.escape(pay)}</a> · "
-            f"play <a href=\"https://t.me/{html.escape(loot)}?start=loot_free\">@{html.escape(loot)}</a>"
+            f"play <a href=\"https://telegram.me/{html.escape(loot)}\">@{html.escape(loot)}</a>"
         )
     if kind == "pack":
         label = html.escape((plan_name or "Pack").strip()[:80])
@@ -204,13 +210,17 @@ def announce_sale_to_telegram_network(
         stagger = 8
 
     channels: list[tuple[str, Channel]] = []
+    skip_keys = sale_announce_skip_keys()
     if main_only:
-        ch = db.query(Channel).filter(Channel.identifier == MAIN_GROUP_IDENT).first()
-        if ch:
-            channels.append(("main", ch))
+        if "main" not in skip_keys:
+            ch = db.query(Channel).filter(Channel.identifier == MAIN_GROUP_IDENT).first()
+            if ch:
+                channels.append(("main", ch))
     else:
         for net_ch in AOF_NETWORK_CHANNELS:
             if net_ch.key == "packs":
+                continue
+            if net_ch.key in skip_keys:
                 continue
             ch = db.query(Channel).filter(Channel.identifier == net_ch.identifier).first()
             if ch:

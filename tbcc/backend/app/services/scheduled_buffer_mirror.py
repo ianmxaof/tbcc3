@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from app.models.scheduled_text_post import ScheduledTextPost
 from app.services.buffer_graphql import (
-    buffer_target_channel_ids,
     scheduled_buffer_share_mode,
 )
 from app.services.buffer_post_result import buffer_create_post_succeeded
@@ -119,11 +118,15 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
     """
     from app.database.session import SessionLocal
     from app.services.buffer_graphql import (
-        buffer_target_channel_ids,
         create_post,
         scheduled_buffer_share_mode,
     )
-    from app.services.campaign_surface_copy import buffer_primary_channel_id, buffer_secondary_channel_ids, resolve_surface_texts
+    from app.services.buffer_x_channel_route import (
+        buffer_mirror_x_only_for_telegram_identifier,
+        buffer_x_channel_for_telegram_identifier,
+    )
+    from app.services.campaign_surface_copy import buffer_secondary_channel_ids, resolve_surface_texts
+    from app.models.channel import Channel
 
     db = SessionLocal()
     try:
@@ -133,8 +136,11 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
         if require_mirror_enabled and not getattr(post, "buffer_mirror_enabled", False):
             return {"ok": False, "error": "buffer_mirror disabled or post missing", "channels": 0}
 
-        if not buffer_target_channel_ids():
-            logger.warning("buffer mirror: no TBCC_BUFFER_CHANNEL_ID_PRIMARY / TBCC_BUFFER_CHANNEL_IDS set")
+        ch = db.query(Channel).filter(Channel.id == int(post.channel_id)).first() if post.channel_id else None
+        tg_ident = (ch.identifier if ch else None) or None
+        x_channel = buffer_x_channel_for_telegram_identifier(tg_ident)
+        if not x_channel:
+            logger.warning("buffer mirror: no X channel id (PRIMARY / X_SECONDARY / map)")
             return {"ok": False, "error": "no buffer channel ids", "channels": 0}
 
         queue = post.get_buffer_x_queue()
@@ -159,28 +165,40 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
 
         if plain_x and not used_queue:
             from app.services.buffer_x_caption import finalize_buffer_x_caption, resolve_overflow_url
-
-            plain_x = finalize_buffer_x_caption(
-                plain_x,
-                db=db,
-                overflow_url=resolve_overflow_url(post=post, db=db) or None,
-                advance_link_cycle=True,
+            from app.services.buffer_x_outbound_guard import (
+                network_key_for_telegram_identifier,
+                strict_mirror_network_keys,
             )
+
+            net_key = network_key_for_telegram_identifier(tg_ident, db)
+            strict = bool(net_key and net_key in strict_mirror_network_keys())
+            try:
+                plain_x = finalize_buffer_x_caption(
+                    plain_x,
+                    db=db,
+                    overflow_url=resolve_overflow_url(post=post, db=db) or None,
+                    advance_link_cycle=True,
+                    network_key=net_key,
+                    strict=strict,
+                )
+            except ValueError as e:
+                logger.error("buffer mirror blocked (bare URL): post=%s %s", post_id, e)
+                return {"ok": False, "error": str(e), "channels": 0}
 
         share_mode = scheduled_buffer_share_mode(
             buffer_publish_now=bool(getattr(post, "buffer_publish_now", False))
         )
         capped = int(os.environ.get("TBCC_BUFFER_MIRROR_MAX_CHANNELS", "6") or 6)
 
-        primary = buffer_primary_channel_id()
-        secondary = buffer_secondary_channel_ids()[: max(0, capped - (1 if primary else 0))]
+        x_only = buffer_mirror_x_only_for_telegram_identifier(tg_ident)
+        secondary = [] if x_only else buffer_secondary_channel_ids()[: max(0, capped - 1)]
         results: list[dict] = []
 
-        if primary and plain_x:
+        if x_channel and plain_x:
             try:
-                results.append(create_post(primary, plain_x, mode=share_mode, image_url=img))
+                results.append(create_post(x_channel, plain_x, mode=share_mode, image_url=img))
             except Exception as e:
-                results.append({"error": str(e), "channelId": primary})
+                results.append({"error": str(e), "channelId": x_channel})
 
         for cid in secondary:
             body = plain_long or plain_x

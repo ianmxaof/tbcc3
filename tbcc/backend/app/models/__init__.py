@@ -22,6 +22,9 @@ from .caption_snippet import CaptionSnippet
 from .custom_emoji_preset import CustomEmojiPreset
 from .emoji_factory_sketch import EmojiFactorySketchPage
 from .listening_relay_settings import ListeningRelaySettings
+from .listening_relay_post_log import ListeningRelayPostLog
+from .goblin_drop import GoblinDrop
+from .goblin_claim import GoblinClaim
 from .zip_bundle_settings import ZipBundleSettings
 from .gallery_send_promo_settings import GallerySendPromoSettings
 from .main_channel_divider_settings import MainChannelDividerSettings
@@ -35,6 +38,11 @@ from .secretary_settings import SecretarySettings
 from .secretary_knowledge import SecretaryKnowledgeEntry
 from .industry_benchmark import IndustryBenchmark
 from .income_entry import IncomeEntry
+from .buyer_entitlement import BuyerEntitlement
+from .lane_drop import LaneDrop
+from .funnel_dm_consent import FunnelDmConsent
+from .funnel_strategy import FunnelStrategyEntry
+from .click_link import ClickLink, ClickLinkHit
 from .loot import (
     LootDropEvent,
     LootGameConfig,
@@ -87,6 +95,9 @@ __all__ = [
     "CustomEmojiPreset",
     "EmojiFactorySketchPage",
     "ListeningRelaySettings",
+    "ListeningRelayPostLog",
+    "GoblinDrop",
+    "GoblinClaim",
     "ZipBundleSettings",
     "GallerySendPromoSettings",
     "MainChannelDividerSettings",
@@ -100,4 +111,10 @@ __all__ = [
     "SecretaryKnowledgeEntry",
     "IndustryBenchmark",
     "IncomeEntry",
+    "BuyerEntitlement",
+    "LaneDrop",
+    "FunnelDmConsent",
+    "FunnelStrategyEntry",
+    "ClickLink",
+    "ClickLinkHit",
 ]

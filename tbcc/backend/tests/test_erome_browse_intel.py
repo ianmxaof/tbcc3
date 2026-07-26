@@ -40,6 +40,16 @@ def test_ingest_rows_dedupes_by_album_day(monkeypatch, tmp_path):
     assert len(ebi._read_jsonl(ledger)) == 1
 
 
+def test_repair_comma_decimal_m_views():
+    # 4,7M mis-parsed as 47M with sparse likes → /10
+    assert ebi.repair_comma_decimal_m_views(47_000_000, 11_274) == 4_700_000
+    # Healthy engagement on round millions — leave alone
+    assert ebi.repair_comma_decimal_m_views(20_000_000, 20_000) == 20_000_000
+    # Non-round / sub-10M — leave alone
+    assert ebi.repair_comma_decimal_m_views(4_700_000, 500) == 4_700_000
+    assert ebi.repair_comma_decimal_m_views(980_000, 50) == 980_000
+
+
 def test_aggregate_tag_scores_weights_views(monkeypatch, tmp_path):
     _patch_intel_paths(monkeypatch, tmp_path)
     ebi.ingest_rows(
@@ -99,6 +109,71 @@ def test_normalize_row_v42_fields(monkeypatch, tmp_path):
     assert stored["media_sequence"] == ["video", "image"]
 
 
+def test_ingest_thisvid_and_motherless_platforms(monkeypatch, tmp_path):
+    ledger, _ = _patch_intel_paths(monkeypatch, tmp_path)
+    tv = ebi.ingest_rows(
+        [
+            {
+                "platform": "thisvid",
+                "captured_at": "2026-07-16T12:00:00Z",
+                "album_url": "https://thisvid.com/videos/sample-clip/",
+                "album_id": "sample-clip",
+                "views": 1200,
+                "tags": ["dur_3_10m", "public"],
+                "uploader": "creator1",
+                "format_bucket": "single_video",
+            }
+        ]
+    )
+    assert tv["appended"] == 1
+    ml = ebi.ingest_rows(
+        [
+            {
+                "platform": "motherless",
+                "captured_at": "2026-07-16T12:05:00Z",
+                "album_url": "https://motherless.com/ABC123XYZ",
+                "album_id": "abc123xyz",
+                "tags": ["group:big-tits", "video"],
+                "format_bucket": "single_video",
+                "uploaded_at_approx_days_ago": 1.0,
+                "views_per_day_proxy": 1.0,
+            }
+        ]
+    )
+    assert ml["appended"] == 1
+    # Reject Motherless-shaped URL with no album_id (Erome regex won't match).
+    rejected = ebi.ingest_rows(
+        [{"platform": "motherless", "album_url": "https://motherless.com/ABC123XYZ", "tags": ["x"]}]
+    )
+    assert rejected["appended"] == 0
+    rows = ebi._read_jsonl(ledger)
+    platforms = {r["platform"] for r in rows}
+    assert platforms == {"thisvid", "motherless"}
+    scores = ebi.aggregate_tag_scores()  # all platforms
+    assert "dur_3_10m" in scores
+    assert "group:big-tits" in scores or "video" in scores
+
+
+def test_ingest_fetlife_context_platform(monkeypatch, tmp_path):
+    _patch_intel_paths(monkeypatch, tmp_path)
+    r = ebi.ingest_rows(
+        [
+            {
+                "platform": "fetlife",
+                "captured_at": "2026-07-16T12:00:00Z",
+                "album_url": "https://fetlife.com/groups/example/discussions/1",
+                "album_id": "flctx_abc",
+                "tags": ["group:example", "discussion"],
+                "format_bucket": "context_page",
+            }
+        ]
+    )
+    assert r["appended"] == 1
+    stored = ebi._read_jsonl(ebi.ledger_path())[0]
+    assert stored["platform"] == "fetlife"
+    assert stored["format_bucket"] == "context_page"
+
+
 def test_rank_pool_media_boosts_intel_tags(db, monkeypatch, tmp_path):
     _patch_intel_paths(monkeypatch, tmp_path)
     ebi.ingest_rows(
@@ -145,3 +220,67 @@ def test_rank_pool_media_boosts_intel_tags(db, monkeypatch, tmp_path):
 
     ranked = rank_pool_media(db, 1, 2, randomize=False)
     assert [m.id for m in ranked] == [2, 1]
+
+
+def test_format_discoveries_prefers_mixed_by_likes(monkeypatch, tmp_path):
+    _patch_intel_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(ebi, "timeseries_path", lambda: tmp_path / "ts.jsonl")
+    now = "2026-07-17T12:00:00Z"
+    rows = []
+    for i in range(6):
+        rows.append(
+            {
+                "platform": "erome",
+                "captured_at": now,
+                "album_url": f"https://www.erome.com/a/mixed{i}",
+                "views": 2000 + i,
+                "likes": 200 + i * 10,
+                "videos": 2,
+                "images": 3,
+                "format_bucket": "mixed_album",
+                "tags": ["milf"],
+            }
+        )
+    for i in range(6):
+        rows.append(
+            {
+                "platform": "erome",
+                "captured_at": now,
+                "album_url": f"https://www.erome.com/a/vid{i}",
+                "views": 5000 + i,
+                "likes": 40 + i,
+                "videos": 2,
+                "images": 0,
+                "format_bucket": "multi_video",
+                "tags": ["milf"],
+            }
+        )
+    assert ebi.ingest_rows(rows)["appended"] == 12
+    disc = ebi.format_discoveries(min_n=5)
+    assert disc["preferred_format_bucket"] == "mixed_album"
+    assert disc["preferred_metric"] == "median_likes"
+    actions = disc["suite_actions"]
+    assert actions and actions[0]["id"] == "show_most_liked_mixed"
+    summary = ebi.intel_summary()
+    assert summary["preferred_format_bucket"] == "mixed_album"
+    assert summary["suite_actions"][0]["label"]
+
+
+def test_aggregate_format_stats_includes_likes(monkeypatch, tmp_path):
+    _patch_intel_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(ebi, "timeseries_path", lambda: tmp_path / "ts.jsonl")
+    ebi.ingest_rows(
+        [
+            {
+                "captured_at": "2026-07-17T12:00:00Z",
+                "album_url": f"https://www.erome.com/a/x{i}",
+                "views": 100 * (i + 1),
+                "likes": 10 * (i + 1),
+                "format_bucket": "photo_album",
+            }
+            for i in range(5)
+        ]
+    )
+    stats = ebi.aggregate_format_stats(min_n=3)
+    assert "photo_album" in stats
+    assert stats["photo_album"]["median_likes"] == 30.0

@@ -12,11 +12,11 @@ def test_suggest_abg_tags():
 def test_suggest_curvy_dual():
     keys = suggest_pool_keys_from_hashtags("#curvy")
     assert "ass" in keys
-    assert "bigtits" in keys
+    assert "big_tits" in keys
 
 
 def test_suggest_csv():
-    assert suggest_pool_keys_csv("#boobs") == "bigtits"
+    assert suggest_pool_keys_csv("#boobs") == "big_tits"
     assert suggest_pool_keys_csv("") is None
 
 

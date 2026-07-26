@@ -34,7 +34,7 @@ https://t.me/+w46b7uJK5eo0MDcx
 https://t.me/+ag3BSf3fliwyYTgx
 
 🪙 AOF LOOT ROOM (first version landing soon)
-https://t.me/+NWathiLSqZ1lMzlh""",
+https://t.me/+97f4Crv3G1RkMGU5""",
     },
     {
         "title": f"{AOF_X_PROMO_TITLE_PREFIX} Emoji map",
@@ -53,7 +53,7 @@ Keys & packs: @aofsubscriptions_bot
 🌍 AOF BIG TITS → https://t.me/+vPhWRgtpteI4NTdh
 🔞 AOF TABOO → https://t.me/+w46b7uJK5eo0MDcx
 👀 AOF PUBLIC VOYEUR → https://t.me/+ag3BSf3fliwyYTgx
-🪙 AOF LOOT ROOM → https://t.me/+NWathiLSqZ1lMzlh
+🪙 AOF LOOT ROOM → https://t.me/+97f4Crv3G1RkMGU5
 
 PS: TBCC is cooking — site + LOOT v1 + sharper community tools. Stay close.""",
     },
@@ -75,7 +75,7 @@ ASS · https://t.me/+gQaguoQE7eM4MzA5
 BIG TITS · https://t.me/+vPhWRgtpteI4NTdh
 TABOO · https://t.me/+w46b7uJK5eo0MDcx
 PUBLIC VOYEUR · https://t.me/+ag3BSf3fliwyYTgx
-LOOT ROOM · https://t.me/+NWathiLSqZ1lMzlh""",
+LOOT ROOM · https://t.me/+97f4Crv3G1RkMGU5""",
     },
     {
         "title": f"{AOF_X_PROMO_TITLE_PREFIX} LOOT ROOM",
@@ -92,7 +92,7 @@ https://t.me/+hMQzGsBFjF02MDkx
 🌍 BIG TITS https://t.me/+vPhWRgtpteI4NTdh
 🔞 TABOO https://t.me/+w46b7uJK5eo0MDcx
 👀 PUBLIC VOYEUR https://t.me/+ag3BSf3fliwyYTgx
-🪙 LOOT https://t.me/+NWathiLSqZ1lMzlh
+🪙 LOOT https://t.me/+97f4Crv3G1RkMGU5
 
 Website + community upgrades in the same pipeline. Worth bookmarking the hub.""",
     },
@@ -107,6 +107,6 @@ Hub: https://t.me/+hMQzGsBFjF02MDkx · @aofsubscriptions_bot
 🌍 BIG TITS https://t.me/+vPhWRgtpteI4NTdh
 🔞 TABOO https://t.me/+w46b7uJK5eo0MDcx
 👀 PUBLIC VOYEUR https://t.me/+ag3BSf3fliwyYTgx
-🪙 LOOT ROOM https://t.me/+NWathiLSqZ1lMzlh""",
+🪙 LOOT ROOM https://t.me/+97f4Crv3G1RkMGU5""",
     },
 ]

@@ -2,7 +2,7 @@
 # Builds on island when local Docker is unavailable; seeds DB; recycles services.
 #
 #   .\scripts\revenue-island\deploy-island-live.ps1
-#   .\scripts\revenue-island\deploy-island-live.ps1 -HostName root@5.161.53.91 -SkipBuild
+#   .\scripts\revenue-island\deploy-island-live.ps1 -SkipTunnel -SkipSeeds   # fast test deploy
 #   .\scripts\revenue-island\deploy-island-live.ps1 -UseGhcrPull   # skip rsync build; pull :latest only
 
 param(
@@ -77,7 +77,21 @@ if ($UseGhcrPull) {
   $tgz = Join-Path $env:TEMP "tbcc-backend-deploy.tgz"
   if (Get-Command tar -ErrorAction SilentlyContinue) {
     Push-Location $backend
-    & tar -czf $tgz --exclude=__pycache__ --exclude=.pytest_cache --exclude=.tbcc-run .
+    # Raw frame-*.png (~100MB+) are never selected at runtime (clean/ pool only).
+    # Omit them so scp + island docker build stay fast and SSH-stable.
+    & tar -czf $tgz `
+      --exclude=__pycache__ `
+      --exclude=.pytest_cache `
+      --exclude=.tbcc-run `
+      --exclude="*.session" `
+      --exclude="*.session-wal" `
+      --exclude="celerybeat-schedule*" `
+      --exclude="app/data/loot_tier_cards/frames/frame-*.png" `
+      --exclude="app/data/loot_tier_cards/frames/_source" `
+      --exclude="app/data/loot_tier_cards/frames/_rembg" `
+      --exclude="app/data/loot_tier_cards/_import_bgclean" `
+      --exclude="app/data/loot_tier_cards/_preview" `
+      .
     Pop-Location
     & scp $tgz "${HostName}:/tmp/tbcc-backend-deploy.tgz"
     if ($LASTEXITCODE -ne 0) { throw "scp backend tarball failed" }

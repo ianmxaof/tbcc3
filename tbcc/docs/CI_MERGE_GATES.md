@@ -2,6 +2,19 @@
 
 Changelog: Initial draft — required checks, branch protection, backlog clear vs home-bandwidth myth.
 
+## Applied (2026-07-13)
+
+- [x] `tbcc-pr-gate.yml` on `main` (via PR #4 squash)
+- [x] Ruleset **Main — TBCC PR gate** (`id=18892202`) — require check `TBCC PR gate`, no force-push
+- [x] Classic branch protection on `main` also requires `TBCC PR gate` (admins enforced)
+- [x] PR #4 merged: https://github.com/ianmxaof/tbcc3/pull/4 → `558d491`
+- [ ] `alembic upgrade head` (092) — **blocked**: Postgres localhost:5432 connection refused (stack down)
+- [ ] Tray services restart — operator choice; status was **0/12 up** after merge (good for WAN)
+
+WIP from pre-merge dirty tree is in git stash: `wip-before-pr4-squash-merge` (FetLife 1.7 FLConsole etc. not all in the squash).
+
+---
+
 ## Goal
 
 Every PR into `main` must pass automated tests **before** merge. Prefer GitHub Actions (cheap, deterministic) as the merge gate; Cursor Bugbot / Cloud Agents are optional review layers, not the merge button.

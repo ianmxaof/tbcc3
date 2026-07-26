@@ -1,0 +1,112 @@
+"""User-facing labels for card/USD checkout (Gumroad backend — never say Gumroad in Telegram copy)."""
+
+from __future__ import annotations
+
+import os
+import re
+
+_GUMROAD_WORD = re.compile(r"\bgumroad\b", re.I)
+
+_DEFAULT_BUTTON = "💳 Card / USD — from $6"
+_DEFAULT_DISPLAY = "Card / USD"
+_DEFAULT_SHORT = "Card"
+_DEFAULT_OPEN_PAY = "Pay with card →"
+_DEFAULT_CHECKOUT_TITLE = "Card checkout"
+_DEFAULT_VIP_LINK = "AOF VIP — card / USD"
+
+
+def fiat_checkout_button_label(*, price_hint: str | None = None) -> str:
+    """Inline keyboard label for VIP/card checkout row."""
+    raw = (
+        (os.getenv("TBCC_FIAT_CHECKOUT_BUTTON_LABEL") or "").strip()
+        or (os.getenv("TBCC_GUMROAD_CHECKOUT_BUTTON_LABEL") or "").strip()
+    )
+    if raw and not _GUMROAD_WORD.search(raw):
+        return raw[:64]
+    if price_hint:
+        return f"💳 Card / USD — {price_hint}"[:64]
+    return _DEFAULT_BUTTON[:64]
+
+
+def fiat_checkout_plan_button_label(duration_badge: str) -> str:
+    return f"💳 Card · {duration_badge}"[:64]
+
+
+def fiat_checkout_display_name() -> str:
+    return (
+        (os.getenv("TBCC_FIAT_CHECKOUT_DISPLAY_NAME") or "").strip() or _DEFAULT_DISPLAY
+    )[:64]
+
+
+def fiat_checkout_short_name() -> str:
+    return (os.getenv("TBCC_FIAT_CHECKOUT_SHORT_NAME") or "").strip() or _DEFAULT_SHORT
+
+
+def fiat_open_pay_button_label() -> str:
+    raw = (os.getenv("TBCC_FIAT_OPEN_PAY_BUTTON_LABEL") or "").strip()
+    if raw and not _GUMROAD_WORD.search(raw):
+        return raw[:64]
+    return _DEFAULT_OPEN_PAY[:64]
+
+
+def fiat_checkout_title() -> str:
+    return _DEFAULT_CHECKOUT_TITLE
+
+
+def fiat_vip_link_label() -> str:
+    raw = (os.getenv("TBCC_FIAT_VIP_LINK_LABEL") or "").strip()
+    if raw and not _GUMROAD_WORD.search(raw):
+        return raw
+    return _DEFAULT_VIP_LINK
+
+
+def fiat_vip_ladder_intro_html() -> str:
+    return f"💎 <b>AOF VIP</b> — same ladder on <b>{fiat_checkout_display_name()}</b>. Pick a term:"
+
+
+def fiat_checkout_disabled_message() -> str:
+    return "Card checkout is not enabled right now. Use Stars or crypto."
+
+
+def fiat_checkout_not_configured_message() -> str:
+    return (
+        "Card checkout URL is not configured on the server. "
+        "Use Stars or crypto, or contact support."
+    )
+
+
+def fiat_checkout_pay_instructions_html(*, title: str, tier_hint: str | None = None) -> str:
+    disp = html_escape(fiat_checkout_display_name())
+    title_e = html_escape(title)
+    tier_line = ""
+    if tier_hint:
+        tier_line = f"\n3) On checkout choose <b>{html_escape(tier_hint)}</b> for this term."
+    return (
+        f"<b>{title_e}</b> — pay with <b>{disp}</b> (card / PayPal).\n\n"
+        f"1) Tap <b>{html_escape(fiat_open_pay_button_label())}</b> and complete payment\n"
+        f"2) Keep this chat open — VIP invite DMs here after payment confirms"
+        f"{tier_line}"
+    )
+
+
+def fiat_checkout_confirm_footer_html() -> str:
+    return (
+        f"After payment confirms, your VIP invite lands here automatically. "
+        f"Need help? Reply in this chat."
+    )
+
+
+def scrub_gumroad_from_user_copy(text: str) -> str:
+    """Last-resort sanitizer for operator-authored HTML that still says Gumroad."""
+    if not text or not _GUMROAD_WORD.search(text):
+        return text
+    out = _GUMROAD_WORD.sub(fiat_checkout_display_name(), text)
+    out = out.replace("Card / USD VIP", "Card / USD VIP")  # idempotent
+    out = re.sub(r"\bon on\b", "on", out, flags=re.I)
+    return out
+
+
+def html_escape(s: str) -> str:
+    import html
+
+    return html.escape(str(s or ""), quote=False)

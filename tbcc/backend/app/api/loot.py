@@ -30,7 +30,7 @@ from app.services.loot_preview_delivery import send_loot_free_pull_to_chat, send
 from app.services.loot_creator_submit import submit_creator_profile
 from app.services.loot_player_modifiers import record_modifiers_seen
 from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining, record_roll
-from app.services.subscription_access import is_loot_key_holder
+from app.services.subscription_access import compensate_loot_key_card_failure, is_loot_key_holder
 from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_referral import (
     bonus_free_pulls_for,
@@ -744,23 +744,6 @@ def claim_free_pull(
     Deal one complimentary DM pull via @aof_lootgod_bot (max 5 per account).
     Tier ≤5, one spoiler item, no real modifiers — tease block only.
     """
-    preview = build_free_pull_preview(db, telegram_user_id=telegram_user_id)
-    if not preview.get("ok"):
-        if preview.get("reason") == "free_pulls_exhausted":
-            pay = _payment_bot_username()
-            pay_hint = f"https://t.me/{pay}?start=loot" if pay else "payment bot /loot"
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "reason": "free_pulls_exhausted",
-                    "message": "No free pulls left on this account. Paid room runs include real modifiers.",
-                    "payment_link": pay_hint,
-                    "free_pull_limit": free_pull_allowance(db, telegram_user_id),
-                    "referral_hint": "/referral on @aof_lootgod_bot for bonus pulls",
-                },
-            )
-        raise HTTPException(status_code=400, detail=preview.get("reason") or "roll failed")
-
     token = resolve_bot_token_raw(db)
     if not token:
         raise HTTPException(status_code=400, detail="Loot bot token not configured")
@@ -770,31 +753,76 @@ def claim_free_pull(
     )
     eff = get_effective_loot_bot_settings(db)
     spoiler = bool(eff.get("drop_spoiler_default", True))
-    rem_before = int(preview.get("free_pulls_remaining_before") or 0)
 
-    async def _run():
-        from app.database.session import SessionLocal
+    # Island Saved Messages may miss home-imported msg ids — retry with other candidates.
+    exclude: list[int] = []
+    preview: dict = {}
+    delivery: dict = {"albums_sent": 0, "media_sent": 0, "notes": []}
+    rem_before = 0
+    for attempt in range(3):
+        preview = build_free_pull_preview(
+            db,
+            telegram_user_id=telegram_user_id,
+            exclude_media_ids=exclude,
+        )
+        if not preview.get("ok"):
+            if preview.get("reason") == "free_pulls_exhausted":
+                pay = _payment_bot_username()
+                pay_hint = f"https://t.me/{pay}?start=loot" if pay else "payment bot /loot"
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "reason": "free_pulls_exhausted",
+                        "message": "No free pulls left on this account. Paid room runs include real modifiers.",
+                        "payment_link": pay_hint,
+                        "free_pull_limit": free_pull_allowance(db, telegram_user_id),
+                        "referral_hint": "/referral on @aof_lootgod_bot for bonus pulls",
+                    },
+                )
+            if attempt == 0:
+                raise HTTPException(status_code=400, detail=preview.get("reason") or "roll failed")
+            break
 
-        worker_db = SessionLocal()
-        try:
-            return await send_loot_free_pull_to_chat(
-                worker_db,
-                bot=bot,
-                chat_id=int(telegram_user_id),
-                preview=preview,
-                spoiler_default=spoiler,
-                payment_bot_username=_payment_bot_username(),
-                free_pulls_remaining=max(0, rem_before - 1),
-            )
-        finally:
-            worker_db.close()
+        rem_before = int(preview.get("free_pulls_remaining_before") or 0)
+        mid = None
+        for m in preview.get("media") or []:
+            if m.get("id") is not None:
+                mid = int(m["id"])
+                break
 
-    delivery = _run_loot_async(_run())
-    if int(delivery.get("media_sent") or 0) > 0:
-        preview = commit_free_pull(db, telegram_user_id, preview)
-    else:
-        preview = dict(preview)
-        preview["free_pulls_remaining"] = rem_before
+        async def _run(p=preview):
+            from app.database.session import SessionLocal
+
+            worker_db = SessionLocal()
+            try:
+                return await send_loot_free_pull_to_chat(
+                    worker_db,
+                    bot=bot,
+                    chat_id=int(telegram_user_id),
+                    preview=p,
+                    spoiler_default=spoiler,
+                    payment_bot_username=_payment_bot_username(),
+                    free_pulls_remaining=max(0, rem_before - 1),
+                )
+            finally:
+                worker_db.close()
+
+        delivery = _run_loot_async(_run())
+        if int(delivery.get("media_sent") or 0) > 0:
+            preview = commit_free_pull(db, telegram_user_id, preview)
+            return {
+                "ok": True,
+                "sent_to": telegram_user_id,
+                "preview": preview,
+                "delivery": delivery,
+            }
+        if mid is not None:
+            exclude.append(mid)
+        delivery.setdefault("notes", []).append(f"retry_after_unloadable:{mid}")
+
+    preview = dict(preview or {})
+    preview["free_pulls_remaining"] = rem_before
+    preview["unloadable_retries"] = exclude
     return {
         "ok": True,
         "sent_to": telegram_user_id,
@@ -880,6 +908,11 @@ def claim_key_roll(
             worker_db.close()
 
     delivery = _run_loot_async(_run())
+    card_ok = bool(delivery.get("tier_card_delivered"))
+    compensation: dict | None = None
+    if not card_ok and not operator:
+        compensation = compensate_loot_key_card_failure(db, uid)
+        delivery.setdefault("notes", []).append(f"key_compensation:{compensation}")
     if int(delivery.get("media_sent") or 0) > 0:
         record_roll(db, uid)
         media_ids = [int(m["id"]) for m in (preview.get("media") or []) if m.get("id") is not None]
@@ -898,6 +931,8 @@ def claim_key_roll(
         "sent_to": uid,
         "preview": preview,
         "delivery": delivery,
+        "tier_card_delivered": card_ok,
+        "key_compensation": compensation,
     }
 
 

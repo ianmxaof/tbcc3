@@ -568,7 +568,7 @@
   /** motherless.com: gallery thumbs link to /{id}; full image is on ?full (parsed server-side). */
   function isMotherlessHost() {
     try {
-      return /(^|\.)motherless\.com$/i.test(location.hostname);
+      return /(^|\.)motherless\.(com|xxx)$/i.test(location.hostname);
     } catch (_) {
       return false;
     }
@@ -605,7 +605,7 @@
   function motherlessMediaIdFromHref(href) {
     try {
       var u = new URL(href, location.href);
-      if (!/(^|\.)motherless\.com$/i.test(u.hostname)) return "";
+      if (!/(^|\.)motherless\.(com|xxx)$/i.test(u.hostname)) return "";
       var parts = u.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
       if (!parts.length) return "";
       var last = parts[parts.length - 1];

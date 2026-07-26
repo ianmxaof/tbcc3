@@ -9,12 +9,13 @@ from __future__ import annotations
 import os
 import re
 
-# Primary @FreeUseDistrictManager + secondary account (confirmed by owner).
+# Primary @FreeUseDistrictManager + secondary + tertiary (confirmed by owner).
 # Do not store phone numbers here — ids only.
 HARDCODED_TBCC_OPERATOR_IDS: frozenset[int] = frozenset(
     {
         7787282561,  # primary
         8630278848,  # secondary
+        8682971339,  # tertiary (Yan Chan)
     }
 )
 

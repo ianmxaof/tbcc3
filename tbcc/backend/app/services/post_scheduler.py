@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _POST_ENQUEUE_KEY = "tbcc:post:enqueued:{post_id}"
 _POST_DUE_QUEUE_KEY = "tbcc:post:due_queue"
+_POST_DUE_SET_KEY = "tbcc:post:due_set"
 _POST_DRAIN_TICK_KEY = "tbcc:post:drain_tick"
 SCHEDULER_POST_QUEUE = "post_scheduler"
 POOL_POST_QUEUE = "post"
@@ -203,7 +204,10 @@ def _enqueue_scheduled_post_batch(post_id: int) -> None:
 
         url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         r = redis.from_url(url, socket_connect_timeout=1.5)
-        r.rpush(_POST_DUE_QUEUE_KEY, str(int(post_id)))
+        pid = int(post_id)
+        if not r.sadd(_POST_DUE_SET_KEY, str(pid)):
+            return
+        r.rpush(_POST_DUE_QUEUE_KEY, str(pid))
         ensure_scheduled_drain_running()
     except Exception:
         post_scheduled_text.delay(int(post_id))
@@ -222,9 +226,11 @@ def pop_scheduled_post_due_queue(*, max_items: int = 64) -> list[int]:
             if not raw:
                 break
             try:
-                out.append(int(raw))
+                pid = int(raw)
             except (TypeError, ValueError):
                 continue
+            r.srem(_POST_DUE_SET_KEY, str(pid))
+            out.append(pid)
         return out
     except Exception:
         return []
@@ -239,6 +245,29 @@ def release_post_drain_tick_lock() -> None:
         r.delete(_POST_DRAIN_TICK_KEY)
     except Exception:
         pass
+
+
+def pool_autopost_when_scheduler_enabled() -> bool:
+    """When false (default), skip pool interval posts for pools that already have a recurring scheduler."""
+    return (os.getenv("TBCC_POOL_AUTOPOST_WHEN_SCHEDULER") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _pool_has_recurring_scheduler(db: Session, pool_id: int) -> bool:
+    return (
+        db.query(ScheduledTextPost.id)
+        .filter(
+            ScheduledTextPost.pool_id == int(pool_id),
+            ScheduledTextPost.interval_minutes.isnot(None),
+            ScheduledTextPost.posting_auto_paused_at.is_(None),
+        )
+        .first()
+        is not None
+    )
 
 
 def pool_auto_post_enabled() -> bool:
@@ -274,11 +303,55 @@ def _post_pool_max_queue_depth() -> int:
 
 
 def _minutes_overdue(post: ScheduledTextPost, now: datetime) -> float | None:
-    if post.interval_minutes is None or int(post.interval_minutes or 0) <= 0:
+    slippage_s = recurring_slot_slippage_seconds(post, now)
+    if slippage_s is None:
+        return None
+    return slippage_s / 60.0
+
+
+def recurring_slot_slippage_seconds(post: ScheduledTextPost, stamped_at: datetime) -> float | None:
+    """Minutes-overdue at stamp time for recurring rows; None if not applicable."""
+    interval = post.interval_minutes
+    if interval is None or int(interval or 0) <= 0:
         return None
     if post.last_posted_at is None:
         return None
-    return (now - post.last_posted_at).total_seconds() / 60 - float(post.interval_minutes)
+    expected_due = post.last_posted_at + timedelta(minutes=float(interval))
+    return (stamped_at - expected_due).total_seconds()
+
+
+def sched_max_catchup_slots() -> int:
+    """Max interval slots to advance last_posted_at on a late success (prevents multi-hour drift)."""
+    raw = (os.getenv("TBCC_SCHED_MAX_CATCHUP_SLOTS") or "1").strip()
+    try:
+        return max(1, min(10, int(raw)))
+    except ValueError:
+        return 1
+
+
+def next_slot_stamp(post: ScheduledTextPost, sent_at: datetime) -> datetime:
+    """
+    Grid-aligned last_posted_at for recurring success — stamp the due slot, not completion time.
+
+    Late sends advance by at most sched_max_catchup_slots() intervals so one long lock wait
+    does not push the entire cron grid forward by hours.
+    """
+    interval = post.interval_minutes
+    if interval is None or int(interval or 0) <= 0:
+        return sent_at
+    if post.last_posted_at is None:
+        return sent_at
+
+    interval_td = timedelta(minutes=float(interval))
+    expected_due = post.last_posted_at + interval_td
+    if sent_at <= expected_due:
+        return expected_due
+
+    interval_s = interval_td.total_seconds()
+    elapsed_s = (sent_at - post.last_posted_at).total_seconds()
+    slots_behind = max(1, int(elapsed_s // interval_s))
+    advance = min(slots_behind, sched_max_catchup_slots())
+    return post.last_posted_at + timedelta(seconds=interval_s * advance)
 
 
 def count_overdue_scheduled_posts(
@@ -367,7 +440,7 @@ def _post_queue_length() -> int:
 
 def clear_post_scheduling_redis_state() -> dict[str, int]:
     """Release enqueue/drain locks so Beat can re-queue overdue scheduled posts."""
-    cleared: dict[str, int] = {"enqueue_keys": 0, "due_queue": 0, "drain_tick": 0}
+    cleared: dict[str, int] = {"enqueue_keys": 0, "due_queue": 0, "due_set": 0, "drain_tick": 0}
     try:
         import redis
 
@@ -376,6 +449,7 @@ def clear_post_scheduling_redis_state() -> dict[str, int]:
         for key in r.scan_iter(match="tbcc:post:enqueued:*", count=200):
             cleared["enqueue_keys"] += int(r.delete(key) or 0)
         cleared["due_queue"] = int(r.delete(_POST_DUE_QUEUE_KEY) or 0)
+        cleared["due_set"] = int(r.delete(_POST_DUE_SET_KEY) or 0)
         cleared["drain_tick"] = int(r.delete(_POST_DRAIN_TICK_KEY) or 0)
     except Exception:
         pass
@@ -472,6 +546,8 @@ def _schedule_pool_interval_posts(
     pools = db.query(ContentPool).all()
     for pool in pools:
         if int(pool.id) in blocked:
+            continue
+        if not pool_autopost_when_scheduler_enabled() and _pool_has_recurring_scheduler(db, int(pool.id)):
             continue
         if getattr(pool, "auto_post_enabled", True) is False:
             continue

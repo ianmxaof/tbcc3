@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.models.listening_relay_settings import ListeningRelaySettings
+from sqlalchemy.orm import Session
+
+from app.services.goblin_roll import note_scrobble_for_goblin
 from app.services.listening_relay_ascii import (
     note_scrobble_for_ascii,
     pick_random_ascii,
@@ -23,6 +26,15 @@ class RelayOutbound:
     copy_followups: list[RelayCopyFollowup]
     ascii_beat: bool = False
     tryptych: bool = False
+    artist: str = ""
+    title: str = ""
+    album: str | None = None
+    url: str | None = None
+    source: str = ""
+    source_label: str = ""
+    template_slot: int = 0
+    template_slots_total: int = 1
+    goblin_spawn: bool = False
 
 
 def _followup_from_pick(row: ListeningRelaySettings, pick: RelaySlotPick, copy_html: str) -> RelayCopyFollowup:
@@ -40,8 +52,12 @@ def build_relay_outbound(
     source: str,
     source_label: str,
     consume: bool,
+    db: Session | None = None,
 ) -> RelayOutbound:
     ascii_beat = note_scrobble_for_ascii(row) if consume else False
+    goblin_spawn = False
+    if consume and db is not None:
+        goblin_spawn = note_scrobble_for_goblin(row, db)
     tryptych = bool(
         ascii_beat
         and bool(getattr(row, "tryptych_enabled", False))
@@ -98,4 +114,13 @@ def build_relay_outbound(
         copy_followups=followups,
         ascii_beat=ascii_beat,
         tryptych=tryptych,
+        artist=artist,
+        title=title,
+        album=album,
+        url=url,
+        source=source,
+        source_label=source_label,
+        template_slot=primary.slot_idx,
+        template_slots_total=primary.n_templates,
+        goblin_spawn=goblin_spawn,
     )

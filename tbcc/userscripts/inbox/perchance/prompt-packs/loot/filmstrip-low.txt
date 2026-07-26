@@ -1,0 +1,53 @@
+# preset=filmstrip-low format=filmstrip-5-cards aspect=9:16
+
+OUTPUT: ONE tall image. FIVE complete AOF LOOT cards stacked top to bottom (Telegram scroll filmstrip).
+Each panel: full card UI. Overall composite: tall portrait strip.
+NOT 2×2 grid. Panels full width, stacked vertically.
+
+LAYOUT LOCK — AOF LOOT CARD (identical structure every tier):
+FORMAT: ONE image. Aspect ratio 1:1 square trading-card.
+FRAME: dark chrome / wet vinyl border; thin neon accent that intensifies with tier.
+TOP-LEFT: small distressed "AOF LOOT" wordmark.
+TOP-RIGHT: "TIER N" + world label (e.g. "1-1", "★") spelled exactly.
+CENTER: EXPLICIT adult erotic artwork — full nudity, sex acts, genitals, fluids, and
+  gratuitous sexual heat are REQUIRED and expected. Escalate intensity with tier.
+  Photoreal adult bodies only (18+). Center art must not cover frame / wordmark /
+  tier label / bottom nameplate.
+OVERLAY: light ASCII / terminal residue — faint green or white monospaced glyphs
+  in corners or as a thin HUD strip (box-drawing, rarity bar, "ROLL OK", "18+").
+  ASCII is decoration only — keep rarity text sharp.
+BOTTOM BAND: tier NAME in bold distressed type + short nasty tagline (exact spelling).
+OPTIONAL BADGES: "RESTRICTED" / "SPOILER" / "SEALED" / "ADULT LANE" as UI chrome only.
+NO QR. NO t.me links in the image.
+NO cartoon cute. Gritty film grain, cyberpunk club, velvet-rope heat.
+UI text must be spelled exactly as specified. UI priority #1.
+
+SCENES:
+PANEL-1 — Crumb · World 1-1 (tier-01):
+CENTER (explicit): adult woman 30s, topless tease on dark bed edge, phone-cam grain, dull grey-green neon, bare breasts half-covered by arm, hungry eye contact. Sparse ···· dust ASCII in corners. Mood: barely a taste — still filthy. Bottom band exact text: CRUMB
+UI TEXT (exact): TOP-RIGHT = TIER 1 · 1-1 ; BOTTOM NAME = CRUMB ; TAGLINE = Barely a taste. Still counts.
+
+PANEL-2 — Peek · World 1-2 (tier-02):
+CENTER (explicit): voyeur doorway — adult woman lifting skirt, no panties, wet pussy glimpse, cool blue neon, mirror edge, caught mid-flash. ASCII HUD: > peek_ cursor. Mood: almost-caught, explicit peek. Bottom band exact text: PEEK
+UI TEXT (exact): TOP-RIGHT = TIER 2 · 1-2 ; BOTTOM NAME = PEEK ; TAGLINE = Skirt lifts. Nothing promised.
+
+PANEL-3 — Leak · World 1-3 (tier-03):
+CENTER (explicit): locker-room steam, adult athletic woman nude, towel slipped, full frontal, wet skin, amber neon, cum-smear aesthetic on tile (tasteful but clear). Cracked ████ ASCII bar. Mood: leaked nudes energy. Bottom band exact text: LEAK
+UI TEXT (exact): TOP-RIGHT = TIER 3 · 1-3 ; BOTTOM NAME = LEAK ; TAGLINE = Someone left the door cracked.
+
+PANEL-4 — Throb · World 2-1 (tier-04):
+CENTER (explicit): close-up adult erect cock glistening with precum OR aroused wet vulva, pulse-red neon rim, sweat sheen, shallow DOF, body heat extreme. ASCII heartbeat ▁▂▃▅▃▂▁. Mood: throbbing need. Bottom band exact text: THROB
+UI TEXT (exact): TOP-RIGHT = TIER 4 · 2-1 ; BOTTOM NAME = THROB ; TAGLINE = The room starts breathing with you.
+
+PANEL-5 — Drip · World 2-2 (tier-05):
+CENTER (explicit): adult woman on black vinyl, legs spread, pussy dripping, hot-pink neon, spit/oil sheen, fingers spreading. ASCII dripping │ │ │. Mood: sticky mid-tier fuck heat. Bottom band exact text: DRIP
+UI TEXT (exact): TOP-RIGHT = TIER 5 · 2-2 ; BOTTOM NAME = DRIP ; TAGLINE = Mid-heat. You're not leaving yet.
+
+STYLE: Five stacked explicit loot cards, escalating erotic intensity.
+
+Generate now. Same locked card UI. Vary only the center erotic motif + neon intensity by tier.
+
+AVOID: minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, ASCII covering important UI text, watermark, wrong aspect ratio, duplicate identical scenes, softcore-only tease when explicit sex is requested.
+
+# NEGATIVE
+minors, childlike subjects, cartoon, cute/wholesome tone, QR codes, t.me links, misspelled tier names, softcore-only when explicit requested, wrong aspect ratio, misspelled text, watermark, random URLs, duplicate identical scenes, cartoon, childish subjects, low quality, blurry, cropped UI, gibberish HUD overlay covering text

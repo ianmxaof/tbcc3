@@ -224,6 +224,9 @@ def _patch_scheduled_post_core(
         post.send_silent = bool(body.send_silent)
     if "pin_after_send" in fs:
         post.pin_after_send = bool(body.pin_after_send)
+    if "delete_after_pin_seconds" in fs:
+        v = body.delete_after_pin_seconds
+        post.delete_after_pin_seconds = int(v) if v is not None and int(v) > 0 else None
     if "checkout_stars_enabled" in fs:
         post.checkout_stars_enabled = bool(body.checkout_stars_enabled)
         if not post.checkout_stars_enabled:
@@ -319,6 +322,12 @@ class ScheduledPostCreate(BaseModel):
     album_order_mode: str | None = None  # static | shuffle | carousel
     send_silent: bool | None = None
     pin_after_send: bool | None = None
+    delete_after_pin_seconds: int | None = Field(
+        default=None,
+        ge=1,
+        le=3600,
+        description="Ephemeral pin liveness: delete message N seconds after pin.",
+    )
     checkout_stars_enabled: bool = False
     checkout_stars_plan_id: int | None = None
     checkout_button_label: str | None = Field(
@@ -375,6 +384,7 @@ class ScheduledPostUpdate(BaseModel):
     album_order_mode: str | None = None
     send_silent: bool | None = None
     pin_after_send: bool | None = None
+    delete_after_pin_seconds: int | None = Field(None, ge=1, le=3600)
     checkout_stars_enabled: bool | None = None
     checkout_stars_plan_id: int | None = None
     checkout_button_label: str | None = None
@@ -489,6 +499,11 @@ def create_scheduled_post(body: ScheduledPostCreate, db: Session = Depends(get_d
                 album_carousel_index=None,
                 send_silent=bool(body.send_silent),
                 pin_after_send=bool(body.pin_after_send),
+                delete_after_pin_seconds=(
+                    int(body.delete_after_pin_seconds)
+                    if getattr(body, "delete_after_pin_seconds", None)
+                    else None
+                ),
                 checkout_stars_enabled=bool(body.checkout_stars_enabled),
                 checkout_stars_plan_id=body.checkout_stars_plan_id if body.checkout_stars_plan_id else None,
                 checkout_button_label=(

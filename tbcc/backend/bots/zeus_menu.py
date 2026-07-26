@@ -158,7 +158,7 @@ def user_main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🛒 Shop", url=f"https://t.me/{pay}?start=shop"),
         ],
         [
-            InlineKeyboardButton("🎲 Loot Room", url=f"https://t.me/{loot}?start=loot_free"),
+            InlineKeyboardButton("🎲 Loot Room", url=f"https://telegram.me/{loot}"),
             InlineKeyboardButton("💳 Payment bot", url=f"https://t.me/{pay}"),
         ],
         [
@@ -179,7 +179,7 @@ def network_submenu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🛒 Shop", url=f"https://t.me/{pay}?start=shop"),
         ],
         [
-            InlineKeyboardButton("🎲 Loot Room", url=f"https://t.me/{loot}?start=loot_free"),
+            InlineKeyboardButton("🎲 Loot Room", url=f"https://telegram.me/{loot}"),
             InlineKeyboardButton("🔥 Companion", url=f"https://t.me/{companion}"),
         ],
         [

@@ -24,9 +24,9 @@
 > https://link-center.net/1367336/7XeubkKSFA8j
 > ```
 >
-> **Public entry (Loot Room via overseer — Main *group* banned 2026-07-09)**
+> **Public entry (Loot God bot — only this URL)**
 > ```
-> https://t.me/aof_lootgod_bot?start=loot_free
+> https://telegram.me/aof_lootgod_bot
 > ```
 >
 > **Paid Loot Room key**
@@ -34,11 +34,17 @@
 > https://t.me/aofsubscriptions_bot?start=loot
 > ```
 >
-> **`t.me/aofmainhub`** — still valid: public **bulletin / signboard** for affiliate + Linkvertise posts (not the banned Main *group*). Prefer **lootgod** as top-of-funnel CTA on cards/X; keep mainhub as the LV/affiliate crossing.
+> **Lane economy (scaffold — not shop-live yet)** — bible: `docs/LOOT_LANE_ECONOMY.md`
+> - Glimpse: 3-of-N heavy watermark in Loot Room subtopic (left visible)
+> - Lane Pass: **$3** / 24h / protected channel + roll perks
+> - Curated Pack → monthly **MEGA PACK** wrap
+> - Subtopic gate: 2.5k images + 2.5k videos min; median target 5k+ each; aspire 10k
+>
+> **`telegram.me/aofmainhub`** — public **bulletin / signboard** for affiliate + Linkvertise posts (not the banned Main *group*). Loot funnel bot: **https://telegram.me/aof_lootgod_bot** only. Room: **https://telegram.me/+97f4Crv3G1RkMGU5**. Gate retarget audit: `docs/GATE_LINK_AUDIT.md`.
 >
 > ~~Direct Main *group* invite~~ — **banned**; do not share.
 >
-> **Pixeldrain paste (inner layer behind Linkvertise)** — *host t.me/aofmainhub text via Dashboard → Misc → pixeldrain shorten*
+> **Pixeldrain paste (inner layer behind Linkvertise)** — *host telegram.me/aofmainhub text via Dashboard → Misc → pixeldrain shorten*
 > ```
 > Private invite — read the paste, not the comments.
 > YOUR_PIXELDRAIN_U_URL
@@ -89,7 +95,7 @@
 > **AOF LOOT ROOM**
 > ```
 > Keys, rolls, chaos — v1 live on the network.
-> https://t.me/+NWathiLSqZ1lMzlh
+> https://t.me/+97f4Crv3G1RkMGU5
 > ```
 
 > > [!EXAMPLE]+ 🤖 Official bots

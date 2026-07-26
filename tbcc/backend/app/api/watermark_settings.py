@@ -41,6 +41,8 @@ def get_watermark_settings(db: Session = Depends(get_db)):
 
 @router.patch("")
 def patch_watermark_settings(body: WatermarkSettingsPatch, db: Session = Depends(get_db)):
+    from app.data.aof_telegram_links import normalize_telegram_me_brand
+
     row = _ensure_row(db)
     for field in (
         "enabled",
@@ -56,7 +58,7 @@ def patch_watermark_settings(body: WatermarkSettingsPatch, db: Session = Depends
         val = getattr(body, field, None)
         if val is not None:
             if field.startswith("text_"):
-                val = (val or "").strip()[:120] or None
+                val = normalize_telegram_me_brand((val or "").strip())[:120] or None
             elif field == "color":
                 val = (val or "").strip()[:16] or None
             setattr(row, field, val)

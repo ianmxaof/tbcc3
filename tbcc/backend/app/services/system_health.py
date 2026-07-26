@@ -10,6 +10,7 @@ import os
 import platform
 import socket
 import subprocess
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -656,6 +657,62 @@ def _scheduling_process_counts() -> dict[str, int]:
     ops = _win_leaf_worker_count(
         r"app\.workers\.celery_app worker.*-Q\s+ops_growth|-n\s+ops@"
     )
+    counts = {
+        "beat": beat,
+        "celery_worker": worker,
+        "celery_post_scheduler": post_scheduler,
+        "celery_post": post,
+        "celery_ops": ops,
+    }
+    # Windows process scan is empty inside Docker/Linux — use Celery inspect instead.
+    if sum(counts.values()) == 0:
+        dockerish = (
+            Path("/.dockerenv").exists()
+            or (os.getenv("TBCC_HEALTH_DOCKER_SCHEDULING") or "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            or (os.getenv("TBCC_REVENUE_ISLAND_ACTIVE") or "").strip().lower()
+            in {"1", "true", "yes", "on"}
+            or sys.platform.startswith("linux")
+        )
+        if dockerish:
+            inspected = _celery_inspect_scheduling_counts()
+            if inspected is not None:
+                return inspected
+    return counts
+
+
+def _celery_inspect_scheduling_counts() -> dict[str, int] | None:
+    """Classify live Celery workers via inspect.ping (Docker / revenue island)."""
+    try:
+        from app.workers.celery_app import celery
+
+        insp = celery.control.inspect(timeout=1.5)
+        pong = insp.ping() if insp else None
+    except Exception:
+        return None
+    if not pong:
+        return None
+
+    worker = 0
+    post = 0
+    post_scheduler = 0
+    ops = 0
+    for name in pong.keys():
+        n = str(name).lower()
+        if "ops@" in n or "ops_growth" in n:
+            ops += 1
+        elif "island-post@" in n or "post@" in n or "scheduler@" in n:
+            # Island worker_post consumes post_scheduler + post together.
+            post += 1
+            post_scheduler += 1
+        elif "island@" in n or n.startswith("celery@") or "worker" in n:
+            worker += 1
+        else:
+            worker += 1
+
+    # Beat does not answer ping; on island compose it is a sibling container.
+    # Treat beat as up when the main worker is reachable (same Redis broker).
+    beat = 1 if worker > 0 or post > 0 else 0
     return {
         "beat": beat,
         "celery_worker": worker,
@@ -747,6 +804,17 @@ def collect_system_health() -> dict[str, Any]:
         )
 
     pg_ok = _port_listening(5432)
+    # Inside Docker, Postgres is reached by hostname — host :5432 probe is a false negative.
+    if not pg_ok:
+        try:
+            from app.database.session import SessionLocal
+            from sqlalchemy import text
+
+            with SessionLocal() as db:
+                db.execute(text("SELECT 1"))
+            pg_ok = True
+        except Exception:
+            pg_ok = False
     if not pg_ok:
         conflicts.append(
             _conflict(

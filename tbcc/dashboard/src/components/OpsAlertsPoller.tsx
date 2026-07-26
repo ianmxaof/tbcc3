@@ -1,24 +1,20 @@
 import { useEffect, useRef } from "react";
+import { api } from "../api";
+import { useApiTarget } from "../context/ApiTargetContext";
 import { showAlertToast, type OpsAlert } from "../utils/alertToast";
 
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 /** Fast poll so sales/pending checkout toasts feel instant. */
 const POLL_MS = 5000;
 
 export function OpsAlertsPoller() {
+  const { target } = useApiTarget();
   const seenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    seenRef.current = new Set();
     const poll = async () => {
       try {
-        const r = await fetch(`${API}/ops/alerts/poll`, { cache: "no-store" });
-        if (!r.ok) return;
-        const data = (await r.json()) as {
-          alerts?: OpsAlert[];
-          enabled?: boolean;
-          hub_toast?: boolean;
-          restart_grace?: { active?: boolean };
-        };
+        const data = await api.opsAlertsPoll();
         if (data.enabled === false) return;
         if (data.restart_grace?.active) return;
         for (const a of data.alerts || []) {
@@ -28,7 +24,7 @@ export function OpsAlertsPoller() {
           if (kind === "error_hub" || code === "error_hub_digest") continue;
           if (!data.hub_toast && kind === "error_hub") continue;
           seenRef.current.add(a.id);
-          showAlertToast(a);
+          showAlertToast(a as OpsAlert);
         }
         if (seenRef.current.size > 200) {
           seenRef.current = new Set([...seenRef.current].slice(-80));
@@ -40,7 +36,7 @@ export function OpsAlertsPoller() {
     void poll();
     const t = setInterval(() => void poll(), POLL_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [target]);
 
   return null;
 }

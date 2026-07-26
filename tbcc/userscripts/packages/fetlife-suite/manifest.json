@@ -1,10 +1,10 @@
 {
   "name": "fetlife-suite",
-  "version": "1.1.3",
+  "version": "1.8.8",
   "header": {
     "name": "TBCC FetLife Suite",
     "namespace": "https://github.com/tbcc/userscripts/fetlife",
-    "description": "FetLife suite: masonry, story filter, mute, gender filter, auto-follow+scroll, San Jose kinksters redirect, TBCC chevron overlay.",
+    "description": "FetLife suite: masonry, story filter, mute, ASL filter, auto-follow, place kinksters nav, infinite scroll, FLConsole, thin context intel, TBCC overlay.",
     "match": [
       "https://fetlife.com/*",
       "https://www.fetlife.com/*"
@@ -30,9 +30,15 @@
     "features/mute.js",
     "features/newest-discussions.js",
     "features/home-feed.js",
+    "features/place-nav.js",
     "features/login-redirect.js",
     "features/gender-filter.js",
     "features/auto-follow.js",
+    "features/infinite-scroll.js",
+    "features/social-proof.js",
+    "data/privacy-presets.js",
+    "data/genders.js",
+    "features/privacy-console.js",
     "features/overlay.js",
     "boot.js"
   ]

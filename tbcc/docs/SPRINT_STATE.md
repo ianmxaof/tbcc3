@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-07-20 (checkout dead-end fix + Gumroad VIP island + AI pack relist)
+**Last updated:** 2026-07-22 (loot reveal video 1–4 + island deploy)
 
 ## Sprint goal
 
@@ -23,7 +23,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Motherless enhancer | agent | **2026-07-19:** Ext **1.40.30** — Intel tab: grid auto-scan + Pareto/Live + auto-push at max. Prior: thumb ♥ 📣 🖼 👥. |
 | Loot Room leave sweep | agent | **2026-07-19:** Shared `leave_message_cleanup` on secretary + **loot-bot** (island money path) + album composer. Needs bot admin in Loot Room; `TBCC_CLEAN_LEAVE_MESSAGES=1` (default). Restart loot/secretary after pull. |
 | FYP–AOF Link Hub divider | agent | **Live:** `fyp_aof_divider_v2_by_7787282561` — Saved Messages preview #110075; add via https://t.me/addemoji/fyp_aof_divider_v2_by_7787282561. Paste: F Y P · · A O F. |
-| Zeus CI/CD prep | agent | **2026-07-19:** Phase 2 tray-wire — `TBCC_ZEUS_COHOST_SPIKE=1` runs secretary+macro_search; keep macro_search Off. Cover = Remixer `/cover` (not a new bot). Click beacon `/r/{slug}` + Zeus `/zeus/v1/click-links` (alembic **095**). Operator smoke: enable flag, restart secretary, confirm no 409. |
+| Zeus CI/CD prep | operator | **2026-07-22 smoke:** Alembic **095+** live (`click_links` tables; head **096**). Click beacon green — `POST /zeus/v1/click-links`, `GET /r/{slug}` → 302 + hit row (`?id=` works). Island `TBCC_CLICK_BEACON_PUBLIC_BASE=https://api.powercore.app`. Home `.env` has `TBCC_ZEUS_COHOST_SPIKE=1`; tray secretary+macro_search **Off** — enable secretary only when testing co-host (tokens in Dashboard). Remixer `/cover` smoke: start album_composer, forward photo in DM. |
 | Celery home backlog + import priority | agent | **2026-07-14:** Supervisor: champagne diamond CPU/RAM meters (heat + flutter sparkle). Relaunch tray to load. |
 | Userscript monorepo + FetLife suite | agent | **v1.8.0:** Clear place/ASL + no place→ASL sync; kinksters Resume bookmark; build writes `extension/fetlife-suite.bundle.js`. Survey: `docs/FETLIFE_MOD_SURVEY.md`. |
 | Perchance Gemini-parity suite | agent | **extension-only** `perchance-suite.bundle.js` (no TM). **0.3 / ext 1.40.9:** Loot God Card Lab (border+primer+Δ subject), lean page, jobs. Reload TBCC after `userscripts` npm build. |
@@ -32,11 +32,13 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | AOF watermark brand rename | agent | Burn-in + defaults: **`telegram.me/aofmainhub`** (t.me→telegram.me normalizer for .env/DB; zip `telegram.me_aofmainhub`). Gate retarget: `docs/GATE_LINK_AUDIT.md`. |
 | Creative orchestrator | agent | `/creative/plan` + suite Orch executor + Analytics deploy button; Playwright batch textarea-only |
 | Loot key → full `/roll` | agent | **2026-07-16:** Shared-library eligibility — all named TBCC pools banded **1–10** (22 enabled on island); `_pools_for_tier` uses every loot_enabled row. Temp until true 1:1 tier pools. Bake docker-cp into GHCR. |
-| Loot tier cards (Gemini/Perchance) | agent | **Starter set live** on island (`tier-1..10.png` chrome cards). Perchance art later via Card Lab or `scripts/generate_loot_god_cards_playwright.py --execute`. |
+| Loot tier cards (Gemini/Perchance) | agent | **2026-07-22:** Animated reveal path shipped — `loot_reveal_video.py`, 5 background loops, `TBCC_LOOT_REVEAL_VIDEO=1` + Celery offload flag. Island deploy in flight (ffmpeg in Dockerfile). Item 5 (Mini App) → Frontier. |
 | AOF Main ban → Loot Room public CTA | agent | Public loot CTA locked to **https://telegram.me/aof_lootgod_bot** only (no `?start=`). Room invite separate: `+97f4Crv3G1RkMGU5`. LV loot gate must target live room. |
 | Calm Ops Phase 5 (Erome hands-off) | agent | Private staging + governance; **extension transport overlay** (live Pareto intel + Playwright record) |
 | Promo affiliate rotation | agent | Seed includes **PornMaker AI** `https://pornmaker.ai?ref=DExnc3FJ` (x_buffer / telegram_footer / links_hub_ai / loot_roll). |
-| X ↔ Erome flywheel (SFW promo pool + Buffer) | agent | **2026-07-20:** Buffer env keys copy to island on seed; promo public base = `api.powercore.app`. Dual X schedulers on island when keys present. Gumroad VIP in rotation. |
+| Stars bait outreach (DM + channel pace) | agent | **2026-07-22:** Island `local-20260722-0610`; alembic **097** head; funnel RAG +9; scheduler **#148** (15 bait variations). DM pace: `ENABLED=1` batch=2 / 60min; pool=19 users. Smoke: `?start=bait_loot`. |
+| Stars bait outreach (DM + channel pace) | agent | **2026-07-22:** Island `local-20260722-0610`; alembic **097** head; funnel RAG +9 patterns; scheduler **#148** (15 bait variations). DM pace: `ENABLED=1` batch=2 / 60min; pool=19 users. Smoke: `?start=bait_loot` on payment bot. |
+| X ↔ Erome flywheel (SFW promo pool + Buffer) | agent | **2026-07-22:** `TBCC_POOL_BUFFER_MIRROR=0` on island (no false Erome claims). Honest opener + `#erome` only when URL present; armory reseeded (16 items w/ hashtags). Re-enable mirror when Erome upload reliable. |
 | AI curated packs relist | agent | **2026-07-20:** `seed_ai_curated_packs.py` — legacy AI zips → $3 / 250⭐ / crypto bundles with 3-image promo albums in `/packs` catalog. |
 | XEnhancer download parity | agent | **ext 1.40.7:** per-post DL → AOF name under `Downloads/tbcc/inbox` + sidecar (`defer_preprocess`); watch organizer watermarks. ZIP archive still `TBCC Bundle · …`. |
 | Remote scrape offload (GCP + GHCR) | agent | Scripts + GHCR workflow + capture-secret fix; go-live: create VM + enable-home-offload |

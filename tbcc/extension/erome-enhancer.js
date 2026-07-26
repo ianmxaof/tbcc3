@@ -29,7 +29,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
           recordIntel: true,
           maxIntelRows: 5000,
           tbccApiUrl: 'http://127.0.0.1:8000/analytics/erome-browse-intel',
-          showTransportOverlay: false,
+          showTransportOverlay: true,
           showIntelLivePanel: true,
         },
         JSON.parse(localStorage.getItem(INTEL_META_KEY) || '{}')
@@ -39,7 +39,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
         recordIntel: true,
         maxIntelRows: 5000,
         tbccApiUrl: 'http://127.0.0.1:8000/analytics/erome-browse-intel',
-        showTransportOverlay: false,
+        showTransportOverlay: true,
         showIntelLivePanel: true,
       };
     }
@@ -56,7 +56,26 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       return [];
     }
   }
-  function saveIntelRows(rows) {
+  function saveIntelRows(rows, opts) {
+    const o = opts || {};
+    if (globalThis.tbccBrowseIntel && typeof globalThis.tbccBrowseIntel.saveWithCapAndMaybePush === 'function') {
+      globalThis.tbccBrowseIntel.saveWithCapAndMaybePush({
+        rows,
+        meta: intelMeta,
+        skipAutoPush: !!o.skipAutoPush,
+        applyTrimmed: (stored) => {
+          try {
+            localStorage.setItem(INTEL_KEY, JSON.stringify(stored));
+          } catch (_) {}
+        },
+        toast: (msg) => {
+          try {
+            showEeToast(msg);
+          } catch (_) {}
+        },
+      });
+      return;
+    }
     const cap = Math.max(500, intelMeta.maxIntelRows || 5000);
     localStorage.setItem(INTEL_KEY, JSON.stringify(rows.slice(-cap)));
   }
@@ -247,6 +266,18 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       is_uploader_verified,
       media_sequence,
     };
+    // Duration-band tags help AOF pool mapping without inventing new schema fields.
+    const longest = Number(row.longest_clip_sec) || Number(row.total_duration_sec) || 0;
+    const tagList = Array.isArray(row.tags) ? row.tags : [];
+    if (longest > 0) {
+      let band = 'dur_20m_plus';
+      if (longest < 180) band = 'dur_0_3m';
+      else if (longest < 600) band = 'dur_3_10m';
+      else if (longest < 1200) band = 'dur_10_20m';
+      if (!tagList.includes(band)) row.tags = [...tagList, band].slice(0, 30);
+    } else {
+      row.tags = tagList;
+    }
     rows.push(row);
     saveIntelRows(rows);
     updateIntelCountBadge({ pulse: true });
@@ -257,26 +288,45 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
 
   function exportIntelJsonl() {
     const rows = loadIntelRows();
+    const name = `erome-browse-intel-${new Date().toISOString().slice(0, 10)}.jsonl`;
+    if (globalThis.tbccBrowseIntel && typeof globalThis.tbccBrowseIntel.exportJsonlSaveAs === 'function') {
+      void globalThis.tbccBrowseIntel.exportJsonlSaveAs(rows, name).then((r) => {
+        showEeToast(r && r.ok !== false ? `Save As · ${name}` : 'Export failed');
+      });
+      return;
+    }
     const blob = new Blob([rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : '')], { type: 'application/jsonl' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'browse-intel-drop.jsonl';
+    a.download = name;
     a.click();
     URL.revokeObjectURL(a.href);
   }
 
   async function pushIntelToTbcc() {
-    const url = (intelMeta.tbccApiUrl || '').trim().replace(/\/$/, '');
-    if (!url) {
-      alert('Set TBCC API URL in Intel settings (e.g. http://127.0.0.1:8000/analytics/erome-browse-intel)');
-      return;
-    }
     const rows = loadIntelRows();
     if (!rows.length) {
       alert('No intel rows to push.');
       return;
     }
+    const url = (intelMeta.tbccApiUrl || '').trim().replace(/\/$/, '');
     try {
+      if (globalThis.tbccBrowseIntel && typeof globalThis.tbccBrowseIntel.postIntelRows === 'function') {
+        const resp = await globalThis.tbccBrowseIntel.postIntelRows(url, rows);
+        const keep = Math.max(100, Math.floor(Math.max(500, intelMeta.maxIntelRows || 5000) * 0.2));
+        saveIntelRows(rows.slice(-keep), { skipAutoPush: true });
+        updateIntelCountBadge();
+        alert(
+          `Pushed ${resp.appended ?? rows.length} rows` +
+            (resp.url ? ` via ${resp.url}` : '') +
+            ` · kept ${Math.min(rows.length, keep)} local`
+        );
+        return;
+      }
+      if (!url) {
+        alert('Set TBCC API URL in Intel settings (or Options → API base)');
+        return;
+      }
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -291,7 +341,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
 
   function clearIntelRows() {
     if (!confirm('Clear all browse intel rows?')) return;
-    saveIntelRows([]);
+    saveIntelRows([], { skipAutoPush: true });
     updateIntelCountBadge();
     alert('Browse intel cleared.');
   }
@@ -634,16 +684,31 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
   }
 
   function parseAbbrevNumber(text) {
+    // Shared helper: comma-as-decimal with K/M ("4,7M" ≠ "47M").
+    if (typeof globalThis.tbccParseAbbrevNumber === 'function') {
+      return globalThis.tbccParseAbbrevNumber(text);
+    }
     if (!text) return 0;
-    const t = text.replace(/\s+/g, ' ').trim();
-    const m = t.match(/(\d[\d.,]*)(\s*[KM])?/i);
+    const t = String(text).replace(/\s+/g, ' ').trim();
+    const m = t.match(/(\d[\d.,]*)(\s*[KMB])?/i);
     if (!m) return 0;
-    const num = parseFloat(m[1].replace(/,/g, '').replace(/\.(?=.*\.)/g, ''));
-    if (!isFinite(num)) return 0;
+    let raw = m[1];
     const unit = (m[2] || '').trim().toUpperCase();
-    if (unit === 'K') return num * 1000;
-    if (unit === 'M') return num * 1000000;
-    return num;
+    if (unit) {
+      raw = raw.replace(/,/g, '.');
+      const parts = raw.split('.');
+      if (parts.length > 2) raw = parts[0] + '.' + parts.slice(1).join('');
+    } else {
+      raw = raw.replace(/,/g, '');
+      if (/^\d{1,3}(\.\d{3})+$/.test(raw)) raw = raw.replace(/\./g, '');
+      else raw = raw.replace(/\.(?=.*\.)/g, '');
+    }
+    const num = parseFloat(raw);
+    if (!isFinite(num)) return 0;
+    if (unit === 'K') return Math.round(num * 1e3);
+    if (unit === 'M') return Math.round(num * 1e6);
+    if (unit === 'B') return Math.round(num * 1e9);
+    return Math.round(num);
   }
 
   function formatDuration(seconds) {
@@ -853,6 +918,118 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
   function sortAlbums(keyFnDesc) { sortOrResetAlbums(keyFnDesc); }
   function resetAlbums() { sortOrResetAlbums(); }
 
+  function albumFormatBucket(albumEl) {
+    const v = extractVideos(albumEl);
+    const i = extractImages(albumEl);
+    return formatBucket(v, i);
+  }
+
+  function isMixedAlbum(albumEl) {
+    return albumFormatBucket(albumEl) === 'mixed_album';
+  }
+
+  function filterAlbumsByFormat(bucket) {
+    const container = document.querySelector(SELECTORS.albums);
+    if (!container) return 0;
+    let shown = 0;
+    container.querySelectorAll('.album').forEach((a) => {
+      const match = !bucket || albumFormatBucket(a) === bucket;
+      a.style.display = match ? '' : 'none';
+      if (match) shown += 1;
+    });
+    return shown;
+  }
+
+  function clearAlbumFormatFilter() {
+    const container = document.querySelector(SELECTORS.albums);
+    if (!container) return;
+    container.querySelectorAll('.album').forEach((a) => {
+      a.style.display = '';
+    });
+  }
+
+  /** Intel-driven action: keep mixed albums only, sort by likes (DOM on current search). */
+  function applyShowMostLikedMixed() {
+    const n = filterAlbumsByFormat('mixed_album');
+    lastSort = 'likes_mixed';
+    sortAlbums(extractLikes);
+    return n;
+  }
+
+  let lastIntelDiscovery = null;
+
+  function intelSummaryUrl() {
+    try {
+      const meta = JSON.parse(localStorage.getItem('eromeBrowseIntelMeta') || '{}');
+      const base = String(meta.tbccApiUrl || 'http://127.0.0.1:8000/analytics/erome-browse-intel').trim();
+      return base.replace(/\/?$/, '') + '/summary?days=30';
+    } catch (_) {
+      return 'http://127.0.0.1:8000/analytics/erome-browse-intel/summary?days=30';
+    }
+  }
+
+  function renderIntelDiscoveryBanner(discovery) {
+    const existing = document.getElementById('eromeIntelDiscovery');
+    if (existing) existing.remove();
+    if (!discovery || !Array.isArray(discovery.suite_actions) || !discovery.suite_actions.length) return;
+    const action = discovery.suite_actions.find((a) => a && a.id === 'show_most_liked_mixed')
+      || discovery.suite_actions[0];
+    if (!action) return;
+    const bar = document.getElementById('eromeSortControls');
+    if (!bar || !bar.parentElement) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'eromeIntelDiscovery';
+    wrap.style.cssText =
+      'margin:8px 0 4px;padding:10px 12px;border-radius:8px;background:#2a1520;border:1px solid #eb6395;' +
+      'color:#fce7f3;font-size:13px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;';
+    const ev = action.evidence || {};
+    const lift = ev.lift_vs_runner_up != null ? ` · ${Math.round((ev.lift_vs_runner_up - 1) * 100)}% lift` : '';
+    const n = ev.n != null ? ` · n=${ev.n}` : '';
+    wrap.innerHTML =
+      `<span style="flex:1;min-width:180px"><b>Intel discovery</b> — ${String(action.label || '').replace(/</g, '')}` +
+      `<span style="opacity:.75;font-size:11px">${lift}${n} · ${String(discovery.preferred_metric || '')}</span></span>`;
+    const go = document.createElement('button');
+    go.type = 'button';
+    go.textContent = 'Apply on this page';
+    go.style.cssText =
+      'background:#eb6395;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:600;';
+    go.addEventListener('click', (e) => {
+      e.preventDefault();
+      const shown = applyShowMostLikedMixed();
+      go.textContent = `Showing ${shown} mixed ♥`;
+      const mixedBtn = document.getElementById('eromeSortByMixedLikes');
+      if (mixedBtn) mixedBtn.style.outline = '2px solid #fff';
+    });
+    wrap.appendChild(go);
+    bar.parentElement.insertBefore(wrap, bar);
+  }
+
+  async function refreshIntelDiscoveries() {
+    if (location.pathname.startsWith('/a/')) return;
+    try {
+      let data = null;
+      try {
+        const meta = JSON.parse(localStorage.getItem('eromeBrowseIntelMeta') || '{}');
+        const hint = String(meta.tbccApiUrl || '').trim();
+        if (globalThis.tbccBrowseIntel && typeof globalThis.tbccBrowseIntel.fetchIntelSummary === 'function') {
+          data = await globalThis.tbccBrowseIntel.fetchIntelSummary(hint, 30);
+        }
+      } catch (_) {}
+      if (!data) return;
+      lastIntelDiscovery = data.discoveries || data;
+      renderIntelDiscoveryBanner(lastIntelDiscovery);
+      const mixedBtn = document.getElementById('eromeSortByMixedLikes');
+      if (mixedBtn && (data.preferred_format_bucket === 'mixed_album' ||
+          (lastIntelDiscovery && lastIntelDiscovery.preferred_format_bucket === 'mixed_album'))) {
+        mixedBtn.style.background = '#eb6395';
+        mixedBtn.style.color = '#fff';
+        mixedBtn.title = 'Ledger says mixed albums lead — tap to filter + sort by likes';
+      }
+    } catch (_) {
+      /* API down — Mixed button still works from DOM */
+    }
+  }
+
   function addSortingControls() {
     if (!settings.enableSorting || location.pathname.startsWith('/a/')) return;
     const tabsContainer = document.querySelector(SELECTORS.tabs);
@@ -862,17 +1039,29 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     bar.id = 'eromeSortControls';
     
     const buttons = [
-      ['↓ Views', 'eromeSortByViews', () => { lastSort = 'views'; sortAlbums(extractViews); }],
-      ['↓ Likes', 'eromeSortByLikes', () => { lastSort = 'likes'; sortAlbums(extractLikes); }],
-      ['♥ Rate', 'eromeSortByEngagement', () => { lastSort = 'engagement'; sortAlbums(extractEngagement); }],
-      ['↓ Videos', 'eromeSortByVideos', () => { lastSort = 'videos'; sortAlbums(extractVideos); }],
-      ['↓ Images', 'eromeSortByImages', () => { lastSort = 'images'; sortAlbums(extractImages); }],
-      ['↓ Items', 'eromeSortByItems', () => { lastSort = 'items'; sortAlbums(extractTotalItems); }],
-      ['↓ Duration', 'eromeSortByDuration', () => { lastSort = 'duration'; sortAlbums(extractDuration); }],
-      ['↓ Avg', 'eromeSortByAvgDuration', () => { lastSort = 'avgDuration'; sortAlbums(extractAvgDuration); }],
-      ['↓ Longest', 'eromeSortByLongest', () => { lastSort = 'longest'; sortAlbums(extractLongestClip); }],
-      ['★ New', 'eromeSortByUnwatched', () => { lastSort = 'unwatched'; sortAlbums(extractUnwatched); }],
-      ['↺ Reset', 'eromeSortReset', () => { lastSort = null; resetAlbums(); }],
+      ['♥ Mixed', 'eromeSortByMixedLikes', () => {
+        lastSort = 'likes_mixed';
+        const n = applyShowMostLikedMixed();
+        const btn = document.getElementById('eromeSortByMixedLikes');
+        if (btn) btn.textContent = `♥ Mixed (${n})`;
+      }],
+      ['↓ Views', 'eromeSortByViews', () => { lastSort = 'views'; clearAlbumFormatFilter(); sortAlbums(extractViews); }],
+      ['↓ Likes', 'eromeSortByLikes', () => { lastSort = 'likes'; clearAlbumFormatFilter(); sortAlbums(extractLikes); }],
+      ['♥ Rate', 'eromeSortByEngagement', () => { lastSort = 'engagement'; clearAlbumFormatFilter(); sortAlbums(extractEngagement); }],
+      ['↓ Videos', 'eromeSortByVideos', () => { lastSort = 'videos'; clearAlbumFormatFilter(); sortAlbums(extractVideos); }],
+      ['↓ Images', 'eromeSortByImages', () => { lastSort = 'images'; clearAlbumFormatFilter(); sortAlbums(extractImages); }],
+      ['↓ Items', 'eromeSortByItems', () => { lastSort = 'items'; clearAlbumFormatFilter(); sortAlbums(extractTotalItems); }],
+      ['↓ Duration', 'eromeSortByDuration', () => { lastSort = 'duration'; clearAlbumFormatFilter(); sortAlbums(extractDuration); }],
+      ['↓ Avg', 'eromeSortByAvgDuration', () => { lastSort = 'avgDuration'; clearAlbumFormatFilter(); sortAlbums(extractAvgDuration); }],
+      ['↓ Longest', 'eromeSortByLongest', () => { lastSort = 'longest'; clearAlbumFormatFilter(); sortAlbums(extractLongestClip); }],
+      ['★ New', 'eromeSortByUnwatched', () => { lastSort = 'unwatched'; clearAlbumFormatFilter(); sortAlbums(extractUnwatched); }],
+      ['↺ Reset', 'eromeSortReset', () => {
+        lastSort = null;
+        clearAlbumFormatFilter();
+        const mixedBtn = document.getElementById('eromeSortByMixedLikes');
+        if (mixedBtn) mixedBtn.textContent = '♥ Mixed';
+        resetAlbums();
+      }],
     ];
 
     buttons.forEach(([text, id, handler]) => {
@@ -884,6 +1073,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     });
 
     tabsContainer.parentElement.insertBefore(bar, tabsContainer.nextSibling);
+    setTimeout(() => refreshIntelDiscoveries(), 800);
   }
 
   /* ---------- Like Count & Duration Display ---------- */
@@ -1310,6 +1500,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       }
     });
   }
+  window.__tbccEromeApplyTitleKeywords = applyTitleKeywordVisibility;
 
   function markAlbumClick(albumEl) {
     const link = albumEl.querySelector('a');
@@ -1561,9 +1752,9 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     publishAlbumVideoUrls();
   }
 
-  /* ---------- Album video sources → ThisVid direct-link upload ---------- */
+  /* ---------- Album video sources → R2 host → ThisVid my_video_upload ---------- */
   const THISVID_PENDING_KEY = 'tbccThisVidPendingUpload';
-  const THISVID_UPLOAD_URL = 'https://www.thisvid.com/upload.php';
+  const THISVID_UPLOAD_URL = 'https://thisvid.com/my_video_upload/';
 
   function collectVideoSources(videoEl) {
     const sources = Array.from(videoEl.querySelectorAll('source')).filter((s) => s && s.src);
@@ -1593,16 +1784,10 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     return String(h).replace(/\s+/g, ' ').trim().slice(0, 120);
   }
 
-  function sendVideoToThisVid(srcUrl) {
-    const payload = {
-      url: srcUrl,
-      title: albumTitleHint(),
-      albumUrl: location.href.split('#')[0],
-      ts: Date.now(),
-    };
+  function storePendingThisVid(payload, thenOpen) {
     const openUpload = () => {
       window.open(THISVID_UPLOAD_URL, '_blank');
-      showEeToast('Opening ThisVid upload — URL will auto-fill');
+      if (typeof thenOpen === 'function') thenOpen();
     };
     try {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
@@ -1614,6 +1799,121 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
       localStorage.setItem(THISVID_PENDING_KEY, JSON.stringify(payload));
     } catch (_) {}
     openUpload();
+  }
+
+  /** After TBCC reload/update, album tabs keep old content scripts — runtime.id is gone. */
+  function isExtensionContextAlive() {
+    try {
+      return !!(typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function isContextInvalidatedError(err) {
+    const msg = String((err && err.message) || err || '');
+    return /extension context invalidated|context invalidated/i.test(msg);
+  }
+
+  async function hostEromeUrlToR2(srcUrl) {
+    if (!isExtensionContextAlive() || !chrome.runtime.sendMessage) {
+      throw new Error('Extension context invalidated — reload this Erome tab, then retry → ThisVid');
+    }
+    const resp = await new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(
+          {
+            action: 'tbcc-watermark-upload-r2',
+            url: srcUrl,
+            destination: 'library',
+            refererPageUrl: location.href.split('#')[0],
+            preferFull: true,
+          },
+          (r) => {
+            if (chrome.runtime.lastError) {
+              const m = chrome.runtime.lastError.message || 'runtime error';
+              if (/context invalidated/i.test(m)) {
+                reject(
+                  new Error('Extension context invalidated — reload this Erome tab, then retry → ThisVid')
+                );
+                return;
+              }
+              reject(new Error(m));
+              return;
+            }
+            resolve(r || {});
+          }
+        );
+      } catch (e) {
+        if (isContextInvalidatedError(e)) {
+          reject(
+            new Error('Extension context invalidated — reload this Erome tab, then retry → ThisVid')
+          );
+          return;
+        }
+        reject(e);
+      }
+    });
+    if (!resp || !resp.ok || !resp.directUrl) {
+      throw new Error((resp && resp.error) || 'R2 upload returned no URL');
+    }
+    return resp;
+  }
+
+  function sendVideoToThisVid(srcUrl) {
+    const raw = String(srcUrl || '').trim();
+    if (!raw) {
+      showEeToast('No video URL');
+      return;
+    }
+    const title = albumTitleHint();
+    const albumUrl = location.href.split('#')[0];
+    // Stale tab after extension reload — R2 + chrome.storage both dead until refresh.
+    if (!isExtensionContextAlive()) {
+      try {
+        navigator.clipboard.writeText(raw);
+      } catch (_) {}
+      showEeToast('TBCC was reloaded — refresh this tab, then retry → ThisVid (URL copied)');
+      return;
+    }
+    // Already hosted on our CDN — skip re-upload.
+    if (/media\.powercore\.app|\.r2\.dev/i.test(raw)) {
+      storePendingThisVid(
+        { url: raw, title, albumUrl, ts: Date.now(), hosted: 'r2' },
+        () => showEeToast('Opening ThisVid upload — R2 URL will auto-fill')
+      );
+      return;
+    }
+    showEeToast('Hosting to R2…');
+    hostEromeUrlToR2(raw)
+      .then((result) => {
+        storePendingThisVid(
+          {
+            url: result.directUrl,
+            title,
+            albumUrl,
+            ts: Date.now(),
+            hosted: 'r2',
+            sourceUrl: raw,
+            watermarked: !!result.watermarked,
+          },
+          () =>
+            showEeToast(
+              `R2 ready${result.watermarked ? ' · watermarked' : ''} — opening ThisVid upload`
+            )
+        );
+      })
+      .catch((e) => {
+        const err = (e && e.message) || String(e);
+        try {
+          navigator.clipboard.writeText(raw);
+        } catch (_) {}
+        if (isContextInvalidatedError(e)) {
+          showEeToast('TBCC was reloaded — refresh this tab, then retry → ThisVid (URL copied)');
+          return;
+        }
+        showEeToast(`R2 host failed: ${err}`);
+      });
   }
 
   function publishAlbumVideoUrls() {
@@ -1682,7 +1982,7 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     modal.className = 'modal';
     modal.id = 'enhancerModal';
     modal.innerHTML = `<div class="modal-dialog"><div class="modal-content" style="background:#2b2b2b;color:#fff;"><div class="modal-header" style="border-bottom:1px solid #444;padding:20px 25px 15px;"><button type="button" class="close" data-dismiss="modal" style="color:#fff;opacity:0.8;font-size:24px;margin-top:-5px;">×</button><h4 class="modal-title" style="font-weight:600;font-size:18px;"><i class="fa fa-sliders" style="margin-right:10px;color:#eb6395;"></i>Erome Enhancer Settings</h4></div><div class="modal-body" style="padding:25px;"><div class="settings-section"><div class="section-header"><i class="fa fa-th-large" style="margin-right:8px;"></i>Grid View Filters</div><div class="section-content"><div class="form-group"><label class="control-label">Content Filter</label><select id="filterMode" class="form-control"><option value="all">Show All Albums</option><option value="videos">Videos Only</option><option value="images">Images Only (No Videos)</option></select></div><div class="form-group"><label class="control-label">Title include (all must match)</label><input type="text" id="titleInclude" class="form-control" placeholder="e.g. milf blonde"></div><div class="form-group"><label class="control-label">Title exclude (hide if any match)</label><input type="text" id="titleExclude" class="form-control" placeholder="e.g. gay"></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="autoScroll"> Auto-load pages (infinite scroll)</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="hideViewed"> Hide viewed albums</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="showLikes"> Show like counts on albums</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="gridLikeRepost"> Like + Repost on gallery thumbnails</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="videoThisVidBridge"> Album: publish video URLs to FAB Videos tab</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="enableSorting"> Enable album sorting controls</label></div></div></div></div>
-<div class="settings-section"><div class="section-header"><i class="fa fa-bar-chart" style="margin-right:8px;"></i>Browse Intel (v4)</div><div class="section-content" style="background:#333;padding:20px;border-radius:8px;border:1px solid #444;"><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="recordIntel"> Record browse intel while loading likes</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="showTransportOverlay"> Show transport overlay (live intel + Playwright)</label></div></div><div class="form-group"><label class="control-label">Max intel rows (localStorage)</label><input type="number" id="maxIntelRows" class="form-control" min="500" max="50000" value="5000"></div><div class="form-group"><label class="control-label">TBCC ingest URL (optional)</label><input type="text" id="tbccApiUrl" class="form-control" placeholder="http://127.0.0.1:8000/analytics/erome-browse-intel"></div><div class="ee-action-buttons"><button type="button" id="exportIntel" class="btn btn-default ee-action-btn"><i class="fa fa-download"></i> Export JSONL</button><button type="button" id="pushIntelTbcc" class="btn btn-default ee-action-btn"><i class="fa fa-upload"></i> Push to TBCC</button><button type="button" id="showIntelSummary" class="btn btn-default ee-action-btn"><i class="fa fa-list"></i> Summary</button><button type="button" id="clearIntel" class="btn btn-default ee-action-btn"><i class="fa fa-trash"></i> Clear Intel</button></div><pre id="intelSummaryBox" class="ee-intel-summary" hidden></pre></div></div><hr style="border-color:#444;margin:25px 0;">
+<div class="settings-section"><div class="section-header"><i class="fa fa-bar-chart" style="margin-right:8px;"></i>Browse Intel (v4)</div><div class="section-content" style="background:#333;padding:20px;border-radius:8px;border:1px solid #444;"><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="recordIntel"> Record browse intel while loading likes</label></div></div><div class="form-group"><div class="checkbox"><label><input type="checkbox" id="showTransportOverlay"> Show right-edge Erome tab (ER ▸ — live intel + Playwright)</label></div></div><div class="form-group"><label class="control-label">Max intel rows (localStorage)</label><input type="number" id="maxIntelRows" class="form-control" min="500" max="50000" value="5000"></div><div class="form-group"><label class="control-label">TBCC ingest URL (optional)</label><input type="text" id="tbccApiUrl" class="form-control" placeholder="http://127.0.0.1:8000/analytics/erome-browse-intel"></div><div class="ee-action-buttons"><button type="button" id="exportIntel" class="btn btn-default ee-action-btn"><i class="fa fa-download"></i> Export JSONL</button><button type="button" id="pushIntelTbcc" class="btn btn-default ee-action-btn"><i class="fa fa-upload"></i> Push to TBCC</button><button type="button" id="showIntelSummary" class="btn btn-default ee-action-btn"><i class="fa fa-list"></i> Summary</button><button type="button" id="clearIntel" class="btn btn-default ee-action-btn"><i class="fa fa-trash"></i> Clear Intel</button></div><pre id="intelSummaryBox" class="ee-intel-summary" hidden></pre></div></div><hr style="border-color:#444;margin:25px 0;">
 <div class="settings-section"><div class="section-header"><i class="fa fa-clock-o" style="margin-right:8px;"></i>Video Duration Filter</div><div class="section-content" style="background:#333;padding:20px;border-radius:8px;margin-top:12px;border:1px solid #444;"><div class="form-group" style="margin-bottom:20px;"><label class="control-label" style="font-size:14px;color:#ddd;font-weight:500;"><i class="fa fa-filter" style="margin-right:6px;"></i>Minimum Average Video Duration</label><div style="display:flex;align-items:center;gap:12px;margin-top:8px;"><input type="number" id="minVideoSeconds" class="form-control" min="0" placeholder="0 = disabled" style="flex:1;background:#444;border:1px solid #555;color:#fff;"><span style="color:#888;font-size:13px;white-space:nowrap;font-weight:500;">seconds</span></div><div style="font-size:12px;color:#777;margin-top:8px;line-height:1.4;"><i class="fa fa-info-circle" style="margin-right:5px;"></i>Hide albums where the average video duration is shorter than this</div></div><div style="background:#3a3a3a;padding:12px 15px;border-radius:6px;margin-top:15px;border-left:3px solid #eb6395;"><div style="font-size:12px;color:#999;display:flex;align-items:center;"><i class="fa fa-exclamation-circle" style="margin-right:8px;font-size:14px;"></i><span>Applies to both grid pages and individual album pages</span></div></div><div class="ee-action-buttons"><button id="clearViewed" class="btn btn-default ee-action-btn"><i class="fa fa-trash" style="margin-right:6px;"></i>Clear Viewed</button><button id="resetDurationFilter" class="btn btn-default ee-action-btn"><i class="fa fa-refresh" style="margin-right:6px;"></i>Reset Duration</button></div></div></div></div><div class="modal-footer" style="border-top:1px solid #444;padding:20px 25px;"><button id="saveEnhancer" class="btn btn-primary" style="background:#eb6395 !important;border-color:#eb6395 !important;color:#fff !important;font-weight:600;padding:10px 20px;width:100%;"><i class="fa fa-check" style="margin-right:8px;"></i>Apply Settings</button></div></div></div>`;
     document.body.appendChild(modal);
 
@@ -1858,6 +2158,30 @@ tbccWaitForModule('erome_enhancer', function () {(function () {
     }
     addSettingsUI();
     updateIntelCountBadge();
+    // Already at max from a prior session — flush without waiting for a new album save.
+    try {
+      if (globalThis.tbccBrowseIntel && typeof globalThis.tbccBrowseIntel.flushIfAtCap === 'function') {
+        globalThis.tbccBrowseIntel.flushIfAtCap({
+          rows: loadIntelRows(),
+          meta: intelMeta,
+          applyTrimmed: (stored) => {
+            try {
+              localStorage.setItem(INTEL_KEY, JSON.stringify(stored));
+            } catch (_) {}
+            updateIntelCountBadge();
+          },
+          toast: (msg) => {
+            try {
+              showEeToast(msg);
+            } catch (_) {
+              try {
+                console.info('[TBCC intel]', msg);
+              } catch (__) {}
+            }
+          },
+        });
+      }
+    } catch (_) {}
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

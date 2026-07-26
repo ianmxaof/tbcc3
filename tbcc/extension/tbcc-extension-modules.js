@@ -22,17 +22,40 @@
     {
       id: "erome_enhancer",
       title: "Erome enhancer",
-      urlPatterns: ["*://erome.com/*", "*://www.erome.com/*"],
+      urlPatterns: ["*://erome.com/*", "*://*.erome.com/*"],
+    },
+    {
+      id: "motherless_enhancer",
+      title: "Motherless enhancer",
+      description: "Chevron overlay: bulk friend, gallery ZIP, capped infinite scroll; ♥ favorite + 📣 shout on thumbs",
+      urlPatterns: [
+        "*://motherless.com/*",
+        "*://*.motherless.com/*",
+        "*://motherless.xxx/*",
+        "*://*.motherless.xxx/*",
+      ],
     },
     {
       id: "thisvid_enhancer",
       title: "ThisVid enhancer",
+      description:
+        "Title/privacy filters, duration·views sort, No Gay, mass friend, infinite scroll, download, Erome→ThisVid fill",
       urlPatterns: ["*://thisvid.com/*", "*://*.thisvid.com/*"],
     },
     {
       id: "fetlife_suite",
       title: "FetLife suite",
       urlPatterns: ["*://fetlife.com/*", "*://www.fetlife.com/*"],
+    },
+    {
+      id: "perchance_suite",
+      title: "Perchance suite (Loot God Card Lab)",
+      description: "Lean page, Loot God Card Lab (border+Δ), Gemini-parity jobs on perchance.org",
+      urlPatterns: [
+        "*://perchance.org/*",
+        "*://*.perchance.org/*",
+        "*://image-generation.perchance.org/*",
+      ],
     },
     {
       id: "onlyfans_harvest",

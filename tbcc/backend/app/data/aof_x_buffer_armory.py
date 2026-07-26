@@ -76,11 +76,23 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
         "image": "",
     },
     {
-        "text": "VIP ladder on Gumroad — card/PayPal when Stars feel cursed. {gumroad_vip} · hub {hub}",
+        "text": "VIP ladder — card / USD when Stars feel cursed. {gumroad_vip} · hub {hub}",
         "image": "",
     },
     {
         "text": "from $6/mo to 2-year lock-in. same silo, different rail. {gumroad_vip} · map {allmylinks}",
+        "image": "",
+    },
+    {
+        "text": "👺 goblin hops lanes when the relay scrobbles — you have ~45s to tap Claim loot. DM pull @aof_lootgod_bot · hub {hub}",
+        "image": "",
+    },
+    {
+        "text": "Loot God game: card reveal → album in DM. five free pulls ever, then pay the table. telegram.me/aof_lootgod_bot?start=loot_free · {allmylinks}",
+        "image": "",
+    },
+    {
+        "text": "shipped: relay Bot API + loot goblin + key-roll album fix on revenue island. TBCC keeps the firehose honest. {hub} · @aof_lootgod_bot",
         "image": "",
     },
 ]

@@ -199,7 +199,7 @@ async def gumroad_ping(request: Request, db: Session = Depends(get_db)):
         return {
             "ok": True,
             "ignored": "no_tbcc_ref_or_telegram_id",
-            "hint": "Start checkout from @aofsubscriptions_bot (Gumroad button) so tbcc_ref=EPO-… is set",
+            "hint": "Start checkout from @aofsubscriptions_bot (card checkout button) so tbcc_ref=EPO-… is set",
         }
 
     charge = gr.sale_charge_id(payload)

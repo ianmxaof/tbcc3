@@ -38,7 +38,7 @@ def test_build_grid_prompt_structure():
     )
     assert aspect == "9:16"
     assert "TOP-LEFT" in prompt
-    assert "t.me/aofmainhub" in prompt
+    assert "telegram.me/aofmainhub" in prompt
     assert "NICHE LANES" in prompt
     assert "ma-07" in prompt.lower() or "MA-07" in prompt
     assert "2×2" in prompt or "2x2" in prompt.lower()

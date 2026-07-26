@@ -24,7 +24,7 @@ def fulfill_external_order(
     """
     Mark order paid and create subscription / bundle fulfillment (idempotent if already paid).
 
-    payment_method: manual | crypto | nowpayments | webhook
+    payment_method: manual | crypto | nowpayments | webhook | gumroad
     """
     if order.status == "paid":
         return {"ok": True, "idempotent": True, "external_order_id": order.id, "reference_code": order.reference_code}

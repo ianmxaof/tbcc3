@@ -12,7 +12,7 @@ from app.services.aof_social_links import (
 def test_loot_public_cta_default(monkeypatch):
     monkeypatch.delenv("TBCC_LOOT_PUBLIC_CTA_URL", raising=False)
     monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "aof_lootgod_bot")
-    assert loot_public_cta_url() == "https://t.me/aof_lootgod_bot?start=loot_free"
+    assert loot_public_cta_url() == "https://telegram.me/aof_lootgod_bot"
 
 
 def test_aof_hub_defaults_to_loot_not_banned_main(monkeypatch):
@@ -20,7 +20,8 @@ def test_aof_hub_defaults_to_loot_not_banned_main(monkeypatch):
     monkeypatch.delenv("TBCC_LOOT_PUBLIC_CTA_URL", raising=False)
     monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "aof_lootgod_bot")
     hub = aof_hub_invite_url()
-    assert "loot_free" in hub
+    assert "aof_lootgod_bot" in hub
+    assert "loot_free" not in hub
     assert "hMQzGsBFjF02MDkx" not in hub
 
 

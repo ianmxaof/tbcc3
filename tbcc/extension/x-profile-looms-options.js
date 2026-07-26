@@ -1,5 +1,5 @@
 /* global chrome, TbccXProfileLooms */
-/** Extension options — X profile overlay Comic Looms settings (mirrors CONF threads / timeout). */
+/** Extension options — X profile overlay concurrency / timeout settings. */
 (function () {
   if (!window.TbccXProfileLooms) return;
 
@@ -45,7 +45,7 @@
     if (elZipSkipWatermark) elZipSkipWatermark.checked = s.zipSkipWatermark !== false;
   }
 
-  function bindStepper(inputId, key, delta) {
+  function bindStepper(inputId, key) {
     var input = document.getElementById(inputId);
     if (!input) return;
     var wrap = input.closest(".tbcc-looms-stepper");
@@ -67,7 +67,17 @@
   function persist() {
     return TbccXProfileLooms.saveLoomsSettings(readForm()).then(function (s) {
       fillForm(s);
-      setStatus("Saved — idle " + s.idleThreads + ", browse " + s.browseThreads + ", download " + s.downloadThreads + ", timeout " + s.timeoutSec + "s");
+      setStatus(
+        "Saved — idle " +
+          s.idleThreads +
+          ", browse " +
+          s.browseThreads +
+          ", download " +
+          s.downloadThreads +
+          ", timeout " +
+          s.timeoutSec +
+          "s"
+      );
     });
   }
 
@@ -91,6 +101,6 @@
 
   TbccXProfileLooms.loadLoomsSettings().then(function (s) {
     fillForm(s);
-    setStatus("Defaults: idle 2 · browse 4 · download 4 · timeout 9s (Comic Looms X profile)");
+    setStatus("Defaults: idle 2 · browse 4 · download 8 · timeout 20s");
   });
 })();

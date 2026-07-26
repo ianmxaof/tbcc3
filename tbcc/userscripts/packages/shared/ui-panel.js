@@ -46,7 +46,7 @@
       const panel = document.createElement('div');
       panel.id = panelId;
       panel.innerHTML = `<header><strong>${title}</strong><button type="button" data-act="close">Close</button></header>
-        <div class="note">Flags persist in Tampermonkey storage. Reload if a feature looks stuck.</div>`;
+        <div class="note">Flags persist in extension localStorage (or TM if present). Reload if a feature looks stuck.</div>`;
       const all = flags.all();
       Object.keys(all).forEach((key) => {
         const lab = document.createElement('label');

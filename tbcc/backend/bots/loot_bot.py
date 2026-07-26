@@ -359,6 +359,20 @@ async def _submit_creator_url(telegram_user_id: int, url: str) -> dict:
     return data
 
 
+def _key_roll_status(telegram_user_id: int) -> dict | None:
+    """GET /loot/key-roll/status — decide free vs paid claim path."""
+    try:
+        r = _api_get_sync(
+            "/loot/key-roll/status",
+            params={"telegram_user_id": int(telegram_user_id)},
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        logger.exception("loot key-roll status failed")
+    return None
+
+
 def _claim_key_roll(telegram_user_id: int) -> dict:
     """POST /loot/key-roll/claim — full paid-key roll (sync httpx; run via to_thread)."""
     url = f"{API_BASE}/loot/key-roll/claim"
@@ -544,8 +558,14 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     try:
-        result = await asyncio.to_thread(_claim_key_roll, int(user.id))
-        if result.get("not_key_holder"):
+        # Status-first: never call key-roll for free-only users (avoids 500/403 noise
+        # blocking the free-pull path when the API misbehaves on paid claim).
+        status = await asyncio.to_thread(_key_roll_status, int(user.id))
+        if status and status.get("can_key_roll"):
+            result = await asyncio.to_thread(_claim_key_roll, int(user.id))
+            if result.get("not_key_holder"):
+                result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+        else:
             result = await asyncio.to_thread(_claim_free_pull, int(user.id))
     except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
         logger.warning("roll claim transient API error: %s", e)
@@ -558,14 +578,32 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     except httpx.HTTPStatusError as e:
-        await _drop_transient_msg(status_msg)
-        await _safe_reply_html(
-            msg,
-            f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
-            disable_web_page_preview=True,
-            reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
-        )
-        return
+        # Paid claim blew up but user may still have free pulls — one recovery attempt.
+        if e.response is not None and e.response.status_code >= 500:
+            try:
+                result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+            except Exception:
+                result = None
+            if result and result.get("ok"):
+                pass  # fall through to success handling
+            else:
+                await _drop_transient_msg(status_msg)
+                await _safe_reply_html(
+                    msg,
+                    f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
+                    disable_web_page_preview=True,
+                    reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
+                )
+                return
+        else:
+            await _drop_transient_msg(status_msg)
+            await _safe_reply_html(
+                msg,
+                f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
+                disable_web_page_preview=True,
+                reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
+            )
+            return
     except Exception:
         logger.exception("roll claim failed")
         await _drop_transient_msg(status_msg)
@@ -598,11 +636,24 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup=finale_markup,
             )
             return
+        card_ok = bool(result.get("tier_card_delivered") or delivery.get("tier_card_delivered"))
+        comp = result.get("key_compensation") or {}
+        comp_line = ""
+        if not card_ok and comp.get("ok"):
+            comp_line = (
+                "\n\n<b>Card reveal missed — your Loot Room key was extended 24h.</b>"
+                f"\n<i>New expiry: {html.escape(str(comp.get('extended_until') or 'updated'))}</i>"
+            )
+        elif not card_ok:
+            comp_line = (
+                "\n\n<b>Card reveal missed this pull.</b> Tap <b>/roll</b> again — your key time was not consumed."
+            )
         await _safe_reply_html(
             msg,
             f"<b>Key roll dealt.</b>\n"
             f"Tier <b>{tier}</b> · {mods} modifier slot(s).\n"
-            "<i>Your Loot Room key unlocked the full ladder.</i>",
+            "<i>Your Loot Room key unlocked the full ladder.</i>"
+            f"{comp_line}",
             disable_web_page_preview=True,
             reply_markup=finale_markup,
         )
@@ -680,9 +731,104 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _claim_goblin_drop(telegram_user_id: int, token: str) -> dict:
+    """POST /goblin/claim — cap-limited goblin grant via deep link."""
+    url = f"{API_BASE}/goblin/claim"
+    body = {"token": token.strip(), "telegram_user_id": int(telegram_user_id)}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    if key:
+        headers["X-TBCC-Internal-Key"] = key
+    try:
+        with httpx.Client(timeout=_LOOT_CLAIM_TIMEOUT) as client:
+            r = client.post(url, json=body, headers=headers)
+        if r.status_code == 409:
+            return {"ok": False, "already_claimed": True, "detail": r.json()}
+        if r.status_code == 410:
+            return {"ok": False, "exhausted": True, "detail": r.json()}
+        if r.status_code == 404:
+            return {"ok": False, "not_found": True, "detail": r.json()}
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        logger.exception("goblin claim failed")
+        return {"ok": False, "reason": str(e)}
+
+
+async def _handle_goblin_claim(msg, context: ContextTypes.DEFAULT_TYPE, user_id: int, token: str) -> None:
+    cfg = context.application.bot_data.get("effective") or {}
+    status_msg = await _safe_reply_html(msg, "<b>Goblin claim…</b>", disable_web_page_preview=True)
+    try:
+        result = await asyncio.to_thread(_claim_goblin_drop, int(user_id), token)
+    except Exception:
+        await _drop_transient_msg(status_msg)
+        await _safe_reply_html(
+            msg,
+            "<b>Goblin claim failed</b>\nAPI unreachable — is TBCC backend running?",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+
+    await _drop_transient_msg(status_msg)
+    if result.get("ok"):
+        delivery = result.get("delivery") or {}
+        media_sent = int(delivery.get("media_sent") or 0)
+        finale_markup = _loot_inline_keyboard(cfg)
+        if media_sent <= 0:
+            await _safe_reply_html(
+                msg,
+                "<b>Goblin grant missed delivery.</b> Try again if slots remain.",
+                disable_web_page_preview=True,
+                reply_markup=finale_markup,
+            )
+            return
+        await _safe_reply_html(
+            msg,
+            "<b>👺 Goblin loot claimed!</b>\n"
+            "<i>Complimentary pull — does not use your /roll allowance.</i>",
+            disable_web_page_preview=True,
+            reply_markup=finale_markup,
+        )
+        return
+
+    if result.get("already_claimed"):
+        await _safe_reply_html(
+            msg,
+            "<b>Already claimed</b> this goblin drop.",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+    if result.get("exhausted"):
+        await _safe_reply_html(
+            msg,
+            "<b>Goblin exhausted</b> — cap reached before you tapped.",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+    if result.get("not_found"):
+        await _safe_reply_html(
+            msg,
+            "<b>Invalid goblin link.</b>",
+            disable_web_page_preview=True,
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        return
+
+    detail = result.get("detail") or result.get("reason") or "unknown"
+    await _safe_reply_html(
+        msg,
+        f"<b>Goblin claim failed.</b>\n<code>{html.escape(str(detail)[:300])}</code>",
+        disable_web_page_preview=True,
+    )
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data.get("effective") or {}
-    arg = (context.args[0] if context.args else "").strip().lower()
+    raw_arg = (context.args[0] if context.args else "").strip()
+    arg = raw_arg.lower()
 
     user = update.effective_user
     msg = update.effective_message
@@ -693,8 +839,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await cmd_roll(update, context)
         return
 
+    if user and arg.startswith("goblin_"):
+        # Token is case-sensitive (secrets.token_urlsafe); do not lower() the payload.
+        token = raw_arg[len("goblin_") :].strip()
+        if token:
+            await _handle_goblin_claim(msg, context, int(user.id), token)
+            return
+
     if user and arg.startswith("lootref_"):
-        code = arg[8:].strip()
+        code = raw_arg[len("lootref_") :].strip()
         if code:
             ok = await _record_loot_referral(int(user.id), code)
             if ok:
@@ -1105,6 +1258,12 @@ def main() -> None:
     application.add_handler(CommandHandler("status", cmd_status))
     application.add_handler(CallbackQueryHandler(on_loot_callback, pattern=r"^loot:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
+    try:
+        from bots.leave_message_cleanup import register_leave_cleanup_handler
+
+        register_leave_cleanup_handler(application, bot_label="loot-bot")
+    except Exception as e:
+        logger.warning("leave-message cleanup not registered: %s", e)
     application.add_error_handler(on_error)
     logger.info(
         "Loot overseer starting (API %s), Telegram timeout=%.1fs, bootstrap_retries=%s%s",

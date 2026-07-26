@@ -10,20 +10,26 @@ from app.models.content_pool import ContentPool
 from app.models.loot import LootPoolEligibility
 from app.models.media import Media
 
-# Network channel key → rarity band for loot rolls (overlapping bands cover tiers 1–10).
+# Temporary shared-library mode: every named TBCC pool is eligible for every rarity
+# tier (same idea as drawing from the whole VIP-capable library). Narrow 1:1
+# tier→pool bands can return later without changing roll engines.
+_FULL_LADDER: tuple[int, int] = (1, 10)
+
+# Kept for docs / future narrow-band restore (unused while shared-library is on).
 _NETWORK_KEY_TIER_BANDS: dict[str, tuple[int, int]] = {
-    "ai": (1, 5),
-    "ass": (1, 5),
-    "big_tits": (1, 5),
-    "blowjob": (1, 5),
-    "milf": (1, 5),
-    "taboo": (1, 5),
-    "voyeur": (5, 7),
-    "abg": (5, 7),
-    "goon": (5, 8),
-    "bop": (5, 8),
-    "main": (7, 10),
-    "packs": (8, 10),
+    "ai": _FULL_LADDER,
+    "ass": _FULL_LADDER,
+    "big_tits": _FULL_LADDER,
+    "blowjob": _FULL_LADDER,
+    "milf": _FULL_LADDER,
+    "taboo": _FULL_LADDER,
+    "voyeur": _FULL_LADDER,
+    "abg": _FULL_LADDER,
+    "goon": _FULL_LADDER,
+    "bop": _FULL_LADDER,
+    "main": _FULL_LADDER,
+    "packs": _FULL_LADDER,
+    "full_length": _FULL_LADDER,
 }
 
 _POOL_NAME_TO_NETWORK_KEY: dict[str, str] = {
@@ -32,40 +38,12 @@ _POOL_NAME_TO_NETWORK_KEY: dict[str, str] = {
 
 
 def tier_band_for_pool_name(name: str) -> tuple[int, int] | None:
+    """Return rarity band for a content pool name, or None if the name is empty."""
     n = (name or "").strip().upper()
     if not n:
         return None
-
-    net_key = _POOL_NAME_TO_NETWORK_KEY.get(n)
-    if net_key:
-        return _NETWORK_KEY_TIER_BANDS.get(net_key)
-
-    if "SPOTLIGHT" in n:
-        return 5, 7
-    if any(x in n for x in ("VAULT", "RELIC", "MYTHIC")):
-        return 7, 10
-    if "LOOT ROOM" in n:
-        if "SPOTLIGHT" in n:
-            return 5, 7
-        if any(x in n for x in ("VAULT", "RELIC", "MYTHIC")):
-            return 7, 10
-        return 1, 5
-
-    if "PACK" in n and "PROMO" in n:
-        return 8, 10
-    if "MAIN" in n and "GROUP" in n:
-        return 7, 10
-    if any(x in n for x in ("VOYEUR", "PUBLIC")):
-        return 5, 7
-    if any(x in n for x in ("ABG", "LBFM")):
-        return 5, 7
-    if "GOON" in n:
-        return 5, 8
-    if "BOP" in n:
-        return 5, 8
-    if n.endswith(" POOL") or " POOL" in n:
-        return 1, 5
-    return None
+    # Shared library: any live pool (AOF lanes, VIP, LOOT ROOM*, packs, hubs) → 1–10.
+    return _FULL_LADDER
 
 
 def _upsert_eligibility(

@@ -8,12 +8,13 @@ from datetime import datetime, timezone
 
 import httpx
 
+from app.data.aof_network import BANNED_MAIN_GROUP_IDENT
 from app.workers.celery_app import celery
 
 logger = logging.getLogger(__name__)
 
 # Banned AOF Main — do not attempt Telegram send; Buffer mirror still runs.
-_BANNED_MAIN_GROUP_CHAT_ID = -1003206350461
+_BANNED_MAIN_GROUP_CHAT_ID = int(BANNED_MAIN_GROUP_IDENT)
 
 
 def _mirror_to_buffer() -> None:

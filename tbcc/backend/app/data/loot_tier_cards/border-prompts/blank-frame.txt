@@ -1,0 +1,25 @@
+CRITICAL OVERRIDE — EMPTY CARD FRAME ONLY.
+Ignore every character / NSFW / persona / lingerie / pose / extras dropdown. Those plugins MUST NOT appear in the image.
+
+OUTPUT: ONE image. Aspect ratio 1:1 square. PNG with TRANSPARENT (alpha) center AND transparent outer background.
+
+PURPOSE: reusable AOF LOOT card FRAME only — to be composited in code over any photo.
+
+DRAW ONLY THE CHROME:
+- Dark chrome / wet vinyl rectangular card border with thin neon accent (hot-pink + cyan).
+- TOP-LEFT: small distressed "AOF LOOT" wordmark on the frame.
+- TOP-RIGHT: empty tier plate (blank dark metal rectangle) for code to stamp later.
+- BOTTOM BAND: empty nameplate strip (blank) for code to stamp later.
+- Thin ASCII corner ticks only (no readable sentences).
+- OPTIONAL faint badges outlines: RESTRICTED / ADULT LANE as chrome lines only.
+
+CENTER WINDOW: must be FULLY TRANSPARENT (true alpha hole). If the model cannot output alpha, fill the center with pure chroma green #00FF00 flat (no texture) for keying.
+OUTER BACKGROUND outside the card: also transparent (or #00FF00 if alpha unsupported).
+
+DO NOT draw: any person, woman, man, face, body, skin, tits, nude, sex act, object, sealed pack, room, toilet, furniture, text inside the window, QR, t.me links, filled artwork in the center.
+
+STYLE: photoreal UI chrome product shot, wet vinyl, sharp edges, clean cutout, empty window, 8K border detail.
+AVOID: opaque center fill (unless #00FF00 key), subjects, people, nudes, smut, martyrs, cartoon, blurry edges, wrong aspect.
+
+--- NEGATIVE ---
+person, people, woman, man, girl, face, body, nude, nudes, naked, tits, breasts, pussy, penis, sex, porn, smut, lingerie, pose, toilet, room, furniture, sealed pack, object in center, opaque center, filled artwork, photograph of human, portrait, character, anime, cartoon, watermark, QR, t.me, collage, filmstrip, grid

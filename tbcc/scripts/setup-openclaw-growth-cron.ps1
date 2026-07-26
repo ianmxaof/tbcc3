@@ -2,7 +2,9 @@
 param(
   [string]$TbccRoot = "",
   [string]$TelegramUserId = "",
-  [string]$CronModel = "openai-codex/gpt-5.2",
+  [string]$CronModel = "openrouter/openai/gpt-oss-20b:free",
+  [int]$OpsEveryMinutes = 120,
+  [int]$GrowthEveryMinutes = 360,
   [switch]$SkipSkillSync
 )
 
@@ -122,8 +124,8 @@ $growthId = "a8c3b1e2-4f5d-6e7a-9b0c-1d2e3f4a5b6c"
 $jobsDoc = @{
   version = 1
   jobs    = @(
-    (New-CronJob -Id $opsId -Name "tbcc-ops-check" -Description "TBCC health + flywheel poll every 20m" -EveryMinutes 20 -Message $opsMessage),
-    (New-CronJob -Id $growthId -Name "tbcc-growth-report" -Description "TBCC growth signals + recommendations every 30m" -EveryMinutes 30 -Message $growthMessage)
+    (New-CronJob -Id $opsId -Name "tbcc-ops-check" -Description "TBCC health + flywheel poll every ${OpsEveryMinutes}m (OpenRouter free)" -EveryMinutes $OpsEveryMinutes -Message $opsMessage),
+    (New-CronJob -Id $growthId -Name "tbcc-growth-report" -Description "TBCC growth signals every ${GrowthEveryMinutes}m (OpenRouter free)" -EveryMinutes $GrowthEveryMinutes -Message $growthMessage)
   )
 }
 
@@ -133,15 +135,15 @@ if (Test-Path -LiteralPath $jobsPath) {
 
 ($jobsDoc | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath $jobsPath -Encoding utf8
 Write-Host "`nWrote cron jobs:" -ForegroundColor Green
-Write-Host "  tbcc-ops-check     every 20m" -ForegroundColor Green
-Write-Host "  tbcc-growth-report every 30m" -ForegroundColor Green
+Write-Host "  tbcc-ops-check     every ${OpsEveryMinutes}m  model=$CronModel" -ForegroundColor Green
+Write-Host "  tbcc-growth-report every ${GrowthEveryMinutes}m  model=$CronModel" -ForegroundColor Green
 
-# Prefer Codex for cron if OpenRouter model was failing
+# Keep OpenClaw default model aligned with cron model
 $ocPath = Join-Path $env:USERPROFILE ".openclaw\openclaw.json"
 if (Test-Path -LiteralPath $ocPath) {
   try {
     $oc = Get-Content -LiteralPath $ocPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($oc.agents.defaults.model.primary -match "openrouter/anthropic/claude-sonnet-4-5") {
+    if ($oc.agents.defaults.model.primary -ne $CronModel) {
       $oc.agents.defaults.model.primary = $CronModel
       if (-not $oc.agents.defaults.models.PSObject.Properties[$CronModel]) {
         $oc.agents.defaults.models | Add-Member -NotePropertyName $CronModel -NotePropertyValue @{} -Force

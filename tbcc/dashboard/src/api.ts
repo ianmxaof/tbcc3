@@ -1,8 +1,64 @@
+import { getApiBase } from "./apiConfig";
+import type { SchedulingStackHealth } from "./utils/schedulerIntervalCountdown";
+
 /**
- * Default `/api` is rewritten by Vite to the TBCC backend (see vite.config.ts).
- * For static hosting without a proxy, set e.g. `VITE_API_BASE=http://127.0.0.1:8000` at build time.
+ * Default `/api` (local) or `/island-api` (production VM) is rewritten by Vite — see vite.config.ts.
+ * For static hosting without a proxy, set e.g. `VITE_API_BASE=https://api.powercore.app` at build time.
  */
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "/api";
+export { getApiBase } from "./apiConfig";
+
+export type SystemHealthConflict = {
+  code: string;
+  severity: string;
+  message: string;
+  action?: string;
+  action_label?: string;
+};
+
+export type SystemHealth = {
+  ok?: boolean;
+  conflicts?: SystemHealthConflict[];
+  recommendations?: string[];
+  import_pipeline?: { active_jobs?: number };
+  ports?: Record<string, boolean | number>;
+  fixable_count?: number;
+  focus?: {
+    state?: { profile?: string; reason?: string; since?: string; auto?: boolean };
+    evaluation?: { suggested_profile?: string | null; lock_events?: number };
+  };
+  scheduling?: Record<string, unknown>;
+};
+
+function parseSchedulingHealth(
+  data: { scheduling?: Record<string, unknown> } & Record<string, unknown>
+): SchedulingStackHealth & {
+  focusProfile?: string;
+} {
+  // /health/system nests fields under scheduling; /health/scheduling/fast is flat (beat_up…).
+  const s = (data.scheduling && typeof data.scheduling === "object" ? data.scheduling : data) as Record<
+    string,
+    unknown
+  >;
+  const beatRunning = Boolean(s.beat_running ?? s.beat_up);
+  const celeryPostRunning = Boolean(
+    s.celery_post_worker_running ?? s.celery_pool_post_up ?? s.celery_post_up
+  );
+  const celeryPostSchedulerRunning = Boolean(
+    s.celery_post_scheduler_worker_running ?? s.celery_post_up ?? s.celery_post_worker_running
+  );
+  return {
+    beatRunning,
+    celeryPostRunning,
+    celeryPostSchedulerRunning,
+    schedulingPaused: Boolean(s.scheduling_paused_by_focus),
+    focusProfile:
+      typeof s.focus_profile === "string"
+        ? s.focus_profile
+        : typeof data.focus === "string"
+          ? data.focus
+          : undefined,
+  };
+}
 
 /** Avoid infinite “Loading…” if the backend or DB never responds (default fetch has no timeout). */
 const FETCH_TIMEOUT_MS = 60_000;
@@ -87,7 +143,7 @@ async function fetchApi<T>(path: string, options?: ApiFetchOptions): Promise<T> 
     : { "Content-Type": "application/json", ...(fetchInit.headers ?? {}) };
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(`${getApiBase()}${path}`, {
       ...fetchInit,
       signal: fetchInit.signal ?? timeoutSignal(timeoutMs),
       headers: mergedHeaders,
@@ -96,7 +152,7 @@ async function fetchApi<T>(path: string, options?: ApiFetchOptions): Promise<T> 
     const msg = isTimedOutFetchError(e)
       ? `Request timed out after ${timeoutMs / 1000}s. Is the API up (port 8000) and the database reachable? If you bulk-approved many items, try again once thumbnails finish loading, or approve in smaller groups.`
       : e instanceof TypeError && e.message === "Failed to fetch"
-        ? "Cannot reach backend. Use `npm run dev` (Vite proxies /api → port 8000), or set VITE_API_BASE to your API URL when serving a static build."
+        ? "Cannot reach backend. Use `npm run dev` (local /api) or `npm run dev:island` (production /island-api), or set VITE_API_BASE for static builds."
         : String(e);
     throw new Error(msg);
   }
@@ -251,9 +307,26 @@ export type LootBotSettingsEffective = {
   bot_token_source: string;
 };
 
+export type ListeningRelayDestinations = {
+  loot_room: {
+    channel_id: number | null;
+    identifier: string;
+    name: string;
+    topics: Array<{ id: number; title: string }>;
+  };
+  vip: {
+    channel_id: number | null;
+    identifier: string;
+    name: string;
+  };
+  network_channel_count: number;
+};
+
 export type ListeningRelaySettings = {
   enabled: boolean;
   channel_id: number | null;
+  /** Each scrobble posts once to a random AOF network channel (main chat). */
+  relay_random_network_channel: boolean;
   message_thread_id: number | null;
   lastfm_username: string | null;
   lastfm_api_key_masked: string | null;
@@ -323,6 +396,44 @@ export type ListeningRelayLastfmPreview = {
   detail?: string;
 };
 
+export type ListeningRelayPostDestination = {
+  kind: "random" | "topic" | "main";
+  label: string;
+  thread_id?: number;
+  channel_id?: number;
+  channel_name?: string;
+  channel_identifier?: string;
+  lane?: string;
+};
+
+export type ListeningRelayPostLogItem = {
+  id: number;
+  created_at: string | null;
+  trigger: string;
+  status: string;
+  source: string | null;
+  source_label: string | null;
+  artist: string | null;
+  title: string | null;
+  album: string | null;
+  url: string | null;
+  headline: string;
+  destination: ListeningRelayPostDestination;
+  template_slot: number | null;
+  template_slots_total: number | null;
+  ascii_beat: boolean;
+  tryptych: boolean;
+  copy_followups_count: number;
+  send_silent: boolean;
+  main_html_preview: string | null;
+  telegram_message_id: number | null;
+  telegram_message_url: string | null;
+  buffer_sent: boolean;
+  discord_sent: boolean;
+  error_message: string | null;
+  extra: Record<string, unknown> | null;
+};
+
 export type LootModifier = {
   id: number;
   kind: string;
@@ -385,6 +496,67 @@ export const api = {
   health: () => fetchApi<{ status: string }>("/health"),
   healthDb: () =>
     fetchApi<{ status?: string; database?: string; error?: string; detail?: string }>("/health/db"),
+  healthSystem: async () => {
+    // /health/system returns HTTP 503 when conflicts exist — body is still valid JSON.
+    const timeoutMs = 20_000;
+    let res: Response;
+    try {
+      res = await fetch(`${getApiBase()}/health/system`, {
+        signal: timeoutSignal(timeoutMs),
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      const msg = isTimedOutFetchError(e)
+        ? `Request timed out after ${timeoutMs / 1000}s.`
+        : e instanceof TypeError && e.message === "Failed to fetch"
+          ? "Cannot reach backend."
+          : String(e);
+      throw new Error(msg);
+    }
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as SystemHealth;
+    } catch {
+      throw new Error(parseFastApiErrorBody(text) || res.statusText || `HTTP ${res.status}`);
+    }
+  },
+  healthSystemRemediate: (codes?: string[]) =>
+    fetchApi<{ health?: SystemHealth }>("/health/system/remediate", {
+      method: "POST",
+      body: JSON.stringify(codes?.length ? { codes } : {}),
+    }),
+  healthScheduling: async () => {
+    // Prefer the fast endpoint; fall back to /health/system when cache is cold or fields missing.
+    try {
+      const data = await fetchApi<Record<string, unknown>>("/health/scheduling/fast");
+      const parsed = parseSchedulingHealth(data);
+      if (data.beat_up != null || data.celery_post_up != null || data.celery_pool_post_up != null) {
+        return parsed;
+      }
+    } catch {
+      /* fall through */
+    }
+    return parseSchedulingHealth(await api.healthSystem());
+  },
+  opsFocus: (profile: string, reason?: string) =>
+    fetchApi<{ ok?: boolean }>("/ops/focus", {
+      method: "POST",
+      body: JSON.stringify({ profile, reason: reason ?? "Dashboard focus apply" }),
+    }),
+  opsAlertsPoll: () =>
+    fetchApi<{
+      alerts?: Array<{
+        id?: string;
+        kind?: string;
+        code?: string;
+        title?: string;
+        message?: string;
+        severity?: string;
+      }>;
+      enabled?: boolean;
+      hub_toast?: boolean;
+      restart_grace?: { active?: boolean };
+    }>("/ops/alerts/poll"),
   watchFolder: {
     status: () => fetchApi<WatchFolderStatus>("/watch-folder/status"),
   },
@@ -523,7 +695,7 @@ export const api = {
         body: JSON.stringify({ ids }),
       }),
     thumbnailUrl: (id: number, opts?: { cacheOnly?: boolean }) => {
-      const base = `${API_BASE}/media/${id}/thumbnail`;
+      const base = `${getApiBase()}/media/${id}/thumbnail`;
       if (opts?.cacheOnly) return `${base}?cache_only=1`;
       return base;
     },
@@ -533,7 +705,7 @@ export const api = {
         body: JSON.stringify({ ids }),
       }),
     /** Full bytes (Telegram download or URL proxy) — use in lightbox / video src. */
-    fileUrl: (id: number) => `${API_BASE}/media/${id}/file`,
+    fileUrl: (id: number) => `${getApiBase()}/media/${id}/file`,
   },
   tags: {
     list: () =>
@@ -567,6 +739,48 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify(body),
       }),
+  },
+  funnelStrategies: {
+    list: (opts?: { surface?: string; pattern?: string; q?: string }) => {
+      const sp = new URLSearchParams();
+      if (opts?.surface) sp.set("surface", opts.surface);
+      if (opts?.pattern) sp.set("pattern", opts.pattern);
+      if (opts?.q) sp.set("q", opts.q);
+      const qs = sp.toString();
+      return fetchApi<
+        Array<{
+          id: number;
+          title: string | null;
+          pattern: string;
+          surface: string;
+          copy_template: string | null;
+          visual_notes: string | null;
+          screenshot_ref: string | null;
+          risk_tags: string | null;
+          is_active: boolean;
+        }>
+      >(qs ? `/funnel-strategies/?${qs}` : "/funnel-strategies/");
+    },
+    context: (surface: string, goal?: string) => {
+      const sp = new URLSearchParams({ surface });
+      if (goal) sp.set("goal", goal);
+      return fetchApi<{ surface: string; context: string }>(`/funnel-strategies/context?${sp.toString()}`);
+    },
+    bulk: (items: Array<{
+      title?: string | null;
+      pattern: string;
+      surface: string;
+      copy_template?: string | null;
+      visual_notes?: string | null;
+      screenshot_ref?: string | null;
+      risk_tags?: string | null;
+    }>) =>
+      fetchApi<{ created: number }>("/funnel-strategies/bulk", {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      }),
+    seedDefaults: () =>
+      fetchApi<{ created: number }>("/funnel-strategies/seed-defaults", { method: "POST" }),
   },
   promoAffiliateLinks: {
     list: (opts?: { sort?: string; active_only?: boolean }) => {
@@ -733,7 +947,7 @@ export const api = {
       if (opts?.skipWatermark) form.append("skip_watermark", "true");
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/import/bytes`, { method: "POST", body: form });
+        res = await fetch(`${getApiBase()}/import/bytes`, { method: "POST", body: form });
       } catch (e) {
         const msg =
           e instanceof TypeError && e.message === "Failed to fetch"
@@ -759,7 +973,7 @@ export const api = {
       if (caption?.trim()) form.append("caption", caption.trim());
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/import/saved-batch`, { method: "POST", body: form });
+        res = await fetch(`${getApiBase()}/import/saved-batch`, { method: "POST", body: form });
       } catch (e) {
         const msg =
           e instanceof TypeError && e.message === "Failed to fetch"
@@ -935,7 +1149,7 @@ export const api = {
       if (opts.skipWatermark) form.append("skip_watermark", "true");
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/import/process-bytes`, { method: "POST", body: form });
+        res = await fetch(`${getApiBase()}/import/process-bytes`, { method: "POST", body: form });
       } catch (e) {
         throw new Error(e instanceof TypeError ? "Cannot reach backend." : String(e));
       }
@@ -1602,6 +1816,11 @@ export const api = {
         "/growth-hub/sync-schedulers",
         { method: "POST" }
       ),
+    applyMainhub: () =>
+      fetchApi<{ ok: boolean; schedulers: Array<{ name: string; action: string; scheduler_id: number | null }> }>(
+        "/growth-hub/apply-mainhub",
+        { method: "POST" }
+      ),
     syncAffiliateRotation: () =>
       fetchApi<{
         ok: boolean;
@@ -1868,7 +2087,7 @@ export const api = {
       form.append("dry_run", opts.dry_run ? "true" : "false");
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/emoji-factory/create-from-upload`, { method: "POST", body: form });
+        res = await fetch(`${getApiBase()}/emoji-factory/create-from-upload`, { method: "POST", body: form });
       } catch (e) {
         const msg =
           e instanceof TypeError && e.message === "Failed to fetch"
@@ -2188,6 +2407,7 @@ export const api = {
     },
   },
   listeningRelay: {
+    destinations: () => fetchApi<ListeningRelayDestinations>("/listening-relay-settings/destinations"),
     get: () =>
       fetchApi<{ settings: ListeningRelaySettings; webhook_secret?: string }>("/listening-relay-settings"),
     patch: (body: Record<string, unknown>) =>
@@ -2221,6 +2441,15 @@ export const api = {
       fetchApi<{ ok: boolean }>(`/listening-relay-settings/ascii-art/${encodeURIComponent(id)}`, {
         method: "DELETE",
       }),
+    history: (params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit != null) qs.set("limit", String(params.limit));
+      if (params?.offset != null) qs.set("offset", String(params.offset));
+      const q = qs.toString();
+      return fetchApi<{ items: ListeningRelayPostLogItem[]; limit: number; offset: number }>(
+        `/listening-relay-settings/history${q ? `?${q}` : ""}`
+      );
+    },
   },
   loot: {
     listModifiers: (includeInactive = true) =>
@@ -2424,7 +2653,7 @@ export const api = {
     uploadBundleZip: async (planId: number, file: File) => {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API_BASE}/subscription-plans/${planId}/bundle-zip`, { method: "POST", body: fd });
+      const res = await fetch(`${getApiBase()}/subscription-plans/${planId}/bundle-zip`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(parseFastApiErrorBody(await res.text()));
       return res.json() as Promise<Record<string, unknown>>;
     },
@@ -2432,7 +2661,7 @@ export const api = {
     uploadPromoImage: async (file: File) => {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch(`${API_BASE}/subscription-plans/upload-promo-image`, { method: "POST", body: fd });
+      const res = await fetch(`${getApiBase()}/subscription-plans/upload-promo-image`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(parseFastApiErrorBody(await res.text()));
       return res.json() as Promise<{
         url: string;
@@ -2719,7 +2948,7 @@ export const api = {
       if (params?.order) sp.set("order", params.order);
       if (params?.sort2) sp.set("sort2", params.sort2);
       if (params?.order2) sp.set("order2", params.order2);
-      return `${API_BASE}/archive/entries/export?${sp.toString()}`;
+      return `${getApiBase()}/archive/entries/export?${sp.toString()}`;
     },
   },
   extensionContextMenu: {

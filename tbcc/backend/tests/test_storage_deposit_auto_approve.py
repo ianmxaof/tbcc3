@@ -24,6 +24,7 @@ def test_clip_tags_passed():
 def test_auto_approve_immediate_without_clip(monkeypatch):
     monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE", "1")
     monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE_REQUIRES_CLIP", "0")
+    monkeypatch.setenv("TBCC_MEDIA_GATEKEEPER_ENABLED", "0")
     media = MagicMock()
     media.id = 9
     media.status = "pending"
@@ -34,7 +35,7 @@ def test_auto_approve_immediate_without_clip(monkeypatch):
     pool.name = "AOF ASS POOL"
 
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.side_effect = [media, pool]
+    db.query.return_value.filter.return_value.first.side_effect = [media, media, pool]
 
     out = maybe_auto_approve_storage_deposit_media(db, 9, {})
     assert out["applied"] is True
@@ -46,6 +47,7 @@ def test_auto_approve_immediate_without_clip(monkeypatch):
 def test_auto_approve_requires_clip_when_configured(monkeypatch):
     monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE", "1")
     monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE_REQUIRES_CLIP", "1")
+    monkeypatch.setenv("TBCC_MEDIA_GATEKEEPER_ENABLED", "0")
     media = MagicMock()
     media.id = 9
     media.status = "pending"
@@ -56,7 +58,12 @@ def test_auto_approve_requires_clip_when_configured(monkeypatch):
     pool.name = "AOF FULL LENGTH POOL"
 
     db = MagicMock()
-    db.query.return_value.filter.return_value.first.side_effect = [media, pool]
+    db.query.return_value.filter.return_value.first.side_effect = [
+        media,  # call1 m_pre
+        media,  # call2 m_pre
+        media,  # call2 m
+        pool,   # call2 pool
+    ]
 
     out = maybe_auto_approve_storage_deposit_media(db, 9, {})
     assert out["applied"] is False
@@ -65,6 +72,24 @@ def test_auto_approve_requires_clip_when_configured(monkeypatch):
     out2 = maybe_auto_approve_storage_deposit_media(db, 9, {"clip_tags": 3})
     assert out2["applied"] is True
     assert out2["mode"] == "clip"
+
+
+def test_scrape_origin_blocked_even_when_gatekeeper_disabled(monkeypatch):
+    monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE", "1")
+    monkeypatch.setenv("TBCC_MEDIA_GATEKEEPER_ENABLED", "0")
+    media = MagicMock()
+    media.id = 99
+    media.status = "pending"
+    media.source_channel = "-1003271959583"
+    media.pool_id = 8
+    src = MagicMock()
+    src.name = "SCRP [ASS SCRP]: test"
+    src.source_type = "telegram_channel"
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.side_effect = [media, src]
+    out = maybe_auto_approve_storage_deposit_media(db, 99, source_label="-1003271959583")
+    assert out["applied"] is False
+    assert out["reason"] == "scrape_origin_blocked"
 
 
 def test_enrich_kill_switch(monkeypatch):

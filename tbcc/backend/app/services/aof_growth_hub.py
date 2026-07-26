@@ -58,10 +58,17 @@ def _a_tag(url: str, anchor: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">{html.escape(anchor)}</a>'
 
 
+def _fiat_display() -> str:
+    from app.services.fiat_checkout_labels import fiat_checkout_display_name
+
+    return fiat_checkout_display_name()
+
+
 def _gumroad_vip_bulletin_link() -> str:
     from app.services.aof_social_links import gumroad_vip_link_html
+    from app.services.fiat_checkout_labels import fiat_checkout_display_name
 
-    return gumroad_vip_link_html(label="from $6/mo") or "aof69.gumroad.com/l/ynnulc"
+    return gumroad_vip_link_html(label=f"from $6/mo — {fiat_checkout_display_name()}") or "card checkout via @aofsubscriptions_bot"
 
 
 def gumroad_vip_embed_rotation_enabled() -> bool:
@@ -178,7 +185,7 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
         "🚀 <b>SUPPORT AOF</b>\n"
         "🔥 Buy Premium Packs: @aofsubscriptions_bot\n"
         f"⭐ AOF VIP: @aofsubscriptions_bot — /subscribe\n"
-        f"💳 Gumroad VIP (card/PayPal): {_gumroad_vip_bulletin_link()}\n"
+        f"💳 AOF VIP ({_fiat_display()}): {_gumroad_vip_bulletin_link()}\n"
         "📢 Referral Program: @aofsubscriptions_bot — /referral\n"
         f"{donate_line}"
         f"{partner_lines}"
@@ -692,10 +699,12 @@ def _append_gate_fomo_variations(variations: list[str], footer: str) -> list[str
 
 
 def _gumroad_vip_promo_variations(footer: str) -> list[str]:
-    """Dedicated VIP + Gumroad embed slots (bare URL → Telegram preview card)."""
+    """Dedicated VIP + card/USD embed slots (bare URL → Telegram preview card)."""
     from app.services.aof_main_group_copy import vip_promo_minimal_bodies
     from app.services.aof_social_links import gumroad_vip_url
+    from app.services.fiat_checkout_labels import fiat_checkout_display_name
 
+    disp = fiat_checkout_display_name()
     if not gumroad_vip_embed_rotation_enabled():
         return []
     url = gumroad_vip_url()
@@ -705,11 +714,11 @@ def _gumroad_vip_promo_variations(footer: str) -> list[str]:
         (
             "⭐ <b>AOF VIP</b> — ad-free · early · all lanes.\n"
             "Public gets gates — VIP gets direct files, bigger batches.\n"
-            "<i>Card / PayPal on Gumroad — or Pay ⭐ below.</i>"
+            f"<i>{disp} (card / PayPal) — or Pay ⭐ below.</i>"
         ),
         (
-            "💳 <b>VIP from $6/mo</b> — monthly → 2-year ladder on Gumroad.\n"
-            "Same access as Stars · pick your term on the landing page."
+            f"💳 <b>VIP from $6/mo</b> — monthly → 2-year ladder on {disp}.\n"
+            "Same access as Stars · pick your term on the checkout page."
         ),
     ]
     bodies.extend(vip_promo_minimal_bodies()[:1])

@@ -116,8 +116,8 @@ def export_loot_jobs() -> list[dict]:
                 "shapeHint": SHAPE_FOR_ASPECT.get(aspect, "Square = 512x512"),
                 "prompt": text,
                 "negative": (
-                    "nudity, sex acts, genitals, pornography, QR codes, t.me links, "
-                    "cute/wholesome tone, cartoon, misspelled tier names, watermark, "
+                    "minors, childlike subjects, cartoon, cute/wholesome tone, "
+                    "QR codes, t.me links, misspelled tier names, softcore-only when explicit requested, "
                     + DEFAULT_NEGATIVE
                 ),
             }
@@ -175,7 +175,12 @@ def write_model_text(jobs: list[dict]) -> None:
         "settings",
         "  pageTitle = Gemini-parity promo + loot cards · $0 Perchance primary",
         "  numImages = [Number(input.numImages)]",
+        "  # No forum / public gallery on the generator page (t2i-framework).",
         "  socialFeatures = disabled",
+        "  comments = disabled",
+        "  gallery = disabled",
+        "  # Private lab — do not surface community chrome.",
+        "  privateGenerator = true",
         "",
         "  imageOptions",
         "    prompt = [input.artStyle.prompt]",

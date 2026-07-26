@@ -31,6 +31,8 @@ def _env_enabled() -> bool:
 
 
 def _row_texts(row: WatermarkSettings | None) -> tuple[str, str, str]:
+    from app.data.aof_telegram_links import normalize_telegram_me_brand
+
     primary = (row.text_primary or "").strip() if row else ""
     secondary = (row.text_secondary or "").strip() if row else ""
     tertiary = (row.text_tertiary or "").strip() if row else ""
@@ -42,7 +44,10 @@ def _row_texts(row: WatermarkSettings | None) -> tuple[str, str, str]:
         secondary = env2
     if not tertiary and env3:
         tertiary = env3
-    return primary[:120], secondary[:120], tertiary[:120]
+    primary = normalize_telegram_me_brand(primary)[:120]
+    secondary = normalize_telegram_me_brand(secondary)[:120] if secondary else ""
+    tertiary = normalize_telegram_me_brand(tertiary)[:120] if tertiary else ""
+    return primary, secondary, tertiary
 
 
 def get_effective_watermark_settings(db: Session | None = None) -> dict[str, Any]:
@@ -91,6 +96,8 @@ def build_apply_config(
     *,
     override: WatermarkOptions | dict[str, Any] | None = None,
 ) -> wm.WatermarkApplyConfig:
+    from app.data.aof_telegram_links import normalize_telegram_me_brand
+
     base = get_effective_watermark_settings(db)
     opts = override
     if isinstance(opts, dict):
@@ -101,11 +108,11 @@ def build_apply_config(
         if opts.enabled is not None:
             base["enabled"] = bool(opts.enabled)
         if opts.text is not None:
-            base["text"] = (opts.text or "").strip()[:120]
+            base["text"] = normalize_telegram_me_brand((opts.text or "").strip())[:120]
         if opts.text_secondary is not None:
-            base["text_secondary"] = (opts.text_secondary or "").strip()[:120]
+            base["text_secondary"] = normalize_telegram_me_brand((opts.text_secondary or "").strip())[:120]
         if opts.text_tertiary is not None:
-            base["text_tertiary"] = (opts.text_tertiary or "").strip()[:120]
+            base["text_tertiary"] = normalize_telegram_me_brand((opts.text_tertiary or "").strip())[:120]
         texts = [t for t in (base["text"], base["text_secondary"], base["text_tertiary"]) if t]
         base["texts"] = texts
         base["enabled"] = base["enabled"] and bool(texts)

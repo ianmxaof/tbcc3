@@ -138,7 +138,7 @@ def seed_vip_membership_skus(db, *, execute: bool, report: dict) -> None:
         desc = (
             f"{sku.blurb}\n"
             f"${sku.price_usd:.0f} / {sku.duration_days}d · {stars}⭐\n"
-            "Card: Gumroad AOF VIP (same term). Crypto: NOWPayments.\n"
+            "Card: same VIP term via card / USD checkout. Crypto: NOWPayments.\n"
             "Fulfillment: @aofsubscriptions_bot → VIP invite DM."
         )
         if existing:

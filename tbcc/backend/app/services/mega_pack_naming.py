@@ -18,7 +18,7 @@ _MAX_FOLDER_NAME = 256
 
 
 def pack_brand_handle() -> str:
-    return (os.getenv("TBCC_MEGA_PACK_BRAND_HANDLE") or "@AOFMAINHUB").strip() or "@AOFMAINHUB"
+    return (os.getenv("TBCC_MEGA_PACK_BRAND_HANDLE") or "telegram.me/aofmainhub").strip() or "telegram.me/aofmainhub"
 
 
 def pack_name_tail() -> str:
@@ -148,7 +148,7 @@ def extract_pack_theme(folder_name: str) -> str:
             continue
         if up in tail_tokens:
             continue
-        if "ALLMYLINKS.COM" in up or up.startswith("T.ME/"):
+        if "ALLMYLINKS.COM" in up or up.startswith("T.ME/") or up.startswith("TELEGRAM.ME/"):
             continue
         cleaned.append(part)
 

@@ -2,9 +2,10 @@
 #   .\start.ps1              - backend + dashboard; opens http://127.0.0.1:5173 in Brave if installed, else default browser
 #   .\start.ps1 -NoOpen      - do not open a browser
 #   .\start.ps1 -Open        - also open http://127.0.0.1:8000/docs (Swagger) in the same browser
-#   .\start.ps1 -Full        - backend + dashboard + Redis + Celery + Beat + payment bot + secretary + loot + album composer
+#   .\start.ps1 -Full        - full farm; lean (TBCC_STACK_PROFILE=lean): API + Celery + Beat + payment + loot only
 #                            (+ NSFW Detect + Lustpress when .env URLs are localhost and repos exist under services/)
 #                            (Last.fm "listening relay" has no extra exe: TBCC-Beat schedules it, TBCC-Celery post queue runs it)
+#   After revenue-island cutover: TBCC_REVENUE_ISLAND_ACTIVE=1 keeps home payment/loot Off (no Telegram 409).
 #   .\start.ps1 -SkipDocker     - skip Postgres/Redis step (use when Docker DBs already running)
 #   .\start.ps1 -SkipTailscale  - skip Tailscale mesh check (when TBCC_REMOTE_STACK_HOST is set in .env)
 #   .\start.ps1 -SkipNgrok      - skip ngrok tunnel check (companion webhooks / promo / NOWPayments IPN)
@@ -697,7 +698,11 @@ $stackProfile = ($dotEnv['TBCC_STACK_PROFILE'] -as [string]).Trim().ToLower()
 $leanStack = $stackProfile -eq 'lean'
 if ($leanStack) {
   $skipEnrichment = $true
-  Write-Host '[stack] TBCC_STACK_PROFILE=lean - core stack + Album Composer; skipping forum, macro search, admin/companion, enrichment (enable in tray Services).' -ForegroundColor DarkCyan
+  Write-Host '[stack] TBCC_STACK_PROFILE=lean - API + Celery + Beat + payment + loot; dashboard/secretary/album/post lanes Off (enable in tray Services).' -ForegroundColor DarkCyan
+  $islandActive = (($dotEnv['TBCC_REVENUE_ISLAND_ACTIVE'] -as [string]).Trim().ToLower() -match '^(1|true|yes)$')
+  if ($islandActive) {
+    Write-Host '[stack] TBCC_REVENUE_ISLAND_ACTIVE=1 - home payment/loot default Off (island owns tokens).' -ForegroundColor DarkYellow
+  }
 }
 $enrichment = @{ Titles = @(); Commands = @(); Notes = @() }
 if (-not $skipEnrichment) {
@@ -764,9 +769,14 @@ if ($wtTabs) {
       }
     }
   }
-  $titles = @('TBCC-Backend', 'TBCC-Dashboard')
-  $cmds = @($cmdBackend, $cmdDashboard)
-  if ($fullStack -and $openClawAutoStart -and $cmdOpenClaw) {
+  if ($leanStack) {
+    $titles = @('TBCC-Backend')
+    $cmds = @($cmdBackend)
+  } else {
+    $titles = @('TBCC-Backend', 'TBCC-Dashboard')
+    $cmds = @($cmdBackend, $cmdDashboard)
+  }
+  if ($fullStack -and (-not $leanStack) -and $openClawAutoStart -and $cmdOpenClaw) {
     $titles = @('TBCC-Backend', 'OpenClaw-Gateway', 'TBCC-Dashboard')
     $cmds = @($cmdBackend, $cmdOpenClaw, $cmdDashboard)
     if (-not (Test-TbccOpenClawConfigured)) {
@@ -778,16 +788,26 @@ if ($wtTabs) {
     $cmds += $cmdAofForum
   }
   if ($fullStack -and $redisOk) {
-    $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Celery-Post-Scheduler', 'TBCC-Celery-Ops', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
-    $cmds += $cmdCelery, $cmdCeleryPost, $cmdCeleryPostScheduler, $cmdCeleryOps, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot, $cmdAlbumComposer
-    if (-not $leanStack) {
+    if ($leanStack) {
+      # True lean: one Celery + Beat + revenue bots (toggles / REVENUE_ISLAND_ACTIVE may still skip payment/loot).
+      $titles += 'TBCC-Celery', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-LootBot'
+      $cmds += $cmdCelery, $cmdBeat, $cmdPay, $cmdLoot
+    } else {
+      $titles += 'TBCC-Celery', 'TBCC-Celery-Post', 'TBCC-Celery-Post-Scheduler', 'TBCC-Celery-Ops', 'TBCC-Beat', 'TBCC-PaymentBot', 'TBCC-SecretaryBot', 'TBCC-LootBot', 'TBCC-AlbumComposer'
+      $cmds += $cmdCelery, $cmdCeleryPost, $cmdCeleryPostScheduler, $cmdCeleryOps, $cmdBeat, $cmdPay, $cmdSecretary, $cmdLoot, $cmdAlbumComposer
       $titles += 'TBCC-MacroSearchBot', 'TBCC-CompanionBot', 'TBCC-AdminBot'
       $cmds += $cmdMacroSearch, $cmdCompanion, $cmdAdminBot
     }
   } elseif ($fullStack -and -not $redisOk) {
-    $titles += 'TBCC-LootBot', 'TBCC-AlbumComposer'
-    $cmds += $cmdLoot, $cmdAlbumComposer
-    Write-Host '  (-WtTabs) Redis unavailable - Backend + Dashboard + Loot (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
+    if ($leanStack) {
+      $titles += 'TBCC-LootBot'
+      $cmds += $cmdLoot
+      Write-Host '  (-WtTabs lean) Redis unavailable - Backend + Loot only (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
+    } else {
+      $titles += 'TBCC-LootBot', 'TBCC-AlbumComposer'
+      $cmds += $cmdLoot, $cmdAlbumComposer
+      Write-Host '  (-WtTabs) Redis unavailable - Backend + Dashboard + Loot (no Celery/Beat/Payment).' -ForegroundColor DarkYellow
+    }
   }
   if ($enrichment.Titles.Length -gt 0) {
     $titles += $enrichment.Titles

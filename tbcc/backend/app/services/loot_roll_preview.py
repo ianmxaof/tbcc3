@@ -57,11 +57,20 @@ def _weighted_choice(items: list[Any], weights: list[float], rng: random.Random)
 
 
 def _pools_for_tier(eligible_rows: list[LootPoolEligibility], rarity: int) -> list[LootPoolEligibility]:
+    """
+    Pools eligible for a rarity roll.
+
+    Shared-library mode: use every loot_enabled row (bands are informational /
+    seeded as 1–10). If none are enabled, fall back to the input list.
+    """
+    enabled = [r for r in eligible_rows if bool(getattr(r, "loot_enabled", True))]
+    if enabled:
+        return enabled
     out: list[LootPoolEligibility] = []
     for r in eligible_rows:
         lo = int(r.min_rarity_tier) if r.min_rarity_tier is not None else 1
         hi = int(r.max_rarity_tier) if r.max_rarity_tier is not None else 10
-        if lo <= rarity <= hi:
+        if lo <= int(rarity) <= hi:
             out.append(r)
     return out or list(eligible_rows)
 
@@ -127,6 +136,9 @@ def build_roll_preview(
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
+        Media.telegram_message_id.isnot(None),
+        Media.telegram_message_id > 0,
+        ~Media.file_id.like("local:%"),
     )
     if telegram_user_id and not is_loot_operator(telegram_user_id):
         seen_ids = [

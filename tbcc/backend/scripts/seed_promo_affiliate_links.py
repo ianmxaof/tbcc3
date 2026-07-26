@@ -20,7 +20,7 @@ from app.models.promo_affiliate_link import PromoAffiliateLink
 
 SEED_ITEMS: list[dict] = [
     {
-        "label": "AOF VIP Gumroad",
+        "label": "AOF VIP card checkout",
         "url": "https://aof69.gumroad.com/l/ynnulc",
         "payout_kind": "subscription",
         "priority_tier": 2,
@@ -263,6 +263,24 @@ SEED_ITEMS: list[dict] = [
         "placements": ["telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🔥 {link} — invite credits",
+    },
+    {
+        "label": "Loot God free roll",
+        "url": "https://telegram.me/aof_lootgod_bot?start=loot_free",
+        "payout_kind": "funnel",
+        "priority_tier": 1,
+        "placements": ["telegram_footer", "loot_roll", "links_hub"],
+        "network_keys": ["loot", "main", "voyeur", "goon"],
+        "copy_template": "🎲 {link} — five free DM rolls (tier teaser)",
+    },
+    {
+        "label": "Loot Goblin — channel FOMO",
+        "url": "https://telegram.me/aof_lootgod_bot",
+        "payout_kind": "funnel",
+        "priority_tier": 2,
+        "placements": ["telegram_footer", "loot_roll"],
+        "network_keys": [],
+        "copy_template": "👺 {link} — goblin grants blink into lanes on scrobble; tap Claim fast",
     },
 ]
 

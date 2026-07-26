@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -74,6 +74,29 @@ class ScheduleDropBody(BaseModel):
 @router.get("/status")
 def get_growth_hub_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     return growth_hub_status(db)
+
+
+@router.post("/apply-stars-bait")
+def post_apply_stars_bait(
+    post_channel_now: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Seed Stars-bait funnel RAG + main-group pacing scheduler."""
+    from app.services.stars_bait_outreach import apply_stars_bait_outreach
+
+    report = apply_stars_bait_outreach(db, execute=True, post_channel_now=post_channel_now)
+    db.commit()
+    return {"ok": True, **report}
+
+
+@router.post("/apply-mainhub")
+def post_apply_mainhub(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Seed @aofmainhub CTA + liveness schedulers (durable pin + ephemeral pings)."""
+    from app.services.mainhub_growth import apply_mainhub_growth
+
+    report = apply_mainhub_growth(db, execute=True, post_now=False)
+    db.commit()
+    return {"ok": True, **report}
 
 
 @router.post("/sync-schedulers")

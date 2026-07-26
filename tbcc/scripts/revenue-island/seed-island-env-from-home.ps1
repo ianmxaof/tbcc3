@@ -13,6 +13,16 @@ $islandEnv = Join-Path $tbccRoot "infra\.env.revenue-island"
 $example = Join-Path $tbccRoot "infra\env.revenue-island.example"
 
 if (-not (Test-Path -LiteralPath $homeEnv)) { throw "Missing $homeEnv" }
+
+# Guard: a failed scp can balloon this file to gigabytes and OOM the seed step.
+if (Test-Path -LiteralPath $islandEnv) {
+  $envBytes = (Get-Item -LiteralPath $islandEnv).Length
+  if ($envBytes -gt 512000) {
+    Write-Host "WARN island env is $([math]::Round($envBytes/1MB,1)) MB - recreating from example (likely scp corruption)." -ForegroundColor Red
+    Remove-Item -LiteralPath $islandEnv -Force
+  }
+}
+
 if (-not (Test-Path -LiteralPath $islandEnv)) {
   if (-not (Test-Path -LiteralPath $example)) { throw "Missing example and island env" }
   Copy-Item $example $islandEnv
@@ -57,6 +67,8 @@ function Set-DotEnvKey([string[]]$lines, [string]$key, [string]$value) {
 # Avoid $home — PowerShell treats HOME as a read-only automatic/drive variable.
 $homeMap = Read-DotEnvMap $homeEnv
 $lines = @(Get-Content -LiteralPath $islandEnv)
+$existingIsland = Read-DotEnvMap $islandEnv
+$preserveWorkerImage = ($existingIsland["TBCC_WORKER_IMAGE"] -as [string]).Trim()
 
 # Keys: islandKey = homeKey (or same name)
 $copies = [ordered]@{
@@ -74,6 +86,10 @@ $copies = [ordered]@{
   "TBCC_R2_S3_ENDPOINT"       = "TBCC_R2_S3_ENDPOINT"
   "TBCC_R2_ACCESS_KEY_ID"     = "TBCC_R2_ACCESS_KEY_ID"
   "TBCC_R2_SECRET_ACCESS_KEY" = "TBCC_R2_SECRET_ACCESS_KEY"
+  "TBCC_X_PROMO_R2_BUCKET"              = "TBCC_X_PROMO_R2_BUCKET"
+  "TBCC_X_PROMO_R2_PUBLIC_BASE_URL"     = "TBCC_X_PROMO_R2_PUBLIC_BASE_URL"
+  "TBCC_X_PROMO_R2_PREFIX"              = "TBCC_X_PROMO_R2_PREFIX"
+  "TBCC_BUFFER_X_PROMO_IMAGES"          = "TBCC_BUFFER_X_PROMO_IMAGES"
   "TBCC_ADMAVEN_API_TOKEN"       = "TBCC_ADMAVEN_API_TOKEN"
   "TBCC_ADMAVEN_LINK_TITLE"      = "TBCC_ADMAVEN_LINK_TITLE"
   "TBCC_PIXELDRAIN_API_KEY"      = "TBCC_PIXELDRAIN_API_KEY"
@@ -104,6 +120,9 @@ $copies = [ordered]@{
   "TBCC_AOF_VIP_EARLY_DROP_ENABLED"         = "TBCC_AOF_VIP_EARLY_DROP_ENABLED"
   "TBCC_AOF_VIP_MIRROR_ENABLED"             = "TBCC_AOF_VIP_MIRROR_ENABLED"
   "TBCC_REVENUE_ISLAND_ACTIVE"              = "TBCC_REVENUE_ISLAND_ACTIVE"
+  "TBCC_WATERMARK_TEXT"                     = "TBCC_WATERMARK_TEXT"
+  "TBCC_WATERMARK_TEXT_SECONDARY"           = "TBCC_WATERMARK_TEXT_SECONDARY"
+  "TBCC_WATERMARK_TEXT_TERTIARY"            = "TBCC_WATERMARK_TEXT_TERTIARY"
   "TBCC_BUFFER_API_KEY"                     = "TBCC_BUFFER_API_KEY"
   "TBCC_BUFFER_ORGANIZATION_ID"             = "TBCC_BUFFER_ORGANIZATION_ID"
   "TBCC_BUFFER_CHANNEL_ID_PRIMARY"          = "TBCC_BUFFER_CHANNEL_ID_PRIMARY"
@@ -111,7 +130,25 @@ $copies = [ordered]@{
   "TBCC_BUFFER_CHANNEL_IDS"                 = "TBCC_BUFFER_CHANNEL_IDS"
   "TBCC_BUFFER_X_AFFILIATE_FIRST"           = "TBCC_BUFFER_X_AFFILIATE_FIRST"
   "TBCC_BUFFER_X_LINK_CYCLE"                = "TBCC_BUFFER_X_LINK_CYCLE"
-  "TBCC_PROMO_PUBLIC_BASE_URL"              = "TBCC_PROMO_PUBLIC_BASE_URL"
+  "TBCC_LOOT_BUFFER_PUBLISH_NOW"            = "TBCC_LOOT_BUFFER_PUBLISH_NOW"
+  "TBCC_BUFFER_ARMORY_STARTUP_REFILL"       = "TBCC_BUFFER_ARMORY_STARTUP_REFILL"
+  "TBCC_BUFFER_ARMORY_REFILL_HOURS"         = "TBCC_BUFFER_ARMORY_REFILL_HOURS"
+  "TBCC_BUFFER_NATIVE_MIN_DEPTH"            = "TBCC_BUFFER_NATIVE_MIN_DEPTH"
+  "TBCC_BUFFER_NATIVE_MAX_SCHEDULED"        = "TBCC_BUFFER_NATIVE_MAX_SCHEDULED"
+  "TBCC_SALE_ANNOUNCE_ENABLED"              = "TBCC_SALE_ANNOUNCE_ENABLED"
+  "TBCC_SALE_ANNOUNCE_TARGETS"              = "TBCC_SALE_ANNOUNCE_TARGETS"
+  "TBCC_SALE_ANNOUNCE_BUFFER_MODE"          = "TBCC_SALE_ANNOUNCE_BUFFER_MODE"
+  "TBCC_SALE_ANNOUNCE_MIN_INTERVAL_S"       = "TBCC_SALE_ANNOUNCE_MIN_INTERVAL_S"
+  "TBCC_SALE_ANNOUNCE_STAGGER_S"            = "TBCC_SALE_ANNOUNCE_STAGGER_S"
+  "TBCC_SALE_ANNOUNCE_SKIP_KEYS"            = "TBCC_SALE_ANNOUNCE_SKIP_KEYS"
+  "TBCC_POOL_BUFFER_MIRROR"                 = "TBCC_POOL_BUFFER_MIRROR"
+  "TBCC_STARS_BAIT_DM_ENABLED"              = "TBCC_STARS_BAIT_DM_ENABLED"
+  "TBCC_STARS_BAIT_DM_BATCH"                = "TBCC_STARS_BAIT_DM_BATCH"
+  "TBCC_STARS_BAIT_DM_INTERVAL_MIN"         = "TBCC_STARS_BAIT_DM_INTERVAL_MIN"
+  "TBCC_STARS_BAIT_CHANNEL_INTERVAL_MIN"    = "TBCC_STARS_BAIT_CHANNEL_INTERVAL_MIN"
+  "TBCC_FIAT_CHECKOUT_BUTTON_LABEL"         = "TBCC_FIAT_CHECKOUT_BUTTON_LABEL"
+  "TBCC_FIAT_CHECKOUT_DISPLAY_NAME"         = "TBCC_FIAT_CHECKOUT_DISPLAY_NAME"
+  "TBCC_FIAT_OPEN_PAY_BUTTON_LABEL"         = "TBCC_FIAT_OPEN_PAY_BUTTON_LABEL"
 }
 
 # Prefer loot token aliases used at home
@@ -165,6 +202,23 @@ $forceKeep = @{
   "POSTGRES_USER"            = "postgres"
   "TBCC_LINK_GATE_PROVIDERS" = "linkvertise,admaven,workink"
   "TBCC_LINK_GATE_ROTATION"  = "first"
+  "TBCC_SCRAPE_HUB_FIRST"    = "1"
+  "TBCC_SCRAPE_MICRO_PULL_ENABLED" = "1"
+  "TBCC_SCRAPE_MICRO_PULL_MODE"    = "firehose"
+  "TBCC_INTAKE_SCHEDULER_ENABLED"  = "1"
+  "TBCC_INBOX_INTAKE_ENABLED"      = "1"
+  "TBCC_PAYMENT_STORAGE_DEPOSIT"   = "1"
+  "TBCC_SCRAPE_MICRO_PULL_LIMIT"   = "10"
+  "TBCC_SCRAPE_MICRO_PULL_DEDUPE"  = "1"
+  "TBCC_GATEKEEPER_REVIEW_BOT"     = "payment"
+  "TBCC_GATEKEEPER_REVIEW_COPY_MEDIA" = "1"
+  "TBCC_GATEKEEPER_LANE_PICKER"    = "1"
+  "TBCC_GATEKEEPER_HUB_AUTO_APPROVE" = "1"
+  "TBCC_GATEKEEPER_HUB_AUTO_APPROVE_MIN" = "70"
+  "TBCC_GATEKEEPER_APPROVE_MICRO_PULL" = "1"
+  "TBCC_LOOT_REVEAL_VIDEO"             = "1"
+  "TBCC_LOOT_BORDER_REVEAL"            = "1"
+  "TBCC_RELAY_USE_BOT_API"             = "1"
 }
 foreach ($k in $forceKeep.Keys) {
   $lines = Set-DotEnvKey $lines $k $forceKeep[$k]
@@ -184,16 +238,21 @@ if (-not $islandPublic) {
     $islandPublic = $cand
   }
 }
+if (-not $islandPublic) {
+  $islandPublic = "https://api.powercore.app"
+}
 if ($islandPublic) {
   $lines = Set-DotEnvKey $lines "TBCC_PUBLIC_API_BASE_URL" $islandPublic
   $lines = Set-DotEnvKey $lines "TBCC_API_PUBLIC_URL" $islandPublic
-  if ([string]::IsNullOrWhiteSpace($homeMap["TBCC_PROMO_PUBLIC_BASE_URL"])) {
-    $lines = Set-DotEnvKey $lines "TBCC_PROMO_PUBLIC_BASE_URL" $islandPublic
-    Write-Host ("OK  TBCC_PROMO_PUBLIC_BASE_URL (= public API)") -ForegroundColor Green
-  }
-  Write-Host ("OK  TBCC_PUBLIC_API_BASE_URL + TBCC_API_PUBLIC_URL ({0} chars)" -f $islandPublic.Length) -ForegroundColor Green
+  $lines = Set-DotEnvKey $lines "TBCC_PROMO_PUBLIC_BASE_URL" $islandPublic
+  Write-Host ("OK  TBCC_PUBLIC_API_BASE_URL + TBCC_API_PUBLIC_URL + TBCC_PROMO_PUBLIC_BASE_URL ({0} chars)" -f $islandPublic.Length) -ForegroundColor Green
 } else {
   Write-Host "SKIP TBCC_PUBLIC_API_BASE_URL - set TBCC_ISLAND_API_PUBLIC_URL on home or run install-island-api-tunnel.sh on VPS." -ForegroundColor Yellow
+}
+
+if ($preserveWorkerImage -and $preserveWorkerImage -notmatch ":latest$") {
+  $lines = Set-DotEnvKey $lines "TBCC_WORKER_IMAGE" $preserveWorkerImage
+  Write-Host ("OK  TBCC_WORKER_IMAGE (preserved {0})" -f $preserveWorkerImage) -ForegroundColor Green
 }
 
 # If POSTGRES_PASSWORD still placeholder, leave DB alone (restore already used change-me-strong).

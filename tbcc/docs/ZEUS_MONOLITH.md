@@ -1,7 +1,7 @@
 # Zeus monolith — architecture (Phase 0)
 
 **Status:** Design only. No bots merged, no processes spawned by this document.
-**Last updated:** 2026-07-14 (reconciled with second-opinion review — see §10 + `ZEUS_MONOLITH_REVIEW.md`)
+**Last updated:** 2026-07-19 (Phase 2 co-host tray-wire + Remixer Cover + click beacon)
 **Companion to:** `ZEUS_MENU.md` (Phase 1, shipped), `handoffs/zeus-monolith-primer.md` (agent primer),
 `handoffs/supervisor-remote-deploy-design.md` (single-writer lease).
 
@@ -107,7 +107,7 @@ loot, album_composer, openclaw, llm_chat, watch, nsfw, lustpress, clip`.
 | `macro_search`, `llm_chat` | **Merge into secretary/Zeus** | Bot-API only — process-count win, behind a multi-`Application` host. |
 | `admin` | **Redesign — NOT a Bot-API merge** | Long-lived Telethon userbot on a shared session; folding into secretary is a session-risk merge, not a token co-host. Deferred. |
 | `companion`, `loot` | **Candidate merge (later)** | Bot-API; keep as URL faces until Phase 4 co-host is proven. |
-| `album_composer` | **Stays (worker face)** | Marked mandatory in tray; ops exposed via Zeus router, process unchanged. |
+| `album_composer` | **Stays (worker face)** | Remixer + **Cover** (`/cover` clean `copy_message` echo). Not a new tray service; ops via Zeus router, process unchanged. |
 | `backend`, `celery*`, `beat` | **Stay** | Infra; Telethon jobs already run here behind Celery + the account lock — Zeus *routes* to them, does not re-host. |
 | `dashboard, forum, openclaw, watch, nsfw, lustpress, clip` | **Out of scope** | Not part of the Telegram surface. |
 
@@ -192,8 +192,8 @@ identity, raw sessions — is operator-only. This list is the contract; widening
 | Phase | Goal | Verify |
 |-------|------|--------|
 | **0** | This doc: matrix, process target, control-plane sketch, session strategy, roadmap. | File exists; `pytest tests/test_zeus_menu.py` green **modulo the one known pre-existing loot deep-link assertion** (unrelated to Zeus). |
-| **1** | `zeus_core` library **+ multi-`Application` host proof** (secretary + one low-traffic Bot-API token on one loop). Not file moves alone. | **Host proof shipped 2026-07-14** — `bots/zeus_multi_app.py` + gated `bots/zeus_cohost_spike.py` (secretary+llm_chat); `tests/test_zeus_multi_app.py`. Not tray-wired. |
-| **2** | Tray-merge that one Bot-API token into the host. **`admin` excluded — it is Telethon.** | One fewer tray service; menu still works; tray CommandMatch updated. |
+| **1** | `zeus_core` library **+ multi-`Application` host proof** (secretary + one low-traffic Bot-API token on one loop). Not file moves alone. | **Host proof shipped 2026-07-14** — `bots/zeus_multi_app.py` + gated `bots/zeus_cohost_spike.py`; `tests/test_zeus_multi_app.py`. |
+| **2** | Tray-merge **macro_search** into secretary host. **`admin` excluded — it is Telethon.** | **2026-07-19:** `TBCC_ZEUS_COHOST_SPIKE=1` → tray `secretary` runs `bots.zeus_cohost_spike` (secretary+macro_search); standalone `macro_search` forced Off. Remixer Cover (`/cover`) stays on `album_composer` (not a new tray bot). Click beacon: public `GET /r/{slug}` + `POST/GET /zeus/v1/click-links`. |
 | **3a** | **Read-only** `/zeus/v1` facade aliasing existing `/ops/*` + health. No write, no Telethon, no lease. | **Shipped 2026-07-14** — `GET /zeus/v1/stack/status` == `/ops/stack-status`; `tests/test_zeus_v1.py`. |
 | **3b** | Telethon *triggers* (scrape / relay / emoji) behind Layer A. | Job runs with the Redis account lock held; no second `admin.session` connect. |
 | **4** | Agent-safe **write** endpoints (storage deposit, emoji pack) behind allowlist + Layer B lease. | Operator smoke; lock held; `companion`/`loot` co-host trial. |

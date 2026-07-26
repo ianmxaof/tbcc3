@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
 
 from .base import Base
 
@@ -18,6 +18,8 @@ class ListeningRelaySettings(Base):
     id = Column(Integer, primary_key=True, autoincrement=False, default=1)
     enabled = Column(Boolean, nullable=False, default=False)
     channel_id = Column(Integer, nullable=True)
+    # When True, each scrobble/webhook posts once to a random AOF network channel (main chat).
+    relay_random_network_channel = Column(Boolean, nullable=False, default=False)
     message_thread_id = Column(Integer, nullable=True)
     lastfm_username = Column(String(256), nullable=True)
     lastfm_api_key = Column(String(128), nullable=True)
@@ -58,6 +60,15 @@ class ListeningRelaySettings(Base):
     buffer_relay_last_post_at = Column(DateTime, nullable=True)
     # Pre-written X captions: consumed one per buffer relay trigger (like scheduled_text_posts.buffer_x_queue).
     buffer_x_queue_json = Column(Text, nullable=True)
+    goblin_mode_enabled = Column(Boolean, nullable=False, default=False)
+    goblin_spawn_chance = Column(Float, nullable=False, default=0.2)
+    goblin_cooldown_minutes = Column(Integer, nullable=False, default=120)
+    goblin_last_spawn_at = Column(DateTime, nullable=True)
+    goblin_announce_ttl_seconds = Column(Integer, nullable=False, default=45)
+    goblin_claims_cap = Column(Integer, nullable=False, default=5)
+    goblin_max_per_day_utc = Column(Integer, nullable=False, default=3)
+    goblin_utc_day = Column(String(10), nullable=True)
+    goblin_spawns_today = Column(Integer, nullable=False, default=0)
 
     def get_buffer_x_queue(self) -> list[dict]:
         if not self.buffer_x_queue_json:

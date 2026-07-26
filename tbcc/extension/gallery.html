@@ -70,6 +70,16 @@
         </div>
       </header>
 
+      <div class="progress-outer progress-outer--top" aria-live="polite">
+        <div id="progress" class="progress">
+          <div id="progressTitle" class="status"></div>
+          <div class="bar"><div id="progressFill" class="fill" style="width:0%"></div></div>
+          <div id="progressStatus" class="status"></div>
+          <div id="progressError" class="error"></div>
+          <div id="importQueue"></div>
+        </div>
+      </div>
+
       <div id="filterOverlay" class="filter-overlay" aria-hidden="true">
         <div class="filter-panel filter-panel--compact" role="dialog" aria-labelledby="filterHeading">
           <h3 id="filterHeading" class="filter-panel__title">Filter</h3>
@@ -211,20 +221,21 @@
       </div>
 
 
-      <div class="progress-outer">
-        <div id="progress" class="progress">
-          <div id="progressTitle" class="status"></div>
-          <div class="bar"><div id="progressFill" class="fill" style="width:0%"></div></div>
-          <div id="progressStatus" class="status"></div>
-          <div id="progressError" class="error"></div>
-          <div id="importQueue"></div>
-        </div>
-      </div>
-
       <div class="gallery-transport-shell gallery-transport-shell--tools">
         <div class="gallery-transport-inner gallery-transport-inner--tools" role="toolbar" aria-label="Gallery tools">
           <button type="button" id="btnDownload" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Download selected">⬇</button>
           <button type="button" id="btnDownloadZip" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="ZIP selected">📦</button>
+          <select
+            id="zipFlywheelDest"
+            class="tbcc-filter-type"
+            title="After ZIP: Downloads promo name, or flywheel host→gate / loot / Curated Pack"
+            aria-label="ZIP destination"
+          >
+            <option value="downloads_promo">ZIP → Downloads</option>
+            <option value="host_gated">ZIP → Host + gate</option>
+            <option value="loot_modifier">ZIP → Loot modifier</option>
+            <option value="shop_bundle">ZIP → Curated Pack</option>
+          </select>
           <button type="button" id="btnCopyJd" class="tbcc-btn-icon tbcc-btn-icon--tool" disabled title="Send selection to JDownloader LinkGrabber">🔗</button>
           <button
             type="button"
@@ -764,12 +775,12 @@
   <script src="tbcc-clipboard-toast.js"></script>
   <script src="severity-toast-colors.js"></script>
   <script src="tbcc-insert-menu.js"></script>
-  <script src="gallery-send-promo.js"></script>
   <script src="tbcc-webp-convert.js"></script>
   <script src="tbcc-import-pipeline.js"></script>
   <script src="x-profile-looms-shared.js"></script>
   <script src="tbcc-zip-naming.js"></script>
   <script src="gallery.js"></script>
+  <script src="gallery-send-promo.js"></script>
   <script src="gallery-panel.js"></script>
 </body>
 </html>

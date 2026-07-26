@@ -14,32 +14,37 @@
     newestDiscussions: true,
     genderFilter: true,
     autoFollow: true,
+    infiniteScroll: true,
+    socialProof: true,
+    privacyConsole: true,
   };
 
   const LABELS = {
-    loginRedirect: 'Redirect login/home → San Jose kinksters',
+    loginRedirect: 'Redirect login/home → last kinksters place',
     homeFeed: 'Home feed masonry + pills',
     storyFilter: 'Client-side story type filter',
     mute: 'Comment mute buttons',
     newestDiscussions: 'Groups → newest discussions',
-    genderFilter: 'Hide male profiles on lists',
+    genderFilter: 'ASL filter (female / location)',
     autoFollow: 'Auto-follow controls (panel)',
+    infiniteScroll: 'Kinksters infinite scroll (fill gaps)',
+    socialProof: 'Profile count padding (Friends/Followers/Following)',
+    privacyConsole: 'FLConsole privacy presets',
   };
 
   const flags = S.createFlags(FLAG_KEY, DEFAULTS);
   // Force-enable new defaults for users who already have an old flags blob
-  if (flags.raw('autoFollow') === undefined || flags.raw('autoFollow') === false) {
-    // Only upgrade if key missing from saved object — if user explicitly saved false, respect it.
+  {
     const saved = S.storage.get(FLAG_KEY, null);
-    if (!saved || typeof saved !== 'object' || !('autoFollow' in saved)) {
-      flags.set('autoFollow', true);
-    }
-    if (!saved || typeof saved !== 'object' || !('genderFilter' in saved)) {
-      flags.set('genderFilter', true);
-    }
-    if (!saved || typeof saved !== 'object' || !('loginRedirect' in saved)) {
-      flags.set('loginRedirect', true);
-    }
+    const upgrade = (key) => {
+      if (!saved || typeof saved !== 'object' || !(key in saved)) flags.set(key, true);
+    };
+    upgrade('autoFollow');
+    upgrade('genderFilter');
+    upgrade('loginRedirect');
+    upgrade('infiniteScroll');
+    upgrade('socialProof');
+    upgrade('privacyConsole');
   }
 
   const running = Object.create(null);
@@ -60,6 +65,12 @@
     }
   }
 
+  function onRemoteFlags() {
+    flags.hydrate?.();
+    syncFeatures();
+    FL.overlay.refresh?.();
+  }
+
   function boot() {
     FL.overlay.mount({
       flags,
@@ -70,12 +81,17 @@
     });
     syncFeatures();
 
-    // Open overlay on kinksters landing
+    // Keep module flags live across FetLife tabs.
+    if (typeof S.storage.subscribe === 'function') {
+      S.storage.subscribe(FLAG_KEY, onRemoteFlags);
+    }
+
+    // Open overlay on kinksters landing (persists open state to other tabs).
     if (/\/kinksters/i.test(location.pathname)) {
       setTimeout(() => FL.overlay.open('autofollow'), 700);
     }
 
-    console.info('[TBCC FetLife Suite] v1.1 ready', flags.all());
+    console.info('[TBCC FetLife Suite] v1.8 ready', flags.all());
   }
 
   if (document.readyState === 'loading') {

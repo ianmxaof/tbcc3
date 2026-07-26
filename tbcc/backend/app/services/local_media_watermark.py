@@ -75,7 +75,7 @@ def media_type_hint(path: Path | str) -> str:
 def ensure_local_watermark_defaults() -> None:
     """Best-effort defaults for headless/local runs when tbcc/.env omits watermark vars."""
     if not (os.getenv("TBCC_WATERMARK_TEXT") or "").strip() and not watermark_text():
-        os.environ.setdefault("TBCC_WATERMARK_TEXT", "t.me/aofmainhub")
+        os.environ.setdefault("TBCC_WATERMARK_TEXT", "telegram.me/aofmainhub")
     os.environ.setdefault("TBCC_WATERMARK_ENABLED", "1")
     # Explorer context menu / local CLI: subtle burn-in (server pipeline default is 0.045).
     os.environ.setdefault("TBCC_WATERMARK_SIZE_RATIO", "0.024")

@@ -1,0 +1,18 @@
+{
+  "title": "FYP AOF Divider",
+  "short_name_hint": "fyp_aof_divider_v2",
+  "tile_px": 100,
+  "note": "v2 animated unique glyphs — upload via telegram_upload_manifest.json + upload_emoji_pack_telethon.py (import lock). Agents must not open admin.session while tray owns Telethon.",
+  "pack_unique_order": [
+    {"file": "pack_unique/F.webm", "static": "pack_unique/pack_01_F.png", "name": "fyp_F", "tag": "🅵"},
+    {"file": "pack_unique/Y.webm", "static": "pack_unique/pack_02_Y.png", "name": "fyp_Y", "tag": "🆈"},
+    {"file": "pack_unique/P.webm", "static": "pack_unique/pack_03_P.png", "name": "fyp_P", "tag": "🅿"},
+    {"file": "pack_unique/A.webm", "static": "pack_unique/pack_04_A.png", "name": "fyp_A", "tag": "🅰"},
+    {"file": "pack_unique/O.webm", "static": "pack_unique/pack_05_O.png", "name": "fyp_O", "tag": "🅾"},
+    {"file": "pack_unique/F2.webm", "static": "pack_unique/pack_06_F2.png", "name": "fyp_F2", "tag": "🅵"},
+    {"file": "pack_unique/spacer.webm", "static": "pack_unique/pack_07_spacer.png", "name": "fyp_gap", "tag": "⬛"}
+  ],
+  "paste_sequence": [
+    "fyp_F", "fyp_Y", "fyp_P", "fyp_gap", "fyp_gap", "fyp_A", "fyp_O", "fyp_F2"
+  ]
+}

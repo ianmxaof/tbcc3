@@ -132,6 +132,10 @@ def maybe_auto_approve_storage_deposit_media(
 
     enrich_out: dict[str, Any] | None = None,
 
+    *,
+
+    source_label: str | None = None,
+
 ) -> dict[str, Any]:
 
     """
@@ -155,6 +159,28 @@ def maybe_auto_approve_storage_deposit_media(
     if not storage_deposit_auto_approve_enabled():
 
         return {"applied": False, "reason": "disabled"}
+
+
+
+    from app.services.media_gatekeeper import (
+        gatekeeper_enabled,
+        is_scrape_origin_source,
+        gatekeeper_verdict_from_media,
+    )
+
+    m_pre = db.query(Media).filter(Media.id == int(media_id)).first()
+    if m_pre and is_scrape_origin_source(db, source_label or m_pre.source_channel):
+        return {"applied": False, "reason": "scrape_origin_blocked", "media_id": media_id}
+
+    if m_pre and gatekeeper_enabled():
+        gk_verdict = gatekeeper_verdict_from_media(m_pre)
+        if gk_verdict in ("reject", "quarantine"):
+            return {
+                "applied": False,
+                "reason": "gatekeeper_not_approved",
+                "gatekeeper_verdict": gk_verdict,
+                "media_id": media_id,
+            }
 
 
 

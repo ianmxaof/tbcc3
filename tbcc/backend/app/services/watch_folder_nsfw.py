@@ -120,11 +120,37 @@ def sidecar_path_for(dest: Path) -> Path:
     return dest.with_name(dest.stem + ".tbcc-meta.json")
 
 
+def is_watch_sidecar_file(path: Path) -> bool:
+    return path.name.lower().endswith(".tbcc-meta.json")
+
+
+def read_watch_sidecar(media_path: Path) -> dict[str, Any] | None:
+    """Load companion ``*.tbcc-meta.json`` next to a media file if present."""
+    path = sidecar_path_for(media_path)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("watch sidecar read failed %s: %s", path.name, e)
+        return None
+
+
 def write_watch_sidecar(dest: Path, meta: dict[str, Any]) -> None:
     try:
         sidecar_path_for(dest).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError as e:
         logger.warning("watch sidecar write failed %s: %s", dest.name, e)
+
+
+def remove_watch_sidecar(media_path: Path) -> None:
+    path = sidecar_path_for(media_path)
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError:
+        pass
 
 
 def llm_niche_metadata_for_image(path: Path) -> dict[str, Any]:

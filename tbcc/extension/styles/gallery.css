@@ -1056,10 +1056,17 @@ body.tbcc-marquee-dragging .grid { cursor: crosshair; }
   padding: 4px;
 }
 
-/* —— Progress (compact) —— */
+/* —— Progress (top rail, under topbar) —— */
 .progress-outer {
   flex-shrink: 0;
   padding: 6px 10px;
+}
+.progress-outer--top {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--tbcc-bg-base);
+  border-bottom: 1px solid var(--tbcc-bg-elevated);
 }
 .progress {
   padding: 8px 10px;

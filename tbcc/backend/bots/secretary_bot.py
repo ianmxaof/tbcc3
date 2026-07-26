@@ -2393,29 +2393,11 @@ async def on_unsupported_private(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 
-def _service_cleanup_enabled() -> bool:
-    """Delete leave service messages in groups/channels (default on; set =0 to disable)."""
-    raw = (os.getenv("TBCC_SECRETARY_CLEAN_SERVICE_MESSAGES") or "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
-
-
 async def on_service_message_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Delete 'X left the group/channel' only — keep join welcome messages visible."""
-    if not _service_cleanup_enabled():
-        return
-    msg = update.effective_message
-    if not msg or not update.effective_chat:
-        return
-    chat_type = update.effective_chat.type
-    if chat_type not in ("group", "supergroup", "channel"):
-        return
-    if not msg.left_chat_member:
-        return
-    try:
-        await msg.delete()
-    except Exception as e:
-        logger.debug("leave-message cleanup failed chat=%s: %s", msg.chat_id, e)
-        report_bot_error("secretary-bot", "leave-message cleanup", e)
+    from bots.leave_message_cleanup import delete_leave_service_message
+
+    await delete_leave_service_message(update, bot_label="secretary-bot")
 
 
 async def _on_app_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

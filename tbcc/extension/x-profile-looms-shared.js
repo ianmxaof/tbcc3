@@ -1,6 +1,5 @@
 /**
- * Comic Looms–style concurrency + timeout defaults for TBCC X profile overlay.
- * Shared by x-profile-overlay.js (content) and gallery.js (side panel).
+ * X profile overlay concurrency + timeout defaults (shared by overlay + gallery ZIP).
  */
 (function (root) {
   var STORAGE_KEY = "tbccXProfileGallerySettings";

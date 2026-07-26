@@ -62,10 +62,10 @@ def test_cohost_spike_requires_env_flag(monkeypatch):
     assert ei.value.code == 2
 
 
-def test_llm_build_application_none_without_token(monkeypatch):
-    monkeypatch.delenv("TBCC_LLM_CHAT_BOT_TOKEN", raising=False)
-    monkeypatch.delenv("LLM_CHAT_BOT_TOKEN", raising=False)
-    from bots.llm_chat_bot import build_application
+def test_macro_search_build_application_none_without_token(monkeypatch):
+    monkeypatch.delenv("TBCC_MACRO_SEARCH_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("MACRO_SEARCH_BOT_TOKEN", raising=False)
+    from bots.macro_search_bot import build_application
 
     assert build_application("") is None
 

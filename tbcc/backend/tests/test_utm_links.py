@@ -68,3 +68,27 @@ def test_erome_promo_caption_tracks_hub(monkeypatch):
     assert "utm_source=erome" in cap
     assert "utm_medium=album" in cap
     assert "a-pl1-tme_aofmainhub" in cap
+
+
+def test_gumroad_vip_url_default(monkeypatch):
+    from app.services.aof_social_links import gumroad_vip_url
+
+    monkeypatch.delenv("TBCC_GUMROAD_PRODUCT_URL", raising=False)
+    assert gumroad_vip_url() == "https://aof69.gumroad.com/l/ynnulc"
+
+
+def test_fill_armory_template_gumroad_vip(monkeypatch):
+    monkeypatch.setenv("TBCC_GUMROAD_PRODUCT_URL", "https://aof69.gumroad.com/l/ynnulc")
+    monkeypatch.setenv("TBCC_AOF_GATE_URL", "https://example.com/gate")
+    text = fill_armory_template("VIP {gumroad_vip} · hub {hub}", for_x=True)
+    assert "https://aof69.gumroad.com/l/ynnulc" in text
+
+
+def test_append_gumroad_vip_variations():
+    from app.services.aof_growth_hub import _append_gumroad_vip_variations
+
+    footer = "\n\n━━━━━━━━━━━━━━━━━━\n📌 Join the full AOF stack"
+    base = ["⭐ promo" + footer]
+    out = _append_gumroad_vip_variations(base, footer)
+    assert len(out) > len(base)
+    assert any("gumroad.com/l/ynnulc" in v for v in out)

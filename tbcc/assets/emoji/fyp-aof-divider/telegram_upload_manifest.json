@@ -1,0 +1,70 @@
+{
+  "source": "pack_unique/*.webm (FYP AOF divider v2)",
+  "cols": 7,
+  "rows": 1,
+  "params": {
+    "tile_px": 100,
+    "fps": 12,
+    "loop_sec": 2.75,
+    "static": false
+  },
+  "tiles": [
+    {
+      "file": "pack_unique/F.webm",
+      "row": 0,
+      "col": 0,
+      "emoji": "🎬",
+      "name": "fyp_F",
+      "tile_px_used": 100
+    },
+    {
+      "file": "pack_unique/Y.webm",
+      "row": 0,
+      "col": 1,
+      "emoji": "✨",
+      "name": "fyp_Y",
+      "tile_px_used": 100
+    },
+    {
+      "file": "pack_unique/P.webm",
+      "row": 0,
+      "col": 2,
+      "emoji": "🔥",
+      "name": "fyp_P",
+      "tile_px_used": 100
+    },
+    {
+      "file": "pack_unique/A.webm",
+      "row": 0,
+      "col": 3,
+      "emoji": "💫",
+      "name": "fyp_A",
+      "tile_px_used": 100
+    },
+    {
+      "file": "pack_unique/O.webm",
+      "row": 0,
+      "col": 4,
+      "emoji": "⭐",
+      "name": "fyp_O",
+      "tile_px_used": 100
+    },
+    {
+      "file": "pack_unique/F2.webm",
+      "row": 0,
+      "col": 5,
+      "emoji": "🌙",
+      "name": "fyp_F2",
+      "tile_px_used": 100
+    },
+    {
+      "file": "pack_unique/spacer.webm",
+      "row": 0,
+      "col": 6,
+      "emoji": "🎨",
+      "name": "fyp_gap",
+      "tile_px_used": 100
+    }
+  ],
+  "paste_sequence": ["fyp_F", "fyp_Y", "fyp_P", "fyp_gap", "fyp_gap", "fyp_A", "fyp_O", "fyp_F2"]
+}

@@ -8,10 +8,36 @@
 
   const PANEL_ID = 'tbcc-pc-jobs-panel';
   const FAB_ID = 'tbcc-pc-jobs-fab';
+  const TOAST_ID = 'tbcc-pc-jobs-toast';
+  const PUSH_VAR = '--tbcc-pc-jobs-push';
 
   function jobs() {
     const data = PC.jobsData || { jobs: [] };
     return Array.isArray(data.jobs) ? data.jobs : [];
+  }
+
+  function toast(msg) {
+    let el = document.getElementById(TOAST_ID);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = TOAST_ID;
+      document.documentElement.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(el._hide);
+    el._hide = setTimeout(() => el.classList.remove('show'), 1400);
+  }
+
+  function flashBtn(btn, ok) {
+    if (!btn) return;
+    const prev = btn.style.outline;
+    btn.style.outline = ok ? '2px solid #6d6' : '2px solid #d66';
+    btn.style.background = ok ? '#2a4a2a' : '#4a2a2a';
+    setTimeout(() => {
+      btn.style.outline = prev || '';
+      btn.style.background = '';
+    }, 700);
   }
 
   function fillJob(job) {
@@ -68,6 +94,20 @@
         padding: 8px 12px; cursor: pointer; font: 12px system-ui, sans-serif;
         box-shadow: 0 4px 14px rgba(0,0,0,.4);
       }
+      #${TOAST_ID} {
+        position: fixed; z-index: 1000001; left: 12px; top: 56px;
+        background: #1e3a1e; color: #c8f0c8; border: 1px solid #4a7a4a;
+        border-radius: 999px; padding: 4px 10px; font: 11px system-ui, sans-serif;
+        opacity: 0; pointer-events: none; transition: opacity .15s ease;
+        box-shadow: 0 4px 12px rgba(0,0,0,.35);
+      }
+      #${TOAST_ID}.show { opacity: 1; }
+      html.tbcc-pc-jobs-open {
+        scroll-padding-top: var(${PUSH_VAR}, 0px);
+      }
+      html.tbcc-pc-jobs-open textarea[data-tbcc-pc-pushed="1"] {
+        outline: 1px dashed #555;
+      }
     `
     );
 
@@ -75,23 +115,23 @@
     panel.id = PANEL_ID;
     panel.innerHTML = `
       <header>
-        <strong>TBCC jobs (Gemini parity)</strong>
+        <strong>TBCC jobs (loot first)</strong>
         <button type="button" data-act="copy">Copy</button>
         <button type="button" data-act="close">Close</button>
       </header>
       <div class="filters">
         <select data-act="lane">
+          <option value="loot" selected>Loot</option>
           <option value="all">All lanes</option>
-          <option value="promo">Promo</option>
-          <option value="loot">Loot</option>
+          <option value="promo">Promo (martyrs etc)</option>
         </select>
         <input type="search" data-act="q" placeholder="Filter…" style="flex:1" />
       </div>
       <div class="list" data-act="list"></div>
       <div class="hint">
-        Apply fills the page prompt + negative and sets <code>window.__tbccPerchanceLastPrompt</code>
-        for TBCC capture. Gemini CLI fallback if QR/HUD text fails.
-        Shape hint is advisory (Perchance resolution ≠ Gemini aspect enum).
+        Default = <b>Loot</b> only. Prefer <b>Loot Cards</b> FAB for explicit God Lab.
+        Hover off this panel to auto-close. Copy shows a tiny chip toast.
+        Apply pushes the page prompt field below this panel so it stays visible.
       </div>
     `;
     document.documentElement.appendChild(panel);
@@ -100,21 +140,75 @@
     fab.id = FAB_ID;
     fab.type = 'button';
     fab.textContent = 'TBCC Jobs';
-    fab.addEventListener('click', () => {
-      panel.classList.add('open');
-      fab.style.display = 'none';
-    });
     document.documentElement.appendChild(fab);
-
-    panel.querySelector('[data-act="close"]').addEventListener('click', () => {
-      panel.classList.remove('open');
-      fab.style.display = '';
-    });
 
     const listEl = panel.querySelector('[data-act="list"]');
     const laneEl = panel.querySelector('[data-act="lane"]');
     const qEl = panel.querySelector('[data-act="q"]');
+    const copyBtn = panel.querySelector('[data-act="copy"]');
+    const closeBtn = panel.querySelector('[data-act="close"]');
     let selected = null;
+    let leaveTimer = null;
+    let pushedEl = null;
+
+    function clearPush() {
+      document.documentElement.classList.remove('tbcc-pc-jobs-open');
+      document.documentElement.style.removeProperty(PUSH_VAR);
+      if (pushedEl) {
+        pushedEl.style.marginTop = pushedEl.dataset.tbccPrevMargin || '';
+        delete pushedEl.dataset.tbccPrevMargin;
+        delete pushedEl.dataset.tbccPcPushed;
+        pushedEl = null;
+      }
+    }
+
+    function applyPush() {
+      const h = Math.ceil(panel.getBoundingClientRect().height || 420);
+      const pad = h + 20;
+      document.documentElement.style.setProperty(PUSH_VAR, `${pad}px`);
+      document.documentElement.classList.add('tbcc-pc-jobs-open');
+      const ta =
+        (PC.promptBridge && typeof PC.promptBridge.findPromptTextarea === 'function'
+          ? PC.promptBridge.findPromptTextarea()
+          : null) || document.querySelector('textarea');
+      if (ta) {
+        if (pushedEl && pushedEl !== ta) clearPush();
+        pushedEl = ta;
+        if (ta.dataset.tbccPrevMargin == null) {
+          ta.dataset.tbccPrevMargin = ta.style.marginTop || '';
+        }
+        ta.dataset.tbccPcPushed = '1';
+        ta.style.marginTop = `${pad}px`;
+        try {
+          ta.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } catch (_) { /* ignore */ }
+      }
+    }
+
+    function openPanel() {
+      panel.classList.add('open');
+      fab.style.display = 'none';
+      requestAnimationFrame(() => applyPush());
+    }
+
+    function closePanel() {
+      panel.classList.remove('open');
+      fab.style.display = '';
+      clearPush();
+      flashBtn(closeBtn, true);
+      toast('Closed');
+    }
+
+    fab.addEventListener('click', openPanel);
+    closeBtn.addEventListener('click', closePanel);
+
+    panel.addEventListener('mouseleave', () => {
+      clearTimeout(leaveTimer);
+      leaveTimer = setTimeout(() => {
+        if (panel.classList.contains('open')) closePanel();
+      }, 450);
+    });
+    panel.addEventListener('mouseenter', () => clearTimeout(leaveTimer));
 
     function render() {
       const lane = laneEl.value;
@@ -122,6 +216,8 @@
       listEl.innerHTML = '';
       for (const job of jobs()) {
         if (lane !== 'all' && job.lane !== lane) continue;
+        // Hide martyrs unless promo/all explicitly selected
+        if (lane === 'loot' && /martyr/i.test(`${job.id} ${job.label} ${job.preset || ''}`)) continue;
         const blob = `${job.label} ${job.id} ${job.format || ''}`.toLowerCase();
         if (q && !blob.includes(q)) continue;
         const btn = document.createElement('button');
@@ -131,10 +227,9 @@
         btn.addEventListener('click', () => {
           selected = job;
           const ok = fillJob(job);
-          btn.style.outline = ok ? '1px solid #6a6' : '1px solid #a66';
-          setTimeout(() => {
-            btn.style.outline = '';
-          }, 800);
+          flashBtn(btn, ok);
+          toast(ok ? 'Applied to prompt' : 'Applied (field missing?)');
+          applyPush();
         });
         listEl.appendChild(btn);
       }
@@ -142,23 +237,31 @@
 
     laneEl.addEventListener('change', render);
     qEl.addEventListener('input', render);
-    // close handler wired above with fab restore
-    panel.querySelector('[data-act="copy"]').addEventListener('click', async () => {
+    copyBtn.addEventListener('click', async () => {
       const job = selected || (global.__tbccPerchanceLastPrompt && global.__tbccPerchanceLastPrompt.prompt
         ? global.__tbccPerchanceLastPrompt
         : null);
       const text = job && job.prompt ? job.prompt : '';
-      if (!text) return;
+      if (!text) {
+        flashBtn(copyBtn, false);
+        toast('Nothing to copy');
+        return;
+      }
       try {
         await navigator.clipboard.writeText(text);
-      } catch (_) { /* ignore */ }
+        flashBtn(copyBtn, true);
+        toast('Copied');
+      } catch (_) {
+        flashBtn(copyBtn, false);
+        toast('Clipboard blocked');
+      }
     });
 
     render();
 
     if (typeof GM_registerMenuCommand === 'function') {
       try {
-        GM_registerMenuCommand('TBCC Perchance: jobs', () => panel.classList.add('open'));
+        GM_registerMenuCommand('TBCC Perchance: jobs', openPanel);
       } catch (_) { /* ignore */ }
     }
   }
@@ -172,6 +275,9 @@
     stop() {
       document.getElementById(PANEL_ID)?.remove();
       document.getElementById(FAB_ID)?.remove();
+      document.getElementById(TOAST_ID)?.remove();
+      document.documentElement.classList.remove('tbcc-pc-jobs-open');
+      document.documentElement.style.removeProperty(PUSH_VAR);
     },
   };
 })(typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);

@@ -13,6 +13,7 @@ import { EmojiFactoryRowDividers } from "../components/EmojiFactoryRowDividers";
 import { SilentTelegramSendOption } from "../components/SilentTelegramSendOption";
 import { EMPTY_RELAY_SLOT_EXTRA, normalizeRelaySlotExtra } from "../components/RelayCopySlotExtras";
 import { RelayTemplateSlotsEditor } from "../components/RelayTemplateSlotsEditor";
+import { RelayPostHistory } from "../components/RelayPostHistory";
 
 function relaySlotsFromApiSettings(st: ListeningRelaySettings): {
   templates: string[];
@@ -47,6 +48,32 @@ function relaySlotsFromApiSettings(st: ListeningRelaySettings): {
     copyBlocks: padCopy.slice(0, nextTpl.length),
     slotExtras: padExtras.slice(0, nextTpl.length),
   };
+}
+
+/** Sentinel channel dropdown value — random AOF network lane each scrobble. */
+const RELAY_RANDOM_CHANNEL = "__random__";
+
+function relayForumDestFromSettings(
+  s: ListeningRelaySettings,
+  dest: { loot_room?: { channel_id: number | null }; vip?: { channel_id: number | null } } | undefined
+): string {
+  if (s.relay_random_network_channel) return "";
+  const lootId = dest?.loot_room?.channel_id ?? null;
+  const vipId = dest?.vip?.channel_id ?? null;
+  const cid = s.channel_id;
+  if (cid != null && vipId != null && cid === vipId) return "vip";
+  if (cid != null && lootId != null && cid === lootId) {
+    return s.message_thread_id != null ? `loot:${s.message_thread_id}` : "";
+  }
+  if (s.message_thread_id != null) return `topic:${s.message_thread_id}`;
+  return "";
+}
+
+function relayChannelSelectValue(
+  s: ListeningRelaySettings
+): number | typeof RELAY_RANDOM_CHANNEL | "" {
+  if (s.relay_random_network_channel) return RELAY_RANDOM_CHANNEL;
+  return s.channel_id != null ? Number(s.channel_id) : "";
 }
 
 const TEMPLATE_HINT = `Placeholders (main template only): {emoji} {headline} {artist} {title} {album} {album_line} {url} {source} {source_label} {link}
@@ -726,6 +753,10 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
     queryKey: ["listeningRelay"],
     queryFn: () => api.listeningRelay.get(),
   });
+  const relayDestQ = useQuery({
+    queryKey: ["listeningRelayDestinations"],
+    queryFn: () => api.listeningRelay.destinations(),
+  });
   const asciiQ = useQuery({
     queryKey: ["listeningRelayAscii"],
     queryFn: () => api.listeningRelay.listAsciiArt(),
@@ -741,8 +772,8 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
 
   const [webhookSecret, setWebhookSecret] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(false);
-  const [channelId, setChannelId] = useState<number | "">("");
-  const [messageThreadId, setMessageThreadId] = useState<string>("");
+  const [channelId, setChannelId] = useState<number | typeof RELAY_RANDOM_CHANNEL | "">("");
+  const [forumDest, setForumDest] = useState<string>("");
   const [lastfmUser, setLastfmUser] = useState("");
   const [lastfmKey, setLastfmKey] = useState("");
   const [pollMinutes, setPollMinutes] = useState(3);
@@ -763,6 +794,12 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
   const [bufferRelayEnabled, setBufferRelayEnabled] = useState(false);
   const [bufferRelayMinMinutes, setBufferRelayMinMinutes] = useState(360);
   const [bufferRelayMaxPerDay, setBufferRelayMaxPerDay] = useState(5);
+  const [goblinModeEnabled, setGoblinModeEnabled] = useState(false);
+  const [goblinSpawnChance, setGoblinSpawnChance] = useState(0.2);
+  const [goblinCooldownMinutes, setGoblinCooldownMinutes] = useState(120);
+  const [goblinAnnounceTtl, setGoblinAnnounceTtl] = useState(45);
+  const [goblinClaimsCap, setGoblinClaimsCap] = useState(5);
+  const [goblinMaxPerDay, setGoblinMaxPerDay] = useState(3);
   const [edited, setEdited] = useState(false);
 
   const s = relayQ.data?.settings;
@@ -781,8 +818,8 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
   useEffect(() => {
     if (!s || edited) return;
     setEnabled(Boolean(s.enabled));
-    setChannelId(s.channel_id != null ? Number(s.channel_id) : "");
-    setMessageThreadId(s.message_thread_id != null ? String(s.message_thread_id) : "");
+    setChannelId(relayChannelSelectValue(s));
+    setForumDest(relayForumDestFromSettings(s, relayDestQ.data));
     setLastfmUser(String(s.lastfm_username || ""));
     setLastfmKey("");
     setPollMinutes(Number(s.poll_interval_minutes || 3));
@@ -801,13 +838,43 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
     setBufferRelayEnabled(Boolean(s.buffer_relay_enabled));
     setBufferRelayMinMinutes(Number(s.buffer_relay_min_interval_minutes ?? 360));
     setBufferRelayMaxPerDay(Number(s.buffer_relay_max_per_day_utc ?? 5));
-  }, [s, edited]);
+    setGoblinModeEnabled(Boolean(s.goblin_mode_enabled));
+    setGoblinSpawnChance(Number(s.goblin_spawn_chance ?? 0.2));
+    setGoblinCooldownMinutes(Number(s.goblin_cooldown_minutes ?? 120));
+    setGoblinAnnounceTtl(Number(s.goblin_announce_ttl_seconds ?? 45));
+    setGoblinClaimsCap(Number(s.goblin_claims_cap ?? 5));
+    setGoblinMaxPerDay(Number(s.goblin_max_per_day_utc ?? 3));
+  }, [s, edited, relayDestQ.data]);
+
+  const lootRoomChannelId = relayDestQ.data?.loot_room?.channel_id ?? null;
+  const vipChannelId = relayDestQ.data?.vip?.channel_id ?? null;
+
+  const lootTopicsQ = useQuery({
+    queryKey: ["forumTopics", "lootRoom", lootRoomChannelId],
+    queryFn: () => api.channels.forumTopics(Number(lootRoomChannelId)),
+    enabled: typeof lootRoomChannelId === "number" && lootRoomChannelId > 0,
+  });
+
+  const topicsChannelId =
+    channelId === RELAY_RANDOM_CHANNEL || channelId === "" || forumDest === "vip"
+      ? null
+      : forumDest.startsWith("loot:")
+        ? lootRoomChannelId
+        : typeof channelId === "number"
+          ? channelId
+          : null;
 
   const topicsQ = useQuery({
-    queryKey: ["forumTopics", channelId],
-    queryFn: () => api.channels.forumTopics(Number(channelId)),
-    enabled: typeof channelId === "number" && channelId > 0,
+    queryKey: ["forumTopics", topicsChannelId],
+    queryFn: () => api.channels.forumTopics(Number(topicsChannelId)),
+    enabled: typeof topicsChannelId === "number" && topicsChannelId > 0 && !forumDest.startsWith("loot:") && forumDest !== "vip",
   });
+
+  const lootTopicOptions = (() => {
+    const live = lootTopicsQ.data?.topics ?? [];
+    if (live.length > 0) return live;
+    return relayDestQ.data?.loot_room?.topics ?? [];
+  })();
 
   const save = useMutation({
     mutationFn: async () => {
@@ -833,8 +900,6 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
       });
       const body: Record<string, unknown> = {
         enabled,
-        channel_id: channelId === "" ? null : Number(channelId),
-        message_thread_id: messageThreadId.trim() ? Number(messageThreadId) : null,
         lastfm_username: lastfmUser.trim() || null,
         poll_interval_minutes: Math.max(1, Math.min(120, Number(pollMinutes || 3))),
         message_template_variations: trimmedTemplates.length ? trimmedTemplates : null,
@@ -855,7 +920,31 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
         buffer_relay_enabled: bufferRelayEnabled,
         buffer_relay_min_interval_minutes: Math.max(30, Math.min(1440, Number(bufferRelayMinMinutes || 360))),
         buffer_relay_max_per_day_utc: Math.max(1, Math.min(50, Number(bufferRelayMaxPerDay || 5))),
+        goblin_mode_enabled: goblinModeEnabled,
+        goblin_spawn_chance: Math.max(0, Math.min(1, Number(goblinSpawnChance || 0.2))),
+        goblin_cooldown_minutes: Math.max(0, Math.min(1440, Number(goblinCooldownMinutes || 120))),
+        goblin_announce_ttl_seconds: Math.max(5, Math.min(300, Number(goblinAnnounceTtl || 45))),
+        goblin_claims_cap: Math.max(1, Math.min(100, Number(goblinClaimsCap || 5))),
+        goblin_max_per_day_utc: Math.max(1, Math.min(50, Number(goblinMaxPerDay || 3))),
       };
+      if (channelId === RELAY_RANDOM_CHANNEL) {
+        body.relay_random_network_channel = true;
+        body.channel_id = null;
+        body.message_thread_id = null;
+      } else if (forumDest === "vip") {
+        body.relay_random_network_channel = false;
+        body.channel_id = vipChannelId;
+        body.message_thread_id = null;
+      } else if (forumDest.startsWith("loot:")) {
+        const tid = forumDest.slice(5);
+        body.relay_random_network_channel = false;
+        body.channel_id = lootRoomChannelId;
+        body.message_thread_id = tid === "" || tid === "0" ? null : Number(tid);
+      } else {
+        body.relay_random_network_channel = false;
+        body.channel_id = channelId === "" ? null : Number(channelId);
+        body.message_thread_id = forumDest.startsWith("topic:") ? Number(forumDest.slice(6)) : null;
+      }
       if (lastfmKey.trim()) {
         body.lastfm_api_key = lastfmKey.trim();
       }
@@ -867,8 +956,8 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
       if (data.settings) {
         const st = data.settings;
         setEnabled(Boolean(st.enabled));
-        setChannelId(st.channel_id != null ? Number(st.channel_id) : "");
-        setMessageThreadId(st.message_thread_id != null ? String(st.message_thread_id) : "");
+        setChannelId(relayChannelSelectValue(st));
+        setForumDest(relayForumDestFromSettings(st, relayDestQ.data));
         setLastfmUser(String(st.lastfm_username || ""));
         setPollMinutes(Number(st.poll_interval_minutes || 3));
         const { templates, footers, copyBlocks, slotExtras: ex } = relaySlotsFromApiSettings(st);
@@ -886,6 +975,12 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
         setBufferRelayEnabled(Boolean(st.buffer_relay_enabled));
         setBufferRelayMinMinutes(Number(st.buffer_relay_min_interval_minutes ?? 360));
         setBufferRelayMaxPerDay(Number(st.buffer_relay_max_per_day_utc ?? 5));
+        setGoblinModeEnabled(Boolean(st.goblin_mode_enabled));
+        setGoblinSpawnChance(Number(st.goblin_spawn_chance ?? 0.2));
+        setGoblinCooldownMinutes(Number(st.goblin_cooldown_minutes ?? 120));
+        setGoblinAnnounceTtl(Number(st.goblin_announce_ttl_seconds ?? 45));
+        setGoblinClaimsCap(Number(st.goblin_claims_cap ?? 5));
+        setGoblinMaxPerDay(Number(st.goblin_max_per_day_utc ?? 3));
       }
       setEdited(false);
       qc.invalidateQueries({ queryKey: ["listeningRelay"] });
@@ -970,6 +1065,7 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
 
   const testPost = useMutation({
     mutationFn: () => api.listeningRelay.testPost(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["listeningRelayHistory"] }),
   });
 
   const [bufferTestMsg, setBufferTestMsg] = useState<string | null>(null);
@@ -1126,38 +1222,88 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
                 onChange={(e) => {
                   setEdited(true);
                   const v = e.target.value;
+                  if (v === RELAY_RANDOM_CHANNEL) {
+                    setChannelId(RELAY_RANDOM_CHANNEL);
+                    setForumDest("");
+                    return;
+                  }
                   setChannelId(v ? Number(v) : "");
-                  setMessageThreadId("");
+                  setForumDest("");
                 }}
               >
                 <option value="">— select —</option>
+                <option value={RELAY_RANDOM_CHANNEL}>
+                  🎲 Random — any AOF network channel (one per scrobble)
+                  {relayDestQ.data?.network_channel_count
+                    ? ` · ${relayDestQ.data.network_channel_count} lanes`
+                    : ""}
+                </option>
                 {channels.map((c) => (
                   <option key={String(c.id)} value={String(c.id)}>
                     {(c.name as string) || (c.identifier as string)} ({String(c.identifier)})
                   </option>
                 ))}
               </select>
+              {channelId === RELAY_RANDOM_CHANNEL ? (
+                <span className="text-xs text-violet-300/90 mt-1 block">
+                  Each new track posts once to a random lane main chat (not all channels at once).
+                </span>
+              ) : null}
             </label>
             <label className="block text-sm">
               <span className="text-slate-400">Forum topic (optional)</span>
               <select
                 className="mt-1 w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100"
-                value={messageThreadId}
+                value={forumDest}
                 onChange={(e) => {
                   setEdited(true);
-                  setMessageThreadId(e.target.value);
+                  const v = e.target.value;
+                  setForumDest(v);
+                  if (v === "vip" && vipChannelId) {
+                    setChannelId(vipChannelId);
+                  } else if (v.startsWith("loot:") && lootRoomChannelId) {
+                    setChannelId(lootRoomChannelId);
+                  } else if (channelId === RELAY_RANDOM_CHANNEL) {
+                    setChannelId("");
+                  }
                 }}
-                disabled={typeof channelId !== "number"}
+                disabled={false}
               >
                 <option value="">Main / non-forum</option>
-                {(topicsQ.data?.topics ?? []).map((t) => (
-                  <option key={t.id} value={String(t.id)}>
-                    {t.title} (#{t.id})
-                  </option>
-                ))}
+                {lootRoomChannelId ? (
+                  <optgroup label={relayDestQ.data?.loot_room?.name ?? "AOF LOOT ROOM"}>
+                    {lootTopicOptions.map((t) => (
+                      <option key={`loot-${t.id}`} value={`loot:${t.id}`}>
+                        {t.title} (#{t.id})
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+                {vipChannelId ? (
+                  <optgroup label="Paid lane">
+                    <option value="vip">{relayDestQ.data?.vip?.name ?? "AOF VIP"}</option>
+                  </optgroup>
+                ) : null}
+                {(topicsQ.data?.topics ?? []).length > 0 && typeof channelId === "number" ? (
+                  <optgroup label="Topics (selected channel)">
+                    {(topicsQ.data?.topics ?? []).map((t) => (
+                      <option key={`topic-${t.id}`} value={`topic:${t.id}`}>
+                        {t.title} (#{t.id})
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
-              {topicsQ.data?.error ? (
+              {channelId === RELAY_RANDOM_CHANNEL ? (
+                <span className="text-xs text-slate-500 mt-1 block">
+                  Pick Loot Room topic or VIP above, or choose a fixed channel instead of random.
+                </span>
+              ) : null}
+              {topicsQ.data?.error && !forumDest.startsWith("loot:") && forumDest !== "vip" ? (
                 <span className="text-amber-400 text-xs mt-1 block">{topicsQ.data.error}</span>
+              ) : null}
+              {lootTopicsQ.data?.error && forumDest.startsWith("loot:") ? (
+                <span className="text-amber-400 text-xs mt-1 block">{lootTopicsQ.data.error}</span>
               ) : null}
             </label>
           </div>
@@ -1487,6 +1633,104 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
               </div>
             </div>
 
+            <div className="rounded border border-amber-700/40 bg-amber-950/20 p-3 space-y-3">
+              <h3 className="text-sm font-medium text-amber-100">Loot goblin (deep-link grants)</h3>
+              <p className="text-xs text-slate-400">
+                Rare spawn on relay scrobbles: loot bot posts a short channel announce (Bot API, ~45s TTL) with a{" "}
+                <code className="text-slate-300">@aof_lootgod_bot?start=goblin_…</code> button. Token is cap-only — no expiry.
+              </p>
+              {s ? (
+                <p className="text-[11px] text-slate-500">
+                  Today (UTC): {s.goblin_spawns_today ?? 0} spawn(s) on day {s.goblin_utc_day ?? "—"}
+                  {s.goblin_last_spawn_at ? ` · last ${s.goblin_last_spawn_at}` : ""}
+                </p>
+              ) : null}
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={goblinModeEnabled}
+                  onChange={(e) => {
+                    setEdited(true);
+                    setGoblinModeEnabled(e.target.checked);
+                  }}
+                />
+                Enable loot goblin spawns
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <label className="block text-xs text-slate-400">
+                  Spawn chance (0–1)
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    className="mt-1 w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100"
+                    value={goblinSpawnChance}
+                    onChange={(e) => {
+                      setEdited(true);
+                      setGoblinSpawnChance(Number(e.target.value));
+                    }}
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Cooldown (minutes)
+                  <input
+                    type="number"
+                    min={0}
+                    max={1440}
+                    className="mt-1 w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100"
+                    value={goblinCooldownMinutes}
+                    onChange={(e) => {
+                      setEdited(true);
+                      setGoblinCooldownMinutes(Number(e.target.value));
+                    }}
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Announce TTL (seconds)
+                  <input
+                    type="number"
+                    min={5}
+                    max={300}
+                    className="mt-1 w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100"
+                    value={goblinAnnounceTtl}
+                    onChange={(e) => {
+                      setEdited(true);
+                      setGoblinAnnounceTtl(Number(e.target.value));
+                    }}
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Claims cap per drop
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    className="mt-1 w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100"
+                    value={goblinClaimsCap}
+                    onChange={(e) => {
+                      setEdited(true);
+                      setGoblinClaimsCap(Number(e.target.value));
+                    }}
+                  />
+                </label>
+                <label className="block text-xs text-slate-400">
+                  Max spawns per UTC day
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    className="mt-1 w-full bg-slate-800 border border-slate-600 rounded px-3 py-2 text-slate-100"
+                    value={goblinMaxPerDay}
+                    onChange={(e) => {
+                      setEdited(true);
+                      setGoblinMaxPerDay(Number(e.target.value));
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
             <div className="rounded border border-slate-600/80 bg-slate-950/30 p-3">
             <h3 className="text-sm font-medium text-slate-200 mb-2">Webhook (IFTTT / YouTube / custom)</h3>
             <p className="text-xs text-slate-500 mb-2">
@@ -1582,6 +1826,8 @@ export function MiscPanel({ initialTab = "tools" }: { initialTab?: MiscTab }) {
           {s?.last_poll_at ? (
             <p className="text-xs text-slate-500">Last Last.fm poll (UTC): {s.last_poll_at}</p>
           ) : null}
+
+          <RelayPostHistory />
         </div>
       </section>
 

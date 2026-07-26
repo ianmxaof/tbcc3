@@ -133,8 +133,8 @@ def build_prompt(
 
     style_line = style.strip() or (
         "Photoreal trading-card UI: wet vinyl, neon accent, light ASCII HUD residue, "
-        "gritty film grain, after-hours adult club atmosphere. Suggestive sealed/redacted centers only. "
-        "No cartoon. No wholesome kids content."
+        "gritty film grain, after-hours adult club atmosphere. "
+        "EXPLICIT erotic center art (nudity/sex OK). No cartoon. No minors."
     )
 
     parts = [
@@ -147,12 +147,12 @@ def build_prompt(
         "",
         f"STYLE: {style_line}",
         "",
-        "Generate now. Same locked card UI. Vary only the center motif + neon intensity by tier.",
+        "Generate now. Same locked card UI. Vary only the center erotic motif + neon intensity by tier.",
         "",
-        "AVOID: nudity, sex acts, genitals, pornography, lingerie close-ups with skin, "
-        "QR codes, t.me links, cute/wholesome tone, cartoon, misspelled tier names, "
+        "AVOID: minors, childlike subjects, cartoon, cute/wholesome tone, "
+        "QR codes, t.me links, misspelled tier names, "
         "ASCII covering important UI text, watermark, wrong aspect ratio, "
-        "duplicate identical scenes, childlike or non-adult subjects.",
+        "duplicate identical scenes, softcore-only tease when explicit sex is requested.",
     ]
     if extra_avoid.strip():
         parts.append(extra_avoid.strip())

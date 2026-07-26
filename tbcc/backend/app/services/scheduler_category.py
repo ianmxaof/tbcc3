@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from app.models.scheduled_text_post import ScheduledTextPost
 
 SCHEDULER_CATEGORIES = frozenset(
-    {"main_lane", "bot_commands", "liveness", "promo_bulletin", "manual"}
+    {"main_lane", "bot_commands", "liveness", "promo_bulletin", "manual", "stars_bait_pace"}
 )
 
 
@@ -19,8 +19,8 @@ def infer_scheduler_category(name: str | None, category: str | None = None) -> s
         return cat
 
     n = (name or "").lower()
-    if "bot commands" in n:
-        return "bot_commands"
+    if "stars bait" in n:
+        return "stars_bait_pace"
     if "network liveness" in n or "drop ticker" in n or "spotlight" in n:
         return "liveness"
     if (

@@ -12,8 +12,10 @@ from app.services.tbcc_operator_ids import (
 def test_hardcoded_primary_and_secondary():
     assert 7787282561 in HARDCODED_TBCC_OPERATOR_IDS
     assert 8630278848 in HARDCODED_TBCC_OPERATOR_IDS
+    assert 8682971339 in HARDCODED_TBCC_OPERATOR_IDS
     assert is_tbcc_operator(7787282561)
     assert is_tbcc_operator(8630278848)
+    assert is_tbcc_operator(8682971339)
     assert not is_tbcc_operator(111)
 
 

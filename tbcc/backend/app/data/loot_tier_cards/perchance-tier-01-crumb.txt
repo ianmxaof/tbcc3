@@ -1,0 +1,37 @@
+OUTPUT: ONE image. Aspect ratio 1:1 square. Single complete AOF LOOT trading card. No grid. No filmstrip. No collage. No stacked panels. No sheet of mini-cards.
+
+LAYOUT LOCK — AOF LOOT GOD CARD (same chrome every tier; center sells value):
+FORMAT: 1:1 square trading-card.
+FRAME: dark chrome / wet vinyl border with thin neon accent (listed per tier).
+TOP-LEFT: small distressed "AOF LOOT" wordmark if readable — else blank metal plate.
+TOP-RIGHT: try exact "TIER N · WORLD" — if typography fails, blank dark plate (NO gibberish).
+CENTER WINDOW ONLY: EXPLICIT adult erotic SUBJECT fills the inner window (nudity/sex OK for adults).
+  Do not let the subject cover the frame, wordmark, tier plate, or bottom nameplate.
+OVERLAY: light ASCII / terminal residue in corners only (box-drawing, rarity pips, "ROLL OK") — never cover UI.
+BOTTOM BAND: try exact NAME + TAGLINE — if typography fails, leave a blank dark nameplate (NO fake letters).
+OPTIONAL BADGES: "RESTRICTED" / "SPOILER" / "ADULT LANE" as chrome only.
+NO QR. NO t.me / telegram.me links in the image.
+NO cartoon. NO childish / underage subjects. Gritty film grain OK.
+Adults only (18+).
+
+TIER BLOCK (spell exactly when text is attempted; blank plate OK if typography fails):
+TOP-RIGHT = TIER 1 · 1-1
+BOTTOM NAME = CRUMB
+TAGLINE = Barely a taste. Still counts.
+NEON / FRAME ACCENT: dull grey-green neon, sparse dust accents, cheapest rim
+MOOD CUE: trash loot — still filthy
+LOOT VALUE BAND: trash
+
+QUALITY BAND = TRASH: phone-cam / dirty mirror, awkward crop, soft focus OK, harsh flash or fluorescent buzz, imperfect skin, cheap motel/bathroom grit. Throwaway garbage content — still explicit adult. NOT a masterpiece. NOT studio 8K.
+
+SUBJECT (center window only — this is the loot, not a sealed pack tease):
+{ugly fluorescent bathroom, adult woman on dirty toilet lid, awkward phone flash, trashy nude, bored-horny face, litter on floor|cheap motel bathroom mirror selfie, adult woman half-nude, toothpaste spit on sink, bad angle, explicit garbage vibe|filthy bathroom stall, adult woman pants around ankles, phone cam from above, harsh light, trash loot energy}
+
+VARIATION (optional Perchance braces — pick one path per Generate):
+Lighting: {harsh flash|fluorescent buzz|club neon split|rim-only darkness|warm practical lamp|ultraviolet accent}
+Camera: {phone selfie angle|voyeur doorway|tight window crop|medium card-hero|macro on skin inside window}
+Wear/finish: {sweat sheen|wet vinyl|messy sheets|steam film|fingerprint on chrome frame}
+
+Generate now. ONE card. Explicit center matches band trash. Lock chrome. Prefer blank nameplate over gibberish.
+
+NEGATIVE: grid of cards, filmstrip, collage, stacked panels, sheet of mini-cards, gibberish text, fake latin letters, misspelled tier names, wrong tier number, QR codes, t.me links, telegram.me links, cartoon, anime, childish subjects, child, children, minor, underage, teen, loli, watermark, logo spam, blurry UI mush covering chrome, softcore-only when explicit was requested, gold chrome, luxury frame, studio beauty lighting, godroll polish, sealed foil pack only

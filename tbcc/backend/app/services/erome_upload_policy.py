@@ -336,9 +336,14 @@ def intel_upload_hints(*, top_n: int = 8) -> dict[str, Any]:
 
     tag_scores = aggregate_tag_scores(erome_rows, platform="erome")
     format_scores = aggregate_format_scores(erome_rows)
+    from app.services.erome_browse_intel import format_discoveries
+
+    discoveries = format_discoveries(erome_rows, platform="erome")
     top_tags = sorted(tag_scores.items(), key=lambda x: -x[1])[:top_n]
     tq = top_quartile_tags(tag_scores)
-    best_format = max(format_scores.items(), key=lambda x: x[1])[0] if format_scores else None
+    best_format = discoveries.get("preferred_format_bucket") or (
+        max(format_scores.items(), key=lambda x: x[1])[0] if format_scores else None
+    )
     saturated: list[str] = []
     buckets: dict[str, list[tuple[float, int]]] = {}
     for row in erome_rows:
@@ -359,6 +364,8 @@ def intel_upload_hints(*, top_n: int = 8) -> dict[str, Any]:
         "top_tags": [{"tag": t, "score": round(s, 1)} for t, s in top_tags],
         "top_quartile_tags": sorted(tq)[:40],
         "preferred_format_bucket": best_format,
+        "suite_actions": discoveries.get("suite_actions") or [],
+        "format_stats": discoveries.get("format_stats") or {},
         "saturated_tags": sorted(set(saturated))[:20],
         "row_count": len(erome_rows),
     }
