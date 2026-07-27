@@ -15,5 +15,7 @@ class Subscription(Base):
     payment_method = Column(String, nullable=True)  # stars|crypto|manual
     amount_stars = Column(Integer, nullable=True)  # Stars paid at purchase (for analytics)
     referrer_id = Column(BigInteger, nullable=True)  # Telegram user who referred this subscriber
+    traffic_source_ref = Column(String(64), nullable=True)
+    traffic_entry_payload = Column(String(128), nullable=True)
     # Idempotent Stars fulfillment — duplicate successful_payment webhooks return same row
     telegram_payment_charge_id = Column(String(128), nullable=True, unique=True)

@@ -15,6 +15,7 @@ from .tbcc_tag import TbccTag, MediaTagLink
 from .post_outbound_event import PostOutboundEvent
 from .post_delivery_metric import PostDeliveryMetric
 from .growth_attribution_event import GrowthAttributionEvent
+from .user_funnel_touch import UserFunnelTouch
 from .drop_countdown import DropCountdownSession
 from .link_resolver_request import LinkResolverRequest
 from .loot_bot_settings import LootBotSettings

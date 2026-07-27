@@ -835,6 +835,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not msg:
         return
 
+    if user and raw_arg:
+        try:
+            from app.services.traffic_attribution import record_traffic_touch_from_bot
+
+            record_traffic_touch_from_bot(int(user.id), raw_arg)
+        except Exception:
+            pass
+
     if arg == "loot_free":
         await cmd_roll(update, context)
         return

@@ -73,6 +73,21 @@ export function SchedulerGrowthHub({ className = "" }: Props) {
     onError: (e: Error) => setFeedback(e.message),
   });
 
+  const conversionSprint = useMutation({
+    mutationFn: () => api.growthHub.conversionSprint(),
+    onSuccess: (r) => {
+      const pool = r.stars_bait?.outreach_pool ?? "?";
+      const sched = r.album_checkout?.schedulers_updated ?? "?";
+      const blast = r.broadcast?.count ?? 0;
+      setFeedback(
+        `Conversion sprint queued — stars-bait pool ${pool} · ${sched} schedulers checkout-synced · bulletin to ${blast} channels`
+      );
+      void qc.invalidateQueries({ queryKey: ["growth-hub-status"] });
+      void qc.invalidateQueries({ queryKey: ["scheduledPosts"] });
+    },
+    onError: (e: Error) => setFeedback(e.message),
+  });
+
   const deposit = useMutation({
     mutationFn: () => api.growthHub.storageDeposit({ limit: depositLimit, media_types: "both" }),
     onSuccess: (r) => {
@@ -128,6 +143,24 @@ export function SchedulerGrowthHub({ className = "" }: Props) {
 
       {data && (
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
+          <section className="rounded border border-amber-700/40 bg-amber-950/20 p-2">
+            <p className="mb-1 text-[10px] uppercase tracking-wide text-amber-400">Conversion sprint</p>
+            <p className="mb-2 text-xs leading-relaxed text-slate-400">
+              One click: seed <strong className="text-slate-300">stars-bait</strong> copy + DM pacing, force{" "}
+              <strong className="text-slate-300">Stars checkout</strong> on every scheduler, refresh bulletin slots, and
+              blast the links hub to all channels. Run weekly or after any poster/session incident.
+            </p>
+            <button
+              type="button"
+              className="rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-slate-950 hover:bg-amber-500 disabled:opacity-50"
+              disabled={conversionSprint.isPending}
+              title="POST /growth-hub/conversion-sprint — stars-bait → album checkout → sync schedulers → broadcast"
+              onClick={() => conversionSprint.mutate()}
+            >
+              {conversionSprint.isPending ? "Running sprint…" : "Run conversion sprint"}
+            </button>
+          </section>
+
           <section>
             <p className="mb-1 text-[10px] uppercase tracking-wide text-slate-500">Links bulletin</p>
             <p className="mb-2 text-xs text-slate-400">

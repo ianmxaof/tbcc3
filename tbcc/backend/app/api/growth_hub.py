@@ -123,6 +123,30 @@ def post_sync_album_checkout(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {"ok": True, **report}
 
 
+@router.post("/conversion-sprint")
+def post_conversion_sprint(
+    post_channel_now: bool = Query(True, description="Queue stars-bait main-group post immediately"),
+    broadcast: bool = Query(True, description="Blast links hub bulletin to every network channel"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """One-shot revenue funnel: stars-bait → album checkout → scheduler sync → optional bulletin blast."""
+    from app.services.stars_bait_outreach import apply_stars_bait_outreach
+
+    report: dict[str, Any] = {}
+    try:
+        report["stars_bait"] = apply_stars_bait_outreach(db, execute=True, post_channel_now=post_channel_now)
+        report["album_checkout"] = sync_network_album_and_checkout(db, execute=True)
+        report["schedulers"] = sync_network_schedulers(db, execute=True)
+        if broadcast:
+            report["broadcast"] = broadcast_bulletin_to_network(db, pin_main=True)
+        db.commit()
+        return {"ok": True, **report}
+    except Exception as e:
+        db.rollback()
+        logger.exception("conversion-sprint failed")
+        raise HTTPException(status_code=500, detail=str(e)[:300]) from e
+
+
 @router.post("/broadcast-bulletin")
 def post_broadcast_bulletin(db: Session = Depends(get_db)) -> dict[str, Any]:
     """Sync schedulers then post links hub (variation 0) to every channel; pin on main."""
