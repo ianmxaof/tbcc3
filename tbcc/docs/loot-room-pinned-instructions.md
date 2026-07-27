@@ -95,7 +95,7 @@ Free pulls show you the format; paid runs unlock the real extras.
 
 ## 👺 Loot Goblin (commons bulletin)
 
-*Paste into Loot Room **commons / bulletins** topic — explains the random channel spawns.*
+*Full image overlay + Genesis cover prompts: `docs/samples/LOOT_GOBLIN_LRG_IMAGE_PACK.md` · reference grid: `docs/samples/loot_goblin_lrg_reference_grid.png`*
 
 **What it is**  
 While the network is “listening,” a **Loot Goblin** can blink into an AOF channel — boombox on his shoulders, stolen signal in the air — and leave a **45-second claim window**. He does **not** dump loot in the chat. He leaves a button.

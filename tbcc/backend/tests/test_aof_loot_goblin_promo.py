@@ -62,6 +62,7 @@ def test_loot_room_bulletin_mentions_no_lv_on_goblin() -> None:
     html = build_loot_room_goblin_bulletin_html()
     assert "Loot Goblin" in html
     assert "No Linkvertise on goblin" in html
+    assert "blink" in html.lower()
 
 
 def test_append_prompt_drop_variations_appends_provisioned_rows() -> None:

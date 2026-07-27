@@ -63,14 +63,18 @@ def build_goblin_teaser_with_footer(footer: str) -> str:
 def build_loot_room_goblin_bulletin_html() -> str:
     """Pinned Loot Room commons explainer — once per apply."""
     return (
-        "👺 <b>Loot Goblin + Loot God Game</b>\n"
+        "👺 <b>LOOT GOBLIN</b> — <i>blink · tap · DM</i>\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "When the listening relay posts <b>now playing</b>, a goblin can blink into the lane — "
-        "~45s to tap <b>Claim loot</b>. First 5 taps get a free DM pull.\n\n"
-        "<b>Loot God Game</b> — tier card reveal → spoiler album in DM.\n"
-        "Five free rolls ever, then keys / Stars on <b>@aof_lootgod_bot</b>.\n\n"
-        f'Free taste: <a href="{GOBLIN_FREE_DEEP_LINK}">@aof_lootgod_bot</a>\n'
-        "<i>No Linkvertise on goblin drops — claim links stay clearnet.</i>"
+        "While the network is <b>listening</b>, a goblin can <b>blink</b> into a random AOF lane — "
+        "boombox on his back, stolen signal in the air. He does <b>not</b> dump loot in chat. He leaves a button.\n\n"
+        "<b>How to catch him</b>\n"
+        "1. Watch for <b>👺 Loot goblin!</b> (often on a <b>now playing</b> scrobble).\n"
+        "2. Tap <b>Claim loot</b> within ~<b>45 seconds</b>.\n"
+        "3. First <b>5</b> unique tappers get a <b>complimentary pull</b> in DM.\n"
+        "4. Opens <b>@aof_lootgod_bot</b> — tier-capped teaser, same family as free pulls.\n\n"
+        "<b>Loot God Game</b> — tier card → spoiler album in DM. Five free rolls ever; then keys / Stars on the bot.\n\n"
+        f'👉 <a href="{GOBLIN_FREE_DEEP_LINK}">Free taste — @aof_lootgod_bot</a>\n'
+        "<i>No Linkvertise on goblin drops. Claim links stay clearnet. Don’t forward goblin loot.</i>"
     )
 
 
