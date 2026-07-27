@@ -1828,6 +1828,35 @@ export const api = {
         affiliate?: { active_rows: number; by_placement: Record<string, number>; cursors: number };
         channels?: unknown[];
       }>("/growth-hub/sync-affiliate-rotation", { method: "POST" }),
+    syncAlbumCheckout: () =>
+      fetchApi<{
+        ok: boolean;
+        schedulers_updated?: number;
+        pools_updated?: number;
+        group_access_plan_id?: number;
+      }>("/growth-hub/sync-album-checkout", { method: "POST" }),
+    applyStarsBait: (postChannelNow = true) =>
+      fetchApi<{
+        ok: boolean;
+        dm_enabled?: boolean;
+        outreach_pool?: number;
+        channel_pacing?: { schedulers?: unknown[] };
+      }>(`/growth-hub/apply-stars-bait?post_channel_now=${postChannelNow ? "true" : "false"}`, {
+        method: "POST",
+      }),
+    conversionSprint: (opts?: { postChannelNow?: boolean; broadcast?: boolean }) => {
+      const q = new URLSearchParams();
+      if (opts?.postChannelNow === false) q.set("post_channel_now", "false");
+      if (opts?.broadcast === false) q.set("broadcast", "false");
+      const suffix = q.toString() ? `?${q}` : "";
+      return fetchApi<{
+        ok: boolean;
+        stars_bait?: { outreach_pool?: number; dm_enabled?: boolean };
+        album_checkout?: { schedulers_updated?: number };
+        schedulers?: { channels?: unknown[] };
+        broadcast?: { count?: number };
+      }>(`/growth-hub/conversion-sprint${suffix}`, { method: "POST" });
+    },
     broadcastBulletin: () =>
       fetchApi<{ ok: boolean; queued: unknown[]; count: number }>("/growth-hub/broadcast-bulletin", {
         method: "POST",

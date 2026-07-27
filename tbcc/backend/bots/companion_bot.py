@@ -424,6 +424,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     arg = _parse_start_arg(context)
     if arg:
+        try:
+            from app.services.traffic_attribution import record_traffic_touch_from_bot
+
+            record_traffic_touch_from_bot(int(user.id), arg)
+        except Exception:
+            pass
         await _handle_start_referral(update, context, arg)
     acc = await _gate_access(context, user.id)
     if gate_enabled() and not acc.gate_complete:

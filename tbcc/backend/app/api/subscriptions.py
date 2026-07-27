@@ -161,6 +161,14 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         referrer_id=int(referrer_id) if referrer_id else None,
         telegram_payment_charge_id=charge_id,
     )
+    try:
+        from app.services.traffic_attribution import resolve_attribution_for_user
+
+        attr = resolve_attribution_for_user(db, int(telegram_user_id))
+        sub.traffic_source_ref = attr.get("traffic_source_ref")
+        sub.traffic_entry_payload = attr.get("traffic_entry_payload")
+    except Exception:
+        pass
     db.add(sub)
     db.commit()
     db.refresh(sub)
@@ -194,6 +202,8 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
             amount_stars=int(plan.price_stars or 0),
             plan_id=int(plan.id),
             channel_id=int(plan.channel_id) if plan.channel_id else None,
+            traffic_source_ref=sub.traffic_source_ref,
+            start_payload_raw=sub.traffic_entry_payload,
             extra={"payment_method": payment_method},
         )
         db.commit()

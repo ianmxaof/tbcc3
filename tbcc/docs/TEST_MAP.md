@@ -11,7 +11,7 @@ py -3.13 -m pytest <path> -x -q
 |------|----------------|-------|
 | **Ops / stack** | `tests/test_tbcc_stack_control.py` | Tray adapter, stack CLI |
 | **Ops alerts** | `tests/test_ops_alert_smoke.py`, `test_ops_restart_grace.py`, `test_ops_workflow_runner.py` | |
-| **Loot** | `tests/test_loot_*.py`, `tests/test_lane_readiness_robocopy.py`, `tests/test_zip_flywheel.py`, `tests/test_pack_gate_wrap.py`, `tests/test_lane_drop_checkpoint.py` | Pack pool, VIP pull, free/key roll, tier cards; lane economy; zip flywheel; LV→AdMaven→work.ink ingest; merch checkpoint |
+| **Loot** | `tests/test_loot_*.py`, `tests/test_lane_readiness_robocopy.py`, `tests/test_zip_flywheel.py`, `tests/test_pack_gate_wrap.py`, `tests/test_lane_drop_checkpoint.py`, `tests/test_prompt_gate_lookup.py`, `tests/test_prompt_gate_registry.py`, `tests/test_linkvertise_text_selectors.py`, `tests/test_aof_loot_goblin_promo.py`, `tests/test_prompt_gate_placement.py` | Pack pool, VIP pull, free/key roll, tier cards; lane economy; zip flywheel; LV ingest; prompt_gate registry + placement guards |
 | **Companion** | `tests/test_companion_*.py` | Access, generation, stars |
 | **AOF / VIP** | `tests/test_aof_*.py` | Checkout, captions, packs, hub→loot CTA |
 | **Erome** | `tests/test_erome_*.py`, `tests/test_market_intel_probe.py`, `tests/test_market_intel_cycle.py`, `tests/test_erome_upload_governance.py`, `tests/test_erome_browse_intel.py`, `tests/test_cross_site_intel_report.py` | Upload, private staging governance, ingest, crawler, browse-intel (incl. ThisVid platform rows), cross-site revenue report helpers, Reddit probe, weekly cycle |

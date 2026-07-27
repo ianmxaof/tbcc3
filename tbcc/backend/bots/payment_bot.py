@@ -1150,6 +1150,82 @@ async def send_stars_bait_trap_message(
         db.close()
 
 
+async def send_verify_funnel_prompt(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    target: str = "vip",
+    source: str | None = None,
+) -> None:
+    """Collab.Land-style verify welcome → Tap to Verify → gated invite or VIP checkout."""
+    from app.database.session import SessionLocal
+    from app.services.human_gate_pacing import get_consent, human_gate_enabled
+    from app.services.verify_funnel import (
+        post_verify_response_html,
+        verify_ack_callback_data,
+        verify_button_label,
+        verify_funnel_enabled,
+        verify_welcome_html,
+    )
+
+    if not msg or not verify_funnel_enabled() or not human_gate_enabled():
+        return
+    user = msg.from_user or getattr(msg, "chat", None)
+    uid = getattr(user, "id", None)
+    db = SessionLocal()
+    try:
+        if uid:
+            existing = get_consent(db, int(uid))
+            if existing:
+                html, kb_rows = post_verify_response_html(
+                    db,
+                    telegram_user_id=int(uid),
+                    target=existing.gate_target,
+                    already=True,
+                )
+                kb = _keyboard_from_row_dicts(kb_rows) if kb_rows else None
+                await msg.reply_text(
+                    html,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=kb,
+                )
+                return
+        await msg.reply_text(
+            verify_welcome_html(target),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            verify_button_label(),
+                            callback_data=verify_ack_callback_data(target),
+                        )
+                    ]
+                ]
+            ),
+        )
+    finally:
+        db.close()
+
+
+def _keyboard_from_row_dicts(rows: list[list[dict[str, str]]] | None) -> InlineKeyboardMarkup | None:
+    if not rows:
+        return None
+    built: list[list[InlineKeyboardButton]] = []
+    for row in rows:
+        buttons: list[InlineKeyboardButton] = []
+        for cell in row:
+            if cell.get("url"):
+                buttons.append(InlineKeyboardButton(cell["text"], url=cell["url"]))
+            elif cell.get("callback_data"):
+                buttons.append(InlineKeyboardButton(cell["text"], callback_data=cell["callback_data"]))
+        if buttons:
+            built.append(buttons)
+    return InlineKeyboardMarkup(built) if built else None
+
+
 async def send_human_gate_prompt(
     msg,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1212,6 +1288,7 @@ async def handle_human_gate_callback(update: Update, context: ContextTypes.DEFAU
         parse_human_ack_callback,
         record_human_ack,
     )
+    from app.services.verify_funnel import post_verify_response_html, record_verify_ack, verify_funnel_enabled
 
     target = parse_human_ack_callback(query.data)
     if target is None:
@@ -1222,22 +1299,65 @@ async def handle_human_gate_callback(update: Update, context: ContextTypes.DEFAU
         return
     db = SessionLocal()
     try:
-        row = record_human_ack(
-            db,
-            telegram_user_id=int(user.id),
-            gate_target=target,
-            source=query.data,
-            username=user.username,
-            first_name=user.first_name,
-        )
+        if verify_funnel_enabled():
+            row = record_verify_ack(
+                db,
+                telegram_user_id=int(user.id),
+                gate_target=target,
+                source=query.data,
+                username=user.username,
+                first_name=user.first_name,
+            )
+            html, kb_rows = post_verify_response_html(
+                db,
+                telegram_user_id=int(user.id),
+                target=row.gate_target,
+            )
+            kb = _keyboard_from_row_dicts(kb_rows)
+        else:
+            row = record_human_ack(
+                db,
+                telegram_user_id=int(user.id),
+                gate_target=target,
+                source=query.data,
+                username=user.username,
+                first_name=user.first_name,
+            )
+            html, kb = ack_success_html(row.gate_target), None
         await query.answer("Verified")
         await query.message.reply_text(
-            ack_success_html(row.gate_target),
+            html,
             parse_mode="HTML",
             disable_web_page_preview=True,
+            reply_markup=kb,
         )
     finally:
         db.close()
+
+
+async def handle_gatekeeper_review_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Quarantine approve/reject (gk:a: / gk:r:) — payment bot posts review cards on island."""
+    from bots.gatekeeper_review_handlers import on_gatekeeper_review_callback
+
+    await on_gatekeeper_review_callback(update, context)
+
+
+async def cmd_deposit_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_hub_deposit_bot import cmd_deposit
+
+    await cmd_deposit(update, context, bot_label="payment")
+
+
+async def cmd_intake_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.intake_control_handlers import cmd_intake
+
+    await cmd_intake(update, context)
+
+
+async def handle_intake_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.intake_control_handlers import on_intake_control_callback
+
+    await on_intake_control_callback(update, context)
 
 
 async def cmd_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1297,6 +1417,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = (context.args or [])
     payload = args[0] if args else ""
 
+    try:
+        from app.services.traffic_attribution import record_traffic_touch_from_bot
+
+        if payload:
+            record_traffic_touch_from_bot(int(user.id), payload)
+    except Exception:
+        pass
+
     if payload.startswith("vf_") or payload.startswith("ms_"):
         username = _normalize_video_username(payload[3:])
         if username:
@@ -1310,6 +1438,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if bait_product is not None:
         await send_stars_bait_trap_message(msg, context, product=bait_product)
         return
+
+    from app.services.verify_funnel import parse_verify_start_payload, verify_funnel_enabled
+
+    verify_target = parse_verify_start_payload(payload)
+    if verify_target is not None and verify_funnel_enabled():
+        from app.services.human_gate_pacing import human_gate_enabled
+
+        if human_gate_enabled():
+            await send_verify_funnel_prompt(msg, context, target=verify_target, source=payload)
+            return
 
     from app.services.human_gate_pacing import human_gate_enabled, parse_gate_start_payload
 
@@ -2667,6 +2805,8 @@ def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
     app.add_handler(CommandHandler("videofind", cmd_videofind))
+    app.add_handler(CommandHandler("deposit", cmd_deposit_payment))
+    app.add_handler(CommandHandler("intake", cmd_intake_payment))
     for h in build_macro_search_handlers(
         _get_runtime_settings,
         _patch_macro_custom_sources,
@@ -2703,6 +2843,21 @@ def main() -> None:
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/packs(@\w+)?\s*$"),
             cmd_packs,
         )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/deposit(@\w+)?(?:\s|$)"),
+            cmd_deposit_payment,
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:[atr]:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b[ar]:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")

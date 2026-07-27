@@ -95,6 +95,8 @@ def record_growth_attribution(
     delivery_metric_id: int | None = None,
     caption_slot_index: int | None = None,
     posted_hour_local: int | None = None,
+    traffic_source_ref: str | None = None,
+    start_payload_raw: str | None = None,
     extra: dict[str, Any] | None = None,
     attach_latest_delivery: bool = True,
 ) -> GrowthAttributionEvent | None:
@@ -125,6 +127,8 @@ def record_growth_attribution(
         delivery_metric_id=int(delivery_metric_id) if delivery_metric_id is not None else None,
         caption_slot_index=int(caption_slot_index) if caption_slot_index is not None else None,
         posted_hour_local=int(posted_hour_local) if posted_hour_local is not None else None,
+        traffic_source_ref=(traffic_source_ref or "")[:64] or None,
+        start_payload_raw=(start_payload_raw or "")[:128] or None,
         context_json=json.dumps(ctx, separators=(",", ":"), default=str),
     )
     db.add(row)
@@ -157,6 +161,14 @@ def attribution_summary(db: Session, *, days: int = 30) -> dict[str, Any]:
     hour_rows = [{"hour_local": h, "count": by_hour.get(h, 0)} for h in range(24)]
     top_hours = sorted(by_hour.items(), key=lambda x: -x[1])[:5]
 
+    source_rollup: dict[str, Any] = {}
+    try:
+        from app.services.traffic_attribution import conversions_by_source
+
+        source_rollup = conversions_by_source(db, days=days)
+    except Exception:
+        logger.debug("conversions_by_source rollup failed", exc_info=True)
+
     return {
         "range_days": days,
         "timezone": analytics_timezone_label(),
@@ -164,6 +176,7 @@ def attribution_summary(db: Session, *, days: int = 30) -> dict[str, Any]:
         "subscription_stars_total": stars_total,
         "conversions_by_hour_local": hour_rows,
         "top_conversion_hours_local": [{"hour": h, "count": c} for h, c in top_hours],
+        **source_rollup,
     }
 
 

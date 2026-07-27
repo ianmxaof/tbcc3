@@ -21,4 +21,6 @@ class GrowthAttributionEvent(Base):
     delivery_metric_id = Column(Integer, nullable=True)
     caption_slot_index = Column(Integer, nullable=True)
     posted_hour_local = Column(Integer, nullable=True)
+    traffic_source_ref = Column(String(64), nullable=True)
+    start_payload_raw = Column(String(128), nullable=True)
     context_json = Column(Text, nullable=True)

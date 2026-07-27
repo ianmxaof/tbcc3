@@ -15,6 +15,7 @@ from .tbcc_tag import TbccTag, MediaTagLink
 from .post_outbound_event import PostOutboundEvent
 from .post_delivery_metric import PostDeliveryMetric
 from .growth_attribution_event import GrowthAttributionEvent
+from .user_funnel_touch import UserFunnelTouch
 from .drop_countdown import DropCountdownSession
 from .link_resolver_request import LinkResolverRequest
 from .loot_bot_settings import LootBotSettings
@@ -40,6 +41,7 @@ from .industry_benchmark import IndustryBenchmark
 from .income_entry import IncomeEntry
 from .buyer_entitlement import BuyerEntitlement
 from .lane_drop import LaneDrop
+from .prompt_gate import PromptGate
 from .funnel_dm_consent import FunnelDmConsent
 from .funnel_strategy import FunnelStrategyEntry
 from .click_link import ClickLink, ClickLinkHit
@@ -113,6 +115,7 @@ __all__ = [
     "IncomeEntry",
     "BuyerEntitlement",
     "LaneDrop",
+    "PromptGate",
     "FunnelDmConsent",
     "FunnelStrategyEntry",
     "ClickLink",
