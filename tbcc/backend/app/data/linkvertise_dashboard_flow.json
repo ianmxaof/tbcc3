@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "notes": "Import codegen: py scripts/import_linkvertise_codegen.py recording.py --ad-tasks 2",
+  "notes": "Template only — live Link locators in linkvertise_dashboard_flow.local.json (untracked). Text keys below are the recording checklist.",
   "publisher_login_url": "https://publisher.linkvertise.com/login",
   "post_earn_url": "https://linkvertise.com/",
   "ad_tasks_count": 2,
@@ -14,7 +14,11 @@
     "submit_button": "",
     "created_link_anchor": "",
     "created_link_text": "",
-    "create_new_link_button": ""
+    "create_new_link_button": "",
+    "asset_type_step": "",
+    "asset_type_text_option": "",
+    "text_body_input": "",
+    "text_body_max_len": ""
   },
   "locators": {},
   "slug_url_pattern": "link-target.net/{publisher_id}/",

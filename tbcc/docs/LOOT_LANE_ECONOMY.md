@@ -108,6 +108,7 @@ Zip fulfillment / per-lane invite automation still future work — rows appear i
 - Higher tier = better **roll odds**, not just more files. Files leak; odds don't.
 - Lane Pass is the weakest access tier.
 - **One friction wall per purchase** (never stack Linkvertise + pass + pack gate on the same buy).
+- **Prompt gates (Telegram):** one Linkvertise Text slug per message; channel addlist gate **or** `prompt_gate` SKU — never both. Goblin claim (`?start=loot_free`) and Stars/checkout bot deep links stay clearnet (see `prompt_gate_placement.py`).
 - Funnel weight: **Curated Pack → monthly MEGA** is primary revenue; glimpse + $3 pass = top-of-funnel.
 
 ### Curated packs (operator workflow)
@@ -210,6 +211,8 @@ Model: `lane_drops` (alembic `094`). Service: `lane_drop_checkpoint.py`. List pe
 - Clean + forwardable + paid in any tier.
 - No entitlement ledger independent of Telegram channels.
 - Stacked mandatory gates on one purchase.
+- Dual Linkvertise destinations in one Telegram caption (channel gate + prompt_gate Text).
+- Gating goblin claim or checkout deep links behind Linkvertise.
 - Public "nothing free by design" on cold traffic.
 - Volume-only pack marketing with no curation signal.
 - Fake coercion virality or fake abuse banners.

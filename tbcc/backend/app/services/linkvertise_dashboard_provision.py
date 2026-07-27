@@ -31,6 +31,13 @@ from app.services.pack_gate_wrap import _is_dynamic_linkvertise
 
 logger = logging.getLogger(__name__)
 
+ASSET_TYPE_LINK = "link"
+ASSET_TYPE_TEXT = "text"
+
+
+class PromptGateGuidelinesError(RuntimeError):
+    """LV rejected a Text asset body/title — mark prompt_gate failed; do not mutate prompt."""
+
 _FLOW_PATH = Path(__file__).resolve().parents[1] / "data" / "linkvertise_dashboard_flow.json"
 _LV_SLUG_RE = re.compile(
     r"https?://(?:link-target|link-center|link-to|direct-link|up-to-down)\.net/\d+/([A-Za-z0-9_-]+)",
@@ -59,6 +66,7 @@ class FlowConfig:
     flow_mode: str = "simple"
     skip_login: bool = True
     wizard_entry_url: str | None = None
+    create_target_type_url: str | None = None
 
 
 def flow_config_path() -> Path:
@@ -104,6 +112,9 @@ def load_flow_config() -> FlowConfig:
         flow_mode=str(data.get("flow_mode") or "simple").strip().lower(),
         skip_login=bool(data.get("skip_login", True)),
         wizard_entry_url=(str(data.get("wizard_entry_url")).strip() if data.get("wizard_entry_url") else None),
+        create_target_type_url=(
+            str(data.get("create_target_type_url")).strip() if data.get("create_target_type_url") else None
+        ),
     )
 
 
@@ -114,12 +125,29 @@ def _spec(cfg: FlowConfig, key: str) -> dict[str, Any] | str | None:
     return css or None
 
 
-def selectors_ready(cfg: FlowConfig) -> bool:
+def selectors_ready(cfg: FlowConfig, *, asset_type: str = ASSET_TYPE_LINK) -> bool:
+    if asset_type == ASSET_TYPE_TEXT:
+        return text_selectors_ready(cfg)
     if cfg.flow_mode == "wizard":
         required = ("destination_input", "submit_button", "wizard_start")
         return all(bool(_spec(cfg, k)) for k in required)
     required = ("create_link_button", "destination_input", "submit_button")
     return all(bool(_spec(cfg, key)) for key in required)
+
+
+def text_selectors_ready(cfg: FlowConfig) -> bool:
+    """Text Post & earn wizard — Type→Text body→Meta→Access (reuses link meta/access locators)."""
+    if cfg.flow_mode != "wizard":
+        return False
+    required = (
+        "wizard_start",
+        "asset_type_text_option",
+        "text_body_input",
+        "submit_button",
+        "wizard_next_after_url",
+        "wizard_next_after_settings",
+    )
+    return all(bool(_spec(cfg, k)) for k in required)
 
 
 def extract_lv_slug_url(text: str, publisher_id: str | int | None = None) -> str | None:
@@ -188,14 +216,25 @@ def _dismiss_banners(page: Any) -> None:
 
 def _click_next_when_ready(page: Any, cfg: FlowConfig) -> None:
     spec = _spec(cfg, "wizard_start")
-    if not spec:
-        raise RuntimeError("wizard_start (Next) locator missing")
-    loc = locator_from_spec(page, spec).first
-    loc.wait_for(state="visible", timeout=60000)
-    loc.click()
+    if spec:
+        try:
+            click_spec(page, spec)
+            return
+        except Exception:
+            pass
+    try:
+        page.get_by_role("button", name=re.compile(r"Next", re.I)).first.click(timeout=60000)
+    except Exception as e:
+        raise RuntimeError("wizard_start (Next) locator missing") from e
 
 
-def _navigate_to_wizard_start(page: Any, cfg: FlowConfig, *, first: bool) -> None:
+def _navigate_to_wizard_start(
+    page: Any,
+    cfg: FlowConfig,
+    *,
+    first: bool,
+    advance_past_type: bool = True,
+) -> None:
     """Reach the create-link wizard step where the Next button is visible."""
     _dismiss_banners(page)
 
@@ -203,12 +242,14 @@ def _navigate_to_wizard_start(page: Any, cfg: FlowConfig, *, first: bool) -> Non
         start_spec = _spec(cfg, "wizard_start")
         try:
             locator_from_spec(page, start_spec).first.wait_for(state="visible", timeout=5000)
-            _click_next_when_ready(page, cfg)
+            if advance_past_type:
+                _click_next_when_ready(page, cfg)
             return
         except Exception:
             pass
         _click_if_spec(page, cfg, "create_new_link_button")
-        _click_next_when_ready(page, cfg)
+        if advance_past_type:
+            _click_next_when_ready(page, cfg)
         return
 
     entry = (cfg.wizard_entry_url or "").strip()
@@ -810,6 +851,221 @@ def _scrape_created_url(page: Any, cfg: FlowConfig) -> str | None:
     return _try_read_created_url_once(page, cfg)
 
 
+_LV_CREATE_TARGET_TYPE_URL = "https://linkvertise.com/posts/create/targetType"
+
+
+def _create_target_type_url(cfg: FlowConfig) -> str:
+    raw = (cfg.create_target_type_url or os.getenv("TBCC_LINKVERTISE_CREATE_TARGET_URL") or "").strip()
+    return raw or _LV_CREATE_TARGET_TYPE_URL
+
+
+def _goto_create_type_step(page: Any, cfg: FlowConfig) -> None:
+    page.goto(_create_target_type_url(cfg), wait_until="domcontentloaded", timeout=120000)
+    _dismiss_banners(page)
+    page.wait_for_timeout(1200)
+
+
+def _type_step_visible(page: Any) -> bool:
+    """True only on Post & earn Type step (Link | Text toggles both visible)."""
+    try:
+        link = page.get_by_role("button", name=re.compile(r"^Link$", re.I)).first.is_visible(timeout=2000)
+        text = page.get_by_role("button", name=re.compile(r"^Text$", re.I)).first.is_visible(timeout=2000)
+        return bool(link and text)
+    except Exception:
+        return False
+
+
+def _open_post_earn_create_flow(page: Any, cfg: FlowConfig) -> None:
+    """Reach Post & earn Type step (Link | Text)."""
+    if _type_step_visible(page):
+        return
+    _goto_create_type_step(page, cfg)
+    if _type_step_visible(page):
+        return
+    _click_if_spec(page, cfg, "post_earn_nav")
+    page.wait_for_timeout(2000)
+    if _type_step_visible(page):
+        return
+    for label in ("Create new link", "Create link", "New link", "Get Started"):
+        try:
+            page.get_by_role("button", name=re.compile(re.escape(label), re.I)).first.click(timeout=4000)
+            page.wait_for_timeout(1500)
+            if _type_step_visible(page):
+                return
+        except Exception:
+            continue
+
+
+def _select_asset_type_text(page: Any, cfg: FlowConfig) -> bool:
+    _open_post_earn_create_flow(page, cfg)
+    for attempt in (
+        lambda: page.get_by_role("button", name=re.compile(r"^Text$", re.I)).first.click(timeout=8000),
+        lambda: page.locator("mat-button-toggle").filter(has_text=re.compile(r"^Text$", re.I)).first.click(
+            timeout=5000
+        ),
+        lambda: page.get_by_text(re.compile(r"^Text$", re.I)).first.click(timeout=5000),
+    ):
+        try:
+            attempt()
+            page.wait_for_timeout(500)
+            return True
+        except Exception:
+            continue
+    spec = _spec(cfg, "asset_type_text_option")
+    if spec:
+        try:
+            click_spec(page, spec, timeout_ms=8000)
+            page.wait_for_timeout(500)
+            return True
+        except Exception:
+            pass
+    try:
+        page.get_by_role("button", name=re.compile(r"^Text$", re.I)).first.click(timeout=5000)
+        page.wait_for_timeout(500)
+        return True
+    except Exception:
+        return False
+
+
+def _truncate_text_body(body: str, cfg: FlowConfig) -> str:
+    raw = (body or "").strip()
+    max_len_raw = (os.getenv("TBCC_LINKVERTISE_TEXT_BODY_MAX_LEN") or "").strip()
+    if not max_len_raw:
+        spec = _spec(cfg, "text_body_max_len")
+        max_len_raw = str(spec) if spec else ""
+    if not max_len_raw:
+        return raw
+    try:
+        max_len = int(max_len_raw)
+    except ValueError:
+        return raw
+    if max_len > 0 and len(raw) > max_len:
+        logger.warning("Truncating prompt body %d -> %d chars for LV Text asset", len(raw), max_len)
+        return raw[:max_len]
+    return raw
+
+
+def _on_text_paste_step(page: Any) -> bool:
+    return "/posts/create/paste" in (page.url or "")
+
+
+def _fill_ace_editor(page: Any, text: str) -> None:
+    """ACE code editor overlays the textarea — click scroller and insert text."""
+    try:
+        page.locator(".ace_content").first.click(timeout=8000)
+        page.wait_for_timeout(200)
+        page.keyboard.press("Control+A")
+        page.keyboard.insert_text(text)
+        page.wait_for_timeout(300)
+        return
+    except Exception:
+        logger.debug("ace_content click fill failed", exc_info=True)
+    try:
+        ok = page.evaluate(
+            """(val) => {
+              const el = document.querySelector('.ace_editor');
+              if (!el || !window.ace) return false;
+              const ed = ace.edit(el);
+              ed.setValue(val, -1);
+              ed.clearSelection();
+              return true;
+            }""",
+            text,
+        )
+        if ok:
+            return
+    except Exception:
+        logger.debug("ace.edit setValue failed", exc_info=True)
+    loc = page.locator("textarea.ace_text-input").first
+    loc.click(force=True)
+    page.keyboard.press("Control+A")
+    page.keyboard.insert_text(text)
+
+
+def _fill_text_body_input(page: Any, cfg: FlowConfig, body: str) -> None:
+    text = _truncate_text_body(body, cfg)
+    if not _on_text_paste_step(page):
+        raise RuntimeError(f"expected Linkvertise paste step, got {page.url}")
+
+    if page.locator(".ace_editor").count() > 0:
+        _fill_ace_editor(page, text)
+    else:
+        loc = page.locator("textarea").first
+        loc.wait_for(state="visible", timeout=30000)
+        _set_input_value_angular(page, loc, text)
+    page.wait_for_timeout(500)
+    if "/search/" in (page.url or ""):
+        raise RuntimeError("text body fill navigated to search — wrong input targeted")
+
+
+def _assert_no_guidelines_for_text(page: Any, *, where: str) -> None:
+    if _guidelines_violation_visible(page):
+        raise PromptGateGuidelinesError(
+            f"Linkvertise guidelines violation on prompt Text asset ({where}) — operator review required"
+        )
+
+
+def _run_wizard_meta_access_publish(
+    page: Any,
+    cfg: FlowConfig,
+    *,
+    safe_title: str,
+    headed: bool,
+    guidelines_mode: str = ASSET_TYPE_LINK,
+    recover_dest: str | None = None,
+) -> str:
+    _ensure_meta_visibility_no(page)
+    _fill_wizard_meta_title(page, cfg, safe_title)
+    _clear_meta_description(page)
+    if guidelines_mode == ASSET_TYPE_TEXT:
+        _assert_no_guidelines_for_text(page, where="meta title")
+
+    after_meta = _spec(cfg, "wizard_next_after_settings")
+    if after_meta:
+        click_spec(page, after_meta)
+        page.wait_for_timeout(800)
+
+    _configure_access_two_ads(page, cfg)
+
+    if _guidelines_violation_visible(page):
+        if guidelines_mode == ASSET_TYPE_TEXT:
+            raise PromptGateGuidelinesError(
+                "Linkvertise guidelines violation on prompt Text asset (access) — operator review required"
+            )
+        safe_title = _recover_guidelines_violation(page, cfg, recover_dest or "")
+        _configure_access_two_ads(page, cfg)
+
+    submit = _spec(cfg, "submit_button")
+    if not submit:
+        raise RuntimeError("submit_button (Publish) locator missing")
+    if _guidelines_violation_visible(page):
+        if guidelines_mode == ASSET_TYPE_TEXT:
+            raise PromptGateGuidelinesError(
+                "Linkvertise guidelines violation blocks Publish on prompt Text asset"
+            )
+        raise RuntimeError(
+            "Cannot Publish — Linkvertise guidelines error still visible. "
+            f"dest={ (recover_dest or '')[:80]}"
+        )
+    click_spec(page, submit)
+    try:
+        page.wait_for_load_state("networkidle", timeout=45000)
+    except Exception:
+        pass
+    page.wait_for_timeout(cfg.wait_after_submit_ms)
+
+    link_url = _wait_for_created_url(page, cfg, headed=headed)
+    if not link_url:
+        link_url = _scrape_created_url(page, cfg)
+    if not link_url:
+        raise RuntimeError("Could not read created Linkvertise slug after Publish")
+
+    normalized = extract_lv_slug_url(link_url) or link_url.strip().split()[0]
+    if not is_linkvertise_host(normalized) or _is_dynamic_linkvertise(normalized):
+        raise RuntimeError(f"Created URL is not a dashboard slug: {normalized[:120]}")
+    return normalized
+
+
 def _open_create_form(page: Any, cfg: FlowConfig, *, first_in_session: bool) -> None:
     if first_in_session:
         nav = _spec(cfg, "post_earn_nav")
@@ -831,6 +1087,29 @@ def _open_create_form(page: Any, cfg: FlowConfig, *, first_in_session: bool) -> 
         return
     page.goto(cfg.post_earn_url, wait_until="domcontentloaded")
     click_spec(page, _spec(cfg, "create_link_button"))
+
+
+def _navigate_to_text_wizard_body(page: Any, cfg: FlowConfig, *, first: bool) -> None:
+    """Reach the Text body step (Type -> Text -> Next -> /posts/create/paste)."""
+    if first:
+        _goto_create_type_step(page, cfg)
+    else:
+        _navigate_to_wizard_start(page, cfg, first=False, advance_past_type=False)
+        if not _type_step_visible(page):
+            _goto_create_type_step(page, cfg)
+    if not _select_asset_type_text(page, cfg):
+        raise RuntimeError("asset_type_text_option locator missing - run --record-text")
+    page.wait_for_timeout(600)
+    _click_next_when_ready(page, cfg)
+    page.wait_for_timeout(1200)
+    if not _on_text_paste_step(page):
+        try:
+            page.get_by_role("button", name=re.compile(r"Next", re.I)).first.click(timeout=15000)
+            page.wait_for_timeout(1200)
+        except Exception as e:
+            raise RuntimeError(f"could not reach paste step from {page.url}") from e
+    if not _on_text_paste_step(page):
+        raise RuntimeError(f"expected /posts/create/paste after Type step, got {page.url}")
 
 
 @dataclass
@@ -899,41 +1178,64 @@ class DashboardSession:
             click_spec(page, after_url)
             page.wait_for_timeout(800)
 
-        _ensure_meta_visibility_no(page)
-        _fill_wizard_meta_title(page, cfg, safe_title)
-        _clear_meta_description(page)
+        normalized = _run_wizard_meta_access_publish(
+            page,
+            cfg,
+            safe_title=safe_title,
+            headed=self._headed,
+            guidelines_mode=ASSET_TYPE_LINK,
+            recover_dest=dest,
+        )
 
-        after_meta = _spec(cfg, "wizard_next_after_settings")
-        if after_meta:
-            click_spec(page, after_meta)
+        if cfg.reuse_create_new_link_loop:
+            _click_if_spec(page, cfg, "create_new_link_button")
+
+        self._links_created += 1
+        return normalized
+
+    def create_text_asset(
+        self,
+        prompt_body: str,
+        *,
+        title: str | None = None,
+        prompt_key: str | None = None,
+    ) -> str:
+        """Provision a Linkvertise Text asset (prompt body behind ad gate)."""
+        body = (prompt_body or "").strip()
+        if not body:
+            raise ValueError("empty_prompt_body")
+        if self.cfg.flow_mode != "wizard":
+            raise RuntimeError("Text assets require flow_mode=wizard in linkvertise flow config")
+        return self._create_text_wizard(body, title=title, prompt_key=prompt_key)
+
+    def _create_text_wizard(
+        self,
+        body: str,
+        *,
+        title: str | None = None,
+        prompt_key: str | None = None,
+    ) -> str:
+        page = self.page
+        cfg = self.cfg
+        first = self._links_created == 0
+        safe_title = _safe_linkvertise_title(title or prompt_key, cfg, pack_id=self._pack_id)
+
+        _navigate_to_text_wizard_body(page, cfg, first=first)
+        _fill_text_body_input(page, cfg, body)
+        _assert_no_guidelines_for_text(page, where="body")
+
+        after_url = _spec(cfg, "wizard_next_after_url")
+        if after_url:
+            click_spec(page, after_url)
             page.wait_for_timeout(800)
 
-        _configure_access_two_ads(page, cfg)
-
-        if _guidelines_violation_visible(page):
-            safe_title = _recover_guidelines_violation(page, cfg, dest)
-            _configure_access_two_ads(page, cfg)
-
-        submit = _spec(cfg, "submit_button")
-        if not submit:
-            raise RuntimeError("submit_button (Publish) locator missing")
-        if _guidelines_violation_visible(page):
-            raise RuntimeError(
-                "Cannot Publish — Linkvertise guidelines error still visible. "
-                f"dest={dest[:80]}"
-            )
-        click_spec(page, submit)
-        page.wait_for_timeout(cfg.wait_after_submit_ms)
-
-        link_url = _wait_for_created_url(page, cfg, headed=self._headed)
-        if not link_url:
-            link_url = _scrape_created_url(page, cfg)
-        if not link_url:
-            raise RuntimeError("Could not read created Linkvertise slug after Publish")
-
-        normalized = extract_lv_slug_url(link_url) or link_url.strip().split()[0]
-        if not is_linkvertise_host(normalized) or _is_dynamic_linkvertise(normalized):
-            raise RuntimeError(f"Created URL is not a dashboard slug: {normalized[:120]}")
+        normalized = _run_wizard_meta_access_publish(
+            page,
+            cfg,
+            safe_title=safe_title,
+            headed=self._headed,
+            guidelines_mode=ASSET_TYPE_TEXT,
+        )
 
         if cfg.reuse_create_new_link_loop:
             _click_if_spec(page, cfg, "create_new_link_button")
@@ -1020,11 +1322,46 @@ def record_dashboard_flow(*, headed: bool = True) -> None:
         handle.close()
 
 
-def open_dashboard_session(*, headed: bool = False, keep_open: bool = False) -> DashboardSession:
+def record_text_dashboard_flow(*, headed: bool = True) -> None:
+    """Open Post & earn with Inspector — record Text asset wizard (Type → Text → Meta → Access)."""
     cfg = load_flow_config()
-    if not selectors_ready(cfg):
+    auth_path = auth_state_path()
+
+    handle = open_playwright_session(headed=True, slow_mo=80, storage_state=auth_path)
+    try:
+        page = handle.get_page()
+        page.goto(cfg.post_earn_url, wait_until="domcontentloaded", timeout=120000)
+        print(
+            "\n=== RECORD LINKVERTISE TEXT (POST & EARN) FLOW ===\n"
+            f"Browser: {browser_label()}\n"
+            "Do one full Text cycle:\n"
+            "  - Post & earn -> choose **Text** (not Link)\n"
+            "  - Paste prompt body in the text area\n"
+            "  - Meta title -> Access: Custom -> 2 ads -> disable 60min wait\n"
+            "  - Publish -> note slug URL -> Create new link (batch loop)\n\n"
+            "Then merge locators into linkvertise_dashboard_flow.local.json:\n"
+            "  asset_type_text_option, text_body_input, wizard_start, wizard_next_after_url,\n"
+            "  wizard_next_after_settings, submit_button, create_new_link_button\n\n"
+            "Press Resume when done.\n"
+        )
+        page.pause()
+        handle.context.storage_state(path=str(auth_path))
+    finally:
+        handle.close()
+
+
+def open_dashboard_session(
+    *,
+    headed: bool = False,
+    keep_open: bool = False,
+    asset_type: str = ASSET_TYPE_LINK,
+) -> DashboardSession:
+    cfg = load_flow_config()
+    ready_fn = text_selectors_ready if asset_type == ASSET_TYPE_TEXT else selectors_ready
+    if not ready_fn(cfg):
+        kind = "Text" if asset_type == ASSET_TYPE_TEXT else "Link"
         raise RuntimeError(
-            "Linkvertise flow not configured. Import codegen into linkvertise_dashboard_flow.local.json"
+            f"Linkvertise {kind} flow not configured. Import codegen into linkvertise_dashboard_flow.local.json"
         )
     auth_path = auth_state_path()
     launch_mode = resolve_launch_mode(storage_state=auth_path)
@@ -1062,9 +1399,24 @@ def create_dashboard_link(
     headed: bool = False,
 ) -> str:
     """Single link in a fresh browser (batch runs should use DashboardSession)."""
-    session = open_dashboard_session(headed=headed)
+    session = open_dashboard_session(headed=headed, asset_type=ASSET_TYPE_LINK)
     try:
         return session.create_link(destination_url, title=title)
+    finally:
+        session.close()
+
+
+def create_dashboard_text_asset(
+    prompt_body: str,
+    *,
+    title: str | None = None,
+    prompt_key: str | None = None,
+    headed: bool = False,
+) -> str:
+    """Single Text asset in a fresh browser."""
+    session = open_dashboard_session(headed=headed, asset_type=ASSET_TYPE_TEXT)
+    try:
+        return session.create_text_asset(prompt_body, title=title, prompt_key=prompt_key)
     finally:
         session.close()
 
@@ -1079,7 +1431,7 @@ def create_dashboard_links_batch(
 ) -> list[tuple[str, str | None, str | None]]:
     """Reuse one browser; click Create new link between items. Returns (dest, title, lv_url|error)."""
     keep = keep_open or no_close
-    session = open_dashboard_session(headed=headed, keep_open=keep)
+    session = open_dashboard_session(headed=headed, keep_open=keep, asset_type=ASSET_TYPE_LINK)
     out: list[tuple[str, str | None, str | None]] = []
     try:
         for i, (dest, title) in enumerate(items):
@@ -1110,6 +1462,48 @@ def create_dashboard_links_batch(
                 session.cfg,
                 prompt="Verify the created link in the browser, then continue here.",
             )
+            session.close(force=True)
+        else:
+            session.close()
+
+
+def create_dashboard_text_batch(
+    items: list[tuple[str, str | None, str | None]],
+    *,
+    headed: bool = False,
+    keep_open: bool = False,
+    no_close: bool = False,
+) -> list[tuple[str, str | None, str | None, str | None]]:
+    """
+    Batch Text assets in one browser session.
+
+    Each item: (prompt_body, title, prompt_key). Returns (body, title, key, lv_url|error).
+    """
+    keep = keep_open or no_close
+    session = open_dashboard_session(headed=headed, keep_open=keep, asset_type=ASSET_TYPE_TEXT)
+    out: list[tuple[str, str | None, str | None, str | None]] = []
+    try:
+        for i, (body, title, prompt_key) in enumerate(items):
+            try:
+                lv = session.create_text_asset(body, title=title, prompt_key=prompt_key)
+                out.append((body, title, prompt_key, lv))
+            except PromptGateGuidelinesError as e:
+                out.append((body, title, prompt_key, f"GUIDELINES:{e}"))
+                logger.warning("LV Text guidelines rejection key=%s", prompt_key)
+            except Exception as e:
+                out.append((body, title, prompt_key, f"ERROR:{e}"))
+                logger.exception("LV Text batch item failed key=%s", prompt_key)
+            if i + 1 < len(items):
+                rate_limit_sleep()
+        return out
+    finally:
+        if no_close and session._handle is not None:
+            session.save_auth()
+            print(
+                "\n=== Text automation finished ===\n"
+                "Browser stays open. Close the Brave window when done.\n"
+            )
+            session._handle.wait_until_user_closes()
             session.close(force=True)
         else:
             session.close()

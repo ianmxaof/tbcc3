@@ -26,9 +26,22 @@ Not intentional. Legacy 2-button forwards beside newer payment-bot posts. Consol
 
 ## X outbound links
 
-- `TBCC_BUFFER_X_REQUIRE_GATE_WRAP=1` (default): Buffer/X captions use Linkvertise gates, not bare `t.me`.
-- `TBCC_X_USE_LINKVERTISE=1` on island recommended.
-- BOP/Taboo: mirror blocked if bare Telegram URL would leak.
+**Default (v1):** `TBCC_X_USE_LINKVERTISE=0` — Linkvertise stays on **Telegram only** (channel manual gates + `prompt_gate` Text assets). Buffer/X/IG use clearnet hub (`telegram.me/aofmainhub` / `@aof_lootgod_bot`), revshare affiliates, and Gumroad VIP — filtered by `_caption_allowed_for_x` and `x_placement_violations()`.
+
+- `TBCC_BUFFER_X_REQUIRE_GATE_WRAP=1` (default): legacy strict-wrap path for bare `t.me` on some mirrors; with `TBCC_X_USE_LINKVERTISE=0`, `wrap_url_for_x_outbound()` **passes through** bare Telegram URLs (affiliate-first previews).
+- `TBCC_X_USE_LINKVERTISE=1`: optional island override — enables LV hosts on X captions and manual-gate overflow URLs.
+- BOP/Taboo: mirror blocked if bare Telegram URL would leak (`TBCC_BUFFER_MIRROR_STRICT_NETWORK_KEYS`).
+
+### Prompt gates (Telegram)
+
+| Rule | Enforcement |
+| ---- | ----------- |
+| One LV destination per message | `prompt_gate_placement.telegram_placement_violations()` |
+| Channel gate **or** prompt_gate Text slug — never both | Cannibalization guard + footer suppression on `AOF PROMPT DROP` rows |
+| Goblin claim + checkout deep links | Clearnet only — never wrapped (`is_protected_clearnet_url`) |
+| X/IG | No LV hosts when `TBCC_X_USE_LINKVERTISE=0` |
+
+Service: `backend/app/services/prompt_gate_placement.py` · tests: `tests/test_prompt_gate_placement.py`
 
 ## Funnel strategy RAG
 
@@ -43,7 +56,7 @@ Patterns documented: flash Stars album urgency, bio→channel trap, FOMO scarcit
 ```
 TBCC_BUFFER_X_REQUIRE_GATE_WRAP=1
 TBCC_BUFFER_MIRROR_STRICT_NETWORK_KEYS=bop,taboo
-TBCC_X_USE_LINKVERTISE=1
+TBCC_X_USE_LINKVERTISE=0
 TBCC_GUMROAD_CHECKOUT_ENABLED=1
 TBCC_REDDIT_EXECUTE=0   # set 1 only after subreddit registry review
 ```

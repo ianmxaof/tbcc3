@@ -21,6 +21,7 @@ from app.services.scheduled_post_service import (
     _resolve_variant_sources,
 )
 from app.services.buffer_x_caption import fit_buffer_mirror_plaintext
+from app.services.prompt_gate_placement import x_placement_violations
 from app.services.telegram_html_plain import telegram_html_to_plain
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,12 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
 
         ch = db.query(Channel).filter(Channel.id == int(post.channel_id)).first() if post.channel_id else None
         tg_ident = (ch.identifier if ch else None) or None
+        from app.services.buffer_mirror_policy import buffer_mirror_allowed_for_telegram_identifier
+
+        if not buffer_mirror_allowed_for_telegram_identifier(tg_ident):
+            logger.info("buffer mirror skipped: banned legacy main group channel")
+            return {"ok": False, "error": "banned_main_channel", "channels": 0}
+
         x_channel = buffer_x_channel_for_telegram_identifier(tg_ident)
         if not x_channel:
             logger.warning("buffer mirror: no X channel id (PRIMARY / X_SECONDARY / map)")
@@ -152,13 +159,25 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
             item = queue[0]
             plain_x = _plain_from_queue_item(item, post, db)
             iu = str(item.get("image_url") or "").strip()
-            img = iu if _public_https_image_url(iu) else None
+            from app.services.buffer_x_promo_image import (
+                direct_url_for_buffer,
+                looks_like_direct_image_url,
+                pick_promo_image,
+            )
+
+            img = iu if looks_like_direct_image_url(iu) else None
+            if not img:
+                img = direct_url_for_buffer(pick_promo_image())
             used_queue = True
             plain_long = plain_x
         else:
             plain_x = texts.get("x") or build_buffer_x_mirror_text(post, db)
             plain_long = texts.get("ig_threads") or texts.get("long") or build_buffer_plaintext_from_post(post, db)
             img = first_public_promo_image_url(post, db)
+            if not img:
+                from app.services.buffer_x_promo_image import direct_url_for_buffer, pick_promo_image
+
+                img = direct_url_for_buffer(pick_promo_image())
 
         if not plain_x and not plain_long:
             return {"ok": False, "error": "empty buffer body", "channels": 0}
@@ -184,6 +203,16 @@ def mirror_scheduled_post_to_buffer_with_surfaces(post_id: int, *, require_mirro
             except ValueError as e:
                 logger.error("buffer mirror blocked (bare URL): post=%s %s", post_id, e)
                 return {"ok": False, "error": str(e), "channels": 0}
+
+        if plain_x:
+            x_violations = x_placement_violations(plain_x)
+            if x_violations:
+                logger.warning(
+                    "buffer mirror blocked (LV on X): post=%s violations=%s",
+                    post_id,
+                    x_violations,
+                )
+                return {"ok": False, "error": x_violations[0], "channels": 0}
 
         share_mode = scheduled_buffer_share_mode(
             buffer_publish_now=bool(getattr(post, "buffer_publish_now", False))

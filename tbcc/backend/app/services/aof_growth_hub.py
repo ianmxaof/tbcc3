@@ -315,7 +315,11 @@ def _inject_sponsor_into_footer(clean_footer: str, sponsor_line: str | None) -> 
 
 def _refresh_variation_footer(caption: str, clean_footer: str) -> str:
     """Strip bare VIP leaks and normalize addlist footer block."""
+    from app.services.aof_loot_goblin_promo import is_prompt_drop_variation, strip_prompt_drop_footer
     from app.services.aof_vip_checkout import scrub_caption_for_network_post
+
+    if is_prompt_drop_variation(caption):
+        return strip_prompt_drop_footer(caption, clean_footer)
 
     sponsor = _extract_footer_sponsor_line(caption)
     body = scrub_caption_for_network_post(caption)
@@ -915,6 +919,16 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
             merged = _append_sponsor_promo_variations(merged, net_ch.promo_html, footer_variants)
         merged = _append_gate_fomo_variations(merged, base_footer)
         merged = _append_gumroad_vip_variations(merged, base_footer)
+        from app.services.aof_loot_goblin_promo import (
+            append_prompt_drop_variations,
+            build_goblin_teaser_with_footer,
+            inject_goblin_teaser_variations,
+        )
+
+        goblin_teaser = build_goblin_teaser_with_footer(base_footer)
+        merged = inject_goblin_teaser_variations(merged, [goblin_teaser], every_nth=6)
+        if net_ch.key == "ai":
+            merged = append_prompt_drop_variations(db, merged)
         merged = _sanitize_variations(merged, clean_footer=base_footer, skip_bulletin=True)
         entry["variations"] = len(merged)
         entry["sponsor_footers"] = max(0, len(footer_variants) - 1)
@@ -927,6 +941,8 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
                 sched.last_posted_at = datetime.now(timezone.utc)
             if net_ch.key == "main":
                 sched.pin_after_send = True
+                sched.buffer_mirror_enabled = True
+                sched.buffer_publish_now = False
             entry["status"] = "updated"
         else:
             entry["status"] = "would_update"
