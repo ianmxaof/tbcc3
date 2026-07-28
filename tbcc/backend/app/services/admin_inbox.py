@@ -43,6 +43,7 @@ _CATEGORY_ICON: dict[str, str] = {
     "ops": "🔧",
     "invoice": "🧾",
     "system": "⚙️",
+    "growth": "📊",
 }
 
 _SEVERITY_RANK = {"info": 0, "important": 1, "critical": 2}
@@ -130,6 +131,23 @@ def _format_event_body_html(event: dict[str, Any], *, truncate: int | None = Non
             f"<b>{plan}</b> · {sale_kind.replace('_', ' ')}\n"
             f"Buyer <code>{uid}</code> · {stars} ⭐ · {pm}{ref_line}"
         )
+    elif cat == "growth":
+        slug = html.escape(str(meta.get("slug") or ""))
+        hits = int(meta.get("hit_count") or 0)
+        ip = html.escape(str(meta.get("ip") or "?"))
+        country = html.escape(str(meta.get("country") or "??"))
+        ua = html.escape(str(meta.get("user_agent") or "")[:100])
+        dest = html.escape(str(meta.get("destination_url") or "")[:160])
+        campaign = (meta.get("campaign_id") or "").strip()
+        lines = [
+            f"slug <code>{slug}</code> · hits {hits}",
+            f"ip {ip} · {country}",
+            f"ua {ua}",
+        ]
+        if campaign:
+            lines.append(f"id <code>{html.escape(campaign)}</code>")
+        lines.append(f"→ {dest}")
+        text = "\n".join(lines)
     else:
         text = html.escape(raw_body) if raw_body else ""
 

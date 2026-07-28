@@ -1,35 +1,46 @@
-# VIP reprice — 30-day baseline (capture before announce)
+# VIP reprice — 30-day baseline (captured 2026-07-27)
 
-**Date:** 2026-07-27  
-**Status:** **Not captured** — island API refused connection during deploy session.
+**Island Postgres snapshot** — before public $18 VIP announce. Use as kill-criterion reference.
 
-## Why this matters
+## Income (30 days)
 
-Kill criterion for the $18 VIP floor: **VIP revenue below prior 30-day baseline AND key units flat** after 30 days → rollback floor to $12, not $6.
+| Source | USD | Count |
+|--------|----:|------:|
+| subscription_stars | **39.24** | 9 |
+| affiliate | 12.50 | 1 |
+| subscription_manual | 12.00 | 2 |
+| linkvertise | 9.00 | 1 |
+| **Total** | **~72.74** | 13 |
 
-## Capture when stack is up
+## Subscriptions (30d window via `expires_at`)
 
-```powershell
-# TBCC MCP (Cursor) or curl with internal key
-# analytics_income_summary days=30
+| Plan | Units | Stars |
+|------|------:|------:|
+| AOF Main — 30 days (legacy) | 8 | 4000 |
+| Loot Room 24h — 60min | 3 | 450 |
+| AOF VIP — 1 Month (pre-reprice) | 2 | 1000 |
+| Loot Room 24h — 30min | 1 | 320 |
+
+## wk30 beacons (hits at capture)
+
+| Slug | Hits |
+|------|-----:|
+| wk30-loot-free | 1 |
+| wk30-lv-loot | 1 |
+| wk30-x-hub | 1 |
+| wk30-bait-batch | 0 |
+| wk30-ops-sprint | 0 |
+
+Note: wk30 hits were mostly **curl smokes + TelegramBot previews** — beacon notify spam fixed 2026-07-27 (`TBCC_CLICK_BEACON_INSTANT=0`, bot UA filter).
+
+## Kill criterion (30d post-reprice)
+
+Rollback VIP floor to **$12** only if **both**:
+1. VIP subscription revenue (stars + gumroad + manual) **below ~$40/mo run-rate**, and
+2. Loot key units **flat or down** with no pack uplift.
+
+## Re-run
+
+```bash
+bash /tmp/island_baseline.sh   # on VPS, or use island_baseline.sh in .tbcc-run/
 ```
-
-Record manually:
-
-| Metric | 30d before reprice | Notes |
-|--------|-------------------:|-------|
-| VIP subscription revenue (USD) | | Gumroad + Stars + crypto |
-| Loot key revenue (USD) | | m60–m15 |
-| VIP new units | | |
-| Loot key units | | |
-| Gate revshare (USD) | | |
-| Curated / AI pack revenue | | |
-| Companion stars revenue | | |
-
-Paste results into this file or `docs/handoffs/2026-07-27_module-b-loot-economy-designer.md` § baseline.
-
-## Reprice effective
-
-- Code ladder: **$18 / $48 / $90 / $168 / $300** (`aof_vip_membership.py`)
-- Gumroad product `ynnulc`: **operator must update dashboard prices**
-- `TBCC_GUMROAD_PRODUCT_MAP`: legacy + new `price:*` keys in home `.env` and island env
