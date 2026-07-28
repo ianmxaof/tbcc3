@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-07-22 (loot reveal video 1–4 + island deploy)
+**Last updated:** 2026-07-27 (PR #8 merged; wk30 beacons + stars-bait campaign tag live)
 
 ## Sprint goal
 
@@ -12,10 +12,12 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 | Item | Owner | Notes |
 |------|-------|-------|
+| Pool album duplicate tiles | agent | **2026-07-24:** `media_album_dedupe` on scheduler + `post_pool_albums`; audit `scripts/audit_pool_album_duplicates.py`. Deploy island + run audit on ASS/ABG pools. |
+| Listening relay + loot goblin | agent | **2026-07-26:** Phases 1–4 on island; alembic **102**; natural goblin spawn verified (drop 4, relay_log_id=2); production tuning restored (chance 0.20, cooldown 120). Key-roll album delivery fixed via `admin_import.session` (`local-20260725-2030`). Phase 5 Bot API relay = plan in `docs/handoffs/2026-07-26_relay-bot-api-phase5-plan.md`. |
 | True lean home cold-start | agent | **2026-07-15:** Lean = API + celery + beat + payment + loot; album_composer no longer mandatory; dashboard/secretary/post lanes default Off. Post-cutover: `TBCC_REVENUE_ISLAND_ACTIVE=1` + `mark-home-bots-off.ps1` keeps home payment/loot Off. |
 | Tray trust (Phase B honesty) | operator | Meltdown/`THROTTLE`/`STALE` already in panel — **smoke**, not greenfield. Doc sync done. Lane C only if smoke proves foundation bugs. |
 | Revenue island (dedicated VPS) | operator + agent | **2026-07-20:** Named tunnel `api.powercore.app`; Gumroad Ping 200; VIP ladder plans 10–14; checkout schedulers migrated off dead `start=c6` → plan 10 + `cm10` menu. `/uploads` volume on island for bundle zips. Buffer keys sync via `seed-island-env-from-home.ps1`. Home bots stay Off. |
-| Loot Lane Economy | agent | **2026-07-18:** Island `TBCC_API_REQUIRE_INTERNAL=1` (channels 403 without key). Alembic **094** head (`buyer_entitlements` + `lane_drops`). Ext Options API base → `http://5.161.53.91:8000` + internal key (no Tailscale on island yet — port left open). LV Playwright headed batch started (session expired; needs operator login). Gates LV-first flywheel still green. |
+| Loot Lane Economy | agent | **2026-07-27:** Module A+B handoffs shipped; **VIP floor $18** in code; `bonus_album_draws` applied to album size. **Operator:** Gumroad `ynnulc` prices + island reseed + `price:1800`…`30000` PRODUCT_MAP + deploy. Lane Pass still shelved (0/11 ready). |
 | Mega → R2 vault | agent | **PAUSED 2026-07-16:** Export killed on island. Hold until media-purpose + Cloudflare profit case decided (ThisVid upload experiments inconclusive). Partial R2 prefix may exist — not the vault. |
 | Sale FOMO announce | agent | **2026-07-16:** Hub `main` = **Loot Room** (`-1003927742839`, invite `+97f4…`). Clear `TBCC_SALE_ANNOUNCE_SKIP_KEYS`. Island FOMO targets `network,buffer`. Bake `aof_network.py` into GHCR. |
 | Save AOF + watch lanes | agent | **2026-07-15:** Plan shipped — `aof_lane_tag_map` + watch preprocess/route; Ext Save AOF (watermark-bytes → inbox + `.tbcc-meta.json`); overlay Download = Save AOF by default. Folders: emoji `🍒 AOF BIG TITS` or `TBCC_WATCH_AOF_FOLDER_STYLE=disk` → `AOF NETWORK/AOF BIG TITS`. |

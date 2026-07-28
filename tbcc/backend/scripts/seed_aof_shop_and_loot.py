@@ -207,19 +207,30 @@ def deactivate_legacy_main_vip_plans(db, *, execute: bool, report: dict) -> None
 
 def build_gumroad_product_map(db) -> dict[str, int]:
     """JSON-ready map for TBCC_GUMROAD_PRODUCT_MAP (permalink + price cents → plan_id)."""
-    from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS
+    from app.data.aof_vip_membership import (
+        VIP_MEMBERSHIP_SKUS,
+        VIP_PRICE_CENTS_TO_RECURRENCE,
+        sku_for_recurrence,
+    )
 
     out: dict[str, int] = {}
-    monthly_id: int | None = None
+    recurrence_to_pid: dict[str, int] = {}
     for sku in VIP_MEMBERSHIP_SKUS:
         row = db.query(SubscriptionPlan).filter(SubscriptionPlan.name == sku.name).first()
         if not row or not row.is_active:
             continue
         pid = int(row.id)
+        recurrence_to_pid[sku.gumroad_recurrence] = pid
         cents = int(round(float(sku.price_usd) * 100))
         out[f"price:{cents}"] = pid
-        if sku.gumroad_recurrence == "monthly":
-            monthly_id = pid
+
+    # Legacy + current Gumroad ping price cents → plan id (grandfathered renewals)
+    for cents, recurrence in VIP_PRICE_CENTS_TO_RECURRENCE.items():
+        pid = recurrence_to_pid.get(recurrence)
+        if pid is not None:
+            out[f"price:{int(cents)}"] = pid
+
+    monthly_id = recurrence_to_pid.get("monthly")
     if monthly_id is not None:
         out["ynnulc"] = monthly_id
     return out

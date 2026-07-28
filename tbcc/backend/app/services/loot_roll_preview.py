@@ -102,7 +102,8 @@ def build_roll_preview(
         interval_rarity_shift=int(tier_row.rarity_shift or 0),
         lifetime_roll_index=lifetime_idx,
     )
-    album_size = base_rarity
+    bonus_draws = int(tier_row.bonus_album_draws or 0)
+    album_size = min(12, base_rarity + bonus_draws)
 
     eligible_rows = (
         db.query(LootPoolEligibility)
@@ -133,12 +134,16 @@ def build_roll_preview(
             "base_roll_tier": base_rarity,
         }
 
+  # Approved local-disk pool imports (telegram_message_id=0) or live Saved Messages refs.
+    from sqlalchemy import and_, or_
+
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
-        Media.telegram_message_id.isnot(None),
-        Media.telegram_message_id > 0,
-        ~Media.file_id.like("local:%"),
+        or_(
+            and_(Media.telegram_message_id == 0, Media.file_id.like("local:%")),
+            Media.telegram_message_id > 0,
+        ),
     )
     if telegram_user_id and not is_loot_operator(telegram_user_id):
         seen_ids = [

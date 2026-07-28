@@ -20,6 +20,7 @@ def fulfill_external_order(
     payment_method: str,
     telegram_charge_id: str,
     income_amount_usd: float | None = None,
+    buyer_email: str | None = None,
 ) -> dict:
     """
     Mark order paid and create subscription / bundle fulfillment (idempotent if already paid).
@@ -46,6 +47,7 @@ def fulfill_external_order(
             "external_order_id": order.id,
             "reference_code": order.reference_code,
             "income_amount_usd": income_amount_usd,
+            "buyer_email": buyer_email,
         },
         db,
     )

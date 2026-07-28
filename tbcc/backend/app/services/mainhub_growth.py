@@ -26,7 +26,7 @@ LIVENESS_CAPTIONS = [
 ]
 
 CTA_CAPTION = (
-    "💳 <b>AOF VIP — 500 ⭐/30d</b> · skip the gates, daily god roll, weekly mega dump, "
+    "💳 <b>AOF VIP — 1500 ⭐/30d</b> · skip the gates, daily god roll, weekly mega dump, "
     "@aofsubscriptions_bot credits. Unwrapped lanes, bigger drops, VIP-only perks — "
     "public stays on the wrapped feed. <i>Tap Pay ⭐ — instant access.</i>"
 )

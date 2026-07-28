@@ -21,28 +21,32 @@ from app.services.gumroad_ping import (
 def test_vip_ladder_matches_gumroad_ynnulc() -> None:
     assert len(VIP_MEMBERSHIP_SKUS) == 5
     by_rec = {s.gumroad_recurrence: s for s in VIP_MEMBERSHIP_SKUS}
-    assert by_rec["monthly"].price_usd == 6.0
-    assert by_rec["quarterly"].price_usd == 15.0
-    assert by_rec["biannually"].price_usd == 30.0
-    assert by_rec["yearly"].price_usd == 54.0
-    assert by_rec["every_two_years"].price_usd == 100.0
+    assert by_rec["monthly"].price_usd == 18.0
+    assert by_rec["quarterly"].price_usd == 48.0
+    assert by_rec["biannually"].price_usd == 90.0
+    assert by_rec["yearly"].price_usd == 168.0
+    assert by_rec["every_two_years"].price_usd == 300.0
     assert by_rec["monthly"].duration_days == 30
     assert by_rec["every_two_years"].duration_days == 730
 
 
 def test_vip_stars_at_default_rate() -> None:
-    assert usd_to_stars(6.0, stars_per_usd=0.012) == 500
-    assert usd_to_stars(15.0, stars_per_usd=0.012) == 1250
-    assert usd_to_stars(30.0, stars_per_usd=0.012) == 2500
-    assert usd_to_stars(54.0, stars_per_usd=0.012) == 4500
-    assert usd_to_stars(100.0, stars_per_usd=0.012) == 8334  # ceil(100/0.012)
+    assert usd_to_stars(18.0, stars_per_usd=0.012) == 1500
+    assert usd_to_stars(48.0, stars_per_usd=0.012) == 4000
+    assert usd_to_stars(90.0, stars_per_usd=0.012) == 7500
+    assert usd_to_stars(168.0, stars_per_usd=0.012) == 14000
+    assert usd_to_stars(300.0, stars_per_usd=0.012) == 25000
 
 
 def test_sku_lookups() -> None:
     assert sku_for_recurrence("yearly") is not None
-    assert sku_for_duration_days(90).price_usd == 15.0
+    assert sku_for_duration_days(90).price_usd == 48.0
     assert sku_for_price_cents(5400).gumroad_recurrence == "yearly"
-    assert set(VIP_PRICE_CENTS_TO_RECURRENCE) == {600, 1500, 3000, 5400, 10000}
+    assert sku_for_price_cents(1800).gumroad_recurrence == "monthly"
+    assert sku_for_price_cents(600).gumroad_recurrence == "monthly"  # legacy grandfather
+    legacy = {600, 1500, 3000, 5400, 10000}
+    current = {1800, 4800, 9000, 16800, 30000}
+    assert set(VIP_PRICE_CENTS_TO_RECURRENCE) == legacy | current
 
 
 def test_append_vip_checkout_hints() -> None:
@@ -55,7 +59,7 @@ def test_append_vip_checkout_hints() -> None:
 
 def test_recurrence_for_plan() -> None:
     assert recurrence_for_plan({"duration_days": 180}) == "biannually"
-    assert recurrence_for_plan({"nowpayments_price_usd": 54}) == "yearly"
+    assert recurrence_for_plan({"nowpayments_price_usd": 168}) == "yearly"
 
 
 def test_resolve_plan_id_price_cents(monkeypatch) -> None:

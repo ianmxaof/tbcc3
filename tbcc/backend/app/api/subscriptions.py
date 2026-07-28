@@ -281,6 +281,36 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
     )
     if not is_bundle and perk_result:
         result["vip_perks"] = perk_result
+
+    try:
+        from app.services.fulfillment_entitlement import record_fulfillment_entitlement
+
+        record_fulfillment_entitlement(
+            db,
+            telegram_user_id=int(telegram_user_id),
+            plan=plan,
+            subscription_id=int(sub.id),
+            invite_url=result.get("invite_link"),
+            payment_method=str(payment_method or ""),
+        )
+    except Exception:
+        pass
+
+    buyer_email = (data.get("buyer_email") or data.get("email") or "").strip() or None
+    if buyer_email:
+        try:
+            from app.services.kit_buyer_capture import capture_buyer_email_on_purchase
+
+            capture_buyer_email_on_purchase(
+                buyer_email,
+                telegram_user_id=int(telegram_user_id),
+                plan_name=str(plan.name or ""),
+                payment_method=str(payment_method or ""),
+                product_type=str(plan.product_type or ""),
+            )
+        except Exception:
+            pass
+
     return result
 
 

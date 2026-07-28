@@ -296,7 +296,7 @@ def seed_stars_bait_funnel_strategies(db: Session) -> int:
             "title": "VIP subscription bait",
             "pattern": "stars_bait_subscription",
             "surface": "payment_bot",
-            "copy_template": "start=bait_vip → VIP 500⭐/30d → native subscription invite or cm10 menu.",
+            "copy_template": "start=bait_vip → VIP 1500⭐/30d → native subscription invite or cm10 menu.",
             "visual_notes": "Primary revenue SKU; card/USD + crypto as secondary row.",
             "risk_tags": "subscription,revenue",
         },
