@@ -22,5 +22,6 @@ class IncomeEntry(Base):
     external_ref = Column(String(128), nullable=True)
     subscription_id = Column(Integer, nullable=True)
     telegram_user_id = Column(BigInteger, nullable=True)
+    traffic_source_ref = Column(String(64), nullable=True, index=True)
     raw_json = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

@@ -242,3 +242,79 @@ def conversions_by_source(db: Session, *, days: int = 30) -> dict[str, Any]:
         "unattributed_subscriptions": unattributed,
         "unattributed_stars": unattributed_stars,
     }
+
+
+def revenue_by_source(db: Session, *, days: int = 30) -> dict[str, Any]:
+    """
+    Roll up every ledger dollar by traffic_source_ref.
+
+    Wider than conversions_by_source: income_entries also carries loot keys,
+    bundles, companion stars and external gate revshare, so this is the only
+    view that answers "which lane earns" across all SKUs.
+    """
+    from app.models.income_entry import IncomeEntry
+    from app.services.income_ledger import INTERNAL_SOURCES
+
+    since = datetime.utcnow() - timedelta(days=max(1, min(366, days)))
+    rows = (
+        db.query(IncomeEntry)
+        .filter(IncomeEntry.created_at >= since)
+        .all()
+    )
+
+    by_source: dict[str, dict[str, Any]] = {}
+    unattributed_usd_cents = 0
+    unattributed_entries = 0
+    total_usd_cents = 0
+
+    for r in rows:
+        usd_c = int(r.amount_usd_cents or 0)
+        stars = int(r.amount_minor or 0) if (r.currency or "").upper() == "XTR" else 0
+        total_usd_cents += usd_c
+        ref = (r.traffic_source_ref or "").strip() or None
+        if not ref:
+            unattributed_usd_cents += usd_c
+            unattributed_entries += 1
+            continue
+        bucket = by_source.setdefault(
+            ref,
+            {"source_ref": ref, "usd_cents": 0, "stars": 0, "entries": 0, "by_income_source": {}},
+        )
+        bucket["usd_cents"] += usd_c
+        bucket["stars"] += stars
+        bucket["entries"] += 1
+        sku = bucket["by_income_source"].setdefault(
+            r.source,
+            {"source": r.source, "usd_cents": 0, "entries": 0, "category": "internal" if r.source in INTERNAL_SOURCES else "external"},
+        )
+        sku["usd_cents"] += usd_c
+        sku["entries"] += 1
+
+    out_rows = []
+    for data in sorted(by_source.values(), key=lambda x: -int(x["usd_cents"])):
+        out_rows.append(
+            {
+                "source_ref": data["source_ref"],
+                "usd_cents": data["usd_cents"],
+                "usd": round(data["usd_cents"] / 100.0, 2),
+                "stars": data["stars"],
+                "entries": data["entries"],
+                "by_income_source": sorted(
+                    data["by_income_source"].values(), key=lambda x: -int(x["usd_cents"])
+                ),
+            }
+        )
+
+    attributed_usd_cents = total_usd_cents - unattributed_usd_cents
+    attributed_pct = round(100.0 * attributed_usd_cents / total_usd_cents, 1) if total_usd_cents else 0.0
+
+    return {
+        "range_days": days,
+        "revenue_by_source": out_rows,
+        "total_usd": round(total_usd_cents / 100.0, 2),
+        "attributed_usd": round(attributed_usd_cents / 100.0, 2),
+        "unattributed_usd": round(unattributed_usd_cents / 100.0, 2),
+        "unattributed_entries": unattributed_entries,
+        # North-star attribution quality metric — target >80%.
+        "attributed_revenue_pct": attributed_pct,
+    }

@@ -128,6 +128,28 @@ def _subscription_earned_at(db: Session, sub: Subscription, plan: SubscriptionPl
     return None
 
 
+def _resolve_traffic_source_ref(
+    db: Session,
+    *,
+    telegram_user_id: int | None,
+    explicit: str | None,
+) -> str | None:
+    """Explicit ref wins; otherwise fall back to the buyer's funnel touch."""
+    if explicit:
+        return explicit.strip()[:64] or None
+    if telegram_user_id is None:
+        return None
+    try:
+        from app.services.traffic_attribution import resolve_attribution_for_user
+
+        attr = resolve_attribution_for_user(db, int(telegram_user_id))
+        ref = (attr.get("traffic_source_ref") or "").strip()
+        return ref[:64] or None
+    except Exception:
+        logger.debug("income traffic_source_ref resolve failed", exc_info=True)
+        return None
+
+
 def record_income_entry(
     db: Session,
     *,
@@ -142,6 +164,7 @@ def record_income_entry(
     external_ref: str | None = None,
     subscription_id: int | None = None,
     telegram_user_id: int | None = None,
+    traffic_source_ref: str | None = None,
     raw: dict[str, Any] | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
@@ -152,6 +175,12 @@ def record_income_entry(
     existing = db.query(IncomeEntry).filter(IncomeEntry.idempotency_key == key).first()
     if existing:
         return {"ok": True, "idempotent": True, "id": existing.id}
+
+    source_ref = _resolve_traffic_source_ref(
+        db,
+        telegram_user_id=telegram_user_id,
+        explicit=traffic_source_ref,
+    )
 
     row = IncomeEntry(
         idempotency_key=key,
@@ -165,6 +194,7 @@ def record_income_entry(
         external_ref=(external_ref[:128] if external_ref else None),
         subscription_id=subscription_id,
         telegram_user_id=int(telegram_user_id) if telegram_user_id is not None else None,
+        traffic_source_ref=source_ref,
         raw_json=json.dumps(raw, ensure_ascii=False) if raw else None,
         created_at=datetime.utcnow(),
     )
@@ -223,6 +253,8 @@ def record_subscription_income(
         external_ref=external_ref,
         subscription_id=int(sub.id),
         telegram_user_id=int(sub.telegram_user_id) if sub.telegram_user_id else None,
+        # Stamped at fulfillment; survives touch TTL expiry on later backfills.
+        traffic_source_ref=getattr(sub, "traffic_source_ref", None),
         raw={
             "plan_id": int(plan.id),
             "payment_method": payment_method or sub.payment_method,
@@ -338,6 +370,7 @@ def record_manual_income(
     period_key: str | None = None,
     notes: str | None = None,
     promo_affiliate_link_id: int | None = None,
+    traffic_source_ref: str | None = None,
 ) -> dict[str, Any]:
     src = _normalize_source(source)
     usd = max(0.0, float(amount_usd))
@@ -366,6 +399,7 @@ def record_manual_income(
         earned_at=earned_at or datetime.utcnow(),
         sync_kind="manual",
         external_ref=ext_ref,
+        traffic_source_ref=traffic_source_ref,
         raw={"notes": notes, "period_key": period, "promo_affiliate_link_id": promo_affiliate_link_id},
     )
 
@@ -440,6 +474,7 @@ def list_income_entries(
             "earned_at": r.earned_at.isoformat() + "Z" if r.earned_at else None,
             "sync_kind": r.sync_kind,
             "external_ref": r.external_ref,
+            "traffic_source_ref": r.traffic_source_ref,
             "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         }
         for r in rows
