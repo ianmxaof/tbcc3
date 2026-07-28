@@ -141,6 +141,9 @@ class LootPlayerStats(Base):
     free_pulls_used = Column(Integer, nullable=False, default=0)
     bonus_free_pulls = Column(Integer, nullable=False, default=0)
     vip_daily_pull_at = Column(DateTime, nullable=True)
+    daily_pull_at = Column(DateTime, nullable=True)
+    daily_streak_days = Column(Integer, nullable=False, default=0)
+    daily_streak_best = Column(Integer, nullable=False, default=0)
     first_roll_at = Column(DateTime, nullable=True)
     last_roll_at = Column(DateTime, nullable=True)
 

@@ -19,6 +19,11 @@ from app.models.loot import LootModifier, LootPoolEligibility
 from app.schemas.common import orm_to_dict
 from app.services.bundle_storage import MAX_BUNDLE_ZIP_BYTES, bundle_root, is_zip_magic
 from app.services.loot_free_pull import build_free_pull_preview, commit_free_pull, mark_free_pull_media_seen
+from app.services.loot_daily_pull import (
+    build_daily_pull_preview,
+    commit_daily_pull,
+    daily_pull_status,
+)
 from app.services.loot_vip_daily_pull import (
     build_vip_daily_pull_preview,
     commit_vip_daily_pull,
@@ -822,6 +827,103 @@ def claim_free_pull(
 
     preview = dict(preview or {})
     preview["free_pulls_remaining"] = rem_before
+    preview["unloadable_retries"] = exclude
+    return {
+        "ok": True,
+        "sent_to": telegram_user_id,
+        "preview": preview,
+        "delivery": delivery,
+    }
+
+
+@router.get("/daily-pull/status")
+def daily_pull_status_endpoint(
+    telegram_user_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    return daily_pull_status(db, int(telegram_user_id))
+
+
+@router.post("/daily-pull/claim")
+def claim_daily_pull(
+    telegram_user_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+):
+    """
+    Free daily return pull — tier <=2, one spoiler item, no modifiers.
+    Weaker than a lifetime free pull on purpose; the streak pays a real one.
+    """
+    token = resolve_bot_token_raw(db)
+    if not token:
+        raise HTTPException(status_code=400, detail="Loot bot token not configured")
+    bot = Bot(
+        token=token,
+        request=HTTPXRequest(connect_timeout=30.0, read_timeout=180.0, write_timeout=180.0),
+    )
+    eff = get_effective_loot_bot_settings(db)
+    spoiler = bool(eff.get("drop_spoiler_default", True))
+
+    exclude: list[int] = []
+    preview: dict = {}
+    delivery: dict = {"albums_sent": 0, "media_sent": 0, "notes": []}
+    for attempt in range(3):
+        preview = build_daily_pull_preview(
+            db,
+            telegram_user_id=telegram_user_id,
+            exclude_media_ids=exclude,
+        )
+        if not preview.get("ok"):
+            reason = preview.get("reason") or "daily pull failed"
+            if reason in ("daily_pull_disabled", "daily_pull_already_claimed"):
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "reason": reason,
+                        "message": preview.get("message") or "Daily pull unavailable.",
+                        **daily_pull_status(db, int(telegram_user_id)),
+                    },
+                )
+            if attempt == 0:
+                raise HTTPException(status_code=400, detail=reason)
+            break
+
+        mid = None
+        for m in preview.get("media") or []:
+            if m.get("id") is not None:
+                mid = int(m["id"])
+                break
+
+        async def _run(p=preview):
+            from app.database.session import SessionLocal
+
+            worker_db = SessionLocal()
+            try:
+                return await send_loot_free_pull_to_chat(
+                    worker_db,
+                    bot=bot,
+                    chat_id=int(telegram_user_id),
+                    preview=p,
+                    spoiler_default=spoiler,
+                    payment_bot_username=_payment_bot_username(),
+                    free_pulls_remaining=free_pulls_remaining(db, int(telegram_user_id)),
+                )
+            finally:
+                worker_db.close()
+
+        delivery = _run_loot_async(_run())
+        if int(delivery.get("media_sent") or 0) > 0:
+            preview = commit_daily_pull(db, telegram_user_id, preview)
+            return {
+                "ok": True,
+                "sent_to": telegram_user_id,
+                "preview": preview,
+                "delivery": delivery,
+            }
+        if mid is not None:
+            exclude.append(mid)
+        delivery.setdefault("notes", []).append(f"retry_after_unloadable:{mid}")
+
+    preview = dict(preview or {})
     preview["unloadable_retries"] = exclude
     return {
         "ok": True,

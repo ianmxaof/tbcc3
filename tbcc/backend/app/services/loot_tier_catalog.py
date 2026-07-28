@@ -85,6 +85,24 @@ def tier_display_name(tier: int) -> str:
 FREE_PULL_MAX_TIER = 5
 FREE_PULL_LIMIT = 5
 
+# Daily return pull sits *below* the lifetime free pulls so it creates a habit
+# without becoming a substitute for a key.
+DAILY_PULL_MAX_TIER = 2
+
+
+def roll_daily_rarity_tier(rng, *, max_tier: int = DAILY_PULL_MAX_TIER) -> int:
+    """Bottom-weighted roll for the free daily micro-pull."""
+    cap = max(1, min(FREE_PULL_MAX_TIER, int(max_tier)))
+    weights = [max(1, 64 - (i * 26)) for i in range(cap)]
+    total = sum(weights)
+    target = rng.random() * total
+    run = 0.0
+    for i, w in enumerate(weights, start=1):
+        run += w
+        if run >= target:
+            return i
+    return 1
+
 
 def roll_free_rarity_tier(rng) -> int:
     """Nerfed 1..5 weights for complimentary DM pulls (no modifiers, one item)."""

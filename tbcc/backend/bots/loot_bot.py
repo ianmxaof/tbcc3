@@ -464,6 +464,92 @@ def _claim_vip_daily_pull(telegram_user_id: int) -> dict:
     return r.json()
 
 
+def _claim_daily_pull(telegram_user_id: int) -> dict:
+    """POST /loot/daily-pull/claim — free daily return pull."""
+    url = f"{API_BASE}/loot/daily-pull/claim"
+    params = {"telegram_user_id": int(telegram_user_id)}
+    headers: dict[str, str] = {}
+    key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+    if key:
+        headers["X-TBCC-Internal-Key"] = key
+    with httpx.Client(timeout=_LOOT_CLAIM_TIMEOUT) as client:
+        r = client.post(url, params=params, headers=headers)
+    if r.status_code == 403:
+        return {"ok": False, "forbidden": True, "detail": r.json()}
+    r.raise_for_status()
+    return r.json()
+
+
+async def cmd_daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Free daily return pull — /daily."""
+    user = update.effective_user
+    if not user:
+        return
+    msg = update.effective_message
+    if not msg and update.callback_query:
+        msg = update.callback_query.message
+    if not msg:
+        return
+
+    if update.callback_query:
+        try:
+            await update.callback_query.answer("Pulling…")
+        except TelegramError:
+            pass
+    try:
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_PHOTO)
+    except TelegramError:
+        pass
+
+    status_msg = await _safe_reply_html(msg, "<i>Dealing your daily pull…</i>", disable_web_page_preview=True)
+    try:
+        result = await asyncio.to_thread(_claim_daily_pull, int(user.id))
+    except Exception as e:
+        logger.warning("daily pull claim error: %s", e)
+        await _drop_transient_msg(status_msg)
+        await _safe_reply_html(
+            msg,
+            "<b>Daily pull failed</b>\nAPI unreachable — retry /daily in a few seconds.",
+            disable_web_page_preview=True,
+        )
+        return
+
+    await _drop_transient_msg(status_msg)
+    if result.get("ok"):
+        prev = result.get("preview") or {}
+        delivery = result.get("delivery") or {}
+        if int(delivery.get("media_sent") or 0) > 0:
+            streak = int(prev.get("streak_days") or 1)
+            every = int(prev.get("streak_bonus_every") or 0)
+            bonus = int(prev.get("bonus_free_pulls_awarded") or 0)
+            lines = [f"<b>Daily pull dealt</b> — day {streak} streak."]
+            if bonus:
+                lines.append("<b>Streak paid: +1 full free pull.</b> Burn it on /roll.")
+            elif every:
+                left = (every - (streak % every)) % every
+                if left:
+                    lines.append(f"<i>{left} more day{'s' if left != 1 else ''} → +1 full free pull.</i>")
+            lines.append("<i>Resets 00:00 UTC. Miss a day and the streak restarts.</i>")
+            await _safe_reply_html(msg, "\n".join(lines), disable_web_page_preview=True)
+        return
+
+    if result.get("forbidden"):
+        detail = result.get("detail") or {}
+        body = detail.get("detail") if isinstance(detail, dict) else detail
+        if isinstance(body, dict):
+            message = body.get("message") or "Daily pull unavailable."
+            streak = body.get("streak_days")
+            extra = f"\n<i>Streak: {int(streak)} day(s).</i>" if streak else ""
+            await _safe_reply_html(
+                msg,
+                f"<b>{html.escape(str(message))}</b>{extra}",
+                disable_web_page_preview=True,
+            )
+        return
+
+    await _safe_reply_html(msg, "<b>Daily pull failed.</b> Try again later.", disable_web_page_preview=True)
+
+
 async def cmd_viproll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """VIP subscriber daily god roll — /viproll."""
     user = update.effective_user
@@ -1260,6 +1346,7 @@ def main() -> None:
     application.add_handler(CommandHandler("help", cmd_help))
     application.add_handler(CommandHandler("guide", cmd_guide))
     application.add_handler(CommandHandler("roll", cmd_roll))
+    application.add_handler(CommandHandler("daily", cmd_daily))
     application.add_handler(CommandHandler("viproll", cmd_viproll))
     application.add_handler(CommandHandler("referral", cmd_referral))
     application.add_handler(CommandHandler("model", cmd_model))
