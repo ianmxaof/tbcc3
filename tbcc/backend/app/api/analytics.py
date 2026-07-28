@@ -368,6 +368,28 @@ def growth_attribution_summary(
     return attribution_summary(db, days=days)
 
 
+@router.get("/companion-margin")
+def companion_margin(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+):
+    """Companion photo unit economics — reports unknown cost basis rather than guessing."""
+    from app.services.companion_cogs import companion_margin_summary
+
+    return companion_margin_summary(db, days=days)
+
+
+@router.get("/gate-funnel")
+def gate_funnel(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+):
+    """Beacon click → funnel touch → revenue per source_ref (crawler hits excluded)."""
+    from app.services.gate_funnel import gate_funnel_report
+
+    return gate_funnel_report(db, days=days)
+
+
 @router.get("/bots/funnel")
 def bots_funnel_summary_route(
     db: Session = Depends(get_db),

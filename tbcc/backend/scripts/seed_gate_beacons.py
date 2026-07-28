@@ -71,6 +71,9 @@ def main() -> int:
                     destination_url=b.destination_url,
                     label=b.label,
                     slug=b.slug,
+                    # Stamped even for click_only lanes so the funnel report can
+                    # show clicks that never became a touch.
+                    source_ref=b.source_ref,
                 )
                 created += 1
                 status = "created"

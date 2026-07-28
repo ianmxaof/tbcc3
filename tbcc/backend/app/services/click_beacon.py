@@ -17,6 +17,7 @@ from app.models.click_link import ClickLink, ClickLinkHit
 logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{4,32}$")
+_START_SRC_RE = re.compile(r"[?&]start=(src_[A-Za-z0-9_]+)")
 _ip_hits: dict[str, list[float]] = {}
 _notify_dedupe: dict[tuple[str, str], float] = {}
 _RATE_WINDOW_S = 60.0
@@ -110,12 +111,19 @@ def _new_slug() -> str:
     return secrets.token_urlsafe(9)[:12]
 
 
+def derive_source_ref(destination_url: str) -> str | None:
+    """Pull the ?start=src_* payload out of a destination so clicks can join touches."""
+    m = _START_SRC_RE.search(destination_url or "")
+    return m.group(1)[:64] if m else None
+
+
 def create_click_link(
     db: Session,
     *,
     destination_url: str,
     label: str | None = None,
     slug: str | None = None,
+    source_ref: str | None = None,
 ) -> ClickLink:
     dest = validate_destination_url(destination_url)
     s = (slug or "").strip() or _new_slug()
@@ -123,10 +131,12 @@ def create_click_link(
         raise ValueError("slug must be 4-32 chars [A-Za-z0-9_-]")
     if db.query(ClickLink).filter(ClickLink.slug == s).first():
         raise ValueError("slug_taken")
+    ref = (source_ref or "").strip()[:64] or derive_source_ref(dest)
     row = ClickLink(
         slug=s,
         destination_url=dest,
         label=(label or "").strip()[:128] or None,
+        source_ref=ref,
         active=1,
         hit_count=0,
     )
@@ -228,6 +238,7 @@ def link_as_dict(link: ClickLink) -> dict[str, Any]:
         "slug": link.slug,
         "destination_url": link.destination_url,
         "label": link.label,
+        "source_ref": link.source_ref,
         "active": bool(link.active),
         "hit_count": int(link.hit_count or 0),
         "public_url": link_public_url(link),

@@ -14,6 +14,9 @@ class ClickLink(Base):
     slug = Column(String(32), nullable=False, unique=True, index=True)
     destination_url = Column(String(2048), nullable=False)
     label = Column(String(128), nullable=True)
+    # Join key to user_funnel_touches / income_entries. Derived from the
+    # destination's ?start= payload when not passed explicitly.
+    source_ref = Column(String(64), nullable=True, index=True)
     active = Column(Integer, nullable=False, default=1)  # 1/0 for sqlite-friendly bool
     hit_count = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
