@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-07-27 (PR #8 merged; wk30 beacons + stars-bait campaign tag live)
+**Last updated:** 2026-07-27 (Module A revenue stack: VIP reprice + attribution ledger + daily pull shipped)
 
 ## Sprint goal
 
@@ -12,6 +12,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 | Item | Owner | Notes |
 |------|-------|-------|
+| Module A revenue stack | agent + operator | **2026-07-27:** Week 1–2 done (`fb295ff`): VIP reprice $18 floor, `bonus_album_draws` applied, `grant_entitlement` on fulfill, Gumroad→Kit capture. Week 3–4 done: alembic **105** `income_entries.traffic_source_ref` + `revenue_by_source()` (all SKUs, `attributed_revenue_pct`); alembic **106** daily micro-pull + streak (`/daily`, tier ≤2, 7-day → +1 free pull) **ships disabled**; `seed_gate_beacons.py` for the full LV beacon sweep. **Operator cutover:** island `alembic upgrade head`, run beacon seed `--week wk31 --execute`, paste URLs into LV, then `TBCC_LOOT_DAILY_PULL_ENABLED=1`. Docs: `handoffs/2026-07-27_module-a-stack-architect.md`, `GATE_LINK_AUDIT.md`. |
 | Pool album duplicate tiles | agent | **2026-07-24:** `media_album_dedupe` on scheduler + `post_pool_albums`; audit `scripts/audit_pool_album_duplicates.py`. Deploy island + run audit on ASS/ABG pools. |
 | Listening relay + loot goblin | agent | **2026-07-26:** Phases 1–4 on island; alembic **102**; natural goblin spawn verified (drop 4, relay_log_id=2); production tuning restored (chance 0.20, cooldown 120). Key-roll album delivery fixed via `admin_import.session` (`local-20260725-2030`). Phase 5 Bot API relay = plan in `docs/handoffs/2026-07-26_relay-bot-api-phase5-plan.md`. |
 | True lean home cold-start | agent | **2026-07-15:** Lean = API + celery + beat + payment + loot; album_composer no longer mandatory; dashboard/secretary/post lanes default Off. Post-cutover: `TBCC_REVENUE_ISLAND_ACTIVE=1` + `mark-home-bots-off.ps1` keeps home payment/loot Off. |

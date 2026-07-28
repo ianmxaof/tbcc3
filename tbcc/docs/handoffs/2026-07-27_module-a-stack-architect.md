@@ -10,10 +10,10 @@
 - **Lane Pass cannot ship** — 0/11 lanes meet 2,500/2,500 readiness; `grant_entitlement()` never called from payment code.
 - **Curated Pack shippable before Lane Pass** — ASS lane ~642 items; seal band 250–400. Packs first per `LOOT_LANE_ECONOMY.md` red lines.
 - **`bonus_album_draws` unpaid** — m30/m15 marketing promises +1/+2 draws; code echoed JSON only. **Fixed 2026-07-27** in `loot_roll_preview.py`.
-- **Gumroad email discarded** — buyer email in `webhooks_payment.py`; no Kit capture.
-- **No daily return loop** — 5 lifetime free pulls; no daily micro-pull / streak.
-- **Attribution stops at subscriptions** — `income_entries` lacks `traffic_source_ref`; loot keys / companion invisible to source rollup.
-- **Companion margin unmeasured** — 25⭐ photo vs 2–3 undress API calls; no COGS constant.
+- **Gumroad email discarded** — buyer email in `webhooks_payment.py`; no Kit capture. **Fixed 2026-07-27** (`kit_buyer_capture.py`).
+- **No daily return loop** — 5 lifetime free pulls; no daily micro-pull / streak. **Fixed 2026-07-27** — `/daily`, tier ≤2, 7-day streak pays +1 free pull; ships **disabled** (`TBCC_LOOT_DAILY_PULL_ENABLED=0`).
+- **Attribution stops at subscriptions** — `income_entries` lacked `traffic_source_ref`; loot keys / companion invisible to source rollup. **Fixed 2026-07-27** — alembic **105** + `revenue_by_source()`.
+- **Companion margin unmeasured** — 25⭐ photo vs 2–3 undress API calls; no COGS constant. **Still open.**
 
 ## Revenue stack map (abbreviated)
 
@@ -41,19 +41,32 @@ Full tables: agent transcript Module A run (2026-07-27).
 
 ## Attribution plan
 
-- Traffic: `src_<family>_<lane>_<wk>` (e.g. `src_lv_ass_wk31`)
-- Beacon slugs match traffic slugs
-- Schema: `traffic_source_ref` on `income_entries`; beacon → funnel → conversion join
-- Extend `conversions_by_source()` past `subscription_created`
+- Traffic: `src_<family>_<lane>_<wk>` (e.g. `src_lv_ass_wk31`) — **shipped** in `gate_beacon_plan.py`
+- Beacon slugs match traffic slugs (`wk31-lv-ass` ↔ `src_lv_ass_wk31`) — **shipped**
+- Schema: `traffic_source_ref` on `income_entries` (alembic **105**) — **shipped**
+- `revenue_by_source()` spans every SKU in the ledger (subs, keys, bundles, companion stars, gate revshare) — **shipped**
+- North-star metric: `attributed_revenue_pct` in `GET /analytics/growth-attribution/summary`; target >80%
+- **Still open:** joining `click_link_hits` → `user_funnel_touches` (a beacon click is not yet a touch)
+
+**Attribution honesty:** lane gates are `click_only`. Telegram channel invites
+cannot carry `?start=`, so only bot-destination gates (`loot`, `main_group`,
+`lootgod`) close the click → conversion loop today.
 
 ## 90-day roadmap
 
-| Window | Work |
-|--------|------|
-| Week 1–2 | VIP reprice, bonus draws, entitlement grant, Gumroad→Kit email |
-| Week 3–4 | Beacon all gates, attribution migration, daily micro-pull |
-| Month 2 | Curated Pack #1, companion COGS, whale seat offer |
-| Month 3 | MEGA (if ≥3 packs), Lane Pass only if lane clears readiness |
+| Window | Work | Status |
+|--------|------|--------|
+| Week 1–2 | VIP reprice, bonus draws, entitlement grant, Gumroad→Kit email | **Done** 2026-07-27 |
+| Week 3–4 | Beacon all gates, attribution migration, daily micro-pull | **Done** 2026-07-27 (daily pull ships disabled; beacon seed is operator-run) |
+| Month 2 | Curated Pack #1, companion COGS, whale seat offer | Next |
+| Month 3 | MEGA (if ≥3 packs), Lane Pass only if lane clears readiness | Blocked on lane readiness (0/11) |
+
+## Operator cutover (nothing below is agent-safe)
+
+1. Island: `alembic upgrade head` → **106**.
+2. Island: `py -3.13 scripts/seed_gate_beacons.py --week wk31 --execute`, then paste each beacon URL into its Linkvertise slug.
+3. Watch `attributed_revenue_pct` for a week before judging any lane.
+4. Only then set `TBCC_LOOT_DAILY_PULL_ENABLED=1` and restart the loot bot — kill criterion is loot-key units falling >20% while DAU rises.
 
 ## Anti-patterns
 

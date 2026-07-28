@@ -19,7 +19,7 @@ AOF_MANUAL_LV_GATES: dict[str, str] = {
     "goon": "https://link-hub.net/1367336/HAOxJYVt7iD4",
     "bop": "https://link-center.net/1367336/vaTKeNRpy3tV",
     "packs": "https://direct-link.net/1367336/ARbG9LkABgVV",
-    "loot": "https://direct-link.net/1367336/S4isAVBXklrz",
+    "loot": "https://link-center.net/1367336/dl1P4gLUfX0L",
     # Post & earn addlist gate (t.me/addlist target).
     "addlist": "https://link-target.net/1367336/OXrWginA5Ztr",
     # Clearnet bot (no LV) — maps for anchor replacement only when present as raw URL
