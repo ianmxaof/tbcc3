@@ -58,12 +58,12 @@ def test_bot_routes_carry_start_payload():
     assert plan["main_group"].is_full_attribution
 
 
-def test_lane_gates_are_click_only():
+def test_gates_without_a_resolvable_channel_stay_click_only():
+    """No channel to relay to means no honest way to attach a start payload."""
     plan = {b.key: b for b in build_gate_beacon_plan("wk31")}
-    lane = plan["ass"]
-    assert lane.attribution == ATTRIBUTION_CLICK_ONLY
-    # Channel invites cannot carry a start payload — do not fake one.
-    assert "?start=" not in lane.destination_url
+    for key in ("mainhub", "addlist"):
+        assert plan[key].attribution == ATTRIBUTION_CLICK_ONLY
+        assert "?start=" not in plan[key].destination_url
 
 
 def test_slugs_unique_within_a_week():

@@ -955,7 +955,44 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_loot_keys_hint(msg, context)
         return
 
+    if arg.startswith("src_lv_") and await _handle_lane_gate(msg, context, arg):
+        return
+
     await _send_welcome(msg, context, cfg)
+
+
+async def _handle_lane_gate(msg, context: ContextTypes.DEFAULT_TYPE, payload: str) -> bool:
+    """Hand over the lane invite the user gated for, then cross-sell the room."""
+    try:
+        from app.services.lane_gate_relay import (
+            lane_display_name,
+            lane_invite_url,
+            parse_lane_gate_payload,
+        )
+
+        parsed = parse_lane_gate_payload(payload)
+    except Exception:
+        logger.debug("lane gate parse failed for %s", payload, exc_info=True)
+        return False
+    if not parsed:
+        return False
+
+    lane, _week = parsed
+    invite = lane_invite_url(lane)
+    if not invite:
+        return False
+
+    name = lane_display_name(lane)
+    cfg = context.application.bot_data.get("effective") or {}
+    await _safe_reply_html(
+        msg,
+        f"<b>{html.escape(name)}</b> — you're in.\n\n"
+        f'<a href="{html.escape(invite, quote=True)}">Open {html.escape(name)}</a>\n\n'
+        "<i>Free pull while you're here: /roll</i>",
+        disable_web_page_preview=False,
+        reply_markup=_loot_inline_keyboard(cfg),
+    )
+    return True
 
 
 async def _send_loot_keys_hint(msg, context: ContextTypes.DEFAULT_TYPE) -> None:

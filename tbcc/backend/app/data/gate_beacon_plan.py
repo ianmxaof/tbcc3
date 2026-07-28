@@ -5,9 +5,11 @@ Naming (locked in MODULE A attribution plan):
     beacon slug   {week}-lv-{key}        e.g. wk31-lv-ass
     source ref    src_lv_{key}_{week}    e.g. src_lv_ass_wk31
 
-Only bot destinations can carry a `?start=` payload, so lane channel invites
-are beacon-only: they count clicks and geography but cannot close the loop to a
-conversion until a lane-invite start handler exists on the loot bot.
+Only bot destinations can carry a `?start=` payload. Lanes that resolve to a
+real AOF channel are therefore relayed through the loot bot, which records the
+touch and then hands over the same invite. Keys with no resolvable channel
+(`mainhub`, `addlist`) stay beacon-only: clicks and geography, no conversion
+join.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from dataclasses import dataclass
 
 from app.data.aof_manual_gate_links import AOF_MANUAL_LV_GATES
 from app.data.aof_network import network_channel_by_key
+from app.services.lane_gate_relay import is_relayable_lane
 
 ATTRIBUTION_FULL = "full"
 ATTRIBUTION_CLICK_ONLY = "click_only"
@@ -79,6 +82,14 @@ def _destination_for(key: str, week: str) -> tuple[str, str, str]:
 
     channel = network_channel_by_key(key)
     if channel and (channel.invite or "").strip():
+        if is_relayable_lane(key):
+            # Bot relay first, then the same invite — one extra tap buys the
+            # touch that a bare channel invite can never produce.
+            return (
+                f"{LOOT_BOT_URL}?start={beacon_source_ref(key, week)}",
+                f"LV {key} → loot bot → {channel.display_name}",
+                ATTRIBUTION_FULL,
+            )
         return (channel.invite.strip(), f"LV {key} → {channel.display_name}", ATTRIBUTION_CLICK_ONLY)
 
     # No known Telegram destination (mainhub, addlist): beacon the gate's own
