@@ -64,12 +64,22 @@ collide across weeks, so week-over-week gate performance is comparable.
 
 | Class | Gates | What you get |
 |-------|-------|--------------|
-| `full` | `loot`, `main_group`, `lootgod` | Beacon hit **and** `?start=src_lv_*` touch → conversion joins in `revenue_by_source` |
-| `click_only` | every lane invite, `mainhub`, `packs`, `addlist` | Beacon hit only — Telegram channel invites cannot carry a `?start=` payload |
+| `full` | 14 gates: every lane, plus `loot`, `main_group`, `lootgod` | Beacon hit **and** `?start=src_lv_*` touch → conversion joins in `revenue_by_source` |
+| `click_only` | `mainhub`, `addlist` | Beacon hit only — no single channel to relay to |
 
-Lane gates stay `click_only` until the loot bot grows a start handler that
-hands out a lane invite; at that point flip the lane rows in
-`gate_beacon_plan.BOT_ROUTE_DESTINATIONS` and re-seed.
+Lanes reach `full` through the **loot bot relay**: the slug points at
+`aof_lootgod_bot?start=src_lv_<lane>_<wk>`, the bot records the touch and then
+hands over the same invite (`lane_gate_relay.py`). One extra tap for the user,
+full attribution for you. `mainhub` and `addlist` stay `click_only` because
+there is no single channel to hand over — faking a start payload there would
+report conversions that never happened.
+
+**Deploy ordering:** the loot bot must ship the relay handler *before* the
+beacons are re-pointed, or lane clicks land on a bot that cannot answer them.
+
+**Seeded 2026-07-27 (wk31):** all 16 beacons live on the island, verified with
+`scripts/smoke_lane_gate_relay.py --week wk31` (16/16 resolvable and
+round-tripping). Read results at `GET /analytics/gate-funnel`.
 
 ## AdMaven + Work.ink
 
@@ -96,8 +106,8 @@ Env tips:
 
 ## Operator checkbox
 
-- [ ] Run `seed_gate_beacons.py --week wkNN --execute` on the island
-- [ ] Paste every printed beacon URL into its Linkvertise slug
+- [x] Run `seed_gate_beacons.py --week wkNN --execute` on the island *(wk31 done 2026-07-27)*
+- [ ] **Paste every printed beacon URL into its Linkvertise slug** — the only remaining manual step; until this is done the beacons exist but receive no traffic
 - [ ] LV loot → **wk30:** `https://api.powercore.app/r/wk30-lv-loot` (or room `+97f4…` when campaign off)
 - [ ] LV mainhub → `telegram.me/aofmainhub`
 - [ ] LV main_group → `telegram.me/aof_lootgod_bot`

@@ -46,11 +46,13 @@ Full tables: agent transcript Module A run (2026-07-27).
 - Schema: `traffic_source_ref` on `income_entries` (alembic **105**) — **shipped**
 - `revenue_by_source()` spans every SKU in the ledger (subs, keys, bundles, companion stars, gate revshare) — **shipped**
 - North-star metric: `attributed_revenue_pct` in `GET /analytics/growth-attribution/summary`; target >80%
-- **Still open:** joining `click_link_hits` → `user_funnel_touches` (a beacon click is not yet a touch)
+- Click → touch → revenue join on `source_ref` (alembic **107** + `GET /analytics/gate-funnel`) — **shipped**
+- Lane relay through the loot bot promotes 11 lanes from `click_only` to `full` — **shipped**
 
-**Attribution honesty:** lane gates are `click_only`. Telegram channel invites
-cannot carry `?start=`, so only bot-destination gates (`loot`, `main_group`,
-`lootgod`) close the click → conversion loop today.
+**Attribution honesty:** the join key is `source_ref`, never IP — Telegram
+fetches links from its own infrastructure, so IP matching would invent
+conversions. Crawler hits are excluded from click counts. `mainhub` and
+`addlist` remain `click_only`: no single channel to relay to.
 
 ## 90-day roadmap
 
@@ -58,15 +60,33 @@ cannot carry `?start=`, so only bot-destination gates (`loot`, `main_group`,
 |--------|------|--------|
 | Week 1–2 | VIP reprice, bonus draws, entitlement grant, Gumroad→Kit email | **Done** 2026-07-27 |
 | Week 3–4 | Beacon all gates, attribution migration, daily micro-pull | **Done** 2026-07-27 (daily pull ships disabled; beacon seed is operator-run) |
-| Month 2 | Curated Pack #1, companion COGS, whale seat offer | Next |
+| Month 2 | Curated Pack #1, companion COGS, whale seat offer | COGS **done**; Pack #1 and whale seat next |
 | Month 3 | MEGA (if ≥3 packs), Lane Pass only if lane clears readiness | Blocked on lane readiness (0/11) |
 
-## Operator cutover (nothing below is agent-safe)
+## Deployed to island 2026-07-27
 
-1. Island: `alembic upgrade head` → **106**.
-2. Island: `py -3.13 scripts/seed_gate_beacons.py --week wk31 --execute`, then paste each beacon URL into its Linkvertise slug.
+Migrations **105–107** applied, stack recreated, 16 wk31 beacons seeded and
+smoked (16/16 resolvable). Live checks: `/r/wk31-lv-ass` → 302 to
+`aof_lootgod_bot?start=src_lv_ass_wk31`; `/analytics/gate-funnel` and
+`/analytics/companion-margin` both responding.
+
+## Operator actions still outstanding
+
+1. **Paste the 16 wk31 beacon URLs into the Linkvertise dashboard.** Beacons
+   exist but receive zero traffic until each slug's destination is repointed.
+   Table: `scripts/seed_gate_beacons.py --week wk31` (dry run reprints it).
+2. **Set `TBCC_COMPANION_UNDRESS_USD_PER_CREDIT`** from the undress plan
+   invoice (plan price ÷ credits). Margin reads `cost_basis_known=false`
+   until then. Island balance was 480 credits at deploy.
 3. Watch `attributed_revenue_pct` for a week before judging any lane.
-4. Only then set `TBCC_LOOT_DAILY_PULL_ENABLED=1` and restart the loot bot — kill criterion is loot-key units falling >20% while DAU rises.
+4. Only then set `TBCC_LOOT_DAILY_PULL_ENABLED=1` and restart the loot bot —
+   kill criterion is loot-key units falling >20% while DAU rises.
+
+## Finding from the live margin probe
+
+`photos_sold` over the trailing 30 days is **0**. The companion is producing no
+paid photo revenue at all, so its COGS question is currently theoretical — the
+conversion problem outranks the margin problem.
 
 ## Anti-patterns
 
