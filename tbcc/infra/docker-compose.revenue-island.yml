@@ -66,6 +66,11 @@ services:
       TELEGRAM_SESSION_PATH: /sessions/admin
       TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
       TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
+      # Loot roll delivery reads on its own SQLite file — Celery import workers hold a
+      # long-lived handle on admin_import.session and starve album downloads.
+      TBCC_ALBUM_COMPOSER_TELEGRAM_SESSION: /sessions/admin_album
+      TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION: "1"
+      TBCC_RELAY_USE_BOT_API: ${TBCC_RELAY_USE_BOT_API:-0}
       TBCC_BUNDLE_DIR: /uploads/bundles
       TBCC_PROMO_DIR: /uploads/promo
     volumes:
@@ -95,6 +100,7 @@ services:
       # Storage Hub → pool → SENT CACHE (telegram queue). Absolute path survives cwd=/app.
       TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
       TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
+      TBCC_RELAY_USE_BOT_API: ${TBCC_RELAY_USE_BOT_API:-0}
       # Beat seed (ops_growth until next GHCR bake routes seed → telegram).
       TBCC_STORAGE_POOL_SEED_ENABLED: "1"
       TBCC_STORAGE_POOL_SEED_BATCH: "12"
@@ -174,6 +180,16 @@ services:
     <<: *island-image
     profiles: ["bots"]
     command: python -m bots.loot_bot
+    depends_on:
+      - api
+      - redis
+      - postgres
+
+  # @aof_spicybot_bot — LLM chat + undress webhooks (API serves /webhooks/companion/*).
+  companion_bot:
+    <<: *island-image
+    profiles: ["bots"]
+    command: python -m bots.companion_bot
     depends_on:
       - api
       - redis

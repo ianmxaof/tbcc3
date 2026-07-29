@@ -993,23 +993,39 @@ def claim_key_roll(
     eff = get_effective_loot_bot_settings(db)
     spoiler = bool(eff.get("drop_spoiler_default", True))
 
-    async def _run():
-        from app.database.session import SessionLocal
+    def _deliver(active_preview: dict) -> dict:
+        async def _run():
+            from app.database.session import SessionLocal
 
-        worker_db = SessionLocal()
-        try:
-            return await send_loot_preview_to_chat(
-                worker_db,
-                bot=bot,
-                chat_id=uid,
-                preview=preview,
-                spoiler_default=spoiler,
-                include_affiliate_footer=True,
+            worker_db = SessionLocal()
+            try:
+                return await send_loot_preview_to_chat(
+                    worker_db,
+                    bot=bot,
+                    chat_id=uid,
+                    preview=active_preview,
+                    spoiler_default=spoiler,
+                    include_affiliate_footer=True,
+                )
+            finally:
+                worker_db.close()
+
+        return _run_loot_async(_run())
+
+    delivery = _deliver(preview)
+    if int(delivery.get("media_sent") or 0) <= 0:
+        notes = [str(n) for n in (delivery.get("notes") or [])]
+        if any("load failed" in n for n in notes):
+            retry_preview = build_roll_preview(
+                db,
+                telegram_user_id=uid,
+                interval_code=interval_code,
+                seed=None,
             )
-        finally:
-            worker_db.close()
-
-    delivery = _run_loot_async(_run())
+            if retry_preview.get("ok"):
+                preview = retry_preview
+                delivery = _deliver(preview)
+                delivery.setdefault("notes", []).append("key_roll_retry_after_load_fail")
     card_ok = bool(delivery.get("tier_card_delivered"))
     compensation: dict | None = None
     if not card_ok and not operator:

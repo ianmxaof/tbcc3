@@ -15,6 +15,7 @@ from app.models.loot import (
 )
 from app.models.media import Media
 from app.services.loot_composite_tier import compute_composite_tier, composite_tier_fields
+from app.services.loot_media_deliverable import filter_roll_candidates
 from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_player_modifiers import seen_modifier_ids
 from app.services.loot_player_stats import get_lifetime_roll_index
@@ -155,7 +156,7 @@ def build_roll_preview(
         if seen_ids:
             q = q.filter(~Media.id.in_(seen_ids))
 
-    candidates = q.all()
+    candidates = filter_roll_candidates(q.all())
     if not candidates:
         return {
             "ok": False,

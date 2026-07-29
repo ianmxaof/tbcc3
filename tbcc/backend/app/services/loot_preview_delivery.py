@@ -41,10 +41,10 @@ from app.services.loot_tier_card_assets import (
     roll_reveal_rng,
 )
 from app.services.loot_tier_catalog import tier_display_name
-from app.services.local_media_storage import is_local_pool_media, read_local_media_bytes
+from app.services.loot_media_deliverable import quarantine_stale_saved_message
 from app.services.media_sniff import sniff_media_kind
 from app.services.promo_affiliate_rotation import build_loot_roll_affiliate_footer_html
-from app.services.telegram_admin import run_telegram_import_io
+from app.services.telegram_admin import run_telegram_album_composer_io, run_telegram_import_io
 from app.services.telegram_message_effects import FREE_EFFECT_PARTY, loot_roll_effect_id
 from app.utils.telegram_promo_url import is_public_https_for_telegram
 
@@ -186,26 +186,182 @@ def _coerce_single_message(messages):
     return None
 
 
+def _try_local_or_cached_bytes(row: Media) -> tuple[bytes, str] | None:
+    """On-disk pool file or dashboard thumb cache — no Telethon."""
+    from app.services.local_media_storage import is_local_pool_media, read_local_media_bytes
+
+    if is_local_pool_media(row) or str(getattr(row, "file_id", "") or "").startswith("local:"):
+        data = read_local_media_bytes(row)
+        if data:
+            return _bytes_to_filename(data)
+    try:
+        from app.services.media_cache_storage import cached_thumb_path
+
+        mid = int(getattr(row, "id", 0) or 0)
+        if mid > 0:
+            tp = cached_thumb_path(mid)
+            if tp and tp.is_file():
+                return _bytes_to_filename(tp.read_bytes())
+    except Exception:
+        pass
+    return None
+
+
+async def _download_saved_media_from_storage(
+    storage,
+    telegram_message_id: int,
+) -> tuple[bytes, str]:
+    raw = await storage.client.get_messages("me", ids=telegram_message_id)
+    if isinstance(raw, list):
+        msg = next((m for m in raw if m is not None), None)
+    else:
+        msg = raw
+    if not msg or not getattr(msg, "media", None):
+        raise ValueError(f"Saved message {telegram_message_id} not found or has no media")
+    buf = io.BytesIO()
+    await storage.client.download_media(msg, file=buf)
+    data = buf.getvalue()
+    if not data:
+        raise ValueError(f"Empty download for saved message {telegram_message_id}")
+    return _bytes_to_filename(data)
+
+
+async def _download_saved_thumb_from_storage(
+    storage,
+    telegram_message_id: int,
+) -> tuple[bytes, str] | None:
+    raw = await storage.client.get_messages("me", ids=telegram_message_id)
+    if isinstance(raw, list):
+        msg = next((m for m in raw if m is not None), None)
+    else:
+        msg = raw
+    if not msg or not getattr(msg, "media", None):
+        return None
+    buf = io.BytesIO()
+    await storage.client.download_media(msg, file=buf, thumb=-1)
+    data = buf.getvalue()
+    if not data:
+        return None
+    return _bytes_to_filename(data)
+
+
+async def _loot_telegram_io(fn):
+    """
+    Read loot media on the album-composer session, not the import session.
+
+    Celery import workers hold a long-lived SQLite handle on admin_import.session, so paid
+    roll delivery starves behind "database is locked". admin_album.session is a separate file
+    and still serializes MTProto through the global account lock.
+    """
+    import os
+
+    if (os.getenv("TBCC_LOOT_DELIVERY_SESSION") or "album").strip().lower() == "import":
+        return await run_telegram_import_io(fn)
+    try:
+        return await run_telegram_album_composer_io(fn)
+    except Exception as e:
+        logger.warning("loot album-session io failed (%s); falling back to import session", e)
+        return await run_telegram_import_io(fn)
+
+
+def _loot_album_batch_timeout_s() -> float:
+    import os
+
+    raw = (os.getenv("TBCC_LOOT_ALBUM_BATCH_TIMEOUT_S") or "90").strip()
+    try:
+        return max(35.0, min(240.0, float(raw)))
+    except ValueError:
+        return 90.0
+
+
+def _loot_album_item_timeout_s() -> float:
+    import os
+
+    raw = (os.getenv("TBCC_LOOT_ALBUM_ITEM_TIMEOUT_S") or "20").strip()
+    try:
+        return max(5.0, min(60.0, float(raw)))
+    except ValueError:
+        return 20.0
+
+
+def _is_missing_saved_message(exc: BaseException) -> bool:
+    """True only when Telegram confirmed the Saved Message is gone — not infra failure."""
+    text = str(exc or "").lower()
+    return "not found or has no media" in text or "empty download for saved message" in text
+
+
+async def _download_many_saved_media_bytes(
+    rows: list[Media],
+) -> tuple[dict[int, tuple[bytes, str]], set[int]]:
+    """
+    One import-session lock for the whole album (avoids SQLite lock storms per item).
+
+    Returns (bytes by media id, media ids Telegram confirmed missing). Partial results survive
+    the batch deadline — a slow or dead item must not cost the rest of the album.
+    """
+    if not rows:
+        return {}, set()
+
+    collected: dict[int, tuple[bytes, str]] = {}
+    missing: set[int] = set()
+    budget = _loot_album_batch_timeout_s()
+    per_item = _loot_album_item_timeout_s()
+
+    async def _fn(storage) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        for row in rows:
+            tg_id = int(getattr(row, "telegram_message_id", 0) or 0)
+            if tg_id <= 0:
+                continue
+            remaining = deadline - loop.time()
+            if remaining <= 3.0:
+                logger.warning("loot album batch deadline hit; %s item(s) unattempted", len(rows) - len(collected))
+                return
+            mid = int(row.id)
+            slot = min(per_item, remaining)
+            try:
+                collected[mid] = await asyncio.wait_for(
+                    _download_saved_media_from_storage(storage, tg_id), timeout=slot
+                )
+                continue
+            except Exception as primary:
+                confirmed_missing = _is_missing_saved_message(primary)
+                if not confirmed_missing and (row.media_type or "").lower() == "video":
+                    try:
+                        thumb = await asyncio.wait_for(
+                            _download_saved_thumb_from_storage(storage, tg_id),
+                            timeout=min(per_item, max(1.0, deadline - loop.time())),
+                        )
+                    except Exception:
+                        thumb = None
+                    if thumb:
+                        collected[mid] = thumb
+                        continue
+                if confirmed_missing:
+                    missing.add(mid)
+                logger.warning(
+                    "loot batch skip saved msg media_id=%s tg=%s missing=%s: %s",
+                    mid,
+                    tg_id,
+                    confirmed_missing,
+                    primary,
+                )
+
+    try:
+        await asyncio.wait_for(_loot_telegram_io(_fn), timeout=budget + 45.0)
+    except Exception as e:
+        logger.warning("loot album batch telethon failed after %s item(s): %r", len(collected), e)
+    return collected, missing
+
+
 async def _download_saved_media_bytes(telegram_message_id: int) -> tuple[bytes, str]:
-    import asyncio
+    """Single Saved Messages download — prefer _batch_load_media_bytes for albums."""
 
     async def _fn(storage) -> tuple[bytes, str]:
-        raw = await storage.client.get_messages("me", ids=telegram_message_id)
-        if isinstance(raw, list):
-            msg = next((m for m in raw if m is not None), None)
-        else:
-            msg = raw
-        if not msg or not getattr(msg, "media", None):
-            raise ValueError(f"Saved message {telegram_message_id} not found or has no media")
-        buf = io.BytesIO()
-        await storage.client.download_media(msg, file=buf)
-        data = buf.getvalue()
-        if not data:
-            raise ValueError(f"Empty download for saved message {telegram_message_id}")
-        return _bytes_to_filename(data)
+        return await _download_saved_media_from_storage(storage, telegram_message_id)
 
-    # Island Telethon can hang on missing/huge msgs — fail fast so claim can retry.
-    return await asyncio.wait_for(run_telegram_import_io(_fn), timeout=35.0)
+    return await asyncio.wait_for(_loot_telegram_io(_fn), timeout=35.0)
 
 
 def _bytes_to_filename(data: bytes) -> tuple[bytes, str]:
@@ -225,39 +381,67 @@ def _media_send_bucket(data: bytes, row: Media) -> str:
 
 async def _download_saved_message_thumb_bytes(telegram_message_id: int) -> tuple[bytes, str] | None:
     async def _fn(storage) -> tuple[bytes, str] | None:
-        raw = await storage.client.get_messages("me", ids=telegram_message_id)
-        if isinstance(raw, list):
-            msg = next((m for m in raw if m is not None), None)
+        return await _download_saved_thumb_from_storage(storage, telegram_message_id)
+
+    return await _loot_telegram_io(_fn)
+
+
+async def _batch_load_media_bytes(
+    rows: list[Media],
+    db: Session | None = None,
+) -> tuple[list[tuple[Media, bytes, str]], list[str]]:
+    """
+    Load loot album bytes: local disk first, then one Telethon batch, then thumb cache.
+    """
+    notes: list[str] = []
+    partial: dict[int, tuple[Media, bytes, str]] = {}
+    need_telethon: list[Media] = []
+
+    for row in rows:
+        local = _try_local_or_cached_bytes(row)
+        if local:
+            partial[int(row.id)] = (row, local[0], local[1])
+            continue
+        tg_id = int(getattr(row, "telegram_message_id", 0) or 0)
+        if tg_id > 0:
+            need_telethon.append(row)
         else:
-            msg = raw
-        if not msg or not getattr(msg, "media", None):
-            return None
-        buf = io.BytesIO()
-        await storage.client.download_media(msg, file=buf, thumb=-1)
-        data = buf.getvalue()
-        if not data:
-            return None
-        return _bytes_to_filename(data)
+            notes.append(f"skip media {row.id}: no local file and no saved message id")
 
-    return await run_telegram_import_io(_fn)
+    if need_telethon:
+        downloaded, missing = await _download_many_saved_media_bytes(need_telethon)
+        for row in need_telethon:
+            mid = int(row.id)
+            hit = downloaded.get(mid)
+            if hit:
+                partial[mid] = (row, hit[0], hit[1])
+                continue
+            cached = _try_local_or_cached_bytes(row)
+            if cached:
+                partial[mid] = (row, cached[0], cached[1])
+                notes.append(f"thumb cache media {mid}")
+                continue
+            if mid in missing:
+                notes.append(f"skip media {mid}: saved message gone")
+                if db is not None:
+                    quarantine_stale_saved_message(db, row, reason="delivery_saved_message_gone")
+            else:
+                notes.append(f"skip media {mid}: load failed (infra)")
+
+    ordered: list[tuple[Media, bytes, str]] = []
+    for row in rows:
+        hit = partial.get(int(row.id))
+        if hit:
+            ordered.append(hit)
+    return ordered, notes
 
 
-async def _load_media_bytes(row: Media) -> tuple[bytes, str]:
+async def _load_media_bytes(row: Media, db: Session | None = None) -> tuple[bytes, str]:
     """Prefer on-disk pool files; fall back to Saved Messages via Telethon."""
-    if is_local_pool_media(row) or str(getattr(row, "file_id", "") or "").startswith("local:"):
-        data = read_local_media_bytes(row)
-        if data:
-            return _bytes_to_filename(data)
-    tg_id = int(getattr(row, "telegram_message_id", 0) or 0)
-    if tg_id > 0:
-        try:
-            return await _download_saved_media_bytes(tg_id)
-        except Exception as primary:
-            if (row.media_type or "").lower() == "video":
-                thumb = await _download_saved_message_thumb_bytes(tg_id)
-                if thumb:
-                    return thumb
-            raise primary
+    ordered, _notes = await _batch_load_media_bytes([row], db=db)
+    if ordered:
+        _, data, fname = ordered[0]
+        return data, fname
     raise ValueError(f"media id={row.id} has no local file and no saved message id")
 
 
@@ -512,7 +696,7 @@ async def _send_loot_preview_to_chat_inner(
         if not row:
             continue
         try:
-            data, _fname = await _load_media_bytes(row)
+            data, _fname = await _load_media_bytes(row, db=db)
             kind, _ext = sniff_media_kind(data)
             if kind in ("photo", "gif", "video"):
                 center_jpeg = _bytes_to_center_jpeg(data)
@@ -696,36 +880,32 @@ async def _send_loot_preview_to_chat_inner(
         payloads: list[tuple[Media, bytes, str]] = []
         load_started = time.monotonic()
         still_pinged = False
-        for row in ordered:
-            try:
-                try:
-                    from telegram.constants import ChatAction
+        try:
+            from telegram.constants import ChatAction
 
-                    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-                except Exception:
-                    pass
-                if (
-                    not still_pinged
-                    and preparing_msg is not None
-                    and (time.monotonic() - load_started) > 12.0
-                ):
-                    try:
-                        await bot.edit_message_text(
-                            chat_id=chat_id,
-                            message_id=int(preparing_msg.message_id),
-                            text=f"<i>{html.escape(pick_still_working_line())}</i>",
-                            parse_mode="HTML",
-                            disable_web_page_preview=True,
-                        )
-                        still_pinged = True
-                        delivery["notes"].append("still working ping")
-                    except Exception:
-                        pass
-                data, fname = await _load_media_bytes(row)
-                payloads.append((row, data, fname))
-            except Exception as e:
-                logger.warning("loot preview skip media id=%s: %s", row.id, e)
-                delivery["notes"].append(f"skip media {row.id}: {e}")
+            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+        except Exception:
+            pass
+        if (
+            preparing_msg is not None
+            and (time.monotonic() - load_started) > 12.0
+        ):
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(preparing_msg.message_id),
+                    text=f"<i>{html.escape(pick_still_working_line())}</i>",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+                delivery["notes"].append("still working ping")
+            except Exception:
+                pass
+        payloads, load_notes = await _batch_load_media_bytes(ordered, db=db)
+        for note in load_notes:
+            if note.startswith("skip media"):
+                logger.warning("loot preview %s", note)
+            delivery["notes"].append(note)
 
         if payloads:
             await _send_media_plan(
@@ -876,7 +1056,7 @@ async def _send_loot_free_pull_to_chat_inner(
         row = db.query(Media).filter(Media.id == mid).first()
         if row:
             try:
-                data, fname = await _load_media_bytes(row)
+                data, fname = await _load_media_bytes(row, db=db)
                 payloads = [(row, data, fname)]
                 simple_cap = build_album_caption_html(
                     preview,
