@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
-
-import pytest
 
 from app.api.webhooks_companion import _decode_payload_image, _extract_job_key
 
@@ -26,8 +25,7 @@ def test_decode_payload_image_from_base64_photo():
     assert len(out) > 100
 
 
-@pytest.mark.asyncio
-async def test_handle_json_undress_webhook_delivers(monkeypatch):
+def test_handle_json_undress_webhook_delivers(monkeypatch):
     from app.api import webhooks_companion as wh
     from app.services.companion_jobs import CompanionJob, get_job, pop_job, put_job
 
@@ -40,9 +38,25 @@ async def test_handle_json_undress_webhook_delivers(monkeypatch):
         return True
 
     monkeypatch.setattr(wh, "send_result_photo_bytes", fake_send)
+
+    upsell_calls: list[dict] = []
+
+    async def fake_upsell(**kwargs):
+        upsell_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "app.services.companion_stars.maybe_offer_stars_after_delivery",
+        fake_upsell,
+    )
     img = base64.b64encode(b"\xff\xd8" + b"y" * 300).decode()
-    result = await wh._handle_payload("undress", {"id": jid, "photo": img})
+
+    async def _run():
+        return await wh._handle_payload("undress", {"id": jid, "photo": img})
+
+    result = asyncio.run(_run())
     assert result.get("delivered") == "photo_bytes"
     assert sent and sent[0]["chat_id"] == 100
+    assert upsell_calls and upsell_calls[0]["user_id"] == 200
     assert pop_job(jid) is None
     assert get_job(jid) is None

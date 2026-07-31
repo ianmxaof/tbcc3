@@ -1075,8 +1075,14 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         await asyncio.to_thread(_record_income)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.exception(
+            "companion Stars income ledger failed uid=%s stars=%s charge=%s: %s",
+            user.id,
+            stars,
+            charge_id,
+            e,
+        )
 
     from app.services.companion_access import grant_credits
 
@@ -1188,6 +1194,7 @@ async def post_init(app: Application) -> None:
         BotCommand("start", "Create your character"),
         BotCommand("menu", "Open button menu"),
         BotCommand("help", "How it works"),
+        BotCommand("buy", "Buy another photo reveal (Stars)"),
         BotCommand("verify", "Verify AOF membership"),
         BotCommand("referral", "Invite friends"),
     ]

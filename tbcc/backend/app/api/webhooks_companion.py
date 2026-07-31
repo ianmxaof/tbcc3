@@ -233,6 +233,13 @@ async def _deliver_final_photo(job: CompanionJob, image_bytes: bytes, filename: 
         filename=filename,
         parse_mode="HTML",
     )
+    if ok:
+        try:
+            from app.services.companion_stars import maybe_offer_stars_after_delivery
+
+            await maybe_offer_stars_after_delivery(chat_id=job.chat_id, user_id=job.user_id)
+        except Exception as e:
+            logger.debug("stars upsell after delivery skipped: %s", e)
     return {"ok": True, "delivered": "photo_bytes" if ok else "photo_bytes_failed"}
 
 
@@ -323,6 +330,12 @@ async def _handle_payload(
             chat_id=job.chat_id,
             text="She's ready — chat with her anytime. /name to rename.",
         )
+        try:
+            from app.services.companion_stars import maybe_offer_stars_after_delivery
+
+            await maybe_offer_stars_after_delivery(chat_id=job.chat_id, user_id=job.user_id)
+        except Exception as e:
+            logger.debug("stars upsell after url delivery skipped: %s", e)
     return {"ok": True, "delivered": "photo" if ok else "photo_failed"}
 
 

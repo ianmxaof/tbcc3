@@ -18,12 +18,17 @@ load_tbcc_dotenv()
 from app.database.session import SessionLocal
 from app.models.promo_affiliate_link import PromoAffiliateLink
 
+# Retired affiliates — deactivated on every seed run (fake / dead programs).
+PURGE_LABELS = frozenset({"Carrot Wallet"})
+PURGE_URL_SUBSTRINGS = ("carrotwallettgbot", "carrotwallet")
+
 SEED_ITEMS: list[dict] = [
     {
         "label": "AOF VIP card checkout",
         "url": "https://aof69.gumroad.com/l/ynnulc",
         "payout_kind": "subscription",
-        "priority_tier": 2,
+        "payout_detail": "subscription",
+        "priority_tier": 3,
         "placements": ["x_buffer", "telegram_footer", "links_hub"],
         "network_keys": [],
         "copy_template": "⭐ {link} — VIP from $6/mo · card · PayPal",
@@ -32,7 +37,8 @@ SEED_ITEMS: list[dict] = [
         "label": "Musebox AI",
         "url": "https://musebox.ai/?ref=uOg77ImI",
         "payout_kind": "revshare",
-        "priority_tier": 4,
+        "payout_detail": "usd_revshare",
+        "priority_tier": 10,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🎨 {link} — AI creative playground",
@@ -41,8 +47,9 @@ SEED_ITEMS: list[dict] = [
         "label": "Undress AI bot",
         "url": "https://nodress.site/tg/bot?username=Aifasteditbot&ref_id=7787282561",
         "payout_kind": "revshare",
-        "priority_tier": 3,
-        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "payout_detail": "platform_credits",
+        "priority_tier": 30,
+        "placements": ["x_buffer", "links_hub_ai"],
         "network_keys": [],
         "copy_template": "💰 {link} — free credits",
     },
@@ -50,7 +57,8 @@ SEED_ITEMS: list[dict] = [
         "label": "DrawAI",
         "url": "https://t.me/drawai_0_bot?start=7787282561",
         "payout_kind": "revshare",
-        "priority_tier": 5,
+        "payout_detail": "revshare_unknown",
+        "priority_tier": 20,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🎬 {link} — photo to motion",
@@ -59,7 +67,8 @@ SEED_ITEMS: list[dict] = [
         "label": "BotyNude",
         "url": "https://botynude.com/ref/39Z9HHK3",
         "payout_kind": "revshare",
-        "priority_tier": 6,
+        "payout_detail": "usd_revshare",
+        "priority_tier": 11,
         "placements": ["x_buffer", "telegram_footer", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "💰 {link} — 2 free coins per join",
@@ -68,8 +77,9 @@ SEED_ITEMS: list[dict] = [
         "label": "MotionMuse",
         "url": "https://motionmuse.ai/r/wi9rtg3l",
         "payout_kind": "revshare",
-        "priority_tier": 7,
-        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "payout_detail": "platform_credits",
+        "priority_tier": 32,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai"],
         "copy_template": "🎬 {link} — invite friends, earn credits",
     },
@@ -77,7 +87,8 @@ SEED_ITEMS: list[dict] = [
         "label": "BangBros PPS",
         "url": "https://landing.bangbrosnetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MTMwLCJzIjo2OTMsImUiOjEwNjczLCJwIjoxMX0=",
         "payout_kind": "pps",
-        "priority_tier": 8,
+        "payout_detail": "usd_cash",
+        "priority_tier": 1,
         "placements": ["x_buffer", "telegram_footer", "loot_roll"],
         "network_keys": ["milf", "taboo", "big_tits"],
         "copy_template": "🔞 {link}",
@@ -86,8 +97,9 @@ SEED_ITEMS: list[dict] = [
         "label": "Reality Kings PPS",
         "url": "https://landing.rk.com/tgp1/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MjAsInMiOjM1OCwiZSI6ODAzNCwicCI6MTF9",
         "payout_kind": "pps",
-        "priority_tier": 9,
-        "placements": ["x_buffer"],
+        "payout_detail": "usd_cash",
+        "priority_tier": 3,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
         "network_keys": ["milf", "voyeur"],
         "copy_template": "🔞 {link}",
     },
@@ -95,16 +107,78 @@ SEED_ITEMS: list[dict] = [
         "label": "Spicevids PPS",
         "url": "https://landing.spicevids.com/affiliates/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MTIwLCJzIjo2ODAsImUiOjEwNDMyLCJwIjoxMX0=",
         "payout_kind": "pps",
-        "priority_tier": 10,
-        "placements": ["telegram_footer", "loot_roll"],
+        "payout_detail": "usd_cash",
+        "priority_tier": 4,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
         "network_keys": ["goon", "bop"],
+        "copy_template": "🔞 {link}",
+    },
+    {
+        "label": "Brazzers PPS",
+        "url": "https://landing.brazzersnetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MTQsInMiOjkwLCJlIjo4ODAzLCJwIjoxMX0=",
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 2,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "network_keys": ["milf", "big_tits", "taboo"],
+        "copy_template": "🔞 {link}",
+    },
+    {
+        "label": "Babes Network PPS",
+        "url": "https://landing.babesnetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MTYsInMiOjE2NiwiZSI6ODk5NywicCI6MTF9",
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 5,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "network_keys": ["milf", "main"],
+        "copy_template": "🔞 {link}",
+    },
+    {
+        "label": "Men Network PPS",
+        "url": "https://landing.mennetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MjIsInMiOjU0MiwiZSI6OTA5NCwicCI6MTF9",
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 6,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "network_keys": ["bop"],
+        "copy_template": "🔞 {link}",
+    },
+    {
+        "label": "Erito Network PPS",
+        "url": "https://landing.eritonetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MjYsInMiOjIzMCwiZSI6ODk5NSwicCI6MTF9",
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 7,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "network_keys": ["abg", "ai"],
+        "copy_template": "🔞 {link}",
+    },
+    {
+        "label": "Bromo Network PPS",
+        "url": "https://landing.bromonetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MjMsInMiOjUzNCwiZSI6OTA4OCwicCI6MTF9",
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 8,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "network_keys": ["bop", "goon"],
+        "copy_template": "🔞 {link}",
+    },
+    {
+        "label": "Sean Cody PPS",
+        "url": "https://landing.seancodynetwork.com/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MjcsInMiOjUzOCwiZSI6OTA5NiwicCI6MTF9",
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 9,
+        "placements": ["x_buffer", "telegram_footer", "loot_roll"],
+        "network_keys": ["bop"],
         "copy_template": "🔞 {link}",
     },
     {
         "label": "Nutaku — Lust Goddess",
         "url": "https://network.nutaku.net/images/lp/lust-goddess/video/1/?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MSwicyI6MSwiZSI6MTA5MDMsInAiOjJ9",
         "payout_kind": "cpa",
-        "priority_tier": 11,
+        "payout_detail": "usd_cash",
+        "priority_tier": 12,
         "placements": ["x_buffer", "links_hub"],
         "network_keys": [],
         "copy_template": "🎮 {link}",
@@ -120,9 +194,20 @@ SEED_ITEMS: list[dict] = [
         "copy_template": "📦 {link} — remote storage & fast cloud transfers",
     },
     {
+        "label": "Microsoft Rewards (Bing)",
+        "url": "https://rewards.bing.com/welcome?rh=LjD_QLCQ3xc&ref=rafsrchae",
+        "payout_kind": "referral",
+        "payout_detail": "referral_points",
+        "priority_tier": 46,
+        "placements": ["manual_only", "links_hub", "x_buffer"],
+        "network_keys": ["main"],
+        "copy_template": "🔎 {link} — earn gift cards searching with Bing",
+    },
+    {
         "label": "Cursor referral",
         "url": "https://cursor.com/referral?code=WKMSQ8BYPM1O",
         "payout_kind": "other",
+        "payout_detail": "referral_credits",
         "priority_tier": 50,
         "placements": ["manual_only"],
         "network_keys": [],
@@ -132,6 +217,7 @@ SEED_ITEMS: list[dict] = [
         "label": "Claude referral",
         "url": "https://claude.ai/referral/ve9d3Ki_QA",
         "payout_kind": "other",
+        "payout_detail": "referral_credits",
         "priority_tier": 51,
         "placements": ["manual_only"],
         "network_keys": [],
@@ -142,7 +228,8 @@ SEED_ITEMS: list[dict] = [
         "label": "Nakedly (nudify.now)",
         "url": "https://nudify.now/?code=U214D",
         "payout_kind": "revshare",
-        "priority_tier": 5,
+        "payout_detail": "usd_revshare",
+        "priority_tier": 12,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🧠 {link} — AI tools hub (revshare on purchases)",
@@ -151,6 +238,7 @@ SEED_ITEMS: list[dict] = [
         "label": "Playbun",
         "url": "https://www.playbun.com/?ref=freeusegod",
         "payout_kind": "revshare",
+        "payout_detail": "usd_revshare",
         "priority_tier": 13,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
@@ -160,7 +248,8 @@ SEED_ITEMS: list[dict] = [
         "label": "PornMaker AI",
         "url": "https://pornmaker.ai?ref=DExnc3FJ",
         "payout_kind": "revshare",
-        "priority_tier": 13,
+        "payout_detail": "usd_revshare",
+        "priority_tier": 14,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🎬 {link} — AI porn maker",
@@ -223,7 +312,8 @@ SEED_ITEMS: list[dict] = [
         "label": "Fapify",
         "url": "https://www.fapify.com/?ref=freeusegod",
         "payout_kind": "revshare",
-        "priority_tier": 18,
+        "payout_detail": "usd_revshare",
+        "priority_tier": 15,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🎨 {link} — AI generator suite",
@@ -259,16 +349,31 @@ SEED_ITEMS: list[dict] = [
         "label": "HeatMe",
         "url": "https://heatme.ai/r/wrzw79feke",
         "payout_kind": "revshare",
-        "priority_tier": 22,
+        "payout_detail": "platform_credits",
+        "priority_tier": 33,
         "placements": ["telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🔥 {link} — invite credits",
     },
     {
+        # Owned funnel — beacon wrap rewrites start=src_* to the placement ref,
+        # so click → /start touch → Stars revenue join on one source_ref.
+        "label": "AOF Spicy Companion",
+        "url": "https://telegram.me/aof_spicybot_bot?start=src_companion_promo",
+        "payout_kind": "funnel",
+        "payout_detail": "funnel",
+        # Tier 1 — owned Stars funnel; X rotation also biases every Nth slot to this row.
+        "priority_tier": 1,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "💋 {link} — AOF AI girlfriend · free trial photo + chat in DM",
+    },
+    {
         "label": "Loot God free roll",
         "url": "https://telegram.me/aof_lootgod_bot?start=loot_free",
         "payout_kind": "funnel",
-        "priority_tier": 1,
+        "payout_detail": "funnel",
+        "priority_tier": 40,
         "placements": ["telegram_footer", "loot_roll", "links_hub"],
         "network_keys": ["loot", "main", "voyeur", "goon"],
         "copy_template": "🎲 {link} — five free DM rolls (tier teaser)",
@@ -277,7 +382,8 @@ SEED_ITEMS: list[dict] = [
         "label": "Loot Goblin — channel FOMO",
         "url": "https://telegram.me/aof_lootgod_bot",
         "payout_kind": "funnel",
-        "priority_tier": 2,
+        "payout_detail": "funnel",
+        "priority_tier": 41,
         "placements": ["telegram_footer", "loot_roll"],
         "network_keys": [],
         "copy_template": "👺 {link} — goblin grants blink into lanes on scrobble; tap Claim fast",
@@ -310,12 +416,24 @@ def _ensure_tables() -> None:
         )
 
 
+def _purge_retired_affiliates(db) -> int:
+    n = 0
+    for row in db.query(PromoAffiliateLink).all():
+        label = (row.label or "").strip()
+        url = (row.url or "").strip().lower()
+        if label in PURGE_LABELS or any(s in url for s in PURGE_URL_SUBSTRINGS):
+            row.active = False
+            n += 1
+    return n
+
+
 def main() -> None:
     _ensure_tables()
     db = SessionLocal()
     created = 0
     updated = 0
     try:
+        purged = _purge_retired_affiliates(db)
         for item in SEED_ITEMS:
             url = str(item["url"]).strip()
             label = str(item["label"]).strip()
@@ -335,13 +453,15 @@ def main() -> None:
             row.url = url
             row.label = str(item["label"])[:512]
             row.payout_kind = str(item.get("payout_kind") or "other")[:16]
+            detail = item.get("payout_detail")
+            row.payout_detail = str(detail).strip()[:64] if detail else None
             row.priority_tier = int(item.get("priority_tier") or 10)
             row.active = True
             row.placements_json = _encode_list(list(item.get("placements") or ["manual_only"]))
             row.network_keys_json = _encode_list(list(item.get("network_keys") or []))
             row.copy_template = str(item.get("copy_template") or "")[:1024] or None
         db.commit()
-        print(f"Seed complete: created={created} updated={updated} total={len(SEED_ITEMS)}")
+        print(f"Seed complete: created={created} updated={updated} purged={purged} total={len(SEED_ITEMS)}")
     finally:
         db.close()
 
