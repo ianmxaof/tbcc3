@@ -63,7 +63,7 @@ def main() -> int:
     print("  2. Expect album in DM; check celery loot delivery logs if empty")
     print("  3. Fresh stock: Storage Hub deposits + local imports (TBCC_LOOT_LOCAL_BYTES_ONLY=1)")
 
-  return 0
+    return 0
 
 
 if __name__ == "__main__":
