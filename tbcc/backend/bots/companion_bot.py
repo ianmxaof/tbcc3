@@ -51,6 +51,7 @@ from telegram.ext import (
 from app.services.companion_access import (
     addlist_url,
     affiliate_undress_url,
+    affiliate_undress_url_wrapped,
     auto_complete_gate_if_ready,
     can_spend_operator_api,
     consume_generation_allowance,
@@ -146,6 +147,10 @@ def _history_max() -> int:
 
 
 def _allow_rate_limit(user_id: int) -> bool:
+    from app.services.operator_sandbox import skip_companion_rate_limit
+
+    if skip_companion_rate_limit(user_id):
+        return True
     cap = _rate_limit_per_minute()
     now = time.monotonic()
     dq = _rate_log.setdefault(user_id, deque())
@@ -232,8 +237,10 @@ def _companion_system_prompt(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
 
 
 def _start_menu_text(user_id: int, acc) -> str:
+    from app.services.operator_sandbox import companion_allowance_label, operator_status_line
+
     vip_line = ""
-    if acc.vip_subscriber:
+    if acc.vip_subscriber and not operator_status_line(user_id):
         from app.services.aof_vip_perks import vip_companion_bonus_credits
 
         vip_line = (
@@ -241,6 +248,15 @@ def _start_menu_text(user_id: int, acc) -> str:
             f"Bonus credits on join: {vip_companion_bonus_credits()}. "
             f"Allowance now: {acc.generations_remaining()}."
         )
+    allowance = companion_allowance_label(user_id)
+    stars_line = ""
+    if stars_enabled():
+        from app.services.operator_sandbox import skip_stars_checkout
+
+        if not skip_stars_checkout(user_id):
+            stars_line = f"\n<b>Stars</b>: {stars_per_photo()}⭐ per extra reveal"
+    op_line = operator_status_line(user_id)
+    op_suffix = f"\n\n<i>{op_line}</i>" if op_line else ""
     text = (
         "<b>Create your character</b>\n\n"
         "1. Confirm you're <b>18+</b>\n"
@@ -248,9 +264,10 @@ def _start_menu_text(user_id: int, acc) -> str:
         "3. <b>Poses</b> — pick her vibe (e.g. Wet girl)\n"
         "4. <b>Send a photo</b> — she comes to life from your pic\n"
         "5. <b>Chat</b> — talk to her in first person; she remembers you\n\n"
-        f"<b>Photo allowance</b>: {acc.generations_remaining()}\n"
-        f"<b>Stars</b>: {stars_per_photo()}⭐ per extra reveal"
+        f"<b>Photo allowance</b>: {allowance}"
+        f"{stars_line}"
         f"{vip_line}"
+        f"{op_suffix}"
     )
     char = get_character(user_id)
     if char:
@@ -260,7 +277,7 @@ def _start_menu_text(user_id: int, acc) -> str:
     return text
 
 
-def _main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+def _main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE, *, user_id: int | None = None) -> InlineKeyboardMarkup:
     row1: list[InlineKeyboardButton] = []
     if not _age_confirmed(context):
         row1.append(InlineKeyboardButton("18+", callback_data="comp_menu:age"))
@@ -272,7 +289,9 @@ def _main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMar
         InlineKeyboardButton("Rename", callback_data="comp_menu:name"),
         InlineKeyboardButton("Balance", callback_data="comp_menu:balance"),
     ]
-    if stars_enabled():
+    from app.services.operator_sandbox import skip_stars_checkout
+
+    if stars_enabled() and user_id is not None and not skip_stars_checkout(user_id):
         row2.append(InlineKeyboardButton("Buy reveal", callback_data="comp_menu:buy"))
     rows.append(row2)
     rows.append([InlineKeyboardButton("Clear chat memory", callback_data="comp_menu:reset")])
@@ -293,7 +312,7 @@ async def _send_start_menu(
 ) -> None:
     acc = get_access(user_id)
     text = _start_menu_text(user_id, acc)
-    kb = _main_menu_keyboard(context)
+    kb = _main_menu_keyboard(context, user_id=user_id)
     if edit_message_id is not None:
         await bot.edit_message_text(
             text=text,
@@ -540,15 +559,36 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not msg or not user:
         return
     if not stars_enabled():
-        aff = affiliate_undress_url()
+        from app.database.session import SessionLocal
+        from app.services.companion_monetize_cta import (
+            companion_exhaustion_cta_html,
+            companion_exhaustion_inline_keyboard,
+        )
+
+        db = SessionLocal()
+        try:
+            aff = affiliate_undress_url_wrapped(db=db)
+        finally:
+            db.close()
+        cta = companion_exhaustion_cta_html(include_undress=bool(aff), undress_url=aff)
+        kb = companion_exhaustion_inline_keyboard()
         await msg.reply_text(
-            "Stars checkout is off."
-            + (f"\n\nUse affiliate undress bot:\n{aff}" if aff else "")
+            "Stars checkout is off.\n\n" + (cta or "Try Loot God or VIP below."),
+            parse_mode="HTML",
+            reply_markup=kb,
         )
         return
     acc = await _gate_access(context, user.id)
     if gate_enabled() and not acc.gate_complete:
         await _reply_gate_required(msg, user.id)
+        return
+    from app.services.operator_sandbox import operator_status_line, skip_stars_checkout
+
+    if skip_stars_checkout(user.id):
+        await msg.reply_text(
+            operator_status_line(user.id) or "Operator QA — unlimited reveals; no Stars needed.",
+            parse_mode="HTML",
+        )
         return
     await send_photo_invoice(context.bot, chat_id=msg.chat_id, user_id=user.id)
 
@@ -561,7 +601,7 @@ async def cmd_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data[AGE_KEY] = True
     await msg.reply_text(
         "18+ confirmed — send a photo when you're ready.",
-        reply_markup=_main_menu_keyboard(context),
+        reply_markup=_main_menu_keyboard(context, user_id=user.id),
     )
 
 async def _send_pose_picker(
@@ -696,7 +736,7 @@ async def cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     char = get_character(user.id)
     if not char:
-        await msg.reply_text("Create her first — send a photo.", reply_markup=_main_menu_keyboard(context))
+        await msg.reply_text("Create her first — send a photo.", reply_markup=_main_menu_keyboard(context, user_id=user.id))
         return
     args = context.args or []
     if not args:
@@ -729,14 +769,26 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = update.effective_user
     if not msg or not user:
         return
+    from app.services.operator_sandbox import (
+        companion_allowance_label,
+        operator_status_line,
+        skip_stars_checkout,
+    )
+
     acc = get_access(user.id)
-    lines = [
-        f"<b>Your allowance</b>: {acc.generations_remaining()} photo(s)",
-        f"Trial used: {acc.trial_used} · Bonus credits: {acc.credits}",
-    ]
-    if stars_enabled():
-        lines.append(f"Need more? Tap <b>Buy reveal</b> on the menu ({stars_per_photo()}⭐).")
-    await msg.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=_main_menu_keyboard(context))
+    lines = [f"<b>Your allowance</b>: {companion_allowance_label(user.id)} photo(s)"]
+    if not skip_stars_checkout(user.id):
+        lines.append(f"Trial used: {acc.trial_used} · Bonus credits: {acc.credits}")
+        if stars_enabled():
+            lines.append(f"Need more? Tap <b>Buy reveal</b> on the menu ({stars_per_photo()}⭐).")
+    op_line = operator_status_line(user.id)
+    if op_line:
+        lines.append(f"<i>{op_line}</i>")
+    await msg.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=_main_menu_keyboard(context, user_id=user.id),
+    )
 
 
 async def cmd_poses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -865,7 +917,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.reply_text(
             "I don't exist yet — send a photo to create me first.\n"
             "Tip: open the menu → Body styles → Bimbo preset, then Poses.",
-            reply_markup=_main_menu_keyboard(context),
+            reply_markup=_main_menu_keyboard(context, user_id=user.id),
         )
         return
 
@@ -882,7 +934,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await msg.reply_text(
                 f"Done — you're chatting with <b>{updated.name}</b> now.",
                 parse_mode="HTML",
-                reply_markup=_main_menu_keyboard(context),
+                reply_markup=_main_menu_keyboard(context, user_id=user.id),
             )
         return
 
@@ -1015,6 +1067,27 @@ async def _offer_paid_photo_path(
     user = update.effective_user
     if not msg or not user:
         return
+    from app.services.operator_sandbox import skip_stars_checkout
+
+    if skip_stars_checkout(user.id):
+        await msg.reply_text(
+            "Operator QA — send another photo; no Stars invoice.",
+            parse_mode="HTML",
+        )
+        return
+    from app.database.session import SessionLocal
+    from app.services.companion_monetize_cta import (
+        companion_exhaustion_cta_html,
+        companion_exhaustion_inline_keyboard,
+    )
+
+    db = SessionLocal()
+    try:
+        aff = affiliate_undress_url_wrapped(db=db)
+    finally:
+        db.close()
+    cta = companion_exhaustion_cta_html(include_undress=bool(aff), undress_url=aff)
+    kb = companion_exhaustion_inline_keyboard()
     if stars_enabled():
         save_pending_photo(user_id=user.id, chat_id=msg.chat_id, file_id=file_id, filename=filename)
         await send_photo_invoice(context.bot, chat_id=msg.chat_id, user_id=user.id)
@@ -1023,11 +1096,13 @@ async def _offer_paid_photo_path(
             "Or /referral to earn credits by inviting friends.",
             parse_mode="HTML",
         )
+        if cta:
+            await msg.reply_text(cta, parse_mode="HTML", reply_markup=kb)
         return
-    aff = affiliate_undress_url()
     await msg.reply_text(
-        "No free generations left on this bot.\n\n"
-        + (f"Use the affiliate undress bot (your ref earns credits):\n{aff}" if aff else "Contact admin for credits.")
+        "No free generations left on this bot.\n\n" + (cta or "Try Loot God or VIP below."),
+        parse_mode="HTML",
+        reply_markup=kb,
     )
 
 

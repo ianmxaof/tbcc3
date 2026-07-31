@@ -110,7 +110,12 @@ async def maybe_offer_stars_after_delivery(*, chat_id: int, user_id: int) -> boo
     """
     After a free/paid reveal lands, if the user has no allowance left, send the
     Stars invoice immediately — the conversion moment, not a buried /buy.
+    Also surfaces loot + VIP bridge CTAs for Undress funnel users.
     """
+    from app.services.operator_sandbox import skip_stars_checkout
+
+    if skip_stars_checkout(user_id):
+        return False
     if not stars_enabled():
         return False
     try:
@@ -122,6 +127,10 @@ async def maybe_offer_stars_after_delivery(*, chat_id: int, user_id: int) -> boo
         logger.debug("stars upsell access check skipped: %s", e)
         return False
 
+    from app.services.companion_monetize_cta import (
+        companion_exhaustion_cta_html,
+        companion_exhaustion_reply_markup,
+    )
     from app.services.companion_telegram_dispatch import send_result_message
 
     stars = stars_per_photo()
@@ -131,5 +140,26 @@ async def maybe_offer_stars_after_delivery(*, chat_id: int, user_id: int) -> boo
             f"Free trial used — next reveal is {stars}⭐.\n"
             "Pay the invoice below (or /buy anytime). /referral earns free credits."
         ),
+        parse_mode=None,
     )
-    return await send_photo_invoice_http(chat_id=int(chat_id), user_id=int(user_id))
+    sent = await send_photo_invoice_http(chat_id=int(chat_id), user_id=int(user_id))
+    try:
+        from app.database.session import SessionLocal
+        from app.services.companion_access import affiliate_undress_url_wrapped
+
+        db = SessionLocal()
+        try:
+            undress = affiliate_undress_url_wrapped(db=db)
+        finally:
+            db.close()
+        cta = companion_exhaustion_cta_html(include_undress=bool(undress), undress_url=undress)
+        markup = companion_exhaustion_reply_markup()
+        if cta:
+            await send_result_message(
+                chat_id=int(chat_id),
+                text=cta,
+                reply_markup=markup,
+            )
+    except Exception as e:
+        logger.debug("companion exhaustion CTA skipped: %s", e)
+    return sent

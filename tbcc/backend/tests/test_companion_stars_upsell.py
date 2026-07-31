@@ -18,6 +18,8 @@ def _stars_env(monkeypatch):
 
 def test_maybe_offer_skips_when_allowance_left(monkeypatch):
     class Acc:
+        user_id = 2
+
         def generations_remaining(self):
             return 1
 
@@ -34,8 +36,15 @@ def test_maybe_offer_skips_when_allowance_left(monkeypatch):
     assert called["invoice"] is False
 
 
+def test_maybe_offer_skips_for_operator():
+    ok = asyncio.run(stars.maybe_offer_stars_after_delivery(chat_id=1, user_id=7787282561))
+    assert ok is False
+
+
 def test_maybe_offer_sends_invoice_when_empty(monkeypatch):
     class Acc:
+        user_id = 8
+
         def generations_remaining(self):
             return 0
 
@@ -43,7 +52,7 @@ def test_maybe_offer_sends_invoice_when_empty(monkeypatch):
     msgs: list[str] = []
     invoices: list[dict] = []
 
-    async def fake_msg(*, chat_id, text):
+    async def fake_msg(*, chat_id, text, parse_mode=None, reply_markup=None):
         msgs.append(text)
         return True
 

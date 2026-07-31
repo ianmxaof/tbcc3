@@ -73,6 +73,25 @@ def affiliate_undress_url() -> str:
     )
 
 
+def affiliate_undress_url_wrapped(*, db: Any | None = None) -> str:
+    """Undress affiliate URL with optional beacon wrap (placement companion_dm)."""
+    raw = affiliate_undress_url()
+    if not raw:
+        return ""
+    if db is not None:
+        from app.services.affiliate_beacon_wrap import wrap_companion_affiliate_url
+
+        return wrap_companion_affiliate_url(db, raw)
+    from app.database.session import SessionLocal
+    from app.services.affiliate_beacon_wrap import wrap_companion_affiliate_url
+
+    session = SessionLocal()
+    try:
+        return wrap_companion_affiliate_url(session, raw)
+    finally:
+        session.close()
+
+
 def free_trial_photos() -> int:
     raw = (os.getenv("TBCC_COMPANION_FREE_TRIAL_PHOTOS") or "1").strip()
     try:
@@ -144,11 +163,15 @@ class CompanionAccess:
     def gate_complete(self) -> bool:
         if not gate_enabled():
             return True
+        if self.user_id in admin_telegram_ids():
+            return True
         if self.vip_subscriber and vip_skip_gate_for_subscribers():
             return True
         return self.lv_ack and self.member_verified
 
     def generations_remaining(self) -> int:
+        if self.user_id in admin_telegram_ids():
+            return 999
         trial_left = max(0, free_trial_photos() - self.trial_used)
         return trial_left + max(0, self.credits)
 
