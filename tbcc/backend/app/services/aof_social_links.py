@@ -45,6 +45,11 @@ def loot_paid_checkout_url() -> str:
     return f"https://t.me/{un}?start=loot" if un else ""
 
 
+def loot_free_start_url() -> str:
+    un = loot_bot_username()
+    return f"https://telegram.me/{un}?start=loot_free" if un else loot_public_cta_url()
+
+
 def aof_hub_invite_url() -> str:
     """
     Primary public hub CTA for Buffer/X/{hub} templates.
@@ -233,6 +238,8 @@ def fill_armory_template(
     from app.services.promo_affiliate_rotation import resolve_spicy_companion_url
 
     spicy = resolve_spicy_companion_url(db, placement="x_buffer") if db is not None else resolve_spicy_companion_url(None)
+    lootgod = loot_public_cta_url()
+    lootgod_free = loot_free_start_url()
     return (
         (text or "")
         .replace("{gate}", gate)
@@ -245,6 +252,8 @@ def fill_armory_template(
         .replace("{affiliate_drawai}", affiliate_drawai_url())
         .replace("{affiliate_botynude}", affiliate_botynude_url())
         .replace("{spicy}", spicy)
+        .replace("{lootgod}", lootgod)
+        .replace("{lootgod_free}", lootgod_free)
         .replace("{donate}", donate)
         .replace("{donation}", donate)
         .replace("{gumroad_vip}", gumroad_vip)

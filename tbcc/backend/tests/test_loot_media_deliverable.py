@@ -21,8 +21,14 @@ def _row(*, mid: int, tg: int, fid: str = "x", status: str = "approved") -> Medi
     return m
 
 
-def test_saved_message_ref_is_roll_candidate():
-    assert is_loot_media_roll_candidate(_row(mid=1, tg=100)) is True
+def test_saved_message_ref_excluded_under_local_only_default():
+    with patch("app.services.loot_media_deliverable.loot_local_bytes_only", return_value=True):
+        assert is_loot_media_roll_candidate(_row(mid=1, tg=100)) is False
+
+
+def test_saved_message_ref_allowed_in_legacy_mode():
+    with patch("app.services.loot_media_deliverable.loot_local_bytes_only", return_value=False):
+        assert is_loot_media_roll_candidate(_row(mid=1, tg=100)) is True
 
 
 def test_local_without_bytes_excluded():

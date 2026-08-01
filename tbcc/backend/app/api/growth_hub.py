@@ -157,6 +157,21 @@ def post_broadcast_bulletin(db: Session = Depends(get_db)) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e)[:300]) from e
 
 
+@router.post("/weekly-build-log")
+def post_weekly_build_log(
+    force: bool = Query(True, description="Queue now (ignore weekday/hour gate)"),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Draft + queue PATCH NOTES (Loot Room topic 2408) + @aofmainhub synopsis."""
+    from app.services.weekly_build_log import queue_weekly_build_log_posts
+
+    try:
+        return {"ok": True, **queue_weekly_build_log_posts(db, force=force)}
+    except Exception as e:
+        logger.exception("weekly-build-log failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e)[:300]) from e
+
+
 @router.get("/liveness-status")
 def get_liveness_status(db: Session = Depends(get_db)) -> dict[str, Any]:
     return liveness_status(db)
@@ -220,6 +235,43 @@ def post_storage_deposit_topic(body: StorageDepositTopicBody, db: Session = Depe
 @router.get("/feed-rhythm")
 def get_feed_rhythm_status() -> dict[str, Any]:
     return feed_rhythm_status()
+
+
+@router.get("/creative-search")
+def get_creative_search(
+    db: Session = Depends(get_db),
+    entry_type: str | None = Query(None),
+    surface: str | None = Query(None),
+    campaign: str | None = Query(None),
+    q: str | None = Query(None),
+    limit: int = Query(5, ge=1, le=20),
+) -> dict[str, Any]:
+    from app.services.creative_rag import search_creative
+
+    rows = search_creative(
+        db,
+        entry_type=entry_type,
+        surface=surface,
+        campaign=campaign,
+        query=q,
+        limit=limit,
+    )
+    return {
+        "ok": True,
+        "count": len(rows),
+        "items": [
+            {
+                "id": r.id,
+                "entry_type": r.entry_type,
+                "campaign": r.campaign,
+                "catalog_key": r.catalog_key,
+                "title": r.title,
+                "prompt_gate_key": r.prompt_gate_key,
+                "asset_url": r.asset_url,
+            }
+            for r in rows
+        ],
+    }
 
 
 @router.get("/main-group-notify")

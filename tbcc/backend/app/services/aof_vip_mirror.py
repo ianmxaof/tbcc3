@@ -184,13 +184,36 @@ async def mirror_scheduled_post_to_vip(
 ) -> bool:
     """Send VIP copy (ad-free, no checkout) before the public lane send."""
     from app.models.scheduled_text_post import ScheduledTextPost
+    from app.services.aof_vip_channel_copy import (
+        pick_vip_mirror_caption,
+        scrub_caption_for_vip_mirror,
+        vip_skip_bulletin_mirror,
+    )
     from app.services.aof_vip_early_drop import vip_channel_identifier
-    from app.services.scheduled_post_service import send_scheduled_post
+    from app.services.scheduled_post_service import (
+        _gather_media_items_for_send,
+        _peek_caption_slot_index,
+        _resolve_variant_sources,
+        send_scheduled_post,
+    )
 
     vip_ident = vip_channel_identifier(db)
     if not vip_ident:
         logger.warning("vip mirror: channel not configured")
         return False
+
+    slot = _peek_caption_slot_index(post)
+    album_order_mode = "static"
+    mids, _, use_pool = _resolve_variant_sources(post, slot)
+    media_items = _gather_media_items_for_send(post, db, mids, use_pool, album_order_mode)
+    if vip_skip_bulletin_mirror() and not media_items:
+        from app.services.aof_growth_hub import _is_bulletin_variation
+
+        vars_ = post.get_content_variations() or [post.content or ""]
+        idx = (post.caption_rotation_index or 0) % max(1, len(vars_))
+        if _is_bulletin_variation(str(vars_[idx] if vars_ else "")):
+            logger.info("vip mirror: skip bulletin-only post %s", getattr(post, "id", "?"))
+            return False
 
     vip_post = ScheduledTextPost()
     for col in post.__table__.columns.keys():
@@ -202,30 +225,23 @@ async def mirror_scheduled_post_to_vip(
     vip_post.checkout_stars_plan_id = None
     vip_post.checkout_button_label = None
 
-    orig_caption = vip_post.content or ""
-    try:
-        vars_ = vip_post.get_content_variations() or []
-        if vars_:
-            idx = vip_post.caption_rotation_index or 0
-            slot = int(idx) % len(vars_)
-            orig_caption = vars_[slot]
-    except Exception:
-        pass
-
-    vip_caption = transform_caption_for_vip(orig_caption, db)
+    orig_caption = pick_vip_mirror_caption(post, db)
+    vip_caption = scrub_caption_for_vip_mirror(orig_caption, db)
     vip_post.content = vip_caption
+    from app.services.aof_vip_channel_copy import merge_vip_mirror_buttons, strip_vip_affiliate_blocks
+
     if vip_post.content_variations:
         try:
             raw = json.loads(vip_post.content_variations)
             if isinstance(raw, list):
                 vip_post.content_variations = json.dumps(
-                    [transform_caption_for_vip(str(v), db) for v in raw]
-                )
+                    [scrub_caption_for_vip_mirror(str(v), db) for v in raw if strip_vip_affiliate_blocks(str(v))]
+                ) or None
         except (json.JSONDecodeError, TypeError):
             pass
 
     base_btns = vip_post.get_buttons() if hasattr(vip_post, "get_buttons") else []
-    vip_btns = transform_buttons_for_vip(base_btns if isinstance(base_btns, list) else [], db)
+    vip_btns = merge_vip_mirror_buttons(base_btns if isinstance(base_btns, list) else [], db)
     vip_post.buttons = json.dumps(vip_btns) if vip_btns else None
 
     source_pool_id = getattr(post, "pool_id", None)

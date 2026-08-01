@@ -160,9 +160,6 @@ def watermark_text() -> str:
     explicit = (os.getenv("TBCC_WATERMARK_TEXT") or "").strip()
     if explicit:
         return _normalize_wm_brand(explicit)
-    base = (os.getenv("TBCC_PUBLIC_BASE_URL") or os.getenv("TBCC_PROMO_PUBLIC_BASE_URL") or "").strip()
-    if base:
-        return _normalize_wm_brand(base.replace("https://", "").replace("http://", "").split("/")[0])
     try:
         from app.data.aof_telegram_links import AOF_WATERMARK_DEFAULT
 

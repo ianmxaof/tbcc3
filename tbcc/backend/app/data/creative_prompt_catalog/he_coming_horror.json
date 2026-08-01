@@ -1,0 +1,175 @@
+{
+  "campaign": "he_coming_horror",
+  "schema_version": 3,
+  "master_template": {
+    "layout_lock_ref": null,
+    "style_anchors": "cyberpunk neon-noir, rainy Tokyo alley, cyan magenta neon, wet pavement reflections, VHS scan lines, webcam UI overlay, voyeuristic surveillance dread, cinematic photoreal, high contrast",
+    "negative_prompt": "bright cheerful palette, cartoon, anime, explicit nudity, sexual acts, gore, real faces, misspelled UI, watermark, wrong aspect ratio",
+    "chrome_block": ""
+  },
+  "variations": [
+    {
+      "key": "he_coming_discovery",
+      "subject_delta": "Vertical 9:16 social promo poster, cyberpunk neon-noir horror aesthetic. Rainy Tokyo alley at night, wet pavement reflections, cyan and magenta neon, deep black shadows. Top third: large distressed white text \"AOF\" and blood-red brush-stroke text \"THE LOGS\" with subtitle \"SOMEONE LEFT A WINDOW OPEN \u2022 YOU SHOULDN'T HAVE LOOKED.\"\n\nBackground scene (subtle, not busy): through a cracked closet door, an old beige desktop tower wedged behind a water heater, faint green CRT glow, sticky-note labeled \"Enid\", folder icons floating like ghosts.\n\nCenter: white QR code with Telegram paper-plane icon (placeholder). Flanking QR, two columns of glossy red pill buttons with white sans-serif caps text.\n\nLeft pills: HIDDEN TOWER \u2022 WINDOWS XP \u2022 HARLEY DESKTOP \u2022 SEVEN FOLDERS \u2022 FEB 2012 LOGS\nRight pills: WATER HEATER \u2022 PASSWORD: YES \u2022 PRIVATE SESSIONS \u2022 MATTER-OF-FACT HORROR \u2022 YOU CLICKED \"LOGS\"\n\nBelow QR: small white text \"CURIOSITY ISN'T INNOCENT \u2022 ARCHIVED TRANSCRIPTS\" and red pill CTA \"t.me/aofmainhub\" with telegram icons.\n\nBottom footer row, thin white icons + labels: EYE \"WATCHING YOU\" \u2022 FOLDER \"EXTRACTED FILES\" \u2022 PADLOCK \"BROKEN LOCK\" \u2022 CAMERA \"LIVE FEED\" \u2022 SKULL \"TOO LATE\"\n\nSTYLE ANCHORS: cyberpunk neon-noir, CRT glow, voyeuristic unease. AVOID: explicit nudity, real faces, gore.",
+      "tier": "promo",
+      "tags": [
+        "he_coming_horror"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "episode": 1,
+        "narrative_tension": "Curiosity opens the log",
+        "quote_hook": "Someone left a window open. You shouldn't have looked.",
+        "rollout_day": 0,
+        "telegram_teaser": "Log 01 \u2014 tower behind the water heater. User Enid. You clicked logs first.",
+        "x_copy": {
+          "hook": "Someone left a window open. You shouldn't have looked.",
+          "body": "Not a hack mission \u2014 compulsive curiosity. Seven folders. You clicked logs. The horror was never the cam work; it was the dry tone.",
+          "cta": "Log arc + gated prompts \u2192 @aofmainhub"
+        },
+        "tts_script": null
+      },
+      "prompt_ref": "docs/samples/he_coming_horror/01_discovery.txt"
+    },
+    {
+      "key": "he_coming_session_logs",
+      "subject_delta": "Vertical 9:16 horror-tech promo poster, same AOF neon-noir rainy Shinjuku street style, isolation and digital voyeurism. Title top: white grunge \"AOF\" + red slasher font \"SESSION LOGS\" + tagline \"DRY TONE \u2022 DARK REQUESTS \u2022 YOU COULDN'T STOP READING.\"\n\nBackground: dim bedroom seen through a cheap webcam UI overlay \u2014 timestamp 12:40 AM, REC dot, chat sidebar blurred. Empty chair facing camera, single desk lamp, Cure-era poster barely visible. Mood: loneliness, transactional dread, not erotic.\n\nCenter QR with telegram icon. Red pill columns:\n\nLeft: BESTinLIFE \u2022 MARCOSPOLOTX \u2022 FREDDY NIGHT \u2022 SOBBING CLIENT \u2022 TONYMONTANA\nRight: 11 MIN SESSIONS \u2022 PRIVATE CHAT \u2022 LOBBY FULL \u2022 WINDOW INTO MEN \u2022 NOT \"LIKE THAT\"\n\nSmall text above CTA: \"TRANSCRIPTS \u2022 TIMESTAMPED \u2022 UNFILTERED HUMAN GROSSNESS\"\nRed CTA pill: t.me/aofmainhub\n\nFooter icons: CLOCK \"AFTER MIDNIGHT\" \u2022 CHAT \"CLIENT REQUEST\" \u2022 MIC \"SILENT SOB\" \u2022 DOCUMENT \"WORD LOG\" \u2022 HEART-SLASH \"FALSE INTIMACY\"\n\nSTYLE ANCHORS: webcam UI, REC overlay, surveillance aesthetic. AVOID: explicit acts, erotic framing.",
+      "tier": "promo",
+      "tags": [
+        "he_coming_horror"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "episode": 2,
+        "narrative_tension": "Forensic voyeurism \u2014 can't stop reading",
+        "quote_hook": "Dry tone. Dark requests. You couldn't stop reading.",
+        "rollout_day": 2,
+        "telegram_teaser": "Log 02 \u2014 12:40 AM transcripts. Not erotic. Forensic.",
+        "x_copy": {
+          "hook": "Dry tone. Dark requests. You couldn't stop reading.",
+          "body": "Session logs read like air-traffic control for the id. The engagement trap isn't arousal \u2014 it's the matter-of-fact voice in the dark.",
+          "cta": "Log 02 + full prompt gates \u2192 @aofmainhub"
+        },
+        "tts_script": "[keyboard clicks] BESTinLIFE \u2014 twelve forty-one a.m. [pause] You couldn't stop reading."
+      },
+      "prompt_ref": "docs/samples/he_coming_horror/02_session_logs.txt"
+    },
+    {
+      "key": "he_coming_window_feed",
+      "subject_delta": "Vertical 9:16 neon-noir horror promo, rainy urban night palette (cyan/magenta/black). Title: \"AOF\" white distressed + red \"HE'S IN THE WINDOW\" + subtitle \"SHE NEVER SAW HIM \u2022 YOU DID.\"\n\nBackground split composition: left \u2014 home gym room, woman silhouette on elliptical (faceless, back turned, towel on neck), TV glow. Right \u2014 window behind her with black-masked figure pressed to glass, staring directly at viewer/camera, shoulders in shadow, voyeuristic violation. Flickering lights, impending blackout.\n\nCenter QR + pill columns:\n\nLeft: ELLIPTICAL FEED \u2022 OBLIVIOUS \u2022 BLACK SCREEN FIRST \u2022 POWER CUT \u2022 BREAKING GLASS\nRight: MASK IN GLASS \u2022 STARES AT YOU \u2022 VIDEO CAPTURE \u2022 18 MIN BLACK \u2022 GOTCHA BITCH\n\nCTA line + red pill t.me/aofmainhub\n\nFooter: WINDOW \"BEHIND HER\" \u2022 WEBCAM \"CLIENT CAM\" \u2022 BOLT \"LIGHTS OUT\" \u2022 SCREAM \"NEXT ROOM\" \u2022 POLICE \"THEY DON'T BELIEVE\"\n\nSTYLE ANCHORS: split composition, mask in glass, blackout imminent. AVOID: gore, explicit nudity.",
+      "tier": "promo",
+      "tags": [
+        "he_coming_horror"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "episode": 3,
+        "narrative_tension": "Watched through someone else's feed",
+        "quote_hook": "She never saw him. You did.",
+        "rollout_day": 4,
+        "telegram_teaser": "Log 03 \u2014 elliptical feed. Mask in the glass. Staring at you.",
+        "x_copy": {
+          "hook": "She never saw him. You did.",
+          "body": "Private chat horror: you're the third viewer. Window behind her. Mask pressed to glass. Power cuts. This is where the logs stop being funny.",
+          "cta": "Arc on the hub \u2192 @aofmainhub"
+        },
+        "tts_script": "[static] She's on the elliptical. [whisper] He's in the window. Looking at you."
+      },
+      "prompt_ref": "docs/samples/he_coming_horror/03_window_feed.txt"
+    },
+    {
+      "key": "he_coming_closet_feed",
+      "subject_delta": "Vertical 9:16 horror surveillance promo poster, Tokyo rain-soaked alley neon base matching AOF brand. Title stack: \"AOF\" + red \"CLOSET FEED\" + \"HELLO? \u2022 BANG \u2022 YELP.\"\n\nBackground: webcam POV of a sparse bedroom \u2014 closed door left shaking from impacts, partially open closet right, black-masked figure leaning head out of closet staring into lens, harsh underexposure, domestic claustrophobia, vulnerability of being alone on camera.\n\nCenter QR. Pills:\n\nLeft: HUMBERTSQUARED \u2022 POORLY LIT ROOM \u2022 CLOSET AJAR \u2022 DOOR BANGING \u2022 9 MIN SESSION\nRight: MASK RETURNS \u2022 LOOKS AT YOU \u2022 FORWARDED LOG \u2022 DONNA COPIED \u2022 FEAR IS REAL\n\nSubtext: \"PRIVATE CHAT HORROR \u2022 SAME MASK \u2022 DIFFERENT NAME\"\nCTA: t.me/aofmainhub\n\nFooter: DOOR \"KNOCKING\" \u2022 CLOSET \"CRACK OPEN\" \u2022 MASK \"REPEAT VISITOR\" \u2022 CHAT \"END SESSION\" \u2022 TREMBLE \"NOT AFRAID (LYING)\"\n\nSTYLE ANCHORS: closet POV, door shake, domestic dread. AVOID: explicit content.",
+      "tier": "promo",
+      "tags": [
+        "he_coming_horror"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "episode": 4,
+        "narrative_tension": "Domestic claustrophobia on camera",
+        "quote_hook": "Hello? [bang] [yelp]",
+        "rollout_day": 6,
+        "telegram_teaser": "Log 04 \u2014 closet cam. Door banging. Same mask, new name.",
+        "x_copy": {
+          "hook": "Hello? [bang]",
+          "body": "Poorly lit room. Closet cracked open. The mask leans out \u2014 looking at you, not her. Same visitor. Different username. Fear is the only honest response.",
+          "cta": "Log 04 + prompts \u2192 @aofmainhub"
+        },
+        "tts_script": "[door bang] Hello? [yelp] [static hiss]"
+      },
+      "prompt_ref": "docs/samples/he_coming_horror/04_closet_feed.txt"
+    },
+    {
+      "key": "he_coming_backseat",
+      "subject_delta": "Vertical 9:16 neon-noir horror promo, rainy parking-garage night scene blended with Tokyo alley aesthetic. Title: \"AOF\" + red \"HE'S COMING\" + subtitle \"PARKING LOT \u2022 POCKET DIAL \u2022 TOO LATE TO CALL BACK.\"\n\nBackground: car interior at night, rain on windshield, rearview mirror dominating composition \u2014 black-masked face rising behind driver seat, eyes unreadable, streetlamp flare. Dashboard phone glowing \"MISSED CALL \u2022 VOICEMAIL\" waveform. Empty apartment complex walkway visible through rain \u2014 long lonely path, single figure implied far away. Deep isolation.\n\nCenter QR. Pills:\n\nLeft: ALICE VOICEMAIL \u2022 BACK LOT WALK \u2022 THREE NIGHTS FELT \u2022 RUSTLE \u2022 WHISPER\nRight: HE'S COMING \u2022 48 HOURS GONE \u2022 REARVIEW \u2022 CHLOROFORM \u2022 WELL THIS IS AWKWARD\n\nCTA t.me/aofmainhub\nMicrocopy: \"IF YOU READ THIS FAR \u2022 YOU'RE ALREADY IN THE LOG\"\n\nFooter: PHONE \"MISSED ALERT\" \u2022 CAR \"BACKSEAT\" \u2022 MIRROR \"REFLECTION\" \u2022 MAP \"COORDINATES\" \u2022 QUESTION \"ARE YOU COMING?\"\n\nSTYLE ANCHORS: rearview mirror, rain, voicemail glow. AVOID: violence shown.",
+      "tier": "promo",
+      "tags": [
+        "he_coming_horror"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "episode": 5,
+        "narrative_tension": "Isolation collapses into pursuit",
+        "quote_hook": "\u2026He's coming.",
+        "rollout_day": 8,
+        "telegram_teaser": "Log 05 \u2014 parking lot voicemail. Pocket dial. Too late to call back.",
+        "x_copy": {
+          "hook": "\u2026He's coming.",
+          "body": "Back lot walk. Three nights felt followed. Voicemail rustle \u2014 then the whisper. Rearview mirror finale. If you read this far, you're already in the log.",
+          "cta": "Full arc + filmstrip \u2192 @aofmainhub"
+        },
+        "tts_script": "[voicemail rustle] \u2026He's coming. [tape end]"
+      },
+      "prompt_ref": "docs/samples/he_coming_horror/05_backseat.txt"
+    },
+    {
+      "key": "he_coming_filmstrip_5x",
+      "subject_delta": "OUTPUT: ONE tall image. FIVE complete HE'S COMING promo banners stacked top to bottom (Telegram scroll filmstrip). Each panel: wide landscape banner (~16:9) with full UI chrome. Overall composite: 9:16 portrait strip. NOT 2\u00d72 grid. Panel order: PANEL-1 THE DISCOVERY, PANEL-2 SESSION LOGS, PANEL-3 WINDOW FEED, PANEL-4 CLOSET FEED, PANEL-5 BACKSEAT. LAYOUT LOCK per panel: distressed white AOF + red scene title, subtitle, compact QR with Telegram logo, red pill columns, t.me/aofmainhub link bar, footer icons. STYLE: cyberpunk neon-noir Tokyo rain, VHS scan lines, voyeuristic surveillance dread, no explicit nudity, no gore. Panel-1: tower behind water heater Enid logs. Panel-2: webcam REC 12:40 AM empty chair. Panel-3: elliptical mask in window. Panel-4: closet cam door banging. Panel-5: rearview mirror pocket dial He's coming. Same UI every panel, vary backgrounds only. AVOID: 2x2 grid, bleeding panels, misspelled text.",
+      "tier": "promo",
+      "tags": [
+        "he_coming_horror"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "episode": null,
+        "narrative_tension": "Arc completion \u2014 scroll depth",
+        "quote_hook": "Five logs. One mask. Scroll.",
+        "rollout_day": 10,
+        "telegram_teaser": "Full He's Coming filmstrip \u2014 all 5 panels, one Telegram scroll.",
+        "x_copy": {
+          "hook": "Five logs. One mask. Scroll.",
+          "body": "Discovery \u2192 session logs \u2192 window \u2192 closet \u2192 backseat. Full 5\u00d7 filmstrip + gated Gemini prompts on the hub.",
+          "cta": "@aofmainhub"
+        },
+        "tts_script": null
+      },
+      "prompt_ref": "docs/samples/he_coming_horror/06_filmstrip_5x_telegram.txt"
+    }
+  ],
+  "notes": "Gemini 9:16 surveillance horror \u2014 voyeuristic dread. Import: provision_prompt_gates.py --import-json"
+}

@@ -175,6 +175,30 @@ def append_prompt_drop_variations(db: Session, variations: list[str]) -> list[st
             continue
         seen.add(key)
         out.append(body)
+
+    # Also surface creative catalog entries linked to prompt gates (RAG path).
+    try:
+        from app.services.creative_rag import search_creative
+
+        creative_rows = search_creative(db, entry_type="image_prompt", limit=20)
+        for entry in creative_rows:
+            gate_key = (entry.prompt_gate_key or entry.catalog_key or "").strip()
+            if not gate_key:
+                continue
+            from app.services.prompt_gate_lookup import prompt_gate_url
+
+            url = prompt_gate_url(gate_key, db=db)
+            if not url:
+                continue
+            title = (entry.title or gate_key).replace("_", " ")
+            body = build_prompt_drop_html(gate_url=url, title=title, tier_label=entry.campaign)
+            key = body.strip()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(body)
+    except Exception:
+        pass
     return out
 
 

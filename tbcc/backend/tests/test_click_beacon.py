@@ -64,6 +64,7 @@ def test_create_and_record_hit(db, monkeypatch):
 def test_notify_admin_click_calls_inbox(db, monkeypatch):
     monkeypatch.setenv("TBCC_CLICK_BEACON_PUBLIC_BASE", "https://api.example")
     monkeypatch.setenv("TBCC_CLICK_BEACON_NOTIFY_BOTS", "1")
+    monkeypatch.setenv("TBCC_TRAFFIC_PULSE_ENABLED", "0")
     row = cb.create_click_link(db, destination_url="https://example.com/d", label="x")
     hit = cb.record_hit(
         db,

@@ -32,7 +32,12 @@ from app.services.loot_vip_daily_pull import (
 )
 from app.services.loot_roll_preview import build_roll_preview
 from app.services.loot_preview_delivery import send_loot_free_pull_to_chat, send_loot_preview_to_chat
-from app.services.loot_creator_submit import submit_creator_profile
+from app.services.loot_creator_submit import (
+    approve_creator_submission,
+    list_creator_submissions,
+    reject_creator_submission,
+    submit_creator_profile,
+)
 from app.services.loot_player_modifiers import record_modifiers_seen
 from app.services.loot_player_stats import FREE_PULL_LIMIT, free_pull_allowance, free_pulls_remaining, record_roll
 from app.services.subscription_access import compensate_loot_key_card_failure, is_loot_key_holder
@@ -660,7 +665,13 @@ class LootReferralRecordBody(BaseModel):
 class LootCreatorSubmitBody(BaseModel):
     url: str = Field(..., min_length=8, max_length=2048)
     telegram_user_id: int | None = Field(None, ge=1)
-    handle: str | None = Field(None, max_length=64)
+    display_name: str | None = Field(None, max_length=64)
+    handle: str | None = Field(None, max_length=64)  # legacy alias for display_name
+
+
+class LootCreatorReviewBody(BaseModel):
+    review_note: str | None = Field(None, max_length=500)
+    reviewer_user_id: int | None = Field(None, ge=1)
 
 
 @router.post("/referrals/record")
@@ -706,13 +717,60 @@ def loot_referral_status(
 
 @router.post("/creator-submit")
 def loot_creator_submit(body: LootCreatorSubmitBody, db: Session = Depends(get_db)):
-    """Creator profile → active loot modifier (tier 5+). Self-serve for models."""
+    """Creator profile → review queue (tier 5+ modifier after operator approval)."""
+    display_name = body.display_name or body.handle
     try:
         return submit_creator_profile(
             db,
             url=body.url,
             telegram_user_id=body.telegram_user_id,
-            handle=body.handle,
+            display_name=display_name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/creator-submissions")
+def loot_creator_submissions_list(
+    status: str | None = Query("pending"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_internal),
+):
+    return {"items": list_creator_submissions(db, status=status, limit=limit)}
+
+
+@router.post("/creator-submissions/{submission_id}/approve")
+def loot_creator_submission_approve(
+    submission_id: int,
+    body: LootCreatorReviewBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_internal),
+):
+    try:
+        return approve_creator_submission(
+            db,
+            submission_id,
+            reviewer_user_id=body.reviewer_user_id,
+            review_note=body.review_note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/creator-submissions/{submission_id}/reject")
+def loot_creator_submission_reject(
+    submission_id: int,
+    body: LootCreatorReviewBody,
+    db: Session = Depends(get_db),
+    _: None = Depends(_require_internal),
+):
+    try:
+        return reject_creator_submission(
+            db,
+            submission_id,
+            reviewer_user_id=body.reviewer_user_id,
+            review_note=body.review_note,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

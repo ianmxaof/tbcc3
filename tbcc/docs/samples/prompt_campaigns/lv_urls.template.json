@@ -1,0 +1,15 @@
+{
+  "_comment": "Fill slugs after manual LV Text asset creation, then: py -3.13 scripts/export_prompt_gate_lv_manifest.py --write-catalog-urls docs/samples/prompt_campaigns/lv_urls.json",
+  "he_coming_discovery": "",
+  "he_coming_session_logs": "",
+  "he_coming_window_feed": "",
+  "he_coming_closet_feed": "",
+  "he_coming_backseat": "",
+  "he_coming_filmstrip_5x": "",
+  "jackal_tapes_interview": "",
+  "jackal_tapes_break_the_man": "",
+  "jackal_tapes_war_is_home": "",
+  "jackal_tapes_mikes_bar": "",
+  "jackal_tapes_monster_display": "",
+  "jackal_tapes_filmstrip_5x": ""
+}

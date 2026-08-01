@@ -1,12 +1,14 @@
 """
 Configurable chat completions for the generic LLM Telegram bridge (llm_chat_bot).
 
-Providers: OpenAI, OpenRouter (OpenAI-compatible), or local Ollama /api/chat.
+Providers: OpenAI, OpenRouter (OpenAI-compatible), custom proxy (TBCC_LLM_BASE_URL), or local Ollama /api/chat.
 
-Env (llm_chat_bot):
-  TBCC_LLM_CHAT_PROVIDER — openai | openrouter | ollama (default: ollama)
+Env (llm_chat_bot / companion_bot):
+  TBCC_LLM_CHAT_PROVIDER — openai | openrouter | custom | ollama (default: ollama)
   TBCC_OPENROUTER_API_KEY + TBCC_OPENROUTER_CHAT_MODEL (or TBCC_LLM_MODEL)
   TBCC_OPENAI_API_KEY / TBCC_LLM_CHAT_OPENAI_MODEL / TBCC_LLM_CHAT_MAX_TOKENS / TBCC_LLM_CHAT_TEMPERATURE
+  TBCC_OPENAI_BASE_URL / TBCC_LLM_BASE_URL — OpenAI-compatible host (e.g. api.hcnsec.cn/v1)
+  TBCC_LLM_API_KEY — alternate key env for custom proxies
   TBCC_OLLAMA_BASE_URL (default http://127.0.0.1:11434) / TBCC_OLLAMA_MODEL (default llama3.2)
 """
 
@@ -38,7 +40,16 @@ def _ollama_model() -> str:
 
 
 def _openai_model() -> str:
-    return (os.getenv("TBCC_LLM_CHAT_OPENAI_MODEL") or os.getenv("TBCC_LLM_MODEL") or "gpt-4o-mini").strip()
+    return (
+        os.getenv("TBCC_LLM_CHAT_OPENAI_MODEL")
+        or os.getenv("TBCC_LLM_MODEL")
+        or os.getenv("TBCC_LLM_CHAT_OPENROUTER_MODEL")
+        or "gpt-4o-mini"
+    ).strip()
+
+
+def _custom_base_url() -> str:
+    return (os.getenv("TBCC_OPENAI_BASE_URL") or os.getenv("TBCC_LLM_BASE_URL") or "").strip().rstrip("/")
 
 
 def _openrouter_model() -> str:
@@ -79,6 +90,14 @@ def provider_configured() -> bool:
     p = _provider()
     if p == "openai":
         return bool(_openai_key())
+    if p == "custom":
+        try:
+            from app.services.llm_completions import resolve_text_llm_runtime
+
+            resolve_text_llm_runtime(provider="custom")
+            return True
+        except RuntimeError:
+            return False
     if p == "openrouter":
         from app.services.llm_completions import openrouter_api_key
 
@@ -96,6 +115,8 @@ async def complete_llm_chat(messages: list[dict[str, str]]) -> str:
         return await _complete_ollama(messages)
     if p == "openai":
         return await _complete_openai(messages)
+    if p == "custom":
+        return await _complete_custom(messages)
     if p == "openrouter":
         return await _complete_openrouter(messages)
     raise RuntimeError(f"Unknown TBCC_LLM_CHAT_PROVIDER: {p}")
@@ -125,6 +146,10 @@ async def _complete_ollama(messages: list[dict[str, str]]) -> str:
 
 
 async def _complete_openai(messages: list[dict[str, str]]) -> str:
+    custom = _custom_base_url()
+    if custom:
+        return await _complete_custom(messages, base_url=custom)
+
     key = _openai_key()
     if not key:
         raise RuntimeError("Set TBCC_OPENAI_API_KEY or OPENAI_API_KEY for OpenAI provider")
@@ -159,6 +184,20 @@ async def _complete_openai(messages: list[dict[str, str]]) -> str:
     if not text:
         raise RuntimeError("OpenAI returned empty content")
     return text
+
+
+async def _complete_custom(messages: list[dict[str, str]], *, base_url: str | None = None) -> str:
+    from app.services.llm_completions import complete_chat_text_async, resolve_text_llm_runtime
+
+    rt = resolve_text_llm_runtime(provider="custom", base_url=base_url or _custom_base_url() or None)
+    return await complete_chat_text_async(
+        messages,
+        model=_openai_model(),
+        max_tokens=_max_tokens(),
+        temperature=_temperature(),
+        timeout=120.0,
+        runtime=rt,
+    )
 
 
 async def _complete_openrouter(messages: list[dict[str, str]]) -> str:

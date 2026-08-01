@@ -40,6 +40,12 @@ export function Analytics() {
     refetchInterval: 60_000,
   });
 
+  const gateFunnelQ = useQuery({
+    queryKey: ["analytics", "gate-funnel", rangeDays],
+    queryFn: () => api.analytics.gateFunnel(rangeDays),
+    refetchInterval: 120_000,
+  });
+
   const markApproved = useMutation({
     mutationFn: (albumUrl: string) =>
       api.analytics.eromeGovernanceMark({ album_url: albumUrl, status: "approved_public" }),
@@ -96,6 +102,82 @@ export function Analytics() {
             <StatCard label="Cancelled" value={subQ.data.cancelled} />
             <StatCard label="Revenue (Stars)" value={subQ.data.revenue_stars} />
           </div>
+        ) : null}
+      </section>
+
+      <section>
+        <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide mb-3">
+          Gate funnel (Linkvertise beacons, last {rangeDays} days)
+        </h2>
+        <p className="text-slate-500 text-sm mb-3">
+          Clicks on <code className="text-slate-400">api.powercore.app/r/…</code> beacons → loot-bot touch → revenue
+          joined on <code className="text-slate-400">source_ref</code>. Paste beacons into LV — see{" "}
+          <code className="text-slate-400">docs/WK31_BEACON_PASTE.md</code>.
+        </p>
+        {gateFunnelQ.isError && (
+          <QueryErrorBanner
+            title="Could not load gate funnel"
+            message={String((gateFunnelQ.error as Error)?.message ?? gateFunnelQ.error)}
+            onRetry={() => void gateFunnelQ.refetch()}
+          />
+        )}
+        {gateFunnelQ.isPending ? (
+          <p className="text-slate-500 text-sm">Loading…</p>
+        ) : gateFunnelQ.data ? (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <StatCard label="Human clicks" value={gateFunnelQ.data.totals.clicks} />
+              <StatCard label="Touches" value={gateFunnelQ.data.totals.touches} />
+              <StatCard
+                label="Click→touch %"
+                value={
+                  gateFunnelQ.data.totals.click_to_touch_pct != null
+                    ? `${gateFunnelQ.data.totals.click_to_touch_pct}%`
+                    : "—"
+                }
+              />
+              <StatCard label="Beaconed refs" value={gateFunnelQ.data.totals.beaconed_source_refs} />
+            </div>
+            {gateFunnelQ.data.unbeaconed_earning_refs.length > 0 && (
+              <p className="text-amber-400/90 text-sm mb-3">
+                Unbeaconed revenue refs: {gateFunnelQ.data.unbeaconed_earning_refs.join(", ")}
+              </p>
+            )}
+            {gateFunnelQ.data.gate_funnel.length > 0 ? (
+              <div className="overflow-x-auto border border-slate-700 rounded-lg">
+                <table className="min-w-full text-sm text-left">
+                  <thead className="bg-slate-900/60 text-slate-400 uppercase text-xs">
+                    <tr>
+                      <th className="px-3 py-2">source_ref</th>
+                      <th className="px-3 py-2">clicks</th>
+                      <th className="px-3 py-2">touches</th>
+                      <th className="px-3 py-2">$</th>
+                      <th className="px-3 py-2">click→touch</th>
+                      <th className="px-3 py-2">top geo</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-300 divide-y divide-slate-800">
+                    {gateFunnelQ.data.gate_funnel.slice(0, 24).map((row) => (
+                      <tr key={row.source_ref} className="hover:bg-slate-900/40">
+                        <td className="px-3 py-2 font-mono text-xs">{row.source_ref}</td>
+                        <td className="px-3 py-2">{row.clicks}</td>
+                        <td className="px-3 py-2">{row.touches}</td>
+                        <td className="px-3 py-2">${row.revenue_usd.toFixed(2)}</td>
+                        <td className="px-3 py-2">
+                          {row.click_to_touch_pct != null ? `${row.click_to_touch_pct}%` : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-500">
+                          {row.top_countries.map((c) => `${c.country}:${c.clicks}`).join(" ") || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-slate-500 text-sm">No beacon traffic yet — paste wk31 URLs into Linkvertise.</p>
+            )}
+          </>
         ) : null}
       </section>
 

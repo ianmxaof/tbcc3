@@ -48,7 +48,17 @@ def _method_from_playwright(name: str) -> str:
 def _guess_key(method: str, args: list[Any], action: str) -> str | None:
     text_blob = " ".join(str(a).lower() for a in args)
     if action == "fill":
+        if "search" in text_blob:
+            return "posts_search_input"
         return "destination_input"
+    if "search post" in text_blob:
+        return "posts_search_input"
+    if text_blob.strip() == "open" or " name: 'open'" in text_blob or '"open"' in text_blob:
+        return None
+    if "edit all" in text_blob:
+        return None
+    if "edit" in text_blob and action == "click":
+        return "post_edit_button"
     if "create new link" in text_blob:
         return "create_new_link_button"
     if "create link" in text_blob or "new link" in text_blob:

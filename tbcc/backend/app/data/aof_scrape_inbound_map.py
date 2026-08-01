@@ -25,7 +25,9 @@ ALL_FOLDER_POOL_KEYS: tuple[str, ...] = (
     "blowjob",
     "ass",
     "taboo",
+    "full_length",
     "packs",
+    "inbox",
 )
 
 BATCH_PRESETS: dict[str, tuple[str, ...]] = {
@@ -58,6 +60,7 @@ def next_unscraped_batch_pool_keys(*, size: int = 5) -> tuple[str, ...]:
 
 # Folder title patterns (your "BIG TITS SCRP", "MILF SCRP", … labels) → AOF network pool key.
 FOLDER_TITLE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"scrp\s*bulk|\bscrp\s*bulk\b", re.I), "inbox"),
     (re.compile(r"scrp\s*tits|\btits\b|big\s*tits", re.I), "big_tits"),
     (re.compile(r"scrp\s*milf|\bmilf|gilf", re.I), "milf"),
     (re.compile(r"scrp\s*bop|\bbop\b", re.I), "bop"),
@@ -68,6 +71,7 @@ FOLDER_TITLE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"scrp\s*bj|\bbj\b|blowjob", re.I), "blowjob"),
     (re.compile(r"scrp\s*ass|\bass\b|big\s*ass", re.I), "ass"),
     (re.compile(r"scrp\s*tab|\btaboo\b|\btab\b", re.I), "taboo"),
+    (re.compile(r"scrp\s*full|\bfull\s*length|\bfullength", re.I), "full_length"),
     (re.compile(r"mega|lv|link", re.I), "packs"),
 )
 
@@ -115,7 +119,9 @@ DEFAULT_INBOUND_SOURCES: dict[str, list[dict]] = {
         {"chat_id": -1003271959583, "label": "Hagarth's Big ass"},
     ],
     "taboo": [],
+    "full_length": [],
     "packs": [],
+    "inbox": [],
 }
 
 

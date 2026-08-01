@@ -1019,7 +1019,11 @@ class TelegramStorage:
             file_id=file_id,
             file_unique_id=file_unique_id,
             media_type=media_type,
-            source_channel=str(chat_identifier).strip()[:512],
+            source_channel=(
+                str(source_label).strip()[:512]
+                if "#topic:" in str(source_label or "").lower()
+                else str(chat_identifier).strip()[:512]
+            ),
             pool_id=pool_id,
             status="pending",
         )
@@ -1459,12 +1463,21 @@ class TelegramStorage:
         skipped_media_type = 0
         skipped_no_media = 0
         skipped_forward_restricted = 0
+        skipped_already_mirrored = 0
         errors = 0
         scanned = 0
         source_entity = await resolve_telethon_entity(self.client, source_channel)
         dest_entity = await resolve_telethon_entity(self.client, dest_channel)
         topic_id = int(message_thread_id)
         lim = max(1, min(int(limit), 500))
+        from telethon.utils import get_peer_id
+
+        from app.services.scrape_hub_forward_dedupe import (
+            is_hub_forward_duplicate,
+            mark_hub_forward_done,
+        )
+
+        source_chat_id = int(get_peer_id(source_entity))
 
         async for message in self.client.iter_messages(source_entity, limit=lim):
             scanned += 1
@@ -1475,6 +1488,10 @@ class TelegramStorage:
             if not _channel_accepts_media_kind(kind, media_types):
                 skipped_media_type += 1
                 continue
+            msg_id = int(getattr(message, "id", 0) or 0)
+            if msg_id and is_hub_forward_duplicate(topic_id, source_chat_id, msg_id):
+                skipped_already_mirrored += 1
+                continue
             try:
                 await self.client.forward_messages(
                     dest_entity,
@@ -1483,6 +1500,8 @@ class TelegramStorage:
                     reply_to=topic_id,
                 )
                 forwarded += 1
+                if msg_id:
+                    mark_hub_forward_done(topic_id, source_chat_id, msg_id)
             except Exception as e:
                 if is_forward_restricted_error(e):
                     skipped_forward_restricted += 1
@@ -1496,6 +1515,8 @@ class TelegramStorage:
                     kwargs = {**kwargs, "reply_to": topic_id}
                     await self.client.send_file(dest_entity, f, **kwargs)
                     uploaded += 1
+                    if msg_id:
+                        mark_hub_forward_done(topic_id, source_chat_id, msg_id)
                 except Exception:
                     logger.exception(
                         "forward_channel_to_forum_topic failed msg_id=%s",

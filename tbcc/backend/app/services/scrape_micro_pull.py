@@ -1,4 +1,4 @@
-"""SCRP folder micro-pull → Storage Hub forum subtopics (pilot: ASS)."""
+"""SCRP folder micro-pull → Storage Hub forum subtopics."""
 
 from __future__ import annotations
 
@@ -9,14 +9,16 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.data.aof_scrape_inbound_map import DEFAULT_INBOUND_SOURCES
-from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT, storage_map_by_key
+from app.data.aof_storage_hub_map import CONTENT_LANE_NETWORK_KEYS, STORAGE_HUB_IDENT, storage_map_by_key
 from app.services.aof_batch_scrape import _inbound_specs_for_pool, discover_folder_index
 
 logger = logging.getLogger(__name__)
 
 MICRO_PULL_PILOT_LANE = "ass"
+MICRO_PULL_INBOX_LANE = "inbox"
 MICRO_PULL_DEFAULT_LIMIT = 10
 MICRO_PULL_REDIS_KEY = "tbcc:scrape_micro_pull:cursor"
+MICRO_PULL_LANE_ROTATION_KEY = "tbcc:scrape_micro_pull:lane_idx"
 
 
 def micro_pull_enabled() -> bool:
@@ -38,6 +40,53 @@ def micro_pull_limit() -> int:
 
 def micro_pull_lane() -> str:
     return (os.getenv("TBCC_SCRAPE_MICRO_PULL_LANE") or MICRO_PULL_PILOT_LANE).strip().lower()
+
+
+def micro_pull_firehose_enabled() -> bool:
+    """
+    Firehose mode: SCRP BULK → AOF INBOX only (no per-lane topic rotation).
+    Set TBCC_SCRAPE_MICRO_PULL_MODE=firehose or TBCC_SCRAPE_FIREHOSE=1.
+    """
+    mode = (os.getenv("TBCC_SCRAPE_MICRO_PULL_MODE") or "").strip().lower()
+    if mode in ("firehose", "inbox", "bulk"):
+        return True
+    return (os.getenv("TBCC_SCRAPE_FIREHOSE") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def micro_pull_lanes() -> list[str]:
+    """
+    Lanes rotated by Beat/Celery tick. Default: all content-lane keys with a Storage Hub topic.
+    Firehose: inbox only (SCRP BULK → AOF INBOX topic 22569).
+    Override: TBCC_SCRAPE_MICRO_PULL_LANES=bop,blowjob,ass (comma-separated).
+    """
+    if micro_pull_firehose_enabled():
+        return ["inbox"] if "inbox" in storage_map_by_key() else []
+    raw = (os.getenv("TBCC_SCRAPE_MICRO_PULL_LANES") or "").strip()
+    if raw:
+        wanted = {x.strip().lower() for x in raw.split(",") if x.strip()}
+        return [k for k in sorted(wanted) if k in storage_map_by_key()]
+    return sorted(k for k in CONTENT_LANE_NETWORK_KEYS if k in storage_map_by_key())
+
+
+def pick_micro_pull_lane_for_tick() -> str | None:
+    """Round-robin lane selection across micro_pull_lanes()."""
+    lanes = micro_pull_lanes()
+    if not lanes:
+        return None
+    if len(lanes) == 1:
+        return lanes[0]
+    try:
+        r = _redis_client()
+        n = int(r.incr(MICRO_PULL_LANE_ROTATION_KEY))
+        return lanes[(n - 1) % len(lanes)]
+    except Exception:
+        logger.debug("micro_pull lane rotation fallback", exc_info=True)
+        return lanes[0]
 
 
 def _redis_client():
@@ -163,3 +212,25 @@ async def run_lane_micro_pull(
 async def run_ass_micro_pull(storage, db: Session, *, limit: int | None = None) -> dict[str, Any]:
     """Pilot convenience wrapper — ASS lane only."""
     return await run_lane_micro_pull(storage, db, MICRO_PULL_PILOT_LANE, limit=limit)
+
+
+async def run_inbox_micro_pull(storage, db: Session, *, limit: int | None = None) -> dict[str, Any]:
+    """SCRP BULK folder → AOF INBOX Storage Hub subtopic (uncategorized firehose)."""
+    return await run_lane_micro_pull(storage, db, MICRO_PULL_INBOX_LANE, limit=limit)
+
+
+async def run_micro_pull_tick(storage, db: Session, *, limit: int | None = None) -> dict[str, Any]:
+    """Beat tick: firehose inbox pull, or one lane per invocation (round-robin)."""
+    if micro_pull_firehose_enabled():
+        out = await run_inbox_micro_pull(storage, db, limit=limit)
+        out["tick_lane"] = MICRO_PULL_INBOX_LANE
+        out["firehose"] = True
+        out["lanes_configured"] = micro_pull_lanes()
+        return out
+    lane = pick_micro_pull_lane_for_tick()
+    if not lane:
+        return {"ok": True, "skipped": True, "reason": "no_lanes"}
+    out = await run_lane_micro_pull(storage, db, lane, limit=limit)
+    out["tick_lane"] = lane
+    out["lanes_configured"] = micro_pull_lanes()
+    return out

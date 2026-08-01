@@ -78,14 +78,22 @@ async def send_result_photo(*, chat_id: int, image_url: str, caption: str = "") 
     return False
 
 
-async def send_result_message(*, chat_id: int, text: str) -> bool:
+async def send_result_message(
+    *,
+    chat_id: int,
+    text: str,
+    parse_mode: str | None = "HTML",
+    reply_markup: dict | None = None,
+) -> bool:
     token = _bot_token()
     if not token:
         return False
     api = f"https://api.telegram.org/bot{token}"
+    payload: dict[str, object] = {"chat_id": chat_id, "text": text[:4096]}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(
-            f"{api}/sendMessage",
-            json={"chat_id": chat_id, "text": text[:4096]},
-        )
+        r = await client.post(f"{api}/sendMessage", json=payload)
         return r.is_success

@@ -35,3 +35,24 @@ def compose_reveal_card_mp4_task(
     if not mp4:
         return {"ok": False, "reason": note}
     return {"ok": True, "note": note, "mp4_b64": __import__("base64").b64encode(mp4).decode("ascii")}
+
+
+@celery.task(name="app.workers.loot_reveal_video_worker.build_reveal_card_mp4_task")
+def build_reveal_card_mp4_task(
+    tier: int,
+    *,
+    seed: int | None = None,
+    preview: dict | None = None,
+) -> dict:
+    import base64
+
+    from app.services.loot_tier_card_assets import build_reveal_card_mp4
+    from app.services.loot_reveal_video import loot_reveal_video_enabled
+
+    if not loot_reveal_video_enabled():
+        return {"ok": False, "reason": "disabled"}
+    rng = random.Random(seed) if seed is not None else None
+    mp4, note = build_reveal_card_mp4(int(tier), rng=rng, preview=preview)
+    if not mp4:
+        return {"ok": False, "reason": note}
+    return {"ok": True, "note": note, "mp4_b64": base64.b64encode(mp4).decode("ascii")}

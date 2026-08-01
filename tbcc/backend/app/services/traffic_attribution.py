@@ -197,7 +197,19 @@ def record_traffic_touch_from_bot(telegram_user_id: int, payload: str) -> None:
 
     db = SessionLocal()
     try:
-        record_traffic_touch(db, int(telegram_user_id), payload, commit=True)
+        result = record_traffic_touch(db, int(telegram_user_id), payload, commit=True)
+        if result.get("ok") and result.get("source_ref"):
+            try:
+                from app.services.traffic_pulse import pulse_bot_start
+
+                pulse_bot_start(
+                    int(telegram_user_id),
+                    str(result["source_ref"]),
+                    payload,
+                    int(result.get("touch_count") or 1),
+                )
+            except Exception:
+                logger.debug("traffic pulse bot start failed", exc_info=True)
     except Exception:
         logger.debug("record_traffic_touch_from_bot failed uid=%s", telegram_user_id, exc_info=True)
     finally:

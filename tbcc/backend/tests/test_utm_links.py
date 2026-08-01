@@ -84,6 +84,68 @@ def test_fill_armory_template_gumroad_vip(monkeypatch):
     assert "https://aof69.gumroad.com/l/ynnulc" in text
 
 
+def test_fill_armory_x_avoids_triple_hub_when_map_slots_unset(monkeypatch):
+    """{allmylinks}/{gravatar} must not fall back to {hub} on X — that triple-stacks lootgod."""
+    from unittest.mock import MagicMock
+
+    from app.models.promo_affiliate_link import PromoAffiliateLink
+    from app.services.promo_affiliate_rotation import list_candidates
+
+    monkeypatch.delenv("TBCC_ALLMYLINKS_URL", raising=False)
+    monkeypatch.delenv("TBCC_GRAVATAR_PROFILE_URL", raising=False)
+    monkeypatch.delenv("TBCC_GRAVATAR_PROFILE_USERNAME", raising=False)
+    monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "aof_lootgod_bot")
+
+    db = MagicMock()
+    rows = [
+        PromoAffiliateLink(
+            id=1,
+            label="Undress",
+            url="https://nodress.site/tg/bot?username=Aifasteditbot&ref_id=1",
+            payout_kind="revshare",
+            priority_tier=3,
+            active=True,
+            placements_json='["x_buffer"]',
+        ),
+        PromoAffiliateLink(
+            id=2,
+            label="DrawAI",
+            url="https://t.me/drawai_0_bot?start=2",
+            payout_kind="revshare",
+            priority_tier=5,
+            active=True,
+            placements_json='["x_buffer"]',
+        ),
+    ]
+
+    def _query(model):
+        q = MagicMock()
+        if model is PromoAffiliateLink:
+            q.filter.return_value.order_by.return_value.all.return_value = rows
+        else:
+            from app.models.promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor
+
+            if model is PromoAffiliateRotationCursor:
+                q.filter.return_value.first.return_value = None
+        return q
+
+    db.query.side_effect = _query
+    db.add = MagicMock()
+    db.flush = MagicMock()
+
+    text = fill_armory_template(
+        "you weren't invited. you clicked anyway. good. {hub} · map {allmylinks} · operator {gravatar}",
+        for_x=True,
+        db=db,
+    )
+    hub = "https://telegram.me/aof_lootgod_bot"
+    assert hub in text
+    assert text.count(hub) == 1
+    assert "nodress.site" in text
+    assert "drawai_0_bot" in text
+    assert list_candidates(db, "x_buffer")
+
+
 def test_append_gumroad_vip_variations():
     from app.services.aof_growth_hub import _append_gumroad_vip_variations
 

@@ -1076,6 +1076,19 @@ body.tbcc-marquee-dragging .grid { cursor: crosshair; }
   border: 1px solid var(--tbcc-bg-elevated);
 }
 .progress.visible { display: block; }
+.progress__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.progress__head .status {
+  flex: 1;
+  min-width: 0;
+}
+.progress__head #btnStopProgress {
+  flex-shrink: 0;
+}
 .progress .bar {
   height: 4px;
   background: var(--tbcc-bg-elevated);

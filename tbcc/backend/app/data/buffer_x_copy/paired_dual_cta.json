@@ -1,0 +1,705 @@
+{
+  "category": "paired",
+  "templates": [
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "main hub just moved. zero tourist energy. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. act accordingly. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. you won't. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. the clock is real. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. no explanation needed. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. good. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. you're still here. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. impatient people fund the network. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. act accordingly. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. the clock is real. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. you won't. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. act accordingly. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another relay fired. you won't. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. the clock is real. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. impatient people fund the network. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. you won't. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another relay fired. that's the point. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "you weren't invited. no explanation needed. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "you weren't invited. the clock is real. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. that's the point. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. zero tourist energy. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. you won't. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. you won't. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. no explanation needed. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. the clock is real. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. good. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. no explanation needed. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. you won't. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. another step slightly harder. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. that's the point. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. the clock is real. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. impatient people fund the network. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. that's the point. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. you're still here. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: impatient people fund the network. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. no explanation needed. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. you're still here. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. that's the point. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. impatient people fund the network. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. zero tourist energy. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another relay fired. you won't. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. another step slightly harder. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. you won't. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. another step slightly harder. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. you're still here. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "public face. private hub. the clock is real. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. no explanation needed. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. that's the point. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. no explanation needed. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. that's the point. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. you won't. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. zero tourist energy. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. zero tourist energy. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "you weren't invited. impatient people fund the network. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another relay fired. good. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. impatient people fund the network. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another relay fired. another step slightly harder. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. act accordingly. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. impatient people fund the network. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. zero tourist energy. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. that's the point. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. good. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. the clock is real. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. good. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. that's the point. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: no explanation needed. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. zero tourist energy. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. impatient people fund the network. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. you won't. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. the clock is real. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. you're still here. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "main hub just moved. you're still here. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. you won't. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. zero tourist energy. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. good. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. impatient people fund the network. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. another step slightly harder. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. you won't. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "another relay fired. another step slightly harder. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. good. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. the clock is real. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. good. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. you're still here. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. act accordingly. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. zero tourist energy. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. another step slightly harder. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. another step slightly harder. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. act accordingly. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. good. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: you're still here. keys on loot \u00b7 chat on spicy \u00b7 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. good. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: the clock is real. loot table {lootgod} \u00b7 spicy DM {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "edge lane energy. act accordingly. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. impatient people fund the network. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "main hub just moved. zero tourist energy. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: good. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "you weren't invited. act accordingly. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. that's the point. two bots one maze \u00b7 {lootgod} \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "main hub just moved. you're still here. rolls {lootgod_free} \u00b7 trial {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "paired",
+      "surface": "x_buffer",
+      "body": "casuals bounce. good. {lootgod} + {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    }
+  ]
+}

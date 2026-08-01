@@ -41,6 +41,8 @@ _ACTIONABLE = {
     "surface_roi",
     "erome_market_anomaly",
     "market_intel_weekly_cycle",
+    "bridge_undress_funnel",
+    "boost_companion_cta",
 }
 
 
@@ -69,6 +71,10 @@ def _identity(signal: dict[str, Any]) -> str:
         return f"erome_market_anomaly:{signal.get('tag')}"
     if st == "market_intel_weekly_cycle":
         return f"market_intel_weekly_cycle:{signal.get('week_id') or signal.get('tag')}"
+    if st == "bridge_undress_funnel":
+        return f"bridge_undress_funnel:{signal.get('tag') or 'undress'}"
+    if st == "boost_companion_cta":
+        return "boost_companion_cta:companion"
     return f"{st}:{signal.get('hour_local') or signal.get('channel_id') or signal.get('network_key') or ''}"
 
 
@@ -168,6 +174,18 @@ def _build_action(signal: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "suggested_note": signal.get("recommendation"),
             "mcp_followup": "POST /analytics/market-intel/cycle/run",
         }
+    if st == "bridge_undress_funnel":
+        return "bridge_undress_funnel", {
+            "suggested_note": signal.get("recommendation"),
+            "hits_in_window": signal.get("hits_in_window"),
+            "mcp_followup": "secretary /surge · companion post-credit CTAs · beacon wrap",
+        }
+    if st == "boost_companion_cta":
+        return "boost_companion_cta", {
+            "photos_sold": signal.get("photos_sold"),
+            "suggested_note": signal.get("recommendation"),
+            "mcp_followup": "companion exhaustion keyboard · Stars invoice path",
+        }
     return "review", {"suggested_note": signal.get("recommendation")}
 
 
@@ -197,6 +215,55 @@ def propose_reactions(report: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def propose_funnel_signals(ops_report: dict[str, Any], undress_spike: dict[str, Any]) -> list[dict[str, Any]]:
+    """Synthetic funnel signals for revenue brief + growth reaction (observe-only)."""
+    out: list[dict[str, Any]] = []
+    if undress_spike.get("spike_active") or int(undress_spike.get("hits_in_window") or 0) >= 3:
+        out.append(
+            {
+                "signal_type": "bridge_undress_funnel",
+                "confidence": "high" if undress_spike.get("spike_active") else "medium",
+                "strength": float(undress_spike.get("hits_in_window") or 0),
+                "hits_in_window": undress_spike.get("hits_in_window"),
+                "tag": "undress",
+                "recommendation": (
+                    "Undress affiliate traffic is spiking — bridge to loot keys/VIP "
+                    "(companion CTAs + /surge blast to mainhub + loot room)."
+                ),
+            }
+        )
+    companion = ops_report.get("companion") or {}
+    sold = companion.get("photos_sold")
+    if sold is not None and int(sold) == 0:
+        out.append(
+            {
+                "signal_type": "boost_companion_cta",
+                "confidence": "medium",
+                "strength": 1.0,
+                "photos_sold": 0,
+                "recommendation": (
+                    "Companion Stars photos_sold=0 — post-credit loot/VIP keyboard is the conversion gap."
+                ),
+            }
+        )
+    return out
+
+
+def propose_reactions_with_funnel(
+    report: dict[str, Any],
+    *,
+    ops_report: dict[str, Any] | None = None,
+    undress_spike: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Merge content signals with funnel synthetic signals."""
+    signals = list(report.get("signals") or [])
+    if ops_report is not None:
+        spike = undress_spike if undress_spike is not None else {}
+        signals.extend(propose_funnel_signals(ops_report, spike))
+    merged_report = {**report, "signals": signals}
+    return propose_reactions(merged_report)
+
+
 def _dismissed_ids() -> set[str]:
     try:
         r = cs._redis_client()
@@ -210,7 +277,13 @@ def _dismissed_ids() -> set[str]:
 def list_proposals(db: Session, *, days: int | None = None) -> dict[str, Any]:
     """Pending (non-dismissed) proposals derived from the current signals report."""
     report = cs.compute_strong_signals(db, days=days) if days else cs.compute_strong_signals(db)
-    all_proposals = propose_reactions(report)
+    from app.services.ops_picture_report import build_ops_picture_report
+    from app.services.undress_surge import spike_state
+
+    ops = build_ops_picture_report(db, days=days or 7)
+    all_proposals = propose_reactions_with_funnel(
+        report, ops_report=ops, undress_spike=spike_state()
+    )
     dismissed = _dismissed_ids()
     pending = [p for p in all_proposals if p["id"] not in dismissed]
     return {

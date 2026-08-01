@@ -135,17 +135,28 @@ def build_roll_preview(
             "base_roll_tier": base_rarity,
         }
 
-  # Approved local-disk pool imports (telegram_message_id=0) or live Saved Messages refs.
-    from sqlalchemy import and_, or_
+    # Approved pool media — local disk (default) or legacy Saved Messages when allowed.
+    from sqlalchemy import and_
+
+    from app.services.saved_messages_policy import loot_local_bytes_only
 
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
-        or_(
-            and_(Media.telegram_message_id == 0, Media.file_id.like("local:%")),
-            Media.telegram_message_id > 0,
-        ),
     )
+    if loot_local_bytes_only():
+        q = q.filter(
+            and_(Media.telegram_message_id == 0, Media.file_id.like("local:%")),
+        )
+    else:
+        from sqlalchemy import or_
+
+        q = q.filter(
+            or_(
+                and_(Media.telegram_message_id == 0, Media.file_id.like("local:%")),
+                Media.telegram_message_id > 0,
+            ),
+        )
     if telegram_user_id and not is_loot_operator(telegram_user_id):
         seen_ids = [
             int(x[0])

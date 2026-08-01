@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-07-31 (operator sandbox + spicy conversion live)
+**Last updated:** 2026-07-31 (Buffer X creative stack + operator sandbox live)
 
 ## Sprint goal
 
@@ -42,7 +42,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Promo affiliate rotation | agent | Seed includes **PornMaker AI** `https://pornmaker.ai?ref=DExnc3FJ` (x_buffer / telegram_footer / links_hub_ai / loot_roll). |
 | Stars bait outreach (DM + channel pace) | agent | **2026-07-22:** Island `local-20260722-0610`; alembic **097** head; funnel RAG +9; scheduler **#148** (15 bait variations). DM pace: `ENABLED=1` batch=2 / 60min; pool=19 users. Smoke: `?start=bait_loot`. |
 | Stars bait outreach (DM + channel pace) | agent | **2026-07-22:** Island `local-20260722-0610`; alembic **097** head; funnel RAG +9 patterns; scheduler **#148** (15 bait variations). DM pace: `ENABLED=1` batch=2 / 60min; pool=19 users. Smoke: `?start=bait_loot` on payment bot. |
-| X ↔ Erome flywheel (SFW promo pool + Buffer) | agent | **2026-07-22:** `TBCC_POOL_BUFFER_MIRROR=0` on island (no false Erome claims). Honest opener + `#erome` only when URL present; armory reseeded (16 items w/ hashtags). Re-enable mirror when Erome upload reliable. |
+| X ↔ Erome flywheel (SFW promo pool + Buffer) | agent | **2026-07-31:** Buffer X creative stack — 500 copy templates (5×100 JSON), `social_copy_templates` rotation (demote after 2), DSL (`CREATIVE_COPY_DSL.md`), v3 prompt catalog + ingest, `creative_rag`, optional `TBCC_CREATIVE_GEN_ENABLED` tick. **Island:** alembic **109**, seed copy + ingest + `provision_creative_prompt_gates.py --execute`. Prior: armory 16-cap raised to env **50**; `TBCC_BUFFER_X_SPICY_BIAS_EVERY` separate from copy rotation. |
 | AI curated packs relist | agent | **2026-07-20:** `seed_ai_curated_packs.py` — legacy AI zips → $3 / 250⭐ / crypto bundles with 3-image promo albums in `/packs` catalog. |
 | XEnhancer download parity | agent | **ext 1.40.7:** per-post DL → AOF name under `Downloads/tbcc/inbox` + sidecar (`defer_preprocess`); watch organizer watermarks. ZIP archive still `TBCC Bundle · …`. |
 | Remote scrape offload (GCP + GHCR) | agent | Scripts + GHCR workflow + capture-secret fix; go-live: create VM + enable-home-offload |

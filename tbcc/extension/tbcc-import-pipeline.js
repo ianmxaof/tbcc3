@@ -2,8 +2,6 @@
  * Fast import pipeline: POST /import/bytes returns job_id immediately; poll until Telegram finishes.
  * Background alarms (chrome.alarms) re-poll after service worker restarts — see background.js.
  */
-const TBCC_API_IMPORT_BYTES = "http://localhost:8000/import/bytes";
-const TBCC_API_IMPORT_JOBS = "http://localhost:8000/import/jobs";
 const TBCC_IMPORT_POLL_MS = 700;
 const TBCC_IMPORT_POLL_MAX_MS = 900000;
 const TBCC_STORAGE_IMPORT_QUEUE_PAUSED = "tbccImportQueuePaused";
@@ -87,7 +85,7 @@ async function tbccPollImportJob(jobId, galleryJobId, onTick) {
   while (Date.now() - start < TBCC_IMPORT_POLL_MAX_MS) {
     let data = {};
     try {
-      const r = await fetch(`${TBCC_API_IMPORT_JOBS}/${encodeURIComponent(jobId)}`);
+      const r = await tbccFetchApi(`/import/jobs/${encodeURIComponent(jobId)}`);
       data = await tbccParseImportHttpResponse(r);
     } catch (e) {
       return { error: String(e && e.message ? e.message : e), job_id: jobId };
@@ -132,21 +130,25 @@ async function tbccPostImportForm(form, galleryJobId) {
   }
   const headers = {};
   if (galleryJobId) headers["X-TBCC-Extension-Job-Id"] = galleryJobId;
-  const r = await fetch(TBCC_API_IMPORT_BYTES, { method: "POST", body: form, headers });
-  const data = await tbccParseImportHttpResponse(r);
-  if (data.error) return data;
-  if (data.job_id) {
-    void tbccNotifyGalleryJobUpdate(galleryJobId, { ...data, stage: data.stage || "queued" });
-    tbccArmImportPollAlarm(galleryJobId, data.job_id);
-    return tbccPollImportJob(data.job_id, galleryJobId);
+  try {
+    const r = await tbccFetchApi("/import/bytes", { method: "POST", body: form, headers });
+    const data = await tbccParseImportHttpResponse(r);
+    if (data.error) return data;
+    if (data.job_id) {
+      void tbccNotifyGalleryJobUpdate(galleryJobId, { ...data, stage: data.stage || "queued" });
+      tbccArmImportPollAlarm(galleryJobId, data.job_id);
+      return tbccPollImportJob(data.job_id, galleryJobId);
+    }
+    return data;
+  } catch (e) {
+    return { error: String(e && e.message ? e.message : e) };
   }
-  return data;
 }
 
 async function tbccCancelBackendImportJob(backendJobId) {
   if (!backendJobId) return { ok: false, error: "no_job_id" };
   try {
-    const r = await fetch(`${TBCC_API_IMPORT_JOBS}/${encodeURIComponent(backendJobId)}/cancel`, {
+    const r = await tbccFetchApi(`/import/jobs/${encodeURIComponent(backendJobId)}/cancel`, {
       method: "POST",
     });
     return tbccParseImportHttpResponse(r);
@@ -154,4 +156,3 @@ async function tbccCancelBackendImportJob(backendJobId) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
 }
-

@@ -41,7 +41,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     Update,
 )
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ChatType
 from telegram.error import Conflict, Forbidden, NetworkError, TelegramError
 from telegram.ext import (
     Application,
@@ -345,11 +345,19 @@ async def _fetch_referral_status(telegram_user_id: int) -> dict | None:
     return None
 
 
-async def _submit_creator_url(telegram_user_id: int, url: str) -> dict:
+async def _submit_creator_url(
+    telegram_user_id: int,
+    url: str,
+    *,
+    display_name: str | None = None,
+) -> dict:
+    body: dict = {"url": url.strip(), "telegram_user_id": int(telegram_user_id)}
+    if display_name:
+        body["display_name"] = display_name.strip()
     r = await asyncio.to_thread(
         _api_post_sync,
         "/loot/creator-submit",
-        json_body={"url": url.strip(), "telegram_user_id": int(telegram_user_id)},
+        json_body=body,
     )
     if r.status_code >= 400:
         detail = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else r.text
@@ -390,6 +398,12 @@ def _claim_key_roll(telegram_user_id: int) -> dict:
             if r.status_code == 403:
                 detail = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
                 return {"ok": False, "not_key_holder": True, "detail": detail}
+            if r.status_code == 400:
+                try:
+                    detail = r.json()
+                except Exception:
+                    detail = r.text
+                return {"ok": False, "detail": detail, "http_status": 400}
             r.raise_for_status()
             return r.json()
         except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
@@ -651,6 +665,10 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             result = await asyncio.to_thread(_claim_key_roll, int(user.id))
             if result.get("not_key_holder"):
                 result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+            elif not result.get("ok"):
+                result = await asyncio.to_thread(_claim_free_pull, int(user.id))
+            elif int((result.get("delivery") or {}).get("media_sent") or 0) <= 0:
+                result = await asyncio.to_thread(_claim_free_pull, int(user.id))
         else:
             result = await asyncio.to_thread(_claim_free_pull, int(user.id))
     except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError) as e:
@@ -683,9 +701,24 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 return
         else:
             await _drop_transient_msg(status_msg)
+            detail = ""
+            if e.response is not None:
+                try:
+                    body = e.response.json()
+                    detail = str(body.get("detail") or body)
+                except Exception:
+                    detail = (e.response.text or str(e))[:400]
+            else:
+                detail = str(e)
+            friendly = detail
+            if "No approved media candidates" in detail:
+                friendly = (
+                    "Loot pool is empty — no deliverable media on the island right now. "
+                    "TBCC ops is refilling; try again in a few minutes."
+                )
             await _safe_reply_html(
                 msg,
-                f"<b>Pull failed</b>\n<code>{html.escape(str(e))}</code>",
+                f"<b>Pull failed</b>\n{html.escape(friendly)}",
                 disable_web_page_preview=True,
                 reply_markup=_loot_inline_keyboard(context.application.bot_data.get("effective") or {}),
             )
@@ -955,6 +988,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_loot_keys_hint(msg, context)
         return
 
+    if arg == "model":
+        await _begin_creator_promo_dm(update, context)
+        return
+
     if arg.startswith("src_lv_") and await _handle_lane_gate(msg, context, arg):
         return
 
@@ -1058,10 +1095,210 @@ async def on_loot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await cmd_guide(update, context)
     elif action == "creator_learn":
         await _send_creator_learn(msg, context)
+    elif action == "creator_skip_name":
+        await _creator_promo_submit_from_draft(update, context)
+    elif action == "creator_cancel":
+        _clear_creator_promo_state(context)
+        await _safe_reply_html(msg, "<b>Creator promo cancelled.</b>", disable_web_page_preview=True)
+
+
+def _loot_bot_username(cfg: dict | None = None) -> str:
+    cfg = cfg or {}
+    return (
+        (cfg.get("bot_username") or os.getenv("TBCC_LOOT_BOT_USERNAME") or "aof_lootgod_bot")
+        .strip()
+        .lstrip("@")
+    )
+
+
+def _is_private_chat(update: Update) -> bool:
+    chat = update.effective_chat
+    return bool(chat and chat.type == ChatType.PRIVATE)
+
+
+def _clear_creator_promo_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("creator_promo_step", None)
+    context.user_data.pop("creator_promo_draft", None)
+    context.user_data.pop("awaiting_of_url", None)
+
+
+def _creator_promo_dm_keyboard(cfg: dict) -> InlineKeyboardMarkup:
+    bot_un = html.escape(_loot_bot_username(cfg))
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📦 Open Creator promo in DM", url=f"https://t.me/{bot_un}?start=model")]]
+    )
+
+
+async def _redirect_creator_promo_to_dm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+    cfg = context.application.bot_data.get("effective") or {}
+    bot_un = _loot_bot_username(cfg)
+    text = (
+        "<b>Creator promo</b> submissions happen in DM — not in the group/channel feed.\n\n"
+        f'Tap below to open <a href="https://t.me/{html.escape(bot_un)}?start=model">@{html.escape(bot_un)}</a> '
+        "and paste your profile link there."
+    )
+    kb = _creator_promo_dm_keyboard(cfg)
+    await _safe_reply_html(msg, text, disable_web_page_preview=True, reply_markup=kb)
+    try:
+        await context.bot.send_message(
+            chat_id=int(user.id),
+            text=(
+                "<b>Creator promo</b>\n\n"
+                "Paste your public profile URL in this chat — "
+                "OnlyFans, Fansly, Fanvue, Linktree, Telegram, Snapchat, Kik, SextingFinder, and more.\n\n"
+                "<i>Send the link in your next message.</i>"
+            ),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        context.user_data["creator_promo_step"] = "await_url"
+    except Forbidden:
+        pass
+
+
+async def _begin_creator_promo_dm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_private_chat(update):
+        await _redirect_creator_promo_to_dm(update, context)
+        return
+    msg = update.effective_message
+    if not msg:
+        return
+    _clear_creator_promo_state(context)
+    context.user_data["creator_promo_step"] = "await_url"
+    learn_kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("ℹ️ Learn more", callback_data="loot:creator_learn")],
+            [InlineKeyboardButton("✖ Cancel", callback_data="loot:creator_cancel")],
+        ]
+    )
+    from app.services.loot_creator_platforms import SUPPORTED_PLATFORM_LABELS
+
+    await _safe_reply_html(
+        msg,
+        "<b>Creator promo application</b>\n\n"
+        "Paste your <b>public creator profile URL</b>. After you submit, an operator reviews it "
+        "before it goes live in the tier 5+ modifier pool.\n\n"
+        f"<b>Supported:</b> {html.escape(SUPPORTED_PLATFORM_LABELS)}\n\n"
+        "<i>Send one profile link per message. Gate/shortener links are rejected.</i>",
+        disable_web_page_preview=True,
+        reply_markup=learn_kb,
+    )
+
+
+async def _creator_promo_confirm_step(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft: dict,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    context.user_data["creator_promo_step"] = "await_display_name"
+    context.user_data["creator_promo_draft"] = draft
+    label = html.escape(str(draft.get("label") or "Creator promo"))
+    url = html.escape(str(draft.get("normalized_url") or ""))
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("✅ Submit for review", callback_data="loot:creator_skip_name")],
+            [InlineKeyboardButton("✖ Cancel", callback_data="loot:creator_cancel")],
+        ]
+    )
+    await _safe_reply_html(
+        msg,
+        f"<b>Link recognized</b>\n{label}\n<code>{url}</code>\n\n"
+        "Optional: reply with a short <b>display name</b> for the caption label "
+        "(or tap <b>Submit for review</b> to use the handle).",
+        disable_web_page_preview=True,
+        reply_markup=kb,
+    )
+
+
+async def _creator_promo_submit_from_draft(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    display_name: str | None = None,
+) -> None:
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+    draft = context.user_data.get("creator_promo_draft") or {}
+    url = str(draft.get("submitted_url") or draft.get("normalized_url") or "").strip()
+    if not url:
+        _clear_creator_promo_state(context)
+        await _safe_reply_html(msg, "<b>Nothing to submit.</b> Send /model to start again.", disable_web_page_preview=True)
+        return
+    try:
+        result = await _submit_creator_url(int(user.id), url, display_name=display_name)
+    except Exception:
+        logger.exception("creator submit failed")
+        await _safe_reply_html(msg, "<b>Submit failed</b> — API unreachable.", disable_web_page_preview=True)
+        return
+    _clear_creator_promo_state(context)
+    if not result.get("ok"):
+        detail = result.get("detail")
+        err = detail if isinstance(detail, str) else str(detail)
+        await _safe_reply_html(
+            msg,
+            f"<b>Could not accept link</b>\n{html.escape(err[:400])}",
+            disable_web_page_preview=True,
+        )
+        return
+    label = html.escape(str(result.get("label") or "Creator promo"))
+    if result.get("already_registered"):
+        note = html.escape(str(result.get("message") or ""))
+        await _safe_reply_html(
+            msg,
+            f"<b>Already on file.</b> {label}\n<i>{note}</i>",
+            disable_web_page_preview=True,
+        )
+        return
+    sid = result.get("submission_id")
+    sid_line = f"\n<i>Reference #{html.escape(str(sid))}</i>" if sid else ""
+    await _safe_reply_html(
+        msg,
+        f"<b>✅ Submitted for review.</b> {label}{sid_line}\n\n"
+        f"<i>{html.escape(str(result.get('message') or ''))}</i>",
+        disable_web_page_preview=True,
+    )
+
+
+async def _handle_creator_url_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw_text: str,
+) -> None:
+    from app.services.loot_creator_platforms import label_from_creator_url, normalize_creator_url, unsupported_url_message
+
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+    parsed = normalize_creator_url(raw_text)
+    if not parsed:
+        await _safe_reply_html(
+            msg,
+            f"<b>Could not accept link</b>\n{unsupported_url_message()}",
+            disable_web_page_preview=True,
+        )
+        return
+    normalized, _platform_key, prefix, path_handle = parsed
+    draft = {
+        "submitted_url": raw_text.strip(),
+        "normalized_url": normalized,
+        "label": label_from_creator_url(prefix, path_handle),
+    }
+    await _creator_promo_confirm_step(update, context, draft)
 
 
 async def _send_creator_learn(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
     cfg = context.application.bot_data.get("effective") or {}
+    from app.services.loot_creator_platforms import SUPPORTED_PLATFORM_LABELS
+
     await _safe_reply_html(
         msg,
         "<b>Creator promo — how it works</b>\n\n"
@@ -1069,15 +1306,17 @@ async def _send_creator_learn(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Your profile link enters that weighted pool on <b>tier 5+</b> paid rolls — "
         "players who hit a high tier may see your link hyperlinked under <b>Bonus unlocks</b>.\n\n"
         "<b>Supported platforms</b>\n"
-        "OnlyFans · Fansly · ManyVids · Linktree · Boosty\n\n"
+        f"{html.escape(SUPPORTED_PLATFORM_LABELS)}\n\n"
         "<b>How to submit</b>\n"
-        "Tap <b>Creator promo</b> or send <code>/model</code>, then paste your public profile URL. "
-        "You get a confirmation when it is accepted.\n\n"
+        "Tap <b>Creator promo</b> or send <code>/model</code> in DM. "
+        "In groups/channels the bot opens DM for you — submissions never spam the feed.\n\n"
+        "<b>Review gate</b>\n"
+        "Every link is reviewed before it goes live (blocks spam, gates, and malicious URLs).\n\n"
         "<b>Limits</b>\n"
         "• Same URL cannot be registered twice\n"
-        "• Max 3 new submissions per 24h\n"
-        "• Max 5 active promos per account\n\n"
-        "<i>Tip: use your main landing page — one clean link rolls cleaner than ten duplicates.</i>",
+        "• Max 3 new applications per 24h\n"
+        "• Max 5 pending + active promos per account\n\n"
+        "<i>Tip: paste your main landing page — one clean profile URL rolls cleaner than redirects.</i>",
         disable_web_page_preview=True,
         reply_markup=_loot_inline_keyboard(cfg),
     )
@@ -1125,60 +1364,13 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not user or not msg:
         return
+    if not _is_private_chat(update):
+        await _redirect_creator_promo_to_dm(update, context)
+        return
     if context.args:
-        url = " ".join(context.args).strip()
-        await _handle_creator_url(update, context, url)
+        await _handle_creator_url_input(update, context, " ".join(context.args).strip())
         return
-    context.user_data["awaiting_of_url"] = True
-    learn_kb = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("ℹ️ Learn more", callback_data="loot:creator_learn")]]
-    )
-    await _safe_reply_html(
-        msg,
-        "<b>Creator promo</b>\n\n"
-        "Paste your <b>public creator profile URL</b> — we add it to the loot modifier pool "
-        "on <b>tier 5+</b> rolls immediately.\n\n"
-        "<b>Supported:</b> OnlyFans, Fansly, ManyVids, Linktree, Boosty\n\n"
-        "<i>Send the link in your next message.</i>",
-        disable_web_page_preview=True,
-        reply_markup=learn_kb,
-    )
-
-
-async def _handle_creator_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str) -> None:
-    user = update.effective_user
-    if not user:
-        return
-    context.user_data.pop("awaiting_of_url", None)
-    msg = update.effective_message
-    try:
-        result = await _submit_creator_url(int(user.id), url)
-    except Exception:
-        logger.exception("creator submit failed")
-        await _safe_reply_html(msg, "<b>Submit failed</b> — API unreachable.", disable_web_page_preview=True)
-        return
-    if not result.get("ok"):
-        detail = result.get("detail")
-        err = detail if isinstance(detail, str) else str(detail)
-        await _safe_reply_html(
-            msg,
-            f"<b>Could not accept link</b>\n{html.escape(err[:400])}",
-            disable_web_page_preview=True,
-        )
-        return
-    label = html.escape(str(result.get("label") or "Creator promo"))
-    if result.get("already_registered"):
-        await _safe_reply_html(
-            msg,
-            f"<b>Already active.</b> {label}\n<i>{html.escape(str(result.get('message') or ''))}</i>",
-            disable_web_page_preview=True,
-        )
-        return
-    await _safe_reply_html(
-        msg,
-        f"<b>✅ Accepted.</b> {label}\n<i>{html.escape(str(result.get('message') or ''))}</i>",
-        disable_web_page_preview=True,
-    )
+    await _begin_creator_promo_dm(update, context)
 
 
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1212,8 +1404,14 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    if context.user_data.get("creator_promo_step") == "await_url":
+        await _handle_creator_url_input(update, context, text)
+        return
+    if context.user_data.get("creator_promo_step") == "await_display_name":
+        await _creator_promo_submit_from_draft(update, context, display_name=text)
+        return
     if context.user_data.get("awaiting_of_url"):
-        await _handle_creator_url(update, context, text)
+        await _handle_creator_url_input(update, context, text)
         return
 
     cfg = context.application.bot_data.get("effective") or {}
@@ -1291,7 +1489,7 @@ async def post_init(application: Application) -> None:
         BotCommand("start", "Welcome + action menu"),
         BotCommand("roll", "Claim a complimentary pull"),
         BotCommand("referral", "Your referral link"),
-        BotCommand("model", "Submit creator promo URL"),
+        BotCommand("model", "Submit creator promo (DM review queue)"),
         BotCommand("help", "Show menu and shortcuts"),
         BotCommand("guide", "Full Loot Room guide (5-lesson summary)"),
     ]

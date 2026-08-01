@@ -1354,6 +1354,12 @@ async def cmd_intake_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await cmd_intake(update, context)
 
 
+async def cmd_review_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.review_control_handlers import cmd_review
+
+    await cmd_review(update, context)
+
+
 async def handle_intake_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from bots.intake_control_handlers import on_intake_control_callback
 
@@ -2807,6 +2813,7 @@ def main() -> None:
     app.add_handler(CommandHandler("videofind", cmd_videofind))
     app.add_handler(CommandHandler("deposit", cmd_deposit_payment))
     app.add_handler(CommandHandler("intake", cmd_intake_payment))
+    app.add_handler(CommandHandler("review", cmd_review_payment))
     for h in build_macro_search_handlers(
         _get_runtime_settings,
         _patch_macro_custom_sources,
@@ -2851,10 +2858,25 @@ def main() -> None:
         )
     )
     app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/review(@\w+)?(?:\s|$)"),
+            cmd_review_payment,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/intake(@\w+)?(?:\s|$)"),
+            cmd_intake_payment,
+        )
+    )
+    app.add_handler(
         CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:[atr]:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b[ar]:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:p:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:")

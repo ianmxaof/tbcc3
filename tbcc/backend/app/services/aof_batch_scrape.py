@@ -24,6 +24,15 @@ from app.services.telegram_folder_peers import list_telegram_folders
 logger = logging.getLogger(__name__)
 
 
+def scrape_hub_first_enabled() -> bool:
+    """
+    When true (default), batch scrapes into AOF pools are blocked — use SCRP micro-pull
+  → Storage Hub → gatekeeper → pool instead.
+    """
+    raw = (os.getenv("TBCC_SCRAPE_HUB_FIRST") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def _peer_scrape_eligible(peer: dict[str, Any]) -> bool:
     cid = int(peer.get("chat_id") or 0)
     if cid in SKIP_INBOUND_CHAT_IDS:
@@ -249,6 +258,16 @@ def filter_scrape_eligible_source_ids(
 
 def queue_batch_scrapes(db: Session, source_ids: list[int]) -> dict[str, Any]:
     from app.workers.scraper_worker import run_scrape
+
+    if scrape_hub_first_enabled():
+        return {
+            "queued": [],
+            "skipped": [{"source_id": sid, "reason": "hub_first_blocked"} for sid in source_ids],
+            "queued_count": 0,
+            "skipped_count": len(source_ids),
+            "hub_first": True,
+            "hint": "Use SCRP micro-pull → Storage Hub (TBCC_SCRAPE_MICRO_PULL_ENABLED=1) or set TBCC_SCRAPE_HUB_FIRST=0 to allow direct pool scrape.",
+        }
 
     eligible, skipped = filter_scrape_eligible_source_ids(db, source_ids)
     queued: list[dict[str, Any]] = []

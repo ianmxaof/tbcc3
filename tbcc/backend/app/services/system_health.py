@@ -681,12 +681,21 @@ def _scheduling_process_counts() -> dict[str, int]:
     return counts
 
 
+def _revenue_island_active() -> bool:
+    return (os.getenv("TBCC_REVENUE_ISLAND_ACTIVE") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _celery_inspect_scheduling_counts() -> dict[str, int] | None:
     """Classify live Celery workers via inspect.ping (Docker / revenue island)."""
     try:
         from app.workers.celery_app import celery
 
-        insp = celery.control.inspect(timeout=1.5)
+        insp = celery.control.inspect(timeout=3.0)
         pong = insp.ping() if insp else None
     except Exception:
         return None
@@ -701,17 +710,24 @@ def _celery_inspect_scheduling_counts() -> dict[str, int] | None:
         n = str(name).lower()
         if "ops@" in n or "ops_growth" in n:
             ops += 1
-        elif "island-post@" in n or "post@" in n or "scheduler@" in n:
+        elif "island-post@" in n or n.endswith("@post") or "scheduler@" in n:
             # Island worker_post consumes post_scheduler + post together.
             post += 1
             post_scheduler += 1
-        elif "island@" in n or n.startswith("celery@") or "worker" in n:
+        elif n.startswith("island@") or n.startswith("celery@") or "worker" in n:
             worker += 1
         else:
             worker += 1
 
+    # Solo Celery workers cannot answer inspect.ping() while busy (Telethon lock, etc.).
+    # On the revenue island, worker + worker_post are always deployed as a pair — if the
+    # post worker responds, treat the main worker as up unless we have explicit evidence
+    # it is down (missing from ping alone is not enough).
+    if _revenue_island_active() and post > 0 and worker == 0:
+        worker = 1
+
     # Beat does not answer ping; on island compose it is a sibling container.
-    # Treat beat as up when the main worker is reachable (same Redis broker).
+    # Treat beat as up when any worker is reachable (same Redis broker).
     beat = 1 if worker > 0 or post > 0 else 0
     return {
         "beat": beat,

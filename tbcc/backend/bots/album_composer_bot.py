@@ -17,7 +17,8 @@ all topic media. ADMIN_TELEGRAM_ID plus any TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS 
 served; other senders are ignored silently (no denial replies). Sessions are chat-scoped:
 all admin accounts in a group share one draft. Post as yourself — anonymous /
 channel-as-sender posts are not recognized as admin, and media posted by OTHER BOTS is
-invisible to this bot (Telegram platform rule).
+invisible to this bot (Telegram platform rule). Do not add this bot to @aofmainhub or
+other public channels — it is for DM + Storage Hub groups only.
 """
 from __future__ import annotations
 
@@ -412,11 +413,12 @@ def _actor_user_id(update: Update) -> int | None:
     return None
 
 
-def _is_group_chat(update: Update) -> bool:
+def _is_non_private_chat(update: Update) -> bool:
+    """Groups, supergroups, and channels — never spam denial replies outside DM."""
     chat = update.effective_chat
     if not chat:
         return False
-    return chat.type in ("group", "supergroup")
+    return chat.type in ("group", "supergroup", "channel")
 
 
 def _authorized(user_id: int | None) -> bool:
@@ -427,9 +429,9 @@ def _authorized(user_id: int | None) -> bool:
 async def _deny_unauthorized(update: Update) -> bool:
     if _authorized(_actor_user_id(update)):
         return False
-    # In groups the bot may see every message when BotFather privacy is off.
-    # Never reply with denial text there — it spams the storage topic on each photo.
-    if _is_group_chat(update):
+    # Outside DM the bot may see channel posts or every group message (privacy off).
+    # Never reply with denial text there — it spams storage topics and @aofmainhub.
+    if _is_non_private_chat(update):
         return True
     msg = update.effective_message
     if msg:
@@ -3359,6 +3361,12 @@ async def cmd_deposit_composer(update: Update, context: ContextTypes.DEFAULT_TYP
     await cmd_deposit(update, context, bot_label="album-composer")
 
 
+async def cmd_review_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.review_control_handlers import cmd_review
+
+    await cmd_review(update, context)
+
+
 async def cmd_deposit_staged_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from bots.storage_hub_deposit_bot import cmd_deposit_staged
 
@@ -3465,6 +3473,7 @@ def main() -> None:
     app.add_handler(CommandHandler("emoji_pack", cmd_emoji_pack))
     app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
     app.add_handler(CommandHandler("depositstaged", cmd_deposit_staged_composer))
+    app.add_handler(CommandHandler("review", cmd_review_composer))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ac:"))
     app.add_error_handler(make_error_handler("album-composer-bot"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

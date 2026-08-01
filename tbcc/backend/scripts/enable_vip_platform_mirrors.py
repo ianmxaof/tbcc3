@@ -26,7 +26,8 @@ from app.models.scheduled_text_post import ScheduledTextPost
 
 TARGET_IDENTS = {AOF_VIP_IDENT, MAIN_GROUP_IDENT}
 MIRROR_NAMES = (
-    "AOF MAIN GROUP + X SCHEDULER",
+    "AOF LOOT ROOM + X SCHEDULER",
+    "AOF MAIN GROUP + X SCHEDULER",  # legacy name until retire script renames row
     "AOF VIP SCHEDULER",
 )
 

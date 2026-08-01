@@ -96,7 +96,7 @@ def _quarantine_row(db: Session, row: Media) -> None:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    from app.services.telegram_admin import run_telegram_io
+    from app.services.telegram_admin import run_telegram_album_composer_io
 
     db = SessionLocal()
     try:
@@ -143,7 +143,7 @@ async def _run(args: argparse.Namespace) -> int:
                 if args.pause_ms > 0:
                     await asyncio.sleep(args.pause_ms / 1000.0)
 
-        await run_telegram_io(_audit)
+        await run_telegram_album_composer_io(_audit)
 
         print(f"RESULT live={live} dead={len(dead)}")
         for row in dead[:20]:

@@ -17,7 +17,7 @@ router = APIRouter()
 
 class CrawlerResolveBody(BaseModel):
     url: str = Field(..., min_length=8, max_length=8192)
-    adapter: Literal["auto", "erome", "bunkr", "onlyfans", "generic"] = "auto"
+    adapter: Literal["auto", "erome", "bunkr", "onlyfans", "madeporn", "generic"] = "auto"
     limit: int = Field(default=500, ge=1, le=2000)
     cookies: str | None = Field(
         default=None,

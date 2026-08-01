@@ -390,6 +390,24 @@ def gate_funnel(
     return gate_funnel_report(db, days=days)
 
 
+@router.get("/ops-picture")
+def ops_picture(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+    post_import_days: int = Query(7, ge=1, le=90),
+    backfill: bool = Query(False),
+):
+    """Point-in-time ops + money snapshot for /ops-picture (as-of request time)."""
+    from app.services.ops_picture_report import build_ops_picture_report
+
+    return build_ops_picture_report(
+        db,
+        days=days,
+        post_import_days=post_import_days,
+        backfill_income=backfill,
+    )
+
+
 @router.get("/bots/funnel")
 def bots_funnel_summary_route(
     db: Session = Depends(get_db),

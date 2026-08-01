@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { api, type LootBotSettingsEffective, type LootModifier, type LootRollPreview } from "../api";
+import { api, type LootBotSettingsEffective, type LootCreatorSubmission, type LootModifier, type LootRollPreview } from "../api";
 import { QueryErrorBanner } from "../components/QueryErrorBanner";
 import { tbccCopyText } from "../utils/clipboardToast";
 
@@ -32,6 +32,8 @@ export function LootOverseerSettingsPanel() {
   const [lootReferralOn, setLootReferralOn] = useState(true);
   const [referralBonusPulls, setReferralBonusPulls] = useState("");
   const [creatorOfUrl, setCreatorOfUrl] = useState("");
+  const [creatorQueueStatus, setCreatorQueueStatus] = useState<"pending" | "approved" | "rejected">("pending");
+  const [rejectNote, setRejectNote] = useState("");
   const [spoilerDefault, setSpoilerDefault] = useState(true);
   const [runtimeAdapter, setRuntimeAdapter] = useState<"" | "local" | "command">("");
   const [cmdStart, setCmdStart] = useState("");
@@ -58,6 +60,10 @@ export function LootOverseerSettingsPanel() {
   const modifiersQ = useQuery({
     queryKey: ["lootModifiers"],
     queryFn: () => api.loot.listModifiers(true),
+  });
+  const creatorQueueQ = useQuery({
+    queryKey: ["lootCreatorSubmissions", creatorQueueStatus],
+    queryFn: () => api.loot.listCreatorSubmissions(creatorQueueStatus, 50),
   });
 
   useEffect(() => {
@@ -110,11 +116,30 @@ export function LootOverseerSettingsPanel() {
   const creatorSubmit = useMutation({
     mutationFn: () => api.loot.creatorSubmit({ url: creatorOfUrl.trim() }),
     onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["lootModifiers"] });
+      qc.invalidateQueries({ queryKey: ["lootCreatorSubmissions"] });
       setCreatorOfUrl("");
-      window.alert(data.message || "Added to modifier pool");
+      window.alert(data.message || "Queued for review");
     },
     onError: (e: Error) => window.alert(e.message || "Submit failed"),
+  });
+  const approveCreator = useMutation({
+    mutationFn: (id: number) => api.loot.approveCreatorSubmission(id),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["lootCreatorSubmissions"] });
+      qc.invalidateQueries({ queryKey: ["lootModifiers"] });
+      window.alert(data.message || "Approved");
+    },
+    onError: (e: Error) => window.alert(e.message || "Approve failed"),
+  });
+  const rejectCreator = useMutation({
+    mutationFn: (p: { id: number; note?: string }) =>
+      api.loot.rejectCreatorSubmission(p.id, p.note ? { review_note: p.note } : undefined),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["lootCreatorSubmissions"] });
+      setRejectNote("");
+      window.alert(data.message || "Rejected");
+    },
+    onError: (e: Error) => window.alert(e.message || "Reject failed"),
   });
 
   const createModifier = useMutation({
@@ -513,12 +538,12 @@ export function LootOverseerSettingsPanel() {
           </div>
 
           <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-slate-200">Creator / OnlyFans pool</h3>
+            <h3 className="text-sm font-semibold text-slate-200">Creator promo queue</h3>
             <p className="text-xs text-slate-500">
-              Same as bot <code className="text-slate-400">/model</code> — profile URL becomes an active modifier on tier 5+ rolls.
+              Same as bot <code className="text-slate-400">/model</code> — queues a profile URL for operator review before it becomes a tier 5+ modifier.
             </p>
             <label className="block text-xs text-slate-400">
-              OnlyFans profile URL
+              Creator profile URL
               <input
                 className="mt-1 w-full rounded border border-slate-600 bg-slate-950 px-2 py-1.5 text-sm"
                 value={creatorOfUrl}
@@ -532,8 +557,85 @@ export function LootOverseerSettingsPanel() {
               onClick={() => creatorSubmit.mutate()}
               className="text-xs px-3 py-1.5 rounded bg-violet-700/80 text-white hover:bg-violet-600 disabled:opacity-40"
             >
-              {creatorSubmit.isPending ? "Adding…" : "Add to modifier pool"}
+              {creatorSubmit.isPending ? "Queueing…" : "Queue for review"}
             </button>
+
+            <div className="border-t border-slate-700 pt-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-xs font-semibold text-slate-300">Review queue</h4>
+                <select
+                  className="rounded border border-slate-600 bg-slate-950 px-2 py-1 text-xs"
+                  value={creatorQueueStatus}
+                  onChange={(e) =>
+                    setCreatorQueueStatus(e.target.value as "pending" | "approved" | "rejected")
+                  }
+                >
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+              </div>
+              {creatorQueueQ.isError ? (
+                <p className="text-xs text-rose-400">{(creatorQueueQ.error as Error).message}</p>
+              ) : creatorQueueQ.isPending ? (
+                <p className="text-xs text-slate-500">Loading queue…</p>
+              ) : (creatorQueueQ.data?.items?.length ?? 0) === 0 ? (
+                <p className="text-xs text-slate-500">No {creatorQueueStatus} submissions.</p>
+              ) : (
+                <ul className="space-y-2 max-h-64 overflow-y-auto">
+                  {(creatorQueueQ.data?.items ?? []).map((row: LootCreatorSubmission) => (
+                    <li
+                      key={row.submission_id}
+                      className="rounded border border-slate-700 bg-slate-950/60 p-2 text-xs space-y-1"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-medium text-slate-200">{row.label}</span>
+                        <span className="text-slate-500 shrink-0">#{row.submission_id}</span>
+                      </div>
+                      <a
+                        href={row.normalized_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-violet-300 hover:underline break-all"
+                      >
+                        {row.normalized_url}
+                      </a>
+                      <div className="text-slate-500">
+                        tg:{row.telegram_user_id} · {row.platform_key} · {row.created_at?.slice(0, 10) ?? "—"}
+                      </div>
+                      {row.status === "pending" ? (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={approveCreator.isPending}
+                            onClick={() => approveCreator.mutate(row.submission_id)}
+                            className="px-2 py-1 rounded bg-emerald-800/80 text-white hover:bg-emerald-700 disabled:opacity-40"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            disabled={rejectCreator.isPending}
+                            onClick={() => {
+                              const note = window.prompt("Reject reason (optional):", rejectNote) ?? "";
+                              rejectCreator.mutate({ id: row.submission_id, note: note || undefined });
+                            }}
+                            className="px-2 py-1 rounded bg-rose-900/80 text-white hover:bg-rose-800 disabled:opacity-40"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="text-slate-500">
+                          {row.review_note ? `Note: ${row.review_note}` : null}
+                          {row.modifier_id ? ` · modifier #${row.modifier_id}` : null}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
 
           <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4 space-y-3">

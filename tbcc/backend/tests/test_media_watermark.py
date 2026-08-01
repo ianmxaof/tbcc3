@@ -91,6 +91,15 @@ def test_default_brand_when_text_unset(monkeypatch):
     assert wm.watermark_enabled() is True
 
 
+def test_promo_public_url_never_becomes_watermark(monkeypatch):
+    monkeypatch.delenv("TBCC_WATERMARK_TEXT", raising=False)
+    monkeypatch.setenv(
+        "TBCC_PROMO_PUBLIC_BASE_URL",
+        "https://31c0-2607-fb90-3714-cbb-5933-c4dd-7015-ed1a.ngrok-free.app",
+    )
+    assert wm.watermark_text() == "telegram.me/aofmainhub"
+
+
 def test_multi_text_watermark():
     cfg = wm.WatermarkApplyConfig(
         enabled=True,

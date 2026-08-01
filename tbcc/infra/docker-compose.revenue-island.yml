@@ -73,6 +73,10 @@ services:
       TBCC_RELAY_USE_BOT_API: ${TBCC_RELAY_USE_BOT_API:-0}
       TBCC_BUNDLE_DIR: /uploads/bundles
       TBCC_PROMO_DIR: /uploads/promo
+      TBCC_MEDIA_FILES_DIR: /uploads/media-files
+      # Island stock is mostly Telegram Saved Messages refs (not /uploads bytes).
+      TBCC_LOOT_LOCAL_BYTES_ONLY: "0"
+      TBCC_POOL_IMPORT_LOCAL: "1"
     volumes:
       - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
@@ -118,8 +122,16 @@ services:
       # Metrics sync hammers Buffer API — run less often on island (refill owns quota).
       TBCC_BUFFER_METRICS_SYNC_ENABLED: "1"
       TBCC_BUFFER_METRICS_SYNC_HOURS: "6"
+      TBCC_MEDIA_FILES_DIR: /uploads/media-files
+      TBCC_POOL_IMPORT_LOCAL: "1"
+      TBCC_LANE_SURVIVOR_REFILL_ENABLED: "1"
+      TBCC_TRAFFIC_PULSE_ENABLED: "1"
+      TBCC_TRAFFIC_PULSE_INSTANT: beacon,start,post_fail
+      TBCC_AFFILIATE_BEACON_WRAP: "1"
+      TBCC_CLICK_BEACON_INSTANT: "1"
     volumes:
       - /opt/tbcc/sessions:/sessions:rw
+      - /opt/tbcc/uploads:/uploads:rw
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,8 +156,10 @@ services:
       # Separate SQLite file on the shared volume; auto-copy from admin on first use.
       TBCC_POSTER_TELEGRAM_SESSION: /sessions/admin_poster
       TBCC_POSTER_AUTO_COPY_ADMIN_SESSION: "1"
+      TBCC_MEDIA_FILES_DIR: /uploads/media-files
     volumes:
       - /opt/tbcc/sessions:/sessions:rw
+      - /opt/tbcc/uploads:/uploads:rw
     depends_on:
       postgres:
         condition: service_healthy
@@ -157,6 +171,9 @@ services:
     command: >
       celery -A app.workers.celery_app beat
       -l info
+    environment:
+      TBCC_LANE_SURVIVOR_REFILL_ENABLED: "1"
+      TBCC_TRAFFIC_PULSE_ENABLED: "1"
     depends_on:
       - redis
       - worker
@@ -169,6 +186,9 @@ services:
       PYTHONPATH: /app
       TBCC_BUNDLE_DIR: /uploads/bundles
       TBCC_PROMO_DIR: /uploads/promo
+      TBCC_MEDIA_FILES_DIR: /uploads/media-files
+      TBCC_LOOT_LOCAL_BYTES_ONLY: "1"
+      TBCC_POOL_IMPORT_LOCAL: "1"
     volumes:
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
@@ -190,6 +210,16 @@ services:
     <<: *island-image
     profiles: ["bots"]
     command: python -m bots.companion_bot
+    depends_on:
+      - api
+      - redis
+      - postgres
+
+  # @aof_secretary_bot — admin inbox + Traffic Pulse DMs (keep home secretary Off to avoid 409).
+  secretary_bot:
+    <<: *island-image
+    profiles: ["bots"]
+    command: python -m bots.secretary_bot
     depends_on:
       - api
       - redis

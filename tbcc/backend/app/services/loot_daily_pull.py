@@ -22,6 +22,7 @@ from app.services.loot_free_tease import pick_tease_lines
 from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_roll_presentation import pick_tier_flavor
 from app.services.loot_roll_preview import _pools_for_tier, _weighted_choice
+from app.services.loot_media_deliverable import filter_roll_candidates
 from app.services.loot_tier_catalog import (
     DAILY_PULL_MAX_TIER,
     FREE_PULL_MAX_TIER,
@@ -163,10 +164,6 @@ def build_daily_pull_preview(
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
-        # Island delivery needs a Saved Messages ref — no home-only disk blobs.
-        Media.telegram_message_id.isnot(None),
-        Media.telegram_message_id > 0,
-        ~Media.file_id.like("local:%"),
     )
     seen_ids = [
         int(x[0])
@@ -180,7 +177,7 @@ def build_daily_pull_preview(
     if ban:
         q = q.filter(~Media.id.in_(ban))
 
-    candidates = q.all()
+    candidates = filter_roll_candidates(q.all())
     if not candidates:
         return {
             "ok": False,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from app.services.loot_roll_preview import _pools_for_tier
 
@@ -16,8 +17,51 @@ class _Elig:
         self.base_weight = 1.0
 
 
+def test_loot_candidate_query_local_only_by_default(monkeypatch):
+    """Default policy: only local-disk approved rows are roll candidates."""
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "1")
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models.base import Base
+    from app.models.media import Media
+    from app.services.loot_media_deliverable import filter_roll_candidates
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+
+    local = Media(
+        telegram_message_id=0,
+        file_id="local:abc123.jpg",
+        file_unique_id="local:deadbeef",
+        media_type="photo",
+        pool_id=1,
+        status="approved",
+    )
+    saved = Media(
+        telegram_message_id=999,
+        file_id="tg-file",
+        file_unique_id="uniq-saved",
+        media_type="photo",
+        pool_id=1,
+        status="approved",
+    )
+    db.add_all([local, saved])
+    db.commit()
+
+    rows = db.query(Media).filter(Media.status == "approved", Media.pool_id.in_([1])).all()
+    with patch("app.services.loot_media_deliverable.loot_media_has_local_bytes", side_effect=lambda m: m.file_id.startswith("local:")):
+        ids = {int(r.id) for r in filter_roll_candidates(rows)}
+    assert local.id in ids
+    assert saved.id not in ids
+    db.close()
+
+
 def test_loot_candidate_query_allows_local_and_saved(monkeypatch):
-    """Approved local rows (telegram_message_id=0) must be roll candidates."""
+    """Legacy mode: approved local rows and Saved Messages refs."""
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
 

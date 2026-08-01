@@ -44,8 +44,11 @@ from .lane_drop import LaneDrop
 from .prompt_gate import PromptGate
 from .funnel_dm_consent import FunnelDmConsent
 from .funnel_strategy import FunnelStrategyEntry
+from .social_copy_template import SocialCopyTemplate
+from .creative_catalog import CreativeCatalogEntry
 from .click_link import ClickLink, ClickLinkHit
 from .loot import (
+    LootCreatorSubmission,
     LootDropEvent,
     LootGameConfig,
     LootIntervalTier,
@@ -84,6 +87,7 @@ __all__ = [
     "LootDropEvent",
     "LootGameConfig",
     "LootIntervalTier",
+    "LootCreatorSubmission",
     "LootModifier",
     "LootModifierTagWeight",
     "LootPlayerMediaSeen",
@@ -118,6 +122,8 @@ __all__ = [
     "PromptGate",
     "FunnelDmConsent",
     "FunnelStrategyEntry",
+    "SocialCopyTemplate",
+    "CreativeCatalogEntry",
     "ClickLink",
     "ClickLinkHit",
 ]

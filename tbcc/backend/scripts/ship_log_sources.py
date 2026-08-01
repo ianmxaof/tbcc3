@@ -12,7 +12,7 @@ from app.utils.load_tbcc_dotenv import load_tbcc_dotenv
 
 load_tbcc_dotenv()
 
-from app.services.ship_log_sources import collect_ship_log_context, format_ship_log_context
+from app.services.ship_log_sources import collect_ship_log_context, format_ship_log_context, write_ship_log_cache
 
 
 def main() -> None:
@@ -21,7 +21,12 @@ def main() -> None:
     p = argparse.ArgumentParser(description="TBCC ship log — gather sources")
     p.add_argument("--since", default="7 days ago", help='Git --since value (default: "7 days ago")')
     p.add_argument("--max-commits", type=int, default=25)
+    p.add_argument("--write-cache", action="store_true", help="Write .tbcc-run/ship_log_context.json for island")
     args = p.parse_args()
+    if args.write_cache:
+        path = write_ship_log_cache(since=args.since, max_commits=args.max_commits)
+        print(path)
+        return
     ctx = collect_ship_log_context(since=args.since, max_commits=args.max_commits)
     print(format_ship_log_context(ctx))
 

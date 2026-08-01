@@ -1,0 +1,705 @@
+{
+  "category": "spicy",
+  "templates": [
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Spicy companion: trial photo + chat. good. {spicy} \u00b7 hub {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Spicy companion: trial photo + chat. you won't. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Spicy companion: trial photo + chat. that's the point. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Spicy companion: trial photo + chat. zero tourist energy. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Spicy companion: trial photo + chat. the clock is real. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Spicy companion: trial photo + chat. impatient people fund the network. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Spicy companion: trial photo + chat. no explanation needed. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Spicy companion: trial photo + chat. another step slightly harder. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. act accordingly. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Spicy companion: trial photo + chat. you're still here. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Spicy companion: trial photo + chat. you're still here. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Spicy companion: trial photo + chat. you won't. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Spicy companion: trial photo + chat. you won't. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Spicy companion: trial photo + chat. you're still here. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Spicy companion: trial photo + chat. impatient people fund the network. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Spicy companion: trial photo + chat. you're still here. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "edge lane energy. Spicy companion: trial photo + chat. you're still here. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Spicy companion: trial photo + chat. you won't. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. that's the point. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Spicy companion: trial photo + chat. good. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. Spicy companion: trial photo + chat. you won't. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Spicy companion: trial photo + chat. another step slightly harder. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. that's the point. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Spicy companion: trial photo + chat. no explanation needed. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Spicy companion: trial photo + chat. you won't. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Spicy companion: trial photo + chat. no explanation needed. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Spicy companion: trial photo + chat. that's the point. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. you won't. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Spicy companion: trial photo + chat. you're still here. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. good. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. you're still here. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Spicy companion: trial photo + chat. that's the point. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Spicy companion: trial photo + chat. good. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Spicy companion: trial photo + chat. that's the point. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Spicy companion: trial photo + chat. act accordingly. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. you're still here. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Spicy companion: trial photo + chat. act accordingly. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Spicy companion: trial photo + chat. the clock is real. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Spicy companion: trial photo + chat. impatient people fund the network. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Spicy companion: trial photo + chat. zero tourist energy. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Spicy companion: trial photo + chat. you're still here. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. impatient people fund the network. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Spicy companion: trial photo + chat. good. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Spicy companion: trial photo + chat. another step slightly harder. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another relay fired. Spicy companion: trial photo + chat. you're still here. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Spicy companion: trial photo + chat. zero tourist energy. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. that's the point. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Spicy companion: trial photo + chat. act accordingly. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Spicy companion: trial photo + chat. no explanation needed. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "casuals bounce. Spicy companion: trial photo + chat. zero tourist energy. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Spicy companion: trial photo + chat. no explanation needed. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Spicy companion: trial photo + chat. the clock is real. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Spicy companion: trial photo + chat. that's the point. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Spicy companion: trial photo + chat. another step slightly harder. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Spicy companion: trial photo + chat. good. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Spicy companion: trial photo + chat. another step slightly harder. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. the clock is real. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. zero tourist energy. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Spicy companion: trial photo + chat. zero tourist energy. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. Spicy companion: trial photo + chat. another step slightly harder. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "casuals bounce. Spicy companion: trial photo + chat. you're still here. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another relay fired. Spicy companion: trial photo + chat. the clock is real. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Spicy companion: trial photo + chat. good. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Spicy companion: trial photo + chat. good. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. impatient people fund the network. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Spicy companion: trial photo + chat. act accordingly. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. impatient people fund the network. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. no explanation needed. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Spicy companion: trial photo + chat. another step slightly harder. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Spicy companion: trial photo + chat. act accordingly. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Spicy companion: trial photo + chat. good. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Spicy companion: trial photo + chat. that's the point. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Spicy companion: trial photo + chat. good. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. impatient people fund the network. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Spicy companion: trial photo + chat. act accordingly. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Spicy companion: trial photo + chat. another step slightly harder. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. zero tourist energy. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Spicy companion: trial photo + chat. the clock is real. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Spicy companion: trial photo + chat. the clock is real. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Spicy companion: trial photo + chat. zero tourist energy. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Spicy companion: trial photo + chat. you won't. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "edge lane energy. Spicy companion: trial photo + chat. that's the point. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Spicy companion: trial photo + chat. good. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Spicy companion: trial photo + chat. another step slightly harder. upload \u2192 chat \u2192 unlock \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. act accordingly. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Spicy companion: trial photo + chat. zero tourist energy. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. you won't. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. the clock is real. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Spicy companion: trial photo + chat. that's the point. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Spicy companion: trial photo + chat. another step slightly harder. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Spicy companion: trial photo + chat. another step slightly harder. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. no explanation needed. free trial in DM \u00b7 {spicy} \u00b7 stack {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Spicy companion: trial photo + chat. you're still here. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. another step slightly harder. DM {spicy} \u00b7 revshare optional {affiliate}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Spicy companion: trial photo + chat. no explanation needed. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. the clock is real. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Spicy companion: trial photo + chat. good. {spicy} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. impatient people fund the network. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Spicy companion: trial photo + chat. you're still here. trial photo + chat \u00b7 {spicy}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "spicy",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Spicy companion: trial photo + chat. the clock is real. owned bot first \u00b7 {spicy} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    }
+  ]
+}

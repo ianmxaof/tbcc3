@@ -16,6 +16,7 @@ from app.services.loot_player_stats import free_pull_allowance, free_pulls_remai
 from app.services.loot_referral import try_credit_referrer_for_pull
 from app.services.loot_tier_catalog import FREE_PULL_LIMIT
 from app.services.loot_roll_preview import _pools_for_tier, _weighted_choice
+from app.services.loot_media_deliverable import filter_roll_candidates
 from app.services.loot_tier_catalog import (
     FREE_PULL_MAX_TIER,
     preview_summary_fields,
@@ -74,11 +75,6 @@ def build_free_pull_preview(
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
-        # Island delivery needs Saved Messages download (or local: file_id).
-        Media.telegram_message_id.isnot(None),
-        Media.telegram_message_id > 0,
-        # Skip home-only disk blobs — island has no local media volume.
-        ~Media.file_id.like("local:%"),
     )
     seen_ids = [
         int(x[0])
@@ -92,7 +88,7 @@ def build_free_pull_preview(
     if ban:
         q = q.filter(~Media.id.in_(ban))
 
-    candidates = q.all()
+    candidates = filter_roll_candidates(q.all())
     if not candidates:
         return {
             "ok": False,

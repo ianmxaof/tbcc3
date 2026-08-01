@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.media import Media
 from app.services.local_media_storage import is_local_pool_media, local_media_path, read_local_media_bytes
+from app.services.saved_messages_policy import loot_local_bytes_only
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,15 @@ def is_loot_media_roll_candidate(media: Media) -> bool:
     """
     Eligible for roll selection.
 
-    Local imports must have bytes on disk (or thumb cache via read_local_media_bytes).
-    Saved Messages refs are allowed until audit quarantines them.
+    When TBCC_LOOT_LOCAL_BYTES_ONLY=1 (default): only rows with bytes on disk.
+    Legacy mode: Saved Messages refs allowed until audit quarantines them.
     """
     if (media.status or "").strip().lower() != "approved":
         return False
     if loot_media_has_local_bytes(media):
         return True
+    if loot_local_bytes_only():
+        return False
     tg_id = int(getattr(media, "telegram_message_id", 0) or 0)
     return tg_id > 0
 

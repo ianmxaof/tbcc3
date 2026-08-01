@@ -24,10 +24,12 @@ def test_all_variations_cover_products_and_styles():
     assert styles == set(StarsBaitStyle)
 
 
-def test_bait_handoff_payloads():
+def test_bait_handoff_payloads(monkeypatch):
     assert bait_handoff_payload(StarsBaitProduct.LOOT_KEY) == "bait_loot"
     assert bait_handoff_payload(StarsBaitProduct.DAY_PASS) == "bait_day"
     assert bait_handoff_payload(StarsBaitProduct.SUBSCRIPTION) == "bait_vip"
+    monkeypatch.setenv("TBCC_STARS_BAIT_CAMPAIGN_START", "src_bait_batch_wk30")
+    assert bait_handoff_payload(StarsBaitProduct.LOOT_KEY) == "src_bait_batch_wk30"
 
 
 def test_parse_bait_start_payload():

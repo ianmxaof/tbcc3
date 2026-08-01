@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 
+from celery.signals import worker_ready
+
 from app.workers.celery_app import celery
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,52 @@ def _min_queue_depth() -> int:
         return max(1, min(16, int((os.getenv("TBCC_BUFFER_ARMORY_MIN_DEPTH") or "3").strip())))
     except ValueError:
         return 3
+
+
+def _startup_refill_enabled() -> bool:
+    return (os.getenv("TBCC_BUFFER_ARMORY_STARTUP_REFILL") or "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _startup_refill_countdown_s() -> int:
+    try:
+        return max(30, min(600, int((os.getenv("TBCC_BUFFER_ARMORY_STARTUP_DELAY_S") or "90").strip())))
+    except ValueError:
+        return 90
+
+
+def _worker_should_run_startup_refill(hostname: str) -> bool:
+    """Post-scheduler workers should not own Buffer queue stocking."""
+    h = (hostname or "").lower()
+    if "post@" in h or h.startswith("island-post@"):
+        return False
+    if h.startswith("scheduler@"):
+        return False
+    return True
+
+
+@worker_ready.connect
+def _schedule_buffer_armory_startup_refill(sender=None, **kwargs):
+    if not _startup_refill_enabled():
+        return
+    from app.services.buffer_graphql import buffer_api_key
+
+    if not buffer_api_key():
+        return
+    hostname = str(getattr(sender, "hostname", "") or "")
+    if not _worker_should_run_startup_refill(hostname):
+        return
+    countdown = _startup_refill_countdown_s()
+    refill_buffer_armory.apply_async(countdown=countdown, queue="celery")
+    logger.info(
+        "buffer armory: scheduled startup refill in %ss (worker=%s)",
+        countdown,
+        hostname or "?",
+    )
 
 
 @celery.task(name="app.workers.buffer_armory_worker.refill_buffer_armory")
@@ -28,6 +76,7 @@ def refill_buffer_armory():
         build_armory_queue_items,
         seed_relay_buffer_armory,
         seed_scheduled_buffer_armory,
+        _eligible_buffer_mirror_posts,
     )
 
     min_depth = _min_queue_depth()
@@ -48,6 +97,7 @@ def refill_buffer_armory():
                 armory_report["relay_refilled"] = True
 
             posts = db.query(ScheduledTextPost).filter(ScheduledTextPost.buffer_mirror_enabled.is_(True)).all()
+            posts = _eligible_buffer_mirror_posts(db, posts)
             for post in posts:
                 if len(post.get_buffer_x_queue()) < min_depth:
                     seed_scheduled_buffer_armory(db, post_id=int(post.id), replace=False)

@@ -434,6 +434,22 @@ export type ListeningRelayPostLogItem = {
   extra: Record<string, unknown> | null;
 };
 
+export type LootCreatorSubmission = {
+  submission_id: number;
+  telegram_user_id: number;
+  submitted_url: string;
+  normalized_url: string;
+  platform_key: string;
+  platform_label: string;
+  path_handle: string;
+  display_name: string | null;
+  label: string;
+  status: string;
+  review_note: string | null;
+  modifier_id: number | null;
+  created_at: string | null;
+};
+
 export type LootModifier = {
   id: number;
   kind: string;
@@ -1627,6 +1643,33 @@ export const api = {
         bots: { loot_overseer: string; payment: string };
       }>(`/analytics/bots/funnel${q}`);
     },
+    gateFunnel: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        range_days: number;
+        gate_funnel: Array<{
+          source_ref: string;
+          slugs: string[];
+          clicks: number;
+          bot_clicks: number;
+          touches: number;
+          revenue_usd: number;
+          click_to_touch_pct: number | null;
+          usd_per_1k_clicks: number | null;
+          usd_per_touch: number | null;
+          top_countries: Array<{ country: string; clicks: number }>;
+        }>;
+        totals: {
+          clicks: number;
+          bot_clicks: number;
+          touches: number;
+          click_to_touch_pct: number | null;
+          beaconed_source_refs: number;
+        };
+        unbeaconed_earning_refs: string[];
+        clicks_without_touches: string[];
+      }>(`/analytics/gate-funnel${q}`);
+    },
     signalsStatus: () =>
       fetchApi<{
         enabled: boolean;
@@ -2498,10 +2541,30 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    creatorSubmit: (body: { url: string; telegram_user_id?: number; handle?: string }) =>
-      fetchApi<{ ok: boolean; modifier_id: number; label: string; target_url: string; message: string }>(
-        "/loot/creator-submit",
-        { method: "POST", body: JSON.stringify(body) }
+    creatorSubmit: (body: { url: string; telegram_user_id?: number; display_name?: string; handle?: string }) =>
+      fetchApi<{
+        ok: boolean;
+        pending_review?: boolean;
+        submission_id?: number;
+        modifier_id?: number;
+        label: string;
+        target_url: string;
+        message: string;
+        already_registered?: boolean;
+      }>("/loot/creator-submit", { method: "POST", body: JSON.stringify(body) }),
+    listCreatorSubmissions: (status = "pending", limit = 50) =>
+      fetchApi<{ items: LootCreatorSubmission[] }>(
+        `/loot/creator-submissions?status=${encodeURIComponent(status)}&limit=${limit}`
+      ),
+    approveCreatorSubmission: (id: number, body?: { review_note?: string; reviewer_user_id?: number }) =>
+      fetchApi<{ ok: boolean; submission_id: number; modifier_id?: number; message: string }>(
+        `/loot/creator-submissions/${id}/approve`,
+        { method: "POST", body: JSON.stringify(body ?? {}) }
+      ),
+    rejectCreatorSubmission: (id: number, body?: { review_note?: string; reviewer_user_id?: number }) =>
+      fetchApi<{ ok: boolean; submission_id: number; message: string }>(
+        `/loot/creator-submissions/${id}/reject`,
+        { method: "POST", body: JSON.stringify(body ?? {}) }
       ),
     createModifiersFromUrlBatch: (items: Array<{
       url: string;

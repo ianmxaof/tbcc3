@@ -69,7 +69,7 @@ ALL_SOURCES = INTERNAL_SOURCES + EXTERNAL_SOURCES
 
 MANUAL_SOURCES = EXTERNAL_SOURCES
 
-SYNC_KINDS = ("webhook", "computed", "manual", "api_poll", "playwright_scrape")
+SYNC_KINDS = ("webhook", "computed", "manual", "api_poll", "playwright_scrape", "payout")
 
 def stars_usd_rate() -> float:
     import os
@@ -182,15 +182,22 @@ def record_income_entry(
         explicit=traffic_source_ref,
     )
 
+    sk = (sync_kind or "computed")[:16]
+    minor = int(amount_minor)
+    usd_c = int(amount_usd_cents)
+    if sk != "payout":
+        minor = max(0, minor)
+        usd_c = max(0, usd_c)
+
     row = IncomeEntry(
         idempotency_key=key,
         source=(source or "other")[:32],
         source_label=(source_label or SOURCE_LABELS.get(source, source))[:256],
-        amount_minor=max(0, int(amount_minor)),
+        amount_minor=minor,
         currency=(currency or "USD")[:8],
-        amount_usd_cents=max(0, int(amount_usd_cents)),
+        amount_usd_cents=usd_c,
         earned_at=earned_at,
-        sync_kind=(sync_kind or "computed")[:16],
+        sync_kind=sk,
         external_ref=(external_ref[:128] if external_ref else None),
         subscription_id=subscription_id,
         telegram_user_id=int(telegram_user_id) if telegram_user_id is not None else None,
@@ -404,6 +411,42 @@ def record_manual_income(
     )
 
 
+def record_income_payout(
+    db: Session,
+    *,
+    source: str,
+    amount_usd: float,
+    destination: str = "bank",
+    notes: str | None = None,
+    withdrawn_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Record cash leaving an external platform (withdrawal). Stored as negative USD in the ledger."""
+    src = _normalize_source(source)
+    usd = max(0.0, float(amount_usd))
+    if usd <= 0:
+        return {"ok": False, "error": "amount_must_be_positive"}
+
+    when = withdrawn_at or datetime.utcnow()
+    stamp = when.strftime("%Y%m%d")
+    idem = f"payout:{src}:{stamp}:{int(round(usd * 100))}"[:128]
+    usd_cents = _usd_cents_from_usd(usd)
+    label = f"{SOURCE_LABELS.get(src, src)} payout → {destination}"
+
+    return record_income_entry(
+        db,
+        idempotency_key=idem,
+        source=src,
+        source_label=label[:256],
+        amount_minor=-usd_cents,
+        currency="USD",
+        amount_usd_cents=-usd_cents,
+        earned_at=when,
+        sync_kind="payout",
+        external_ref=f"payout:{destination}"[:128],
+        raw={"destination": destination, "notes": notes, "gross_usd": usd},
+    )
+
+
 def record_cumulative_sync_delta(
     db: Session,
     source: str,
@@ -492,6 +535,8 @@ def income_source_catalog() -> dict[str, Any]:
 
 def _aggregate_rows(rows: list[IncomeEntry]) -> dict[str, Any]:
     total_usd_cents = 0
+    gross_usd_cents = 0
+    payout_usd_cents = 0
     total_stars = 0
     internal_usd_cents = 0
     external_usd_cents = 0
@@ -499,7 +544,12 @@ def _aggregate_rows(rows: list[IncomeEntry]) -> dict[str, Any]:
 
     for row in rows:
         usd_c = int(row.amount_usd_cents or 0)
+        is_payout = (row.sync_kind or "") == "payout" or usd_c < 0
+        if is_payout:
+            payout_usd_cents += abs(usd_c)
+            continue
         total_usd_cents += usd_c
+        gross_usd_cents += usd_c
         if row.source in INTERNAL_SOURCES:
             internal_usd_cents += usd_c
         else:
@@ -525,6 +575,9 @@ def _aggregate_rows(rows: list[IncomeEntry]) -> dict[str, Any]:
     by_source_list = sorted(by_source.values(), key=lambda x: -int(x["usd_cents"]))
     return {
         "total_usd_cents": total_usd_cents,
+        "gross_usd_cents": gross_usd_cents,
+        "payout_usd_cents": payout_usd_cents,
+        "net_usd_cents": total_usd_cents,
         "total_stars": total_stars,
         "internal_usd_cents": internal_usd_cents,
         "external_usd_cents": external_usd_cents,
@@ -561,6 +614,8 @@ def income_summary(db: Session, *, days: int | None = None, backfill: bool = Tru
         "totals": {
             "usd_cents": agg["total_usd_cents"],
             "usd": round(agg["total_usd_cents"] / 100.0, 2),
+            "gross_usd": round(agg["gross_usd_cents"] / 100.0, 2),
+            "payouts_usd": round(agg["payout_usd_cents"] / 100.0, 2),
             "stars": agg["total_stars"],
             "entry_count": agg["entry_count"],
             "internal_usd": round(agg["internal_usd_cents"] / 100.0, 2),

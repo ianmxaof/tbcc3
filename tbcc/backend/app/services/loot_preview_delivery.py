@@ -670,6 +670,19 @@ async def send_loot_preview_to_chat(
         if "chat not found" in str(e).lower():
             delivery["notes"].append("chat_not_found")
         return delivery
+    finally:
+        try:
+            if int(delivery.get("media_sent") or 0) > 0 or int(delivery.get("albums_sent") or 0) > 0:
+                from app.services.traffic_pulse import pulse_loot_roll
+
+                pulse_loot_roll(
+                    roll_kind=str(preview.get("roll_kind") or preview.get("kind") or "roll"),
+                    tier=int(preview.get("rarity_tier") or 1),
+                    media_sent=int(delivery.get("media_sent") or 0),
+                    chat_id=int(chat_id),
+                )
+        except Exception:
+            pass
 
 
 async def _send_loot_preview_to_chat_inner(

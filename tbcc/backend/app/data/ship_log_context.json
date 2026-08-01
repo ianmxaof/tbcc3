@@ -1,0 +1,33 @@
+{
+  "written_at": "2026-08-01T15:08:26.180982+00:00",
+  "since_label": "7 days ago",
+  "commit_lines": [
+    "417aa83 ux: drop affiliate-disclosure copy from link hub menu captions (6 hours ago)",
+    "87a9292 feat: post Loot Room creator recruitment Variation G script (6 hours ago)",
+    "ac08c89 feat: seed Cherry Affair (nudify.systems) in AI affiliate rotation (9 hours ago)",
+    "79f934d fix: loot_durability_check indentation (island preflight) (19 hours ago)",
+    "07c5424 feat: operator sandbox QA + revenue watch / loot durability scripts (19 hours ago)",
+    "70501d3 fix: spicy companion conversion \u2014 traffic bias + post-trial Stars upsell (21 hours ago)",
+    "5b35d60 feat: top up thin lane pools from media that is still deliverable (4 days ago)",
+    "84530c9 fix: refill the AI lane from media that is still deliverable (4 days ago)",
+    "14841ae fix: retry channel imports when the worker event loop is busy (4 days ago)",
+    "b41ab7b fix: deliver loot albums off the import session so paid rolls stop starving (4 days ago)",
+    "c2a55b6 chore(gates): island cutover for wk31 beacons + smoke that lanes cannot dead-end (4 days ago)",
+    "977a65e feat(gates): relay lane traffic through the loot bot so lanes are measurable (4 days ago)",
+    "805688f feat(analytics): measure the gate funnel and the companion's real margin (4 days ago)",
+    "41db51a feat(gates): beacon every Linkvertise destination, not just loot (4 days ago)",
+    "931fa72 feat(loot): daily micro-pull with 7-day streak to build a return habit (4 days ago)",
+    "748a227 feat(attribution): tie every ledger dollar to a traffic source (4 days ago)",
+    "aba9ac5 docs(island): beacon + Kit env example keys (5 days ago)",
+    "d3861b5 fix(beacon): stop curl/TG preview inbox spam; capture VIP baseline (5 days ago)",
+    "fb295ff fix(loot-economy): VIP  floor, bonus draws, fulfillment ledger (5 days ago)",
+    "de3fbff feat(attribution): deep-link touches + conversion sprint hub (5 days ago)",
+    "97a9068 docs(loot): LRG goblin image pack + bulletin v2 copy (6 days ago)",
+    "808ee36 feat(prompt-gate): Linkvertise Text registry, goblin promo, placement guards (6 days ago)",
+    "b1ae84e fix(buffer): keep bare t.me on X when Linkvertise disabled (6 days ago)",
+    "d099210 fix(ci): align celery route test with telegram lane for pool seed (6 days ago)",
+    "0a401c2 feat(relay): Phase 5a Bot API transport for listening relay (6 days ago)",
+    "365e4aa fix(loot): route album delivery through import session on island (6 days ago)",
+    "59cd9f6 feat(relay): Phases 1-4 listening relay hardening + loot goblin v1 (7 days ago)"
+  ]
+}

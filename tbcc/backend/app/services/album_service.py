@@ -103,6 +103,8 @@ async def post_pool_albums(
     *,
     mark_posted: bool = True,
 ) -> dict:
+    from app.services.media_album_dedupe import dedupe_media_for_album
+
     approved = (
         db.query(Media)
         .filter(Media.pool_id == pool_id, Media.status == "approved")
@@ -119,6 +121,7 @@ async def post_pool_albums(
                 approved = ranked + [m for m in approved if m.id not in {x.id for x in ranked}]
     except Exception:
         logger.debug("export flywheel rank skipped", exc_info=True)
+    approved = dedupe_media_for_album(approved)
     # Group by media_type so each album has same type (Telegram requirement)
     by_type = defaultdict(list)
     for m in approved:

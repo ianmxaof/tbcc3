@@ -19,6 +19,15 @@ from dataclasses import dataclass
 STORAGE_HUB_IDENT = "-1003812457581"
 STORAGE_HUB_INTERNAL_ID = "3812457581"
 
+# Manual intake — forum subtopic + optional shortcut channel (bulk forward target).
+INBOX_TOPIC_ID = 22569
+INBOX_TOPIC_TITLE = "AOF INBOX"
+INBOX_CHANNEL_IDENT = "-1003874330989"
+INBOX_CHANNEL_TITLE = "AOF INBOX #CHANNEL"
+
+# Operator quarantine review queue (forum subtopic). Set TBCC_GATEKEEPER_REVIEW_THREAD_ID if renamed.
+GATEKEEPER_REVIEW_TOPIC_TITLE = "Q&A | APPROVE / DENY | INTAKE"
+
 
 @dataclass(frozen=True)
 class StorageTopicMap:
@@ -31,6 +40,10 @@ class StorageTopicMap:
 def topic_deep_link(message_thread_id: int) -> str:
     return f"https://t.me/c/{STORAGE_HUB_INTERNAL_ID}/{message_thread_id}"
 
+
+# Operator quarantine review cards (forum subtopic). Create in hangar, then set env.
+# Until set, review cards post to the hub root / General when TBCC_GATEKEEPER_REVIEW_THREAD_ID is unset.
+GATEKEEPER_REVIEW_TOPIC_ID: int | None = None
 
 # AOF STORAGE lanes — synced from live group 2026-06-13
 AOF_STORAGE_TOPIC_MAP: tuple[StorageTopicMap, ...] = (
@@ -46,6 +59,7 @@ AOF_STORAGE_TOPIC_MAP: tuple[StorageTopicMap, ...] = (
     StorageTopicMap(2919, "AOF TABOO 18+ STORAGE", "taboo"),
     StorageTopicMap(3387, "AOF ABG/LBFM STORAGE", "abg"),
     StorageTopicMap(11281, "AOF FULL LENGTH STORAGE", "full_length"),
+    StorageTopicMap(INBOX_TOPIC_ID, INBOX_TOPIC_TITLE, "inbox"),
 )
 
 # Telegram → watermark → Erome. Topic: Remote Upload Links (Storage & Bot Hangar).
@@ -125,6 +139,7 @@ STORAGE_CATEGORY_EMOJI: dict[str, str] = {
     "taboo": "🔞",
     "abg": "🥡",
     "full_length": "🎬",
+    "inbox": "📥",
     "erome": "💗",
 }
 

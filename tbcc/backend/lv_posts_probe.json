@@ -1,0 +1,23 @@
+{
+  "slug": "dl1P4gLUfX0L",
+  "url": "https://linkvertise.com/dashboard",
+  "buttons": [
+    {
+      "tag": "button",
+      "text": "Click to reveal",
+      "role": "",
+      "href": ""
+    }
+  ],
+  "links": [
+    {
+      "tag": "a",
+      "text": "Cloudflare",
+      "role": "",
+      "href": "https://www.cloudflare.com/5xx-error-landing"
+    }
+  ],
+  "inputs": [],
+  "url_after_search": "https://linkvertise.com/dashboard",
+  "edit_candidates": []
+}

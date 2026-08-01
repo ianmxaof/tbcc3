@@ -2,6 +2,7 @@
 const TBCC_API_BASE_CANDIDATES = [
   "http://127.0.0.1:8000",
   "http://localhost:8000",
+  "https://api.powercore.app",
   "http://5.161.53.91:8000",
 ];
 let API_BASE = TBCC_API_BASE_CANDIDATES[0];
@@ -467,6 +468,7 @@ const progressTitle = document.getElementById("progressTitle");
 const progressFill = document.getElementById("progressFill");
 const progressStatus = document.getElementById("progressStatus");
 const progressError = document.getElementById("progressError");
+const btnStopProgress = document.getElementById("btnStopProgress");
 const btnToggleOverlay = document.getElementById("btnToggleOverlay");
 const btnSelectAllOnPage = document.getElementById("btnSelectAllOnPage");
 const cropBottomEnabled = document.getElementById("cropBottomEnabled");
@@ -4383,7 +4385,7 @@ async function refreshCrawlerTabUrlLabel() {
 /** Hosts where TBCC should forward browser cookies to the backend crawler. */
 function crawlerShouldUseCookiesForUrl(url) {
   const hint = detectCrawlerAdapterHint(url);
-  if (hint === "onlyfans" || hint === "bunkr") return true;
+  if (hint === "onlyfans" || hint === "bunkr" || hint === "madeporn") return true;
   try {
     const h = new URL(url).hostname.toLowerCase();
     if (
@@ -4498,9 +4500,19 @@ function detectCrawlerAdapterHint(url) {
     if (h === "erome.com" || h.endsWith(".erome.com")) return "erome";
     if (/^(?:app\.)?bunkr+\.\w+$/.test(h)) return "bunkr";
     if (h === "onlyfans.com" || h.endsWith(".onlyfans.com")) return "onlyfans";
+    if (tbccUrlLooksLikeMadeporn(url)) return "madeporn";
     if (tbccUrlLooksLikeXProfile(url)) return "x-profile";
   } catch (_) {}
   return "auto";
+}
+
+function tbccUrlLooksLikeMadeporn(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === "made.porn" || h.endsWith(".made.porn");
+  } catch (_) {
+    return false;
+  }
 }
 
 /**
@@ -4730,6 +4742,84 @@ async function deployOnlyFansFromActiveTab(url, adapterHint) {
   setCrawlerStatus(`+${added} / ${upgraded}↑ / ${downgraded}↓ via onlyfans`, "success");
   showToast(
     `Crawler (onlyfans) added ${added}, upgraded ${upgraded} to full-res, swapped ${downgraded} thumbs to previews${elapsed ? " in " + elapsed : ""}.`,
+    "success"
+  );
+}
+
+/**
+ * made.porn gallery harvest — extracts embedded CDN mp4/jpeg URLs from page HTML.
+ * Scrolls to trigger lazy-load tiles; no per-item navigation required.
+ */
+async function deployMadepornFromActiveTab(url) {
+  let tid = await resolveTargetTabId();
+  let tabUrl = "";
+  if (tid != null) {
+    try {
+      const t = await chrome.tabs.get(tid);
+      tabUrl = (t && t.url) || "";
+    } catch (_) {}
+  }
+  if (!tbccUrlLooksLikeMadeporn(tabUrl || url)) {
+    setCrawlerStatus("Open made.porn tab", "error");
+    showToast(
+      "made.porn crawl needs an open gallery or media page (made.porn/v/…, /i/…, or home). Open it in the active tab, then Crawl again.",
+      "info"
+    );
+    return;
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tid },
+      files: ["madeporn-harvest.js"],
+    });
+  } catch (e) {
+    throw new Error(
+      "Could not inject made.porn harvest into tab: " + (e && e.message ? e.message : e)
+    );
+  }
+
+  setCrawlerStatus("Harvesting made.porn…", "info");
+  showToast("Scanning page for embedded media URLs. Stay on this tab until it finishes.", "info");
+
+  let settings = { maxItems: 500, includeVideo: true, includeImage: true, tickMs: 450, idleTicks: 5, hardCapMs: 45000 };
+  try {
+    const stored = await chrome.storage.local.get("tbccMadepornHarvestSettings");
+    if (stored && stored.tbccMadepornHarvestSettings) {
+      settings = { ...settings, ...stored.tbccMadepornHarvestSettings };
+    }
+  } catch (_) {}
+
+  let result;
+  try {
+    result = await chrome.tabs.sendMessage(tid, {
+      action: "tbcc-madeporn-harvest-run",
+      options: settings,
+    });
+  } catch (e) {
+    throw new Error(
+      "made.porn harvest failed: " + (e && e.message ? e.message : e) + ". Reload the page and try again."
+    );
+  }
+
+  if (!result || result.ok === false) {
+    throw new Error((result && result.error) || "made.porn harvest returned no data");
+  }
+
+  const list = Array.isArray(result.list) ? result.list : [];
+  if (!list.length) {
+    throw new Error(
+      "No media found on this made.porn page. Scroll the gallery into view or dismiss the login overlay, then Crawl again."
+    );
+  }
+
+  const added = await mergeCrawlerItemsIntoGallery(list, result.summary?.sourceUrl || url, "madeporn");
+  const capNote = result.truncated ? ` (capped at ${settings.maxItems || 500})` : "";
+  const elapsed =
+    result.summary && result.summary.elapsedMs ? Math.round(result.summary.elapsedMs / 1000) + "s" : "";
+  setCrawlerStatus("+" + added.length + " via madeporn", "success");
+  showToast(
+    `made.porn harvest added ${added.length} item(s)${capNote}${elapsed ? " in " + elapsed : ""}. Use ZIP or Download next.`,
     "success"
   );
 }
@@ -5098,6 +5188,16 @@ async function crawlActiveTab() {
     if (adapterHint === "x-profile") {
       try {
         await deployXProfileFromActiveTab(url);
+      } finally {
+        btnCrawlTab.disabled = false;
+      }
+      return;
+    }
+
+    /** made.porn: embedded CDN URLs in gallery HTML (scroll + extract). */
+    if (adapterHint === "madeporn") {
+      try {
+        await deployMadepornFromActiveTab(url);
       } finally {
         btnCrawlTab.disabled = false;
       }
@@ -5954,6 +6054,54 @@ function tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts) {
   });
 }
 
+/** Harvest ZIP names must match real bytes — X CDN often serves WebP as .jpg. */
+async function tbccZipEntryFilenameAsync(it, idx, baseName, blob, fetchOpts) {
+  const pad = String(idx + 1).padStart(3, "0");
+  let alignedBase = String(baseName || "media").trim() || "media";
+  let sniffExt = "";
+  if (blob && typeof TbccWebp !== "undefined") {
+    try {
+      if (TbccWebp.tbccAlignFilenameToBlob) {
+        alignedBase = await TbccWebp.tbccAlignFilenameToBlob(blob, alignedBase);
+      }
+      if (TbccWebp.tbccSniffImageKind) {
+        const kind = await TbccWebp.tbccSniffImageKind(blob);
+        if (kind && kind !== "unknown" && TbccWebp.tbccExtForKind) {
+          sniffExt = TbccWebp.tbccExtForKind(kind).replace(/^\./, "");
+        }
+      }
+    } catch (_) {}
+  }
+  alignedBase = alignedBase.replace(/[^\w.\-]+/g, "_");
+  const fallback = (pad + "_" + alignedBase).replace(/[^\w.\-]+/g, "_");
+  if (!fetchOpts || !fetchOpts.harvestZip || typeof TbccZipNaming === "undefined") return fallback;
+  const name =
+    (it && it.tbccZipProfileName) ||
+    fetchOpts.profileName ||
+    TbccZipNaming.profileNameFromSourceUrl((it && it.tbccSourcePageUrl) || "") ||
+    "media";
+  return TbccZipNaming.buildZipFilename(fetchOpts.zipNameTemplate, {
+    name,
+    index: idx + 1,
+    baseName: alignedBase,
+    mime: blob && blob.type,
+    ext: sniffExt || undefined,
+  });
+}
+
+async function tbccZipEntryNameForItem(it, idx, baseName, blob, fetchOpts) {
+  if (fetchOpts && fetchOpts.harvestZip) {
+    return tbccZipEntryFilenameAsync(it, idx, baseName, blob, fetchOpts);
+  }
+  if (blob && isImageItem(it) && typeof TbccWebp !== "undefined" && TbccWebp.tbccAlignFilenameToBlob) {
+    try {
+      const aligned = await TbccWebp.tbccAlignFilenameToBlob(blob, baseName || "media");
+      return tbccZipEntryFilename(it, idx, aligned, blob, fetchOpts);
+    } catch (_) {}
+  }
+  return tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts);
+}
+
 function resolveZipBundleProfileName(opts, selected) {
   const rows = Array.isArray(selected) ? selected : [];
   const fetchOpts = (opts && opts.zipFetchOpts) || opts || {};
@@ -6445,6 +6593,76 @@ async function fetchTwimgBytesFromExtensionPage(url, refererPageUrl, expectVideo
   return null;
 }
 
+/** Unwrap { blob, name } mistakes — never zip a plain object (→ "[object Object]" / 15 B). */
+function tbccUnwrapZipBlob(blob) {
+  if (blob && typeof blob === "object" && blob.blob instanceof Blob && !(blob instanceof Blob)) {
+    return blob.blob;
+  }
+  return blob;
+}
+
+/** Normalize bytes from chrome.runtime.sendMessage (ArrayBuffer, TypedArray, numeric dict). */
+function tbccNormalizeFetchBuffer(buf) {
+  if (!buf) return null;
+  if (typeof Blob !== "undefined" && buf instanceof Blob) return buf;
+  if (buf instanceof ArrayBuffer) return buf;
+  if (ArrayBuffer.isView(buf)) {
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  }
+  if (typeof buf === "object" && buf.byteLength == null) {
+    try {
+      const keys = Object.keys(buf);
+      if (keys.length && keys.every((k) => /^\d+$/.test(k))) {
+        const u8 = new Uint8Array(keys.length);
+        for (let i = 0; i < keys.length; i++) u8[i] = Number(buf[i]) & 0xff;
+        return u8.buffer;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function tbccAssertUsableImageBlob(blob, label) {
+  const b = tbccUnwrapZipBlob(blob);
+  if (!b || typeof Blob === "undefined" || !(b instanceof Blob)) {
+    throw new Error((label || "Image") + " fetch failed — not a valid blob.");
+  }
+  if (b.size < 256) {
+    let head = "";
+    try {
+      head = await b.slice(0, Math.min(32, b.size)).text();
+    } catch (_) {}
+    if (head === "[object Object]") {
+      throw new Error(
+        (label || "Image") + " fetch corrupted (object coerced to text) — reload the extension and retry ZIP."
+      );
+    }
+    throw new Error((label || "Image") + " too small (" + b.size + " B) — likely a CDN stub, not image data.");
+  }
+  const sig = new Uint8Array(await b.slice(0, 12).arrayBuffer());
+  const jpeg = sig[0] === 0xff && sig[1] === 0xd8;
+  const png = sig[0] === 0x89 && sig[1] === 0x50 && sig[2] === 0x4e && sig[3] === 0x47;
+  const gif = sig[0] === 0x47 && sig[1] === 0x49 && sig[2] === 0x46;
+  const webp = sig[0] === 0x52 && sig[1] === 0x49 && sig[2] === 0x46 && sig[3] === 0x46 && sig[8] === 0x57;
+  if (!jpeg && !png && !gif && !webp) {
+    throw new Error((label || "Image") + " bytes are not JPEG/PNG/WebP/GIF — refetch or use another URL.");
+  }
+  return b;
+}
+
+function tbccZipAddBinaryFile(zip, filename, blob) {
+  const b = tbccUnwrapZipBlob(blob);
+  if (!b || typeof Blob === "undefined" || !(b instanceof Blob)) {
+    throw new Error("ZIP pack rejected non-blob entry for " + String(filename || "media").slice(0, 64));
+  }
+  zip.file(filename, b);
+}
+
+async function tbccPackZipImageBlob(rawBlob, fetchOpts) {
+  const wm = await tbccMaybeWatermarkZipBlob(rawBlob, "photo", fetchOpts);
+  return tbccAssertUsableImageBlob(wm);
+}
+
 async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) {
   url = normalizeTbccMediaUrlForImport(url);
   const ref = typeof refererPageUrl === "string" ? refererPageUrl : "";
@@ -6469,13 +6687,18 @@ async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) 
     const direct = await fetchTwimgBytesFromExtensionPage(url, ref, expectVideo);
     if (direct) return direct;
   }
-  const preferSession = hostNeedsSessionFetch(url) || hostNeedsGalleryThumbProxy(url);
-  if (!preferSession) {
-    try {
-      const r = await fetch(url, { credentials: "omit", mode: "cors" });
-      if (r.ok) return await r.blob();
-    } catch (_) {}
-  }
+  // Side panel has <all_urls> — try direct fetch first (Fapello and other public CDNs).
+  // hostNeedsSessionFetch used to skip this and route only through the service worker, which
+  // failed for Fapello ZIP batches (no tab/cookie path in background).
+  try {
+    const hdrs = {};
+    if (ref) hdrs.Referer = ref;
+    const r = await fetch(url, { credentials: "omit", mode: "cors", headers: hdrs });
+    if (r.ok) {
+      const blob = await r.blob();
+      if (blob && blob.size >= 256) return blob;
+    }
+  } catch (_) {}
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(
       {
@@ -6491,18 +6714,21 @@ async function fetchUrlBytesToBlob(url, refererPageUrl, tabIdOrItem, fetchOpts) 
           return;
         }
         if (res && res.ok && res.buffer) {
-          const buf = res.buffer;
-          const byteLen =
-            buf && buf.byteLength != null
-              ? buf.byteLength
-              : buf && buf.length != null
-                ? buf.length
-                : 0;
-          if (byteLen > 0 && byteLen < 256 && tbccIsTwimgCdnUrl(url)) {
+          const norm = tbccNormalizeFetchBuffer(res.buffer);
+          if (norm && typeof Blob !== "undefined" && norm instanceof Blob) {
+            resolve(norm);
+            return;
+          }
+          const byteLen = norm && norm.byteLength != null ? norm.byteLength : 0;
+          if (byteLen < 1) {
             resolve(null);
             return;
           }
-          resolve(new Blob([buf], { type: "application/octet-stream" }));
+          if (byteLen < 256 && tbccIsTwimgCdnUrl(url)) {
+            resolve(null);
+            return;
+          }
+          resolve(new Blob([norm], { type: "application/octet-stream" }));
         } else resolve(null);
       }
     );
@@ -6522,15 +6748,15 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry, fetchOpts) {
         it.url,
         safe
       );
-      const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
+      const wm = await tbccPackZipImageBlob(prep.blob, fetchOpts);
       return {
-        filename: tbccZipEntryFilename(it, idx, prep.name.replace(/[^\w.\-]+/g, "_"), wm, fetchOpts),
+        filename: await tbccZipEntryNameForItem(it, idx, prep.name.replace(/[^\w.\-]+/g, "_"), wm, fetchOpts),
         blob: wm,
       };
     }
     const outBlob = await tbccMaybeWatermarkZipBlob(it.file, isImageItem(it) ? "photo" : "video", fetchOpts);
     if (!isImageItem(it)) await tbccAssertUsableVideoBlob(outBlob);
-    return { filename: tbccZipEntryFilename(it, idx, safe, outBlob, fetchOpts), blob: outBlob };
+    return { filename: await tbccZipEntryNameForItem(it, idx, safe, outBlob, fetchOpts), blob: outBlob };
   }
   if (it.url && String(it.url).startsWith("data:image/")) {
     try {
@@ -6538,14 +6764,14 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry, fetchOpts) {
       const blob = await r.blob();
       if (isImageItem(it)) {
         const prep = await tbccPrepareRasterBlob(blob, it.url, filenameForCropUrl(it.url));
-        const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
+        const wm = await tbccPackZipImageBlob(prep.blob, fetchOpts);
         return {
-          filename: tbccZipEntryFilename(it, idx, prep.name, wm, fetchOpts),
+          filename: await tbccZipEntryNameForItem(it, idx, prep.name, wm, fetchOpts),
           blob: wm,
         };
       }
       return {
-        filename: tbccZipEntryFilename(it, idx, filenameFromUrl(it.url), blob, fetchOpts),
+        filename: await tbccZipEntryNameForItem(it, idx, filenameFromUrl(it.url), blob, fetchOpts),
         blob,
       };
     } catch (e) {
@@ -6566,12 +6792,12 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry, fetchOpts) {
     const blob = await r.blob();
     if (isImageItem(it)) {
       const prep = await tbccPrepareRasterBlob(blob, it.url, zipFilenameHintForItem(it, it.url) || "media.jpg");
-      const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
-      return { filename: tbccZipEntryFilename(it, idx, prep.name, wm, fetchOpts), blob: wm };
+      const wm = await tbccPackZipImageBlob(prep.blob, fetchOpts);
+      return { filename: await tbccZipEntryNameForItem(it, idx, prep.name, wm, fetchOpts), blob: wm };
     }
     await tbccAssertUsableVideoBlob(blob);
     const base = (zipFilenameHintForItem(it, it.url) || "media") + ".mp4";
-    return { filename: tbccZipEntryFilename(it, idx, base, blob, fetchOpts), blob };
+    return { filename: await tbccZipEntryNameForItem(it, idx, base, blob, fetchOpts), blob };
   }
   if (it.url && (it.url.startsWith("http://") || it.url.startsWith("https://"))) {
     const httpFetchUrl = bestHttpMediaUrlForItem(it) || it.url;
@@ -6593,9 +6819,9 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry, fetchOpts) {
     if (!blob) throw new Error("Could not fetch: " + String(httpFetchUrl).slice(0, 96));
     if (isImageItem(it)) {
       const prep = await tbccPrepareRasterBlob(blob, it.url, zipFilenameHintForItem(it, httpFetchUrl));
-      const wm = await tbccMaybeWatermarkZipBlob(prep.blob, "photo", fetchOpts);
+      const wm = await tbccPackZipImageBlob(prep.blob, fetchOpts);
       return {
-        filename: tbccZipEntryFilename(it, idx, prep.name, wm, fetchOpts),
+        filename: await tbccZipEntryNameForItem(it, idx, prep.name, wm, fetchOpts),
         blob: wm,
       };
     }
@@ -6607,7 +6833,7 @@ async function getBlobAndNameForZipItem(it, idx, twitterBlobRetry, fetchOpts) {
         ? ".mp4"
         : "";
     const hasExt = /\.\w{2,5}$/i.test(base);
-    const filename = tbccZipEntryFilename(it, idx, hasExt ? base : base + ext, blob, fetchOpts);
+    const filename = await tbccZipEntryNameForItem(it, idx, hasExt ? base : base + ext, blob, fetchOpts);
     return { filename, blob };
   }
   throw new Error("Unsupported item for ZIP");
@@ -8224,6 +8450,14 @@ async function refreshImportQueueDepthHint() {
 
 async function cancelGalleryJob(j) {
   if (!j || !j.id) return;
+  if (j.type === "zip-export" || j.type === "download") {
+    if (!tbccStopProgressRun("cancel")) {
+      chrome.runtime.sendMessage({ action: "tbcc-gallery-job-end", id: j.id });
+      tbccResetProgressChrome();
+    }
+    void refreshActiveJobsBar();
+    return;
+  }
   if (j.backendJobId) {
     await new Promise((resolve) => {
       chrome.runtime.sendMessage(
@@ -8286,13 +8520,22 @@ async function refreshActiveJobsBar() {
     const canCancel =
       j.id &&
       !tbccIsLocalImportJobTerminal(j) &&
-      (j.backendJobId || j.type === "send-batch" || j.type === "crawl-tab");
+      (j.backendJobId ||
+        j.type === "send-batch" ||
+        j.type === "crawl-tab" ||
+        j.type === "zip-export" ||
+        j.type === "download");
     if (canCancel) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "tbcc-active-jobs-list__cancel";
-      btn.textContent = "Cancel";
-      btn.title = j.backendJobId ? "Cancel server import job" : "Remove task from list";
+      btn.textContent = j.type === "zip-export" || j.type === "download" ? "Stop" : "Cancel";
+      btn.title =
+        j.type === "zip-export" || j.type === "download"
+          ? "Stop ZIP/download and clear progress"
+          : j.backendJobId
+            ? "Cancel server import job"
+            : "Remove task from list";
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         void cancelGalleryJob(j);
@@ -8413,12 +8656,75 @@ async function appendZipPromoFiles(zip, opts) {
         const raw = await ir.blob();
         const hint = p.image_filename || "TBCC_PROMO.jpg";
         const prep = await tbccPrepareRasterBlob(raw, p.image_url, hint);
-        zip.file(prep.name || hint, prep.blob);
+        tbccZipAddBinaryFile(zip, prep.name || hint, prep.blob);
         n++;
       }
     } catch (_) {}
   }
   return n;
+}
+
+let _tbccProgressRun = null;
+
+function tbccSyncStopProgressButton(visible) {
+  if (btnStopProgress) btnStopProgress.hidden = !visible;
+}
+
+function tbccBeginProgressRun(kind) {
+  if (_tbccProgressRun) tbccStopProgressRun("replaced", { silent: true });
+  const ac = new AbortController();
+  _tbccProgressRun = { kind: kind || "task", aborted: false, signal: ac, jobId: null };
+  tbccSyncStopProgressButton(true);
+  return _tbccProgressRun;
+}
+
+function tbccProgressRunAborted(run) {
+  return !run || run.aborted || (run.signal && run.signal.aborted);
+}
+
+function tbccResetProgressChrome() {
+  if (progressEl) progressEl.classList.remove("visible");
+  if (progressTitle) progressTitle.textContent = "";
+  if (progressStatus) progressStatus.textContent = "";
+  if (progressFill) progressFill.style.width = "0%";
+  if (progressError) progressError.textContent = "";
+  tbccSyncStopProgressButton(false);
+}
+
+function tbccRestoreDownloadButtonsAfterProgress() {
+  if (btnDownloadZip) btnDownloadZip.disabled = selectedCountInFilteredList() === 0;
+  if (btnDownload) btnDownload.disabled = selectedCountInFilteredList() === 0;
+  if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
+}
+
+/** Stop in-flight ZIP/download; ends gallery job and clears progress UI. */
+function tbccStopProgressRun(reason, opts) {
+  const o = opts || {};
+  const run = _tbccProgressRun;
+  if (!run) return false;
+  run.aborted = true;
+  try {
+    run.signal.abort(reason || "user-stop");
+  } catch (_) {}
+  _tbccProgressRun = null;
+  tbccResetProgressChrome();
+  if (run.jobId) endGalleryJob(run.jobId);
+  tbccRestoreDownloadButtonsAfterProgress();
+  if (!o.silent) {
+    showToast("Stopped.", "info");
+    void refreshActiveJobsBar();
+  }
+  return true;
+}
+
+async function tbccPurgeOrphanedProgressJobs() {
+  await new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { action: "tbcc-gallery-job-purge-types", types: ["zip-export", "download"] },
+      () => resolve()
+    );
+  });
+  if (!_tbccProgressRun) tbccResetProgressChrome();
 }
 
 /** Parallel ZIP: fetch pool, ordered mirror select + overlay progress, then pack. */
@@ -8433,7 +8739,9 @@ async function downloadSelectedAsZipLooms(opts) {
     opts.zipFetchOpts ||
     (await buildHarvestZipFetchOpts({ harvestZip: true, loomsZip: true, stallTimeoutMs: stallMs }, selected));
   const fetchOpts = Object.assign({}, zipFetchOpts, { stallTimeoutMs: stallMs });
+  const run = tbccBeginProgressRun("zip-export");
   const jobId = await beginGalleryJob("zip-export", "ZIP export");
+  run.jobId = jobId;
   emitLoomsZipProgress({ mergeId, phase: "zip-start", total: selected.length, sourceTabId });
 
   try {
@@ -8461,6 +8769,7 @@ async function downloadSelectedAsZipLooms(opts) {
             let i = 0;
             async function w() {
               while (i < items.length) {
+                if (tbccProgressRunAborted(_tbccProgressRun)) break;
                 const ix = i++;
                 out[ix] = await workerFn(items[ix], ix);
               }
@@ -8473,6 +8782,7 @@ async function downloadSelectedAsZipLooms(opts) {
     const results = await poolFn(
       selected,
       async (it, i) => {
+        if (tbccProgressRunAborted(run)) return { ok: false, error: "stopped" };
         try {
           const result = await getBlobAndNameForZipItem(it, i, false, fetchOpts);
           const entry = { ok: true, filename: result.filename, blob: result.blob };
@@ -8495,6 +8805,11 @@ async function downloadSelectedAsZipLooms(opts) {
       looms.downloadThreads || 4
     );
 
+    if (tbccProgressRunAborted(run)) {
+      emitLoomsZipProgress({ mergeId, phase: "error", error: "stopped", sourceTabId });
+      return;
+    }
+
     await persistSelection();
     renderGrid();
     updateActionBarVisibility();
@@ -8508,7 +8823,7 @@ async function downloadSelectedAsZipLooms(opts) {
       const slot = packed[i] || (results && results[i]);
       if (!slot || !slot.ok || !slot.blob) continue;
       try {
-        zip.file(slot.filename, slot.blob);
+        tbccZipAddBinaryFile(zip, slot.filename, slot.blob);
         ok++;
       } catch (e) {
         if (progressError)
@@ -8527,12 +8842,17 @@ async function downloadSelectedAsZipLooms(opts) {
     const out = await zip.generateAsync(
       { type: "blob", compression: "STORE" },
       (meta) => {
+        if (tbccProgressRunAborted(run)) return;
         if (progressFill && meta && meta.percent != null) {
           progressFill.style.width = 70 + Math.round(meta.percent * 0.3) + "%";
         }
         if (progressStatus) progressStatus.textContent = "Packing… " + Math.round(meta.percent || 0) + "%";
       }
     );
+    if (tbccProgressRunAborted(run)) {
+      emitLoomsZipProgress({ mergeId, phase: "error", error: "stopped", sourceTabId });
+      return;
+    }
     const blobUrl = URL.createObjectURL(out);
     const zipFilename = tbccZipBundleDownloadFilename(
       { zipFetchOpts: fetchOpts, sourceUrl: fetchOpts && fetchOpts.sourceUrl },
@@ -8551,13 +8871,17 @@ async function downloadSelectedAsZipLooms(opts) {
     });
     emitLoomsZipProgress({ mergeId, phase: "done", total, ok, sourceTabId });
   } catch (e) {
-    emitLoomsZipProgress({ mergeId, phase: "error", error: String(e.message || e), sourceTabId });
-    if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
+    if (!tbccProgressRunAborted(run)) {
+      emitLoomsZipProgress({ mergeId, phase: "error", error: String(e.message || e), sourceTabId });
+      if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
+    }
   } finally {
-    btnDownloadZip && (btnDownloadZip.disabled = false);
-    if (btnDownload) btnDownload.disabled = selectedCountInFilteredList() === 0;
-    if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
-    endGalleryJob(jobId);
+    if (run.jobId && !run.aborted) endGalleryJob(run.jobId);
+    if (_tbccProgressRun === run) {
+      _tbccProgressRun = null;
+      tbccSyncStopProgressButton(false);
+    }
+    tbccRestoreDownloadButtonsAfterProgress();
   }
 }
 
@@ -8571,7 +8895,9 @@ async function downloadSelectedAsZip(opts) {
     selected = list.filter((i) => selectedUrls.has(i.url));
   }
   if (selected.length === 0 || !chrome.downloads) return;
+  const run = tbccBeginProgressRun("zip-export");
   const jobId = await beginGalleryJob("zip-export", "ZIP export");
+  run.jobId = jobId;
   const zipFetchOpts =
     opts && opts.zipFetchOpts
       ? opts.zipFetchOpts
@@ -8583,9 +8909,7 @@ async function downloadSelectedAsZip(opts) {
     if (progressEl) progressEl.classList.add("visible");
     if (progressTitle) progressTitle.textContent = "ZIP bundle";
     if (progressStatus) progressStatus.textContent = "JSZip library missing — reload the side panel.";
-    if (btnDownloadZip) btnDownloadZip.disabled = selectedCountInFilteredList() === 0;
-    if (btnDownload) btnDownload.disabled = selectedCountInFilteredList() === 0;
-    if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
+    tbccRestoreDownloadButtonsAfterProgress();
     return;
   }
   btnDownloadZip.disabled = true;
@@ -8600,9 +8924,10 @@ async function downloadSelectedAsZip(opts) {
   let ok = 0;
   const total = selected.length;
   for (let i = 0; i < total; i++) {
+    if (tbccProgressRunAborted(run)) break;
     try {
       const { filename, blob } = await getBlobAndNameForZipItem(selected[i], i, false, zipFetchOpts);
-      zip.file(filename, blob);
+      tbccZipAddBinaryFile(zip, filename, blob);
       ok++;
     } catch (e) {
       if (progressError)
@@ -8612,11 +8937,10 @@ async function downloadSelectedAsZip(opts) {
     if (progressFill) progressFill.style.width = Math.round(((i + 1) / total) * 100) + "%";
   }
 
+  if (tbccProgressRunAborted(run)) return;
+
   if (ok === 0) {
     if (progressStatus) progressStatus.textContent = "No files added to ZIP.";
-    btnDownloadZip.disabled = false;
-    if (btnDownload) btnDownload.disabled = selectedCountInFilteredList() === 0;
-    if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
     return;
   }
 
@@ -8626,18 +8950,21 @@ async function downloadSelectedAsZip(opts) {
     if (promoAdded > 0 && progressStatus) {
       progressStatus.textContent = "Added " + promoAdded + " promo file(s) to ZIP…";
     }
+    if (tbccProgressRunAborted(run)) return;
     if (progressStatus) progressStatus.textContent = opts && opts.harvestZip ? "Packing ZIP (STORE)…" : "Compressing…";
     const out = await zip.generateAsync(
       opts && opts.harvestZip
         ? { type: "blob", compression: "STORE" }
         : { type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } },
       (meta) => {
+        if (tbccProgressRunAborted(run)) return;
         if (progressFill && meta && meta.percent != null) progressFill.style.width = meta.percent + "%";
         if (progressStatus)
           progressStatus.textContent =
             (opts && opts.harvestZip ? "Packing… " : "Compressing… ") + Math.round(meta.percent || 0) + "%";
       }
     );
+    if (tbccProgressRunAborted(run)) return;
     const blobUrl = URL.createObjectURL(out);
     const destEl = document.getElementById("zipFlywheelDest");
     const flyDest = (destEl && destEl.value) || "downloads_promo";
@@ -8717,13 +9044,16 @@ async function downloadSelectedAsZip(opts) {
       });
     }
   } catch (e) {
-    if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
+    if (!tbccProgressRunAborted(run) && progressError)
+      progressError.textContent = (progressError.textContent || "") + (e.message || "ZIP failed") + "; ";
   }
-  btnDownloadZip.disabled = false;
-  if (btnDownload) btnDownload.disabled = selectedCountInFilteredList() === 0;
-  if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
   } finally {
-    endGalleryJob(jobId);
+    if (run.jobId && !run.aborted) endGalleryJob(run.jobId);
+    if (_tbccProgressRun === run) {
+      _tbccProgressRun = null;
+      tbccSyncStopProgressButton(false);
+    }
+    tbccRestoreDownloadButtonsAfterProgress();
   }
 }
 
@@ -8806,7 +9136,9 @@ async function downloadSelected() {
 
 /** Fetch each file fully (TBCC progress bar), then hand off to the browser download manager. */
 async function downloadSelectedBuffered(selected) {
+  const run = tbccBeginProgressRun("download");
   const jobId = await beginGalleryJob("download", "Gallery download");
+  run.jobId = jobId;
   try {
     btnDownload.disabled = true;
     if (btnDownloadZip) btnDownloadZip.disabled = true;
@@ -8818,6 +9150,7 @@ async function downloadSelectedBuffered(selected) {
     const staged = [];
     const total = selected.length;
     for (let i = 0; i < total; i++) {
+      if (tbccProgressRunAborted(run)) break;
       if (progressStatus) progressStatus.textContent = `Fetching ${i + 1} / ${total}…`;
       if (progressFill) progressFill.style.width = Math.round(((i + 1) / total) * 50) + "%";
       try {
@@ -8828,8 +9161,10 @@ async function downloadSelectedBuffered(selected) {
           progressError.textContent = (progressError.textContent || "") + (e.message || "fetch failed") + "; ";
       }
     }
+    if (tbccProgressRunAborted(run)) return;
     let n = 0;
     for (let j = 0; j < staged.length; j++) {
+      if (tbccProgressRunAborted(run)) break;
       const { filename, blob } = staged[j];
       if (progressStatus) progressStatus.textContent = `Saving ${j + 1} / ${staged.length}…`;
       if (progressFill) progressFill.style.width = 50 + Math.round(((j + 1) / staged.length) * 50) + "%";
@@ -8843,6 +9178,7 @@ async function downloadSelectedBuffered(selected) {
       });
       n++;
     }
+    if (tbccProgressRunAborted(run)) return;
     if (progressStatus && n > 0) {
       progressStatus.textContent = `Downloaded ${n} file(s) to your Downloads/tbcc folder.`;
     }
@@ -8856,21 +9192,28 @@ async function downloadSelectedBuffered(selected) {
       );
     }
   } finally {
-    btnDownload.disabled = false;
-    if (btnDownloadZip) btnDownloadZip.disabled = selectedCountInFilteredList() === 0;
-    if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
-    endGalleryJob(jobId);
+    if (run.jobId && !run.aborted) endGalleryJob(run.jobId);
+    if (_tbccProgressRun === run) {
+      _tbccProgressRun = null;
+      tbccSyncStopProgressButton(false);
+    }
+    tbccRestoreDownloadButtonsAfterProgress();
   }
 }
 
 async function downloadSelectedDirect(selected) {
+  const run = tbccBeginProgressRun("download");
   const jobId = await beginGalleryJob("download", "Gallery download");
+  run.jobId = jobId;
   try {
   btnDownload.disabled = true;
   if (btnDownloadZip) btnDownloadZip.disabled = true;
   if (btnCopyJd) btnCopyJd.disabled = true;
+  if (progressEl) progressEl.classList.add("visible");
+  if (progressTitle) progressTitle.textContent = "Download";
   let n = 0;
   for (let i = 0; i < selected.length; i++) {
+    if (tbccProgressRunAborted(run)) break;
     const it = selected[i];
     const idx = String(i + 1).padStart(2, "0");
     try {
@@ -9053,15 +9396,17 @@ async function downloadSelectedDirect(selected) {
       if (progressError) progressError.textContent = (progressError.textContent || "") + (e.message || "download failed") + "; ";
     }
   }
-  if (progressEl && n > 0) {
+  if (progressEl && n > 0 && !tbccProgressRunAborted(run)) {
     progressEl.classList.add("visible");
     progressStatus.textContent = "Downloaded " + n + " file(s) to your Downloads/tbcc folder (or browser default).";
   }
-  btnDownload.disabled = false;
-  if (btnDownloadZip) btnDownloadZip.disabled = selectedCountInFilteredList() === 0;
-  if (btnCopyJd) btnCopyJd.disabled = selectedCountInFilteredList() === 0;
   } finally {
-    endGalleryJob(jobId);
+    if (run.jobId && !run.aborted) endGalleryJob(run.jobId);
+    if (_tbccProgressRun === run) {
+      _tbccProgressRun = null;
+      tbccSyncStopProgressButton(false);
+    }
+    tbccRestoreDownloadButtonsAfterProgress();
   }
 }
 
@@ -11149,6 +11494,10 @@ btnClearStaleJobs &&
   btnClearStaleJobs.addEventListener("click", () => {
     chrome.runtime.sendMessage({ action: "tbcc-gallery-job-clear-stale" }, () => void refreshActiveJobsBar());
   });
+btnStopProgress &&
+  btnStopProgress.addEventListener("click", () => {
+    tbccStopProgressRun("user-stop");
+  });
 btnPauseImportQueue &&
   btnPauseImportQueue.addEventListener("click", async () => {
     const paused = await new Promise((resolve) => {
@@ -11298,6 +11647,7 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
     void refreshSystemHealthHint();
   }, 20000);
   void reconcileImportJobsOnOpen().then(() => refreshActiveJobsBar());
+  void tbccPurgeOrphanedProgressJobs().then(() => refreshActiveJobsBar());
   void refreshSystemHealthHint();
   try {
     window.__tbccGallerySidepanelPort = chrome.runtime.connect({ name: "tbcc-gallery-sidepanel" });

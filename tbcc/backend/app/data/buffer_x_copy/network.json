@@ -1,0 +1,705 @@
+{
+  "category": "network",
+  "templates": [
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. you're still here. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. no explanation needed. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "casuals bounce. the clock is real. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. zero tourist energy. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. act accordingly. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. zero tourist energy. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. no explanation needed. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. good. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "main hub just moved. zero tourist energy. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. the clock is real. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. zero tourist energy. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. that's the point. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. impatient people fund the network. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. the clock is real. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. act accordingly. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. another step slightly harder. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. act accordingly. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another relay fired. that's the point. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. no explanation needed. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: that's the point. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. that's the point. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: another step slightly harder. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "casuals bounce. no explanation needed. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. impatient people fund the network. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. zero tourist energy. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. good. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. impatient people fund the network. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. you're still here. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. the clock is real. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "casuals bounce. the clock is real. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. good. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "public face. private hub. that's the point. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. you're still here. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "main hub just moved. the clock is real. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. good. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. no explanation needed. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. the clock is real. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. zero tourist energy. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "public face. private hub. another step slightly harder. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "main hub just moved. that's the point. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. no explanation needed. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. you won't. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. you're still here. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "edge lane energy. good. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. that's the point. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another relay fired. impatient people fund the network. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. the clock is real. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "main hub just moved. you won't. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. that's the point. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. act accordingly. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. you won't. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "public face. private hub. another step slightly harder. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another relay fired. zero tourist energy. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. act accordingly. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. another step slightly harder. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. act accordingly. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. another step slightly harder. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. zero tourist energy. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. that's the point. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. the clock is real. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: no explanation needed. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another relay fired. impatient people fund the network. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. good. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "edge lane energy. no explanation needed. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. you're still here. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. good. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. impatient people fund the network. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "public face. private hub. act accordingly. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. good. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "edge lane energy. you're still here. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. you're still here. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. no explanation needed. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "edge lane energy. impatient people fund the network. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. the clock is real. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. another step slightly harder. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. you're still here. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. you're still here. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. you're still here. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. you won't. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another relay fired. act accordingly. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. zero tourist energy. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. impatient people fund the network. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. you're still here. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. the clock is real. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. you won't. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "edge lane energy. another step slightly harder. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. good. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. impatient people fund the network. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. act accordingly. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "edge lane energy. you're still here. full map {allmylinks} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. act accordingly. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. you won't. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. no explanation needed. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. the clock is real. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "another relay fired. the clock is real. one network arrogant pipeline \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "main hub just moved. impatient people fund the network. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you weren't invited. you won't. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. impatient people fund the network. finish on Telegram \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. you're still here. LOOT \u00b7 AI \u00b7 TABOO \u00b7 VOYEUR \u2014 {hub}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "network",
+      "surface": "x_buffer",
+      "body": "casuals bounce. zero tourist energy. every lane one addlist \u00b7 {hub} \u00b7 {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    }
+  ]
+}

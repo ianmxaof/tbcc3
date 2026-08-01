@@ -20,13 +20,15 @@ from app.services.undress_tool_client import configured as undress_configured
 
 
 def _llm_model_label() -> str:
-    from app.services.llm_chat import _openrouter_model, _provider
+    from app.services.llm_chat import _openai_model, _openrouter_model, _provider
 
     p = _provider()
+    if p == "custom":
+        return _openai_model()
     if p == "openrouter":
         return _openrouter_model()
     if p == "openai":
-        return (os.getenv("TBCC_LLM_CHAT_OPENAI_MODEL") or os.getenv("TBCC_LLM_MODEL") or "gpt-4o-mini").strip()
+        return _openai_model()
     if p in ("ollama", "local"):
         return (os.getenv("TBCC_OLLAMA_MODEL") or "llama3.2").strip()
     return p

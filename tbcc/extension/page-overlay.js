@@ -52,6 +52,7 @@
     "send-storage-hub": true,
     "save-pool": true,
     "save-saved": true,
+    "download-direct": true,
     "download-url": true,
     "download-frame": true,
     "toggle-select": true,
@@ -614,6 +615,7 @@
       { act: "send-storage-hub", label: "Send to Storage Hub ▸" },
       { act: "save-pool", label: "Save to pool" },
       { act: "save-saved", label: "Save to Saved Messages" },
+      { act: "download-direct", label: "Direct download" },
       { act: "download-url", label: "Save AOF (watch)" },
       { act: "download-frame", label: "Save frame AOF" },
       { act: "toggle-select", label: "Toggle overlay select" },
@@ -852,6 +854,23 @@
       if (el) await toggleUrl(url, el);
       return;
     }
+    if (action === "download-direct") {
+      try {
+        await new Promise((resolve) => {
+          chrome.runtime.sendMessage(
+            {
+              action: "tbcc-download-url-from-page-menu",
+              url,
+              preferFull: true,
+              saveAof: false,
+              refererPageUrl: location.href.split("#")[0],
+            },
+            () => resolve()
+          );
+        });
+      } catch (_) {}
+      return;
+    }
     if (action === "download-url") {
       try {
         await new Promise((resolve) => {
@@ -860,6 +879,7 @@
               action: "tbcc-download-url-from-page-menu",
               url,
               preferFull: true,
+              saveAof: true,
               refererPageUrl: location.href.split("#")[0],
             },
             () => resolve()

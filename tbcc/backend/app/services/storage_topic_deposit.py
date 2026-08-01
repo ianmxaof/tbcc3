@@ -780,3 +780,85 @@ def queue_storage_topic_deposit_staged(
         countdown=countdown,
         message_ids=ids,
     )
+
+
+def queue_inbox_channel_deposit(
+    db: Session,
+    *,
+    limit: int | None = None,
+    media_types: str | None = None,
+    commit: bool = True,
+    countdown: int = 0,
+) -> dict[str, Any]:
+    """Import newest media from AOF INBOX #CHANNEL shortcut into inbox pool."""
+    from app.data.aof_network import network_channel_by_key
+    from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT
+    from app.services.import_pipeline import (
+        create_channel_import_job,
+        enqueue_channel_import_job,
+        job_to_public_dict,
+        update_job,
+    )
+
+    net = network_channel_by_key("inbox")
+    if not net:
+        return {"ok": False, "error": "network_channel_missing", "network_key": "inbox"}
+
+    ch = db.query(Channel).filter(Channel.identifier == net.identifier).first()
+    if not ch:
+        ch = _ensure_channel_row(db, net)
+    if not ch:
+        return {
+            "ok": False,
+            "error": "channel_row_missing",
+            "network_key": "inbox",
+            "receive_channel": net.identifier,
+        }
+
+    pool = db.query(ContentPool).filter(ContentPool.name == net.pool_name).first()
+    if not pool:
+        pool = _ensure_pool_row(db, net, int(ch.id))
+        db.flush()
+    if not pool:
+        return {"ok": False, "error": "pool_missing", "pool_name": net.pool_name}
+
+    mt = (media_types or default_deposit_media_types()).strip().lower()
+    if mt not in ("both", "photos", "videos"):
+        mt = "videos"
+    lim = resolve_deposit_limit(limit)
+    source = f"telegram:{INBOX_CHANNEL_IDENT}"
+    index_only = storage_deposit_index_only_enabled()
+
+    job = create_channel_import_job(
+        db,
+        channel=INBOX_CHANNEL_IDENT,
+        pool_id=int(pool.id),
+        limit=lim,
+        media_types=mt,
+        message_thread_id=None,
+        source_label=source,
+        topic_title="AOF INBOX #CHANNEL",
+        apply_watermark=False,
+        index_only=index_only,
+        network_key="inbox",
+        sent_cache=False,
+        message_ids=None,
+    )
+    task_id = enqueue_channel_import_job(job.id, countdown=max(0, int(countdown)))
+    update_job(db, job, celery_task_id=task_id)
+    if commit:
+        db.commit()
+
+    body = job_to_public_dict(job)
+    body.update(
+        {
+            "ok": True,
+            "network_key": "inbox",
+            "channel": INBOX_CHANNEL_IDENT,
+            "limit": lim,
+            "media_types": mt,
+            "job_id": job.id,
+            "task_id": task_id,
+        }
+    )
+    return body

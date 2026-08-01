@@ -204,24 +204,35 @@ def notify_admin_click(link: ClickLink, hit: ClickLinkHit) -> None:
     if not should_notify_beacon_hit(link, hit):
         return
     try:
+        from app.services.traffic_pulse import pulse_beacon_hit, traffic_pulse_enabled
+
+        if traffic_pulse_enabled():
+            from app.services.traffic_beacon_notify import beacon_pulse_meta
+
+            pulse_beacon_hit(
+                (link.label or link.slug).strip(),
+                str(link.slug),
+                (link.source_ref or "").strip() or None,
+                int(link.hit_count or 0),
+                **{
+                    k: v
+                    for k, v in beacon_pulse_meta(link, hit).items()
+                    if k not in ("slug", "source_ref", "hit_count", "link_label")
+                },
+            )
+            return
         from app.services.admin_inbox import push_admin_inbox_event
+        from app.services.traffic_beacon_notify import beacon_pulse_meta, format_traffic_beacon_body_html
 
         label = (link.label or link.slug).strip()
+        meta = beacon_pulse_meta(link, hit, link_label=label)
+        meta["pulse_event_type"] = "beacon"
         push_admin_inbox_event(
-            category="growth",
+            category="traffic",
             severity="info",
             title=f"Click beacon · {label}",
-            body="",
-            meta={
-                "slug": link.slug,
-                "hit_count": int(link.hit_count or 0),
-                "hit_id": hit.id,
-                "ip": hit.ip,
-                "country": hit.country,
-                "user_agent": hit.user_agent,
-                "campaign_id": hit.campaign_id,
-                "destination_url": link.destination_url,
-            },
+            body=format_traffic_beacon_body_html(meta),
+            meta=meta,
             instant=click_beacon_instant_telegram(),
         )
     except Exception as e:

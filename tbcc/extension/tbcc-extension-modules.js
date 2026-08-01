@@ -63,6 +63,12 @@
       urlPatterns: ["*://onlyfans.com/*", "*://*.onlyfans.com/*"],
     },
     {
+      id: "madeporn_harvest",
+      title: "made.porn harvest",
+      description: "Bulk gallery crawl: embedded mp4/jpeg CDN URLs, scroll lazy-load, Crawl tab adapter",
+      urlPatterns: ["*://made.porn/*", "*://*.made.porn/*"],
+    },
+    {
       id: "username_search_overlay",
       title: "Username search overlay",
       urlPatterns: [

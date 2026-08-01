@@ -19,6 +19,27 @@ def test_object_key_sanitizes():
 def test_public_url_for_key():
     url = public_url_for_key("https://pub-abc.r2.dev", "sfw-x-promo/teaser.jpg")
     assert url == "https://pub-abc.r2.dev/sfw-x-promo/teaser.jpg"
+    spaced = public_url_for_key(
+        "https://pub-abc.r2.dev",
+        "upl2cf  aof-x-promo/AOF-XPROMO--TELEGRAM.ME_AOFMAINHUB (10).png",
+    )
+    assert "%20" in spaced
+    assert "%2810%29.png" in spaced
+
+
+def test_x_promo_r2_config(monkeypatch):
+    monkeypatch.setenv("TBCC_R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("TBCC_R2_PUBLIC_BASE_URL", "https://media.powercore.app")
+    monkeypatch.setenv("TBCC_R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("TBCC_R2_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("TBCC_X_PROMO_R2_PUBLIC_BASE_URL", "https://pub-test.r2.dev")
+    monkeypatch.setenv("TBCC_X_PROMO_R2_BUCKET", "aof-x-promo")
+    from app.services.r2_promo_upload import x_promo_r2_config
+
+    cfg = x_promo_r2_config()
+    assert cfg is not None
+    assert cfg["bucket"] == "aof-x-promo"
+    assert cfg["public_base"] == "https://pub-test.r2.dev"
 
 
 def test_resolve_prefix_destinations():

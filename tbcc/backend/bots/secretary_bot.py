@@ -303,6 +303,21 @@ def _auto_reply_in_business() -> bool:
     return os.getenv("TBCC_SECRETARY_AUTO_REPLY", "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _suggest_for_direct_dms() -> bool:
+    """When True, non-admin direct DMs to @aof_secretary_bot use draft→approve flow (Format Engine)."""
+    raw = (os.getenv("TBCC_SECRETARY_SUGGEST_DIRECT") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _draft_notify_chat_ids() -> list[int]:
+    """All admin chats that receive secretary draft cards."""
+    ids = set(_admin_user_id_set())
+    notify = _admin_notify_chat_id()
+    if notify is not None:
+        ids.add(int(notify))
+    return sorted(ids)
+
+
 def _admin_notify_chat_id() -> int | None:
     """Where to send draft replies in suggest mode (defaults to ADMIN_TELEGRAM_ID)."""
     raw = (os.getenv("TBCC_SECRETARY_SUGGEST_NOTIFY_CHAT_ID") or os.getenv("ADMIN_TELEGRAM_ID") or "").strip()
@@ -415,8 +430,8 @@ async def _send_draft_to_admin(
     customer_line: str,
     reply_plain: str,
 ) -> None:
-    admin_id = _admin_notify_chat_id()
-    if admin_id is None:
+    targets = _draft_notify_chat_ids()
+    if not targets:
         return
     body = _format_draft_card(
         draft_id,
@@ -425,12 +440,17 @@ async def _send_draft_to_admin(
         customer_line=customer_line,
         reply_plain=reply_plain,
     )
-    await context.bot.send_message(
-        chat_id=admin_id,
-        text=body,
-        parse_mode="HTML",
-        reply_markup=_draft_keyboard(draft_id, reply_plain),
-    )
+    markup = _draft_keyboard(draft_id, reply_plain)
+    for admin_id in targets:
+        try:
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=body,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+        except Exception as e:
+            logger.warning("secretary: could not DM admin %s draft %s: %s", admin_id, draft_id, e)
 
 
 async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_id: str) -> tuple[bool, str]:
@@ -438,10 +458,15 @@ async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_i
     if not item:
         return False, f"Draft {draft_id} not found."
     chat_id = int(item["chat_id"])
-    bc_id = str(item["business_connection_id"])
+    bc_id = item.get("business_connection_id")
     text = str(item["reply"])
     try:
-        await context.bot.send_message(chat_id=chat_id, text=text[:4096], business_connection_id=bc_id)
+        if bc_id:
+            await context.bot.send_message(
+                chat_id=chat_id, text=text[:4096], business_connection_id=str(bc_id)
+            )
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=text[:4096])
     except TypeError:
         await context.bot.send_message(chat_id=chat_id, text=text[:4096])
     except Exception as e:
@@ -1742,6 +1767,44 @@ async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
 
 
+async def cmd_surge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: force undress surge blast to @aofmainhub + Loot Room."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    def _run() -> dict:
+        from app.database.session import SessionLocal
+        from app.services.undress_surge import run_undress_surge_blast, spike_state
+
+        db = SessionLocal()
+        try:
+            state = spike_state()
+            result = run_undress_surge_blast(db, force=True, reason="secretary_surge")
+            return {"state": state, "result": result}
+        finally:
+            db.close()
+
+    data = await asyncio.to_thread(_run)
+    st = data.get("state") or {}
+    result = data.get("result") or {}
+    lines = [
+        "🔥 <b>Undress surge</b>",
+        f"Hits: <code>{st.get('hits_in_window')}</code> / threshold <code>{st.get('threshold')}</code>",
+        f"Spike active: <code>{st.get('spike_active')}</code>",
+        f"Blast: <code>{result.get('ok')}</code>",
+    ]
+    if result.get("skipped"):
+        lines.append(f"Skipped: <code>{html.escape(str(result.get('reason')))}</code>")
+    if result.get("queued"):
+        lines.append(f"Queued: <code>{len(result.get('queued') or [])}</code> scheduler(s)")
+    if result.get("error"):
+        lines.append(f"Error: <code>{html.escape(str(result.get('error')))}</code>")
+    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
+
+
 async def cmd_stack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin: tray-aligned stack status (same as Zeus Ops → Stack status)."""
     msg = update.effective_message
@@ -2238,9 +2301,12 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     is_business = bc_id is not None
     auto_reply_business = _auto_reply_in_business()
-    suggest_only_business = is_business and not auto_reply_business
+    is_admin_chat = _can_manage_drafts(update)
+    suggest_mode = (is_business and not auto_reply_business) or (
+        not is_business and not is_admin_chat and _suggest_for_direct_dms()
+    )
 
-    if not suggest_only_business:
+    if not suggest_mode:
         try:
             await _send_chat_action(msg, context, ChatAction.TYPING)
         except Exception as e:
@@ -2279,7 +2345,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.warning("secretary RAG/settings suffix failed uid=%s: %s", user.id, e)
 
-    if suggest_only_business:
+    if suggest_mode:
         suggest_suffix = (
             "\n\nYou are drafting a **suggested** reply for the business owner. "
             "The customer has **not** seen any prior bot messages in this thread. "
@@ -2319,6 +2385,27 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply = await complete_secretary_chat(messages, extra_system_suffix=extra)
     except Exception as e:
         logger.warning("secretary LLM failed: %s", e)
+        if suggest_mode:
+            try:
+                from app.services.admin_inbox import push_admin_inbox_event
+
+                who = (user.username or "").strip() or str(user.id)
+                await asyncio.to_thread(
+                    push_admin_inbox_event,
+                    category="system",
+                    severity="important",
+                    title=f"Secretary draft failed · {who}",
+                    body=(
+                        f"Customer said: {html.escape(user_text[:300])}\n\n"
+                        "LLM error — <b>no reply was sent</b> to the customer. "
+                        "Fix LLM config or reply manually."
+                    ),
+                    meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
+                    instant=True,
+                )
+            except Exception:
+                logger.debug("secretary draft-fail inbox notify failed", exc_info=True)
+            return
         await _reply(
             msg,
             "I couldn't generate a reply right now. Try again in a moment, or open the payment bot for checkout.",
@@ -2326,19 +2413,19 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    if suggest_only_business:
+    if suggest_mode:
         lines = context.user_data.get(BIZ_LINES_KEY) or []
         lines.append(user_text)
         context.user_data[BIZ_LINES_KEY] = [str(x).strip() for x in lines if str(x).strip()][-16:]
 
-        admin_id = _admin_notify_chat_id()
-        if admin_id is not None:
+        admin_ids = _draft_notify_chat_ids()
+        if admin_ids:
             draft_id = secrets.token_hex(3).upper()
             who = (user.username or "").strip() or "no_username"
             safe_reply = reply[:3500]
             _pending_drafts[draft_id] = {
                 "chat_id": msg.chat_id,
-                "business_connection_id": str(bc_id),
+                "business_connection_id": str(bc_id) if bc_id else None,
                 "reply": safe_reply,
                 "user_id": user.id,
                 "who": who,
@@ -2355,11 +2442,29 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     customer_line=user_text,
                     reply_plain=safe_reply,
                 )
+                try:
+                    from app.services.admin_inbox import push_admin_inbox_event
+
+                    await asyncio.to_thread(
+                        push_admin_inbox_event,
+                        category="system",
+                        severity="important",
+                        title=f"Draft ready · {who}",
+                        body=(
+                            f"📩 {html.escape(user_text[:280])}\n\n"
+                            f"<pre>{html.escape(safe_reply[:600])}</pre>\n\n"
+                            f"<i>Draft <code>{draft_id}</code> — tap buttons in DM or /approve {draft_id}</i>"
+                        ),
+                        meta={"code": "secretary_draft", "draft_id": draft_id, "telegram_user_id": user.id},
+                        instant=True,
+                    )
+                except Exception:
+                    logger.debug("secretary draft inbox ping failed", exc_info=True)
             except Exception as e:
-                logger.exception("secretary: could not DM admin %s: %s", admin_id, e)
+                logger.exception("secretary: could not DM admin draft %s: %s", draft_id, e)
         else:
             logger.error(
-                "TBCC_SECRETARY_AUTO_REPLY is off but no ADMIN_TELEGRAM_ID / "
+                "TBCC_SECRETARY_SUGGEST_DIRECT is on but no ADMIN_TELEGRAM_ID / "
                 "TBCC_SECRETARY_SUGGEST_NOTIFY_CHAT_ID — cannot deliver FAQ draft"
             )
     else:
@@ -2580,6 +2685,7 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("focus", cmd_focus))
     app.add_handler(CommandHandler("triage", cmd_triage))
     app.add_handler(CommandHandler("flywheel", cmd_flywheel))
+    app.add_handler(CommandHandler("surge", cmd_surge))
     app.add_handler(CommandHandler("toasts", cmd_toasts))
     app.add_handler(CommandHandler("skipbacklog", cmd_skip_backlog))
 

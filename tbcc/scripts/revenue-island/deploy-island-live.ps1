@@ -70,13 +70,21 @@ if (-not $SkipTunnel) {
 # 4) Code deploy — rsync backend + build on island OR pull GHCR
 if ($UseGhcrPull) {
   Write-Host "`n[4/7] Pull GHCR :latest on island" -ForegroundColor Yellow
-  Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile pull api worker worker_post beat payment_bot loot_bot || true"
+  Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile pull api worker worker_post beat payment_bot loot_bot companion_bot secretary_bot || true"
 } elseif (-not $SkipBuild) {
   Write-Host "`n[4/7] Rsync backend + docker build on island ($localTag)" -ForegroundColor Yellow
   Invoke-Remote "mkdir -p $RemoteDir/backend-src"
   $tgz = Join-Path $env:TEMP "tbcc-backend-deploy.tgz"
   if (Get-Command tar -ErrorAction SilentlyContinue) {
     Push-Location $backend
+    # Ship-log cache + improvement notes for weekly build log (island container has no git).
+    $dataDir = Join-Path $backend "app\data"
+    New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+    & py -3.13 scripts/ship_log_sources.py --since "7 days ago" --max-commits 40 --write-cache | Out-Null
+    $notesSrc = Join-Path $tbccRoot "docs\TBCC_IMPROVEMENT_NOTES.md"
+    if (Test-Path $notesSrc) {
+      Copy-Item $notesSrc (Join-Path $dataDir "TBCC_IMPROVEMENT_NOTES_SNAPSHOT.md") -Force
+    }
     # Raw frame-*.png (~100MB+) are never selected at runtime (clean/ pool only).
     # Omit them so scp + island docker build stay fast and SSH-stable.
     & tar -czf $tgz `
@@ -112,7 +120,7 @@ grep -q '^TBCC_WORKER_IMAGE=' $RemoteDir/infra/$envFile && sed -i 's|^TBCC_WORKE
 # 5) Recreate stack
 Write-Host "`n[5/7] Recreate api + workers + bots" -ForegroundColor Yellow
 Invoke-Compose "up -d --pull never --force-recreate api worker worker_post beat"
-Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot"
+Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot companion_bot secretary_bot"
 
 # 6) Migrations + seeds
 if (-not $SkipSeeds) {
@@ -120,7 +128,9 @@ if (-not $SkipSeeds) {
   Invoke-Compose "exec -T api alembic upgrade head"
   Invoke-Compose "exec -T api python scripts/seed_aof_shop_and_loot.py --execute"
   Invoke-Compose "exec -T api python scripts/seed_promo_affiliate_links.py"
+  Invoke-Compose "exec -T api python scripts/repair_content_lanes.py --execute --min-approved 12 --batch 12"
   Invoke-Compose "exec -T api python scripts/apply_network_album_checkout.py --execute --sync-schedulers"
+  Invoke-Compose "exec -T api python scripts/stock_buffer_armory.py --relay --scheduled"
   Invoke-Remote "mkdir -p /opt/tbcc/uploads/bundles /opt/tbcc/uploads/promo"
 } else {
   Write-Host "`n[6/7] Skip seeds (-SkipSeeds)" -ForegroundColor DarkGray
@@ -135,7 +145,15 @@ cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile exec -
 "@
 Write-Host $plans
 
+Write-Host "`nCompanion ops:" -ForegroundColor Yellow
+try {
+  $companion = Invoke-Remote "curl -fsS http://127.0.0.1:8000/companion/ops"
+  Write-Host $companion -ForegroundColor Green
+} catch {
+  Write-Host "WARN: /companion/ops failed (token/LLM may be unset on island)." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "=== Deploy complete ===" -ForegroundColor Green
 Write-Host "Update Gumroad Ping + NOWPayments IPN to the URL in infra/.api-public-url on the VPS if tunnel was (re)started."
-Write-Host "Smoke: Telegram /subscribe on @aofsubscriptions_bot - expect 5-term VIP ladder + Gumroad + crypto."
+Write-Host "Smoke: payment /subscribe · loot /roll · @aof_spicybot_bot /start · GET /companion/ops"

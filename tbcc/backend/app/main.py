@@ -22,6 +22,8 @@ from app.models.link_resolver_request import LinkResolverRequest  # noqa: F401
 from app.models.lane_drop import LaneDrop  # noqa: F401
 from app.models.loot_bot_settings import LootBotSettings  # noqa: F401
 from app.models.caption_snippet import CaptionSnippet  # noqa: F401
+from app.models.social_copy_template import SocialCopyTemplate  # noqa: F401
+from app.models.creative_catalog import CreativeCatalogEntry  # noqa: F401
 from app.models.emoji_factory_sketch import EmojiFactorySketchPage  # noqa: F401
 from app.models.listening_relay_settings import ListeningRelaySettings  # noqa: F401
 from app.models.listening_relay_post_log import ListeningRelayPostLog  # noqa: F401

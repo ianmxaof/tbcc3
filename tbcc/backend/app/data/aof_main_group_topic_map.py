@@ -45,6 +45,10 @@ AOF_MAIN_GROUP_TOPIC_MAP: tuple[MainGroupTopicMap, ...] = (
 MAIN_GROUP_GENERAL_TOPIC_ID = 1
 MAIN_GROUP_GENERAL_TOPIC_TITLE = "Reception / Party Room"
 
+# Meta topic — weekly PATCH NOTES build log (not a content lane). Live: t.me/c/3927742839/2408
+MAIN_GROUP_PATCH_NOTES_TOPIC_ID = 2408
+MAIN_GROUP_PATCH_NOTES_TOPIC_TITLE = "PATCH NOTES"
+
 
 def main_group_topic_deep_link(message_thread_id: int) -> str:
     return f"https://t.me/c/{MAIN_GROUP_INTERNAL_ID}/{int(message_thread_id)}"

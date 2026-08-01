@@ -31,43 +31,85 @@ logger = logging.getLogger(__name__)
 
 # One event loop per Celery worker process — do not create/close a loop per import job
 # (that leaves Telethon send/recv tasks pending and spams "Task was destroyed but it is pending").
+import threading
+
 _worker_loop: asyncio.AbstractEventLoop | None = None
+_worker_loop_thread: threading.Thread | None = None
+_worker_loop_ready = threading.Event()
 
 
-def _worker_event_loop() -> asyncio.AbstractEventLoop:
-    global _worker_loop
-    if _worker_loop is None or _worker_loop.is_closed():
-        _worker_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_worker_loop)
+def _ensure_worker_loop_thread() -> asyncio.AbstractEventLoop:
+    """Run Telethon on a dedicated thread so Celery tasks never nest run_until_complete."""
+    global _worker_loop, _worker_loop_thread
+    if _worker_loop is not None and _worker_loop.is_running():
+        return _worker_loop
+    if _worker_loop_thread is not None and _worker_loop_thread.is_alive():
+        _worker_loop_ready.wait(timeout=30)
+        if _worker_loop is not None and _worker_loop.is_running():
+            return _worker_loop
+
+    def _thread_main() -> None:
+        global _worker_loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _worker_loop = loop
+        _worker_loop_ready.set()
+        loop.run_forever()
+
+    _worker_loop_ready.clear()
+    _worker_loop_thread = threading.Thread(
+        target=_thread_main,
+        name="tbcc-import-worker-loop",
+        daemon=True,
+    )
+    _worker_loop_thread.start()
+    if not _worker_loop_ready.wait(timeout=30):
+        raise RuntimeError("import worker asyncio loop thread failed to start")
+    assert _worker_loop is not None
     return _worker_loop
 
 
+def _worker_event_loop() -> asyncio.AbstractEventLoop:
+    """Legacy accessor — returns the dedicated import-worker loop."""
+    return _ensure_worker_loop_thread()
+
+
 def _run_on_worker_loop(coro):
-    return _worker_event_loop().run_until_complete(coro)
+    loop = _ensure_worker_loop_thread()
+    if threading.current_thread() is _worker_loop_thread:
+        raise RuntimeError(
+            "Cannot call _run_on_worker_loop from the import worker loop thread; await the coroutine instead."
+        )
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result()
 
 
 def shutdown_import_worker_async() -> None:
-    """Celery worker shutdown: disconnect Telethon and close the worker loop."""
-    global _worker_loop
+    """Celery worker shutdown: disconnect Telethon and stop the dedicated loop thread."""
+    global _worker_loop, _worker_loop_thread
     loop = _worker_loop
-    if loop is None or loop.is_closed():
+    if loop is None or loop.is_closed() or not loop.is_running():
         _worker_loop = None
+        _worker_loop_thread = None
         return
     try:
-        if not loop.is_running():
-            loop.run_until_complete(reset_admin_client())
-            loop.run_until_complete(reset_import_client())
+
+        async def _reset() -> None:
+            await reset_admin_client()
+            await reset_import_client()
+
+        fut = asyncio.run_coroutine_threadsafe(_reset(), loop)
+        fut.result(timeout=15)
     except Exception:
         logger.debug("import worker telethon reset on shutdown", exc_info=True)
     try:
-        loop.close()
+        loop.call_soon_threadsafe(loop.stop)
     except Exception:
         pass
+    if _worker_loop_thread is not None:
+        _worker_loop_thread.join(timeout=5)
     _worker_loop = None
-    try:
-        asyncio.set_event_loop(None)
-    except Exception:
-        pass
+    _worker_loop_thread = None
 
 
 def _prepare_bytes(job: ImportJob, raw: bytes) -> tuple[bytes, str]:

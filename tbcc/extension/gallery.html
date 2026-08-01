@@ -72,7 +72,10 @@
 
       <div class="progress-outer progress-outer--top" aria-live="polite">
         <div id="progress" class="progress">
-          <div id="progressTitle" class="status"></div>
+          <div class="progress__head">
+            <div id="progressTitle" class="status"></div>
+            <button type="button" id="btnStopProgress" class="tbcc-btn-secondary tbcc-btn--compact" hidden title="Stop this ZIP/download and discard in-progress work">Stop</button>
+          </div>
           <div class="bar"><div id="progressFill" class="fill" style="width:0%"></div></div>
           <div id="progressStatus" class="status"></div>
           <div id="progressError" class="error"></div>
@@ -776,6 +779,7 @@
   <script src="severity-toast-colors.js"></script>
   <script src="tbcc-insert-menu.js"></script>
   <script src="tbcc-webp-convert.js"></script>
+  <script src="tbcc-api-client.js"></script>
   <script src="tbcc-import-pipeline.js"></script>
   <script src="x-profile-looms-shared.js"></script>
   <script src="tbcc-zip-naming.js"></script>

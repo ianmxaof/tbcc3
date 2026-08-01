@@ -209,6 +209,8 @@ def _load_pool_media_items(
     db: Session,
     album_order_mode: str,
 ) -> list[Media]:
+    from app.services.media_album_dedupe import dedupe_media_for_album, select_unique_pool_media
+
     effective_pool_id = _resolve_effective_pool_id(post, db)
     if not effective_pool_id:
         return []
@@ -228,22 +230,22 @@ def _load_pool_media_items(
     else:
         randomize = bool(pool and getattr(pool, "randomize_queue", False))
     q = db.query(Media).filter(Media.pool_id == effective_pool_id, Media.status == "approved")
+    candidate_cap = min(500, max(album_size * 20, album_size))
     # Randomize means random *selection* from the full approved pool.
     # Album order mode (static/shuffle/carousel) is applied later to the selected batch.
     if randomize:
-        rows = q.all()
-        random.shuffle(rows)
-        return rows[:album_size]
+        return select_unique_pool_media(q.all(), album_size, randomize=True)
     try:
         from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
 
         if rank_picks_enabled():
-            ranked = rank_pool_media(db, effective_pool_id, album_size, randomize=False)
+            ranked = rank_pool_media(db, effective_pool_id, candidate_cap, randomize=False)
             if ranked:
-                return ranked
+                return select_unique_pool_media(ranked, album_size, randomize=False)
     except Exception:
         pass
-    return q.order_by(Media.id.asc()).limit(album_size).all()
+    rows = q.order_by(Media.id.asc()).limit(candidate_cap).all()
+    return select_unique_pool_media(rows, album_size, randomize=False)
 
 
 def _gather_media_items_for_send(
@@ -260,6 +262,9 @@ def _gather_media_items_for_send(
             media_items.append(m)
     if _post_uses_pool(post) and not media_items and use_pool_fallback:
         media_items = _load_pool_media_items(post, db, album_order_mode)
+    from app.services.media_album_dedupe import dedupe_media_for_album
+
+    media_items = dedupe_media_for_album(media_items)
     return _apply_order_mode_to_sequence(media_items, album_order_mode, post)
 
 
@@ -781,6 +786,11 @@ async def send_scheduled_post(
         _log_chat_restricted_help(str(channel_identifier))
         raise
 
+    if sent_result and media_items:
+        from app.services.media_album_dedupe import mark_media_rows_posted
+
+        mark_media_rows_posted(db, media_items)
+
     anchor_id = None
     if sent_result:
         msg = sent_result[0] if isinstance(sent_result, list) else sent_result
@@ -977,6 +987,10 @@ async def send_scheduled_campaign(
                 message_thread_id=reply_to,
                 send_silent=bool(silent_kw.get("silent")),
             )
+            if sent_result and media_items_p:
+                from app.services.media_album_dedupe import mark_media_rows_posted
+
+                mark_media_rows_posted(db, media_items_p)
             sent_post_ids.append(int(p.id))
             outcomes[int(p.id)] = build_scheduled_send_outcome(p, sent_result, slot_index=p_slot)
         except ChatRestrictedError as e:

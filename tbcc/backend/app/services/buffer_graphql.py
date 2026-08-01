@@ -13,6 +13,28 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT = "https://api.buffer.com"
 
+
+class BufferRateLimitError(RuntimeError):
+    """Buffer GraphQL client hit RATE_LIMIT_EXCEEDED."""
+
+    def __init__(self, message: str = "Buffer API rate limit exceeded", *, retry_after_s: int | None = None):
+        super().__init__(message)
+        self.retry_after_s = retry_after_s
+
+
+def buffer_response_rate_limited(data: dict[str, Any] | None, *, status_code: int = 200) -> bool:
+    if status_code == 429:
+        return True
+    if not isinstance(data, dict):
+        return False
+    for err in data.get("errors") or []:
+        if not isinstance(err, dict):
+            continue
+        ext = err.get("extensions")
+        if isinstance(ext, dict) and ext.get("code") == "RATE_LIMIT_EXCEEDED":
+            return True
+    return False
+
 BufferShareMode = Literal["addToQueue", "shareNow", "shareNext", "customScheduled", "recommendedTime"]
 
 _CREATE_POST_MUTATION = """
@@ -135,6 +157,12 @@ def graphql_request(
         logger.warning("Buffer GraphQL HTTP %s: %s", r.status_code, str(data)[:500])
     if data.get("errors"):
         logger.warning("Buffer GraphQL errors: %s", data.get("errors"))
+    if buffer_response_rate_limited(data, status_code=r.status_code):
+        retry_after_s: int | None = None
+        raw_retry = (r.headers.get("retry-after") or "").strip()
+        if raw_retry.isdigit():
+            retry_after_s = int(raw_retry)
+        raise BufferRateLimitError(retry_after_s=retry_after_s)
     return data
 
 
@@ -295,6 +323,7 @@ def create_post(
     image_urls: list[str] | None = None,
     assets: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
+    due_at: str | None = None,
 ) -> dict[str, Any]:
     """
     Mutation createPost.
@@ -312,6 +341,10 @@ def create_post(
         "schedulingType": scheduling_type,
         "mode": mode,
     }
+    due = (due_at or "").strip()
+    if due:
+        inp["dueAt"] = due
+        inp["mode"] = "customScheduled"
     if assets:
         inp["assets"] = assets
     else:

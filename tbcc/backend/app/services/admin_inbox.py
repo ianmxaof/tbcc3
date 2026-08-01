@@ -4,7 +4,7 @@ Central admin notification inbox — one tidy feed for payment, loot, ops, and i
 Events are stored in Redis (recent ~200) and optionally pushed instantly to ADMIN_TELEGRAM_ID
 via the secretary bot token. Digests: /inbox /now in `python -m bots.secretary_bot` (admin only).
 
-Categories: payment, loot, ops, invoice, system
+Categories: payment, loot, ops, invoice, system, traffic (growth alias legacy)
 Severity: critical, important, info
 
 Instant Telegram policy:
@@ -30,7 +30,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-Category = Literal["payment", "loot", "ops", "invoice", "system"]
+Category = Literal["payment", "loot", "ops", "invoice", "system", "traffic", "growth"]
 Severity = Literal["critical", "important", "info"]
 
 REDIS_KEY_EVENTS = "tbcc:admin_inbox:events"
@@ -43,6 +43,7 @@ _CATEGORY_ICON: dict[str, str] = {
     "ops": "🔧",
     "invoice": "🧾",
     "system": "⚙️",
+    "traffic": "📡",
     "growth": "📊",
 }
 
@@ -148,6 +149,17 @@ def _format_event_body_html(event: dict[str, Any], *, truncate: int | None = Non
             lines.append(f"id <code>{html.escape(campaign)}</code>")
         lines.append(f"→ {dest}")
         text = "\n".join(lines)
+    elif str(meta.get("code") or "") in ("revenue_brief", "secretary_draft") and raw_body:
+        # Pre-rendered Telegram HTML from revenue brief / secretary drafts.
+        text = raw_body[:1200]
+    elif cat == "traffic" and (
+        str(meta.get("pulse_event_type") or "") == "beacon" or meta.get("slug")
+    ):
+        from app.services.traffic_beacon_notify import format_traffic_beacon_body_html
+
+        text = format_traffic_beacon_body_html(meta)
+        if not text.strip() and raw_body:
+            text = html.escape(raw_body)
     else:
         text = html.escape(raw_body) if raw_body else ""
 

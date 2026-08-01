@@ -35,6 +35,7 @@ const PAGE_MENU_ORDER = [
   "save-archive-all",
   "save-pool",
   "save-saved",
+  "download-direct",
   "download-url",
   "download-frame",
   "toggle-select",

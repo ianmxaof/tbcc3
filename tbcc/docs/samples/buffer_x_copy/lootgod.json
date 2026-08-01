@@ -1,0 +1,705 @@
+{
+  "category": "lootgod",
+  "templates": [
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Loot God: card reveal \u2192 album. you won't. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Loot God: card reveal \u2192 album. you won't. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Loot God: card reveal \u2192 album. you're still here. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Loot God: card reveal \u2192 album. another step slightly harder. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "casuals bounce. Loot God: card reveal \u2192 album. no explanation needed. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. act accordingly. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Loot God: card reveal \u2192 album. act accordingly. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Loot God: card reveal \u2192 album. impatient people fund the network. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Loot God: card reveal \u2192 album. impatient people fund the network. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. impatient people fund the network. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Loot God: card reveal \u2192 album. that's the point. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. you're still here. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. the clock is real. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. zero tourist energy. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Loot God: card reveal \u2192 album. you won't. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. that's the point. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Loot God: card reveal \u2192 album. another step slightly harder. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. you won't. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. that's the point. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. zero tourist energy. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Loot God: card reveal \u2192 album. you won't. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Loot God: card reveal \u2192 album. no explanation needed. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Loot God: card reveal \u2192 album. good. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Loot God: card reveal \u2192 album. act accordingly. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Loot God: card reveal \u2192 album. good. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. act accordingly. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. you're still here. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. that's the point. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Loot God: card reveal \u2192 album. the clock is real. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Loot God: card reveal \u2192 album. no explanation needed. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "no filler. no apology. Loot God: card reveal \u2192 album. you're still here. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. zero tourist energy. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Loot God: card reveal \u2192 album. no explanation needed. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. good. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. good. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Loot God: card reveal \u2192 album. that's the point. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Loot God: card reveal \u2192 album. another step slightly harder. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "edge lane energy. Loot God: card reveal \u2192 album. another step slightly harder. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Loot God: card reveal \u2192 album. act accordingly. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. Loot God: card reveal \u2192 album. impatient people fund the network. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. zero tourist energy. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. act accordingly. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Loot God: card reveal \u2192 album. you won't. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Loot God: card reveal \u2192 album. act accordingly. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. zero tourist energy. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. act accordingly. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Loot God: card reveal \u2192 album. good. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. another step slightly harder. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Loot God: card reveal \u2192 album. impatient people fund the network. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Loot God: card reveal \u2192 album. you're still here. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "built TBCC so the firehose doesn't rot. Loot God: card reveal \u2192 album. you're still here. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Loot God: card reveal \u2192 album. good. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Loot God: card reveal \u2192 album. the clock is real. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Loot God: card reveal \u2192 album. good. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Loot God: card reveal \u2192 album. zero tourist energy. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Loot God: card reveal \u2192 album. act accordingly. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Loot God: card reveal \u2192 album. good. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. zero tourist energy. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Loot God: card reveal \u2192 album. impatient people fund the network. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. you won't. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. Loot God: card reveal \u2192 album. good. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Loot God: card reveal \u2192 album. that's the point. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the seduction is friction. Loot God: card reveal \u2192 album. impatient people fund the network. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Loot God: card reveal \u2192 album. the clock is real. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Loot God: card reveal \u2192 album. that's the point. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Loot God: card reveal \u2192 album. the clock is real. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "casuals bounce. Loot God: card reveal \u2192 album. you won't. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Loot God: card reveal \u2192 album. act accordingly. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Loot God: card reveal \u2192 album. no explanation needed. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "scarcity isn't cruelty. Loot God: card reveal \u2192 album. that's the point. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Loot God: card reveal \u2192 album. you won't. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. good. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Loot God: card reveal \u2192 album. another step slightly harder. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the table owns you eventually. Loot God: card reveal \u2192 album. that's the point. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another drop cleared the queue. Loot God: card reveal \u2192 album. the clock is real. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Loot God: card reveal \u2192 album. that's the point. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. that's the point. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "psy-slop hour: Loot God: card reveal \u2192 album. the clock is real. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "tourists leave at the gate. Loot God: card reveal \u2192 album. act accordingly. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. you won't. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Loot God: card reveal \u2192 album. you're still here. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. that's the point. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the hub stays intentional. Loot God: card reveal \u2192 album. you're still here. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "edge lane energy. Loot God: card reveal \u2192 album. another step slightly harder. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "public face. private hub. Loot God: card reveal \u2192 album. you're still here. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "curiosity tax: paid in attention. Loot God: card reveal \u2192 album. another step slightly harder. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. another step slightly harder. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. you won't. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. impatient people fund the network. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you weren't invited. Loot God: card reveal \u2192 album. zero tourist energy. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Loot God: card reveal \u2192 album. good. card reveal \u2192 album in DM \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the pipeline doesn't apologize. Loot God: card reveal \u2192 album. good. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "main hub just moved. Loot God: card reveal \u2192 album. the clock is real. {lootgod} \u00b7 hub {hub}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "another relay fired. Loot God: card reveal \u2192 album. act accordingly. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Loot God: card reveal \u2192 album. act accordingly. goblin grants blink into lanes \u00b7 {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "edge lane energy. Loot God: card reveal \u2192 album. no explanation needed. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "the maze has teeth. Loot God: card reveal \u2192 album. act accordingly. {lootgod_free} \u00b7 map {allmylinks}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "filtration is a feature. Loot God: card reveal \u2192 album. impatient people fund the network. loot keys live on {hub} \u00b7 rolls {lootgod}",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "you clicked anyway. good. Loot God: card reveal \u2192 album. no explanation needed. five free rolls then the table \u00b7 {lootgod_free}",
+      "image_hint": "promo_pool",
+      "max_uses_before_demote": 2
+    },
+    {
+      "category": "lootgod",
+      "surface": "x_buffer",
+      "body": "casuals bounce. Loot God: card reveal \u2192 album. you're still here. DM pull {lootgod} \u00b7 keys @aofsubscriptions_bot",
+      "image_hint": "none",
+      "max_uses_before_demote": 2
+    }
+  ]
+}
