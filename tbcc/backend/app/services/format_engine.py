@@ -371,13 +371,16 @@ def prepare_user_turn(
     user_text: str,
     *,
     username: str | None = None,
-) -> tuple[str, int | None]:
+) -> tuple[str, int | None, bool]:
     """
-    Record inbound user message, evolve format, return (LLM context suffix, context_id).
-    Returns ("", None) when disabled or on DB error.
+    Record inbound user message, evolve format.
+
+    Returns (LLM context suffix, context_id, is_new_lead).
+    is_new_lead is True when this is the customer's first recorded user message.
+    Returns ("", None, False) when disabled or on DB error.
     """
     if not format_engine_enabled():
-        return "", None
+        return "", None, False
 
     db = SessionLocal()
     try:
@@ -388,6 +391,7 @@ def prepare_user_turn(
         user_count = int((fmt.get("metrics") or {}).get("user_messages") or 0) + 1
         prev_phase = str(fmt.get("phase") or "introduction")
         new_phase = _infer_phase(fmt, user_message_count=user_count, analysis=analysis, hours_since_last_user=hours_gap)
+        is_new_lead = int(ctx.message_count or 0) == 0
 
         if prev_phase != new_phase:
             from app.services.format_engine_llm import refine_emotion_on_phase_change
@@ -428,11 +432,11 @@ def prepare_user_turn(
         db.commit()
 
         suffix = build_context_suffix(ctx, analysis, fmt)
-        return suffix, ctx.id
+        return suffix, ctx.id, is_new_lead
     except Exception as e:
         db.rollback()
         logger.warning("format_engine prepare_user_turn failed uid=%s: %s", telegram_user_id, e)
-        return "", None
+        return "", None, False
     finally:
         db.close()
 

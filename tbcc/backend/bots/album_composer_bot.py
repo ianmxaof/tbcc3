@@ -884,6 +884,7 @@ async def _present_confirm_step(
 
 
 def _storage_hub_deposit_rows(sess: ComposerSession) -> list[list[InlineKeyboardButton]]:
+    """Pinned payment-bot deposit panel covers bulk presets; workshop keeps staged-only shortcut."""
     try:
         from app.services.storage_topic_deposit import resolve_storage_topic_row, storage_hub_chat_id_int
         from bots.storage_hub_deposit_bot import album_composer_storage_deposit_enabled
@@ -898,19 +899,10 @@ def _storage_hub_deposit_rows(sess: ComposerSession) -> list[list[InlineKeyboard
             return []
     except Exception:
         return []
-    rows: list[list[InlineKeyboardButton]] = []
-    if sess.items:
-        n = len(sess.items)
-        rows.append(
-            [InlineKeyboardButton(f"📥 Deposit staged ({n})", callback_data="ac:depositstaged")]
-        )
-    rows.append(
-        [
-            InlineKeyboardButton("📥 Deposit 5", callback_data="ac:deposit:5"),
-            InlineKeyboardButton("📥 Deposit 15", callback_data="ac:deposit:15"),
-        ]
-    )
-    return rows
+    if not sess.items:
+        return []
+    n = len(sess.items)
+    return [[InlineKeyboardButton(f"📥 Deposit staged ({n})", callback_data="ac:depositstaged")]]
 
 
 def _main_keyboard(sess: ComposerSession) -> InlineKeyboardMarkup:
@@ -2390,6 +2382,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    data = str(query.data)
+
     if data.startswith("ac:deposit:"):
         from app.services.tbcc_telegram_admin import can_operate_storage_hub_bot_api
         from app.services.storage_topic_deposit import default_deposit_media_types, resolve_deposit_limit
@@ -3361,6 +3355,12 @@ async def cmd_deposit_composer(update: Update, context: ContextTypes.DEFAULT_TYP
     await cmd_deposit(update, context, bot_label="album-composer")
 
 
+async def cmd_depositpanel_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_deposit_control_handlers import cmd_deposit_panel
+
+    await cmd_deposit_panel(update, context)
+
+
 async def cmd_review_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from bots.review_control_handlers import cmd_review
 
@@ -3405,6 +3405,7 @@ async def post_init(application: Application) -> None:
             BotCommand("clear", "Clear staged media only"),
             BotCommand("emoji_pack", "Split media into Telegram emoji pack"),
             BotCommand("deposit", "Queue N items into this topic's pool"),
+            BotCommand("depositpanel", "Bulk deposit presets (50/100/150)"),
             BotCommand("depositstaged", "Deposit staged workshop media"),
         ]
     )
@@ -3472,6 +3473,7 @@ def main() -> None:
     app.add_handler(CommandHandler("savepromo", cmd_savepromo))
     app.add_handler(CommandHandler("emoji_pack", cmd_emoji_pack))
     app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
+    app.add_handler(CommandHandler("depositpanel", cmd_depositpanel_composer))
     app.add_handler(CommandHandler("depositstaged", cmd_deposit_staged_composer))
     app.add_handler(CommandHandler("review", cmd_review_composer))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ac:"))

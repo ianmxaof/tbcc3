@@ -1360,10 +1360,40 @@ async def cmd_review_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await cmd_review(update, context)
 
 
+async def cmd_depositpanel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_deposit_control_handlers import cmd_deposit_panel
+
+    await cmd_deposit_panel(update, context)
+
+
+async def cmd_hubpanel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_hub_control_handlers import cmd_hubpanel
+
+    await cmd_hubpanel(update, context)
+
+
+async def handle_deposit_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_deposit_control_handlers import on_deposit_control_callback
+
+    await on_deposit_control_callback(update, context)
+
+
 async def handle_intake_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from bots.intake_control_handlers import on_intake_control_callback
 
     await on_intake_control_callback(update, context)
+
+
+async def handle_hub_lane_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_hub_control_handlers import on_hub_lane_control_callback
+
+    await on_hub_lane_control_callback(update, context)
+
+
+async def handle_sent_cache_control_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_hub_control_handlers import on_sent_cache_control_callback
+
+    await on_sent_cache_control_callback(update, context)
 
 
 async def cmd_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2755,6 +2785,21 @@ async def _post_init(app: Application) -> None:
         await app.bot.set_my_description(long_desc)
     except Exception as e:
         logger.warning("set_my_description failed: %s", e)
+    try:
+        from app.services.storage_hub_control_panels import ensure_all_hub_control_panels
+
+        report = await ensure_all_hub_control_panels(app.bot)
+        lane = report.get("lanes") or {}
+        logger.info(
+            "Storage hub panels: lane_posted=%s lane_edited=%s lane_errors=%s lanes=%s special=%s",
+            lane.get("posted"),
+            lane.get("edited"),
+            lane.get("errors"),
+            lane.get("lanes"),
+            report.get("special_panels"),
+        )
+    except Exception as e:
+        logger.warning("Storage hub panel bootstrap failed: %s", e)
 
 
 async def on_vip_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2812,6 +2857,8 @@ def main() -> None:
     app.add_handler(CommandHandler("resolve", cmd_resolve))
     app.add_handler(CommandHandler("videofind", cmd_videofind))
     app.add_handler(CommandHandler("deposit", cmd_deposit_payment))
+    app.add_handler(CommandHandler("depositpanel", cmd_depositpanel_payment))
+    app.add_handler(CommandHandler("hubpanel", cmd_hubpanel_payment))
     app.add_handler(CommandHandler("intake", cmd_intake_payment))
     app.add_handler(CommandHandler("review", cmd_review_payment))
     for h in build_macro_search_handlers(
@@ -2859,6 +2906,12 @@ def main() -> None:
     )
     app.add_handler(
         MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/depositpanel(@\w+)?(?:\s|$)"),
+            cmd_depositpanel_payment,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/review(@\w+)?(?:\s|$)"),
             cmd_review_payment,
         )
@@ -2867,6 +2920,23 @@ def main() -> None:
         MessageHandler(
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/intake(@\w+)?(?:\s|$)"),
             cmd_intake_payment,
+        )
+    )
+    from app.services.storage_topic_deposit import storage_hub_chat_id_int
+    from bots.storage_hub_auto_pipe_handlers import on_storage_hub_lane_media_post
+
+    hub_id = storage_hub_chat_id_int()
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST
+            & filters.Chat(chat_id=hub_id)
+            & (
+                filters.PHOTO
+                | filters.VIDEO
+                | filters.Document.VIDEO
+                | filters.ATTACHMENT
+            ),
+            on_storage_hub_lane_media_post,
         )
     )
     app.add_handler(
@@ -2880,6 +2950,15 @@ def main() -> None:
     )
     app.add_handler(
         CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_hub_lane_control_callback, pattern=r"^hubctl:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_sent_cache_control_callback, pattern=r"^sctl:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_deposit_control_callback, pattern=r"^depctl:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")

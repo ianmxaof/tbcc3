@@ -118,8 +118,14 @@ def lane_button_label(lane_key: str, *, selected: bool = False) -> str:
     return f"{prefix}{emoji} {short}"
 
 
-def review_lane_picker_keyboard(media_id: int, selected: list[str] | None = None) -> dict[str, Any]:
+def review_lane_picker_keyboard(
+    media_id: int,
+    selected: list[str] | None = None,
+    default_lane_key: str | None = None,
+) -> dict[str, Any]:
     """Inline keyboard: emoji lane toggles + approve/reject."""
+    from app.services.gatekeeper_review import panel_open_callback
+
     mid = int(media_id)
     picked = set(selected if selected is not None else get_picked_lanes(mid))
     lanes = gatekeeper_lane_picker_keys()
@@ -142,6 +148,12 @@ def review_lane_picker_keyboard(media_id: int, selected: list[str] | None = None
             {"text": "✅ Approve", "callback_data": f"{CALLBACK_APPROVE}{mid}"},
             {"text": "🗑 Reject", "callback_data": f"{CALLBACK_REJECT}{mid}"},
         ]
+    )
+    lane_for_open = (default_lane_key or "").strip().lower() or None
+    if not lane_for_open and picked:
+        lane_for_open = sorted(picked)[0]
+    rows.append(
+        [{"text": "📋 Review all waiting", "callback_data": panel_open_callback(lane_for_open)}]
     )
     return {"inline_keyboard": rows}
 

@@ -209,7 +209,11 @@ def _load_pool_media_items(
     db: Session,
     album_order_mode: str,
 ) -> list[Media]:
-    from app.services.media_album_dedupe import dedupe_media_for_album, select_unique_pool_media
+    from app.services.media_album_dedupe import (
+        dedupe_media_for_album,
+        filter_media_older_than_schedule_min_age,
+        select_unique_pool_media,
+    )
 
     effective_pool_id = _resolve_effective_pool_id(post, db)
     if not effective_pool_id:
@@ -234,7 +238,8 @@ def _load_pool_media_items(
     # Randomize means random *selection* from the full approved pool.
     # Album order mode (static/shuffle/carousel) is applied later to the selected batch.
     if randomize:
-        return select_unique_pool_media(q.all(), album_size, randomize=True)
+        rows = filter_media_older_than_schedule_min_age(q.all())
+        return select_unique_pool_media(rows, album_size, randomize=True)
     try:
         from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
 
@@ -244,7 +249,9 @@ def _load_pool_media_items(
                 return select_unique_pool_media(ranked, album_size, randomize=False)
     except Exception:
         pass
-    rows = q.order_by(Media.id.asc()).limit(candidate_cap).all()
+    rows = filter_media_older_than_schedule_min_age(
+        q.order_by(Media.id.asc()).limit(candidate_cap).all()
+    )
     return select_unique_pool_media(rows, album_size, randomize=False)
 
 
@@ -562,23 +569,11 @@ async def _execute_telegram_scheduled_send(
         if first_type not in ("photo", "video", "document", "gif"):
             first_type = "document"
         items = by_type.get(first_type, media_items[:1])
-        from app.services.local_media_storage import is_local_pool_media, telethon_file_from_media
+        from app.services.media_message_resolve import fetch_album_medias
 
-        saved_ids = [m.telegram_message_id for m in items if not is_local_pool_media(m)]
-        msg_map: dict = {}
-        if saved_ids:
-            messages = await client.get_messages("me", ids=saved_ids)
-            msg_map = {m.id: m for m in messages if m}
-        raw_medias = []
-        for m in items:
-            if is_local_pool_media(m):
-                f = telethon_file_from_media(m)
-                if f is not None:
-                    raw_medias.append(f)
-                continue
-            msg = msg_map.get(m.telegram_message_id)
-            if msg and msg.media:
-                raw_medias.append(msg.media)
+        raw_medias = await fetch_album_medias(client, items)
+        if not raw_medias or len(raw_medias) != len(items):
+            raw_medias = []
         if raw_medias:
             send_medias = []
             for i, raw in enumerate(raw_medias):

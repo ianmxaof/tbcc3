@@ -5,7 +5,8 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT, INBOX_TOPIC_ID, STORAGE_HUB_IDENT
-from app.services.inbox_intake_review import is_inbox_source_label, parse_batch_review_callback
+from app.services.inbox_intake_review import is_inbox_source_label
+from app.services.quarantine_batch_review import parse_batch_review_callback
 from app.services.intake_scheduler import (
     adjust_album_size,
     adjust_batch_size,

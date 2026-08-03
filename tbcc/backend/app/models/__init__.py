@@ -35,6 +35,7 @@ from .promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor
 from .capture_archive_entry import CaptureArchiveEntry
 from .import_job import ImportJob
 from .secretary_user_context import SecretaryMessageRecord, SecretaryUserContext
+from .secretary_bot_instance import SecretaryBotInstance
 from .secretary_settings import SecretarySettings
 from .secretary_knowledge import SecretaryKnowledgeEntry
 from .industry_benchmark import IndustryBenchmark
@@ -113,6 +114,7 @@ __all__ = [
     "ImportJob",
     "SecretaryUserContext",
     "SecretaryMessageRecord",
+    "SecretaryBotInstance",
     "SecretarySettings",
     "SecretaryKnowledgeEntry",
     "IndustryBenchmark",

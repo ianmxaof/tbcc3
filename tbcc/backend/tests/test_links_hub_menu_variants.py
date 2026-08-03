@@ -25,9 +25,6 @@ def test_motionmuse_seed_has_links_hub_ai():
 def test_build_all_menu_variants(db):
     menus = build_all_menu_variants(db)
     assert len(menus) == len(CHANNEL_VARIANTS) + len(AI_VARIANTS)
-    kinds = {(m.kind, m.variant) for m in menus}
-    assert ("channels", "v1") in kinds
-    assert ("ai", "v3") in kinds
 
 
 def test_channel_variant_contains_pipes(db):

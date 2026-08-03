@@ -134,6 +134,7 @@ def push_traffic_pulse(
 
 def pulse_beacon_hit(link_label: str, slug: str, source_ref: str | None, hit_count: int, **extra: Any) -> None:
     from app.services.traffic_beacon_notify import format_traffic_beacon_body_html
+    from app.services.traffic_inbox_copy import format_traffic_detail, format_traffic_title
 
     meta = {
         "slug": slug,
@@ -146,10 +147,11 @@ def pulse_beacon_hit(link_label: str, slug: str, source_ref: str | None, hit_cou
         from app.services.traffic_beacon_notify import parse_beacon_placement
 
         meta["placement"] = parse_beacon_placement(label=link_label, slug=slug)
-    body = format_traffic_beacon_body_html(meta)
+    meta["pulse_event_type"] = "beacon"
+    body = format_traffic_detail(meta) or format_traffic_beacon_body_html(meta)
     push_traffic_pulse(
         "beacon",
-        title=f"Click beacon · {link_label}",
+        title=format_traffic_title(meta, fallback=f"Click beacon · {link_label}"),
         body=body,
         meta=meta,
     )
@@ -166,16 +168,20 @@ def pulse_beacon_hit(link_label: str, slug: str, source_ref: str | None, hit_cou
 
 
 def pulse_bot_start(telegram_user_id: int, source_ref: str, payload: str, touch_count: int) -> None:
+    from app.services.traffic_inbox_copy import format_traffic_detail, format_traffic_title
+
+    meta = {
+        "telegram_user_id": telegram_user_id,
+        "source_ref": source_ref,
+        "payload": payload,
+        "touch_count": touch_count,
+        "pulse_event_type": "start",
+    }
     push_traffic_pulse(
         "start",
-        title=f"Bot start · {source_ref}",
-        body=f"uid={telegram_user_id} payload={payload[:80]}",
-        meta={
-            "telegram_user_id": telegram_user_id,
-            "source_ref": source_ref,
-            "payload": payload,
-            "touch_count": touch_count,
-        },
+        title=format_traffic_title(meta, fallback=f"Bot start · {source_ref}"),
+        body=format_traffic_detail(meta),
+        meta=meta,
     )
 
 
@@ -186,20 +192,37 @@ def pulse_post_outbound(
     channel_id: int | None,
     scheduled_post_id: int | None,
     error_message: str | None = None,
+    pool_id: int | None = None,
 ) -> None:
+    from app.services.traffic_inbox_copy import enrich_post_pulse_meta, format_traffic_detail, format_traffic_title
+
     et = "post_fail" if not ok else "post_ok"
-    title = "Channel post failed" if not ok else "Channel post sent"
-    body = (error_message or "")[:200] if not ok else f"scheduler #{scheduled_post_id or '?'}"
+    meta = {
+        "ok": ok,
+        "event_type": event_type,
+        "outbound_event_type": event_type,
+        "channel_id": channel_id,
+        "scheduled_post_id": scheduled_post_id,
+        "pool_id": pool_id,
+        "pulse_event_type": et,
+    }
+    if error_message:
+        meta["error_message"] = error_message[:200]
+    meta.update(
+        enrich_post_pulse_meta(
+            scheduled_post_id=scheduled_post_id,
+            channel_id=channel_id,
+            event_type=event_type,
+            pool_id=pool_id,
+        )
+    )
+    title = format_traffic_title(meta, fallback="Channel post failed" if not ok else "Channel post sent")
+    body = format_traffic_detail(meta)
     push_traffic_pulse(
         et,
         title=title,
         body=body,
-        meta={
-            "ok": ok,
-            "event_type": event_type,
-            "channel_id": channel_id,
-            "scheduled_post_id": scheduled_post_id,
-        },
+        meta=meta,
         force_instant=not ok,
     )
 
@@ -211,11 +234,20 @@ def pulse_loot_roll(
     media_sent: int,
     chat_id: int,
 ) -> None:
+    from app.services.traffic_inbox_copy import format_traffic_detail, format_traffic_title
+
+    meta = {
+        "roll_kind": roll_kind,
+        "tier": tier,
+        "media_sent": media_sent,
+        "chat_id": chat_id,
+        "pulse_event_type": "loot_roll",
+    }
     push_traffic_pulse(
         "loot_roll",
-        title=f"Loot roll · {roll_kind or 'roll'}",
-        body=f"tier={tier} media={media_sent}",
-        meta={"roll_kind": roll_kind, "tier": tier, "media_sent": media_sent, "chat_id": chat_id},
+        title=format_traffic_title(meta, fallback=f"Loot roll · {roll_kind or 'roll'}"),
+        body=format_traffic_detail(meta),
+        meta=meta,
     )
 
 
@@ -226,11 +258,24 @@ def pulse_affiliate_served(
     url: str,
     source_ref: str | None = None,
 ) -> None:
+    from app.services.traffic_inbox_copy import format_traffic_detail, format_traffic_title
+
+    slug = None
+    if "/r/" in url:
+        slug = url.rsplit("/r/", 1)[-1].split("?")[0].strip() or None
+    meta = {
+        "placement": placement,
+        "label": label,
+        "url": url,
+        "source_ref": source_ref,
+        "slug": slug,
+        "pulse_event_type": "affiliate_served",
+    }
     push_traffic_pulse(
         "affiliate_served",
-        title=f"Affiliate · {label}",
-        body=f"{placement}: {url[:120]}",
-        meta={"placement": placement, "label": label, "url": url, "source_ref": source_ref},
+        title=format_traffic_title(meta, fallback=f"Affiliate · {label}"),
+        body=format_traffic_detail(meta),
+        meta=meta,
     )
     try:
         from app.services.undress_surge import on_affiliate_served_for_surge

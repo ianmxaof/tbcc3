@@ -352,6 +352,24 @@ let settings = {
   toastLevel: "urgent",
   downloadMode: "buffered",
   skipPromoWatermark: false,
+  promoWatermark: {
+    enabled: true,
+    text: "telegram.me/aofmainhub",
+    textSecondary: "",
+    textTertiary: "",
+    opacity: 0.58,
+    color: "#ffffff",
+    position: "bottom_right",
+    mode: "rotate",
+    sizeRatio: 0.045,
+    stripPrevious: false,
+  },
+  /** Use subject-aware names (model/gallery/site) for all gallery exports (download + ZIP). */
+  zipHeuristicNaming: true,
+  /** Export filename template (single files + ZIP entries); empty = X overlay harvest template or default. */
+  zipEntryTemplate: "",
+  /** Outer .zip filename template; tokens: {name} {site} {gallery} {title} {date}. */
+  zipBundleTemplate: "",
 };
 let tbccLightboxVideoObjectUrl = "";
 /** Tracks which item the lightbox is currently showing so wheel/arrow steps can compute next/prev. */
@@ -5035,9 +5053,11 @@ async function processGalleryMergeHarvest(msg) {
   }
 
   const profileName =
-    typeof TbccZipNaming !== "undefined"
-      ? TbccZipNaming.profileNameFromSourceUrl(msg.sourceUrl || "")
-      : "media";
+    typeof TbccZipNaming !== "undefined" && TbccZipNaming.inferZipContext
+      ? TbccZipNaming.inferZipContext({ sourceUrl: msg.sourceUrl || "" }).name
+      : typeof TbccZipNaming !== "undefined"
+        ? TbccZipNaming.profileNameFromSourceUrl(msg.sourceUrl || "") || "media"
+        : "media";
   for (const row of rows) {
     if (row) row.tbccZipProfileName = profileName;
   }
@@ -6040,10 +6060,15 @@ async function tbccMaybeWatermarkZipBlob(blob, kind, fetchOpts) {
 function tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts) {
   const pad = String(idx + 1).padStart(3, "0");
   const fallback = (pad + "_" + String(baseName || "media")).replace(/[^\w.\-]+/g, "_");
-  if (!fetchOpts || !fetchOpts.harvestZip || typeof TbccZipNaming === "undefined") return fallback;
+  const useTemplate =
+    fetchOpts &&
+    fetchOpts.zipNameTemplate &&
+    (fetchOpts.harvestZip || fetchOpts.useEntryTemplate);
+  if (!useTemplate || typeof TbccZipNaming === "undefined") return fallback;
   const name =
     (it && it.tbccZipProfileName) ||
     fetchOpts.profileName ||
+    (fetchOpts.zipContext && fetchOpts.zipContext.name) ||
     TbccZipNaming.profileNameFromSourceUrl((it && it.tbccSourcePageUrl) || "") ||
     "media";
   return TbccZipNaming.buildZipFilename(fetchOpts.zipNameTemplate, {
@@ -6074,10 +6099,15 @@ async function tbccZipEntryFilenameAsync(it, idx, baseName, blob, fetchOpts) {
   }
   alignedBase = alignedBase.replace(/[^\w.\-]+/g, "_");
   const fallback = (pad + "_" + alignedBase).replace(/[^\w.\-]+/g, "_");
-  if (!fetchOpts || !fetchOpts.harvestZip || typeof TbccZipNaming === "undefined") return fallback;
+  const useTemplate =
+    fetchOpts &&
+    fetchOpts.zipNameTemplate &&
+    (fetchOpts.harvestZip || fetchOpts.useEntryTemplate);
+  if (!useTemplate || typeof TbccZipNaming === "undefined") return fallback;
   const name =
     (it && it.tbccZipProfileName) ||
     fetchOpts.profileName ||
+    (fetchOpts.zipContext && fetchOpts.zipContext.name) ||
     TbccZipNaming.profileNameFromSourceUrl((it && it.tbccSourcePageUrl) || "") ||
     "media";
   return TbccZipNaming.buildZipFilename(fetchOpts.zipNameTemplate, {
@@ -6102,9 +6132,29 @@ async function tbccZipEntryNameForItem(it, idx, baseName, blob, fetchOpts) {
   return tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts);
 }
 
+/** Full Downloads/tbcc/ path for a single exported file (ZIP entry or regular download). */
+async function tbccGalleryExportDownloadPath(it, idx, baseName, blob, fetchOpts) {
+  const leaf =
+    fetchOpts && fetchOpts.useEntryTemplate
+      ? blob != null
+        ? await tbccZipEntryNameForItem(it, idx, baseName, blob, fetchOpts)
+        : tbccZipEntryFilename(it, idx, baseName, blob, fetchOpts)
+      : (() => {
+          const pad = String(idx + 1).padStart(3, "0");
+          return (pad + "_" + String(baseName || "media").replace(/[^\w.\-]+/g, "_")).replace(/[^\w.\-]+/g, "_");
+        })();
+  if (typeof TbccZipNaming !== "undefined" && TbccZipNaming.tbccDownloadFolderPath) {
+    return TbccZipNaming.tbccDownloadFolderPath(leaf);
+  }
+  return "tbcc/" + String(leaf).replace(/^\/+/, "");
+}
+
 function resolveZipBundleProfileName(opts, selected) {
   const rows = Array.isArray(selected) ? selected : [];
   const fetchOpts = (opts && opts.zipFetchOpts) || opts || {};
+  if (fetchOpts.zipContext && fetchOpts.zipContext.name) {
+    return String(fetchOpts.zipContext.name).trim();
+  }
   if (fetchOpts.profileName && String(fetchOpts.profileName).trim() && !/^media$/i.test(fetchOpts.profileName)) {
     return String(fetchOpts.profileName).trim();
   }
@@ -6116,43 +6166,112 @@ function resolveZipBundleProfileName(opts, selected) {
     fetchOpts.sourceUrl ||
     (opts && opts.sourceUrl) ||
     (rows[0] && rows[0].tbccSourcePageUrl) ||
+    (rows[0] && rows[0].pageUrl) ||
     "";
+  if (typeof TbccZipNaming !== "undefined" && TbccZipNaming.inferZipContext) {
+    const pageTitle = (fetchOpts.zipContext && fetchOpts.zipContext.title) || "";
+    return TbccZipNaming.inferZipContext({ sourceUrl, pageTitle }).name || "";
+  }
   if (typeof TbccZipNaming !== "undefined") {
     return TbccZipNaming.profileNameFromSourceUrl(sourceUrl) || "";
   }
   return "";
 }
 
+async function resolveZipNamingContext(opts, selected) {
+  const rows = Array.isArray(selected) ? selected : [];
+  const sourceUrl =
+    (opts && opts.sourceUrl) ||
+    (opts && opts.zipFetchOpts && opts.zipFetchOpts.sourceUrl) ||
+    (rows[0] && rows[0].tbccSourcePageUrl) ||
+    (rows[0] && rows[0].pageUrl) ||
+    "";
+  let profileHint = "";
+  for (let i = 0; i < rows.length; i++) {
+    const n = rows[i] && rows[i].tbccZipProfileName;
+    if (n && String(n).trim()) {
+      profileHint = String(n).trim();
+      break;
+    }
+  }
+  let pageTitle = "";
+  try {
+    pageTitle = await fetchPageTitleQuick();
+  } catch (_) {}
+  if (typeof TbccZipNaming !== "undefined" && TbccZipNaming.inferZipContext) {
+    return TbccZipNaming.inferZipContext({
+      sourceUrl,
+      pageTitle,
+      itemHints: { profileName: profileHint },
+    });
+  }
+  return {
+    name: profileHint || "media",
+    site: "",
+    gallery: "",
+    title: pageTitle || profileHint || "media",
+    profileName: profileHint || "media",
+    sourceUrl,
+  };
+}
+
 function tbccZipBundleDownloadFilename(opts, selected) {
   const name = resolveZipBundleProfileName(opts, selected);
+  const fetchOpts = (opts && opts.zipFetchOpts) || {};
+  const zipContext = fetchOpts.zipContext || {};
   const sourceUrl =
-    (opts && opts.zipFetchOpts && opts.zipFetchOpts.sourceUrl) ||
+    fetchOpts.sourceUrl ||
     (opts && opts.sourceUrl) ||
+    zipContext.sourceUrl ||
     (selected && selected[0] && selected[0].tbccSourcePageUrl) ||
     "";
+  const bundleTemplate =
+    (settings.zipBundleTemplate && String(settings.zipBundleTemplate).trim()) ||
+    (fetchOpts.zipBundleTemplate && String(fetchOpts.zipBundleTemplate).trim()) ||
+    "";
   if (typeof TbccZipNaming !== "undefined" && TbccZipNaming.downloadPathForBundle) {
-    return TbccZipNaming.downloadPathForBundle({ name, profileName: name, sourceUrl, ext: "zip" });
+    return TbccZipNaming.downloadPathForBundle({
+      name,
+      profileName: name,
+      sourceUrl,
+      site: zipContext.site,
+      gallery: zipContext.gallery,
+      title: zipContext.title,
+      seoTitle: zipContext.title,
+      bundleTemplate: bundleTemplate || undefined,
+      ext: "zip",
+    });
   }
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
   return "tbcc/tbcc_bundle_" + stamp + ".zip";
 }
 
 async function buildHarvestZipFetchOpts(opts, rows) {
+  return buildZipFetchOpts(opts, rows);
+}
+
+async function buildZipFetchOpts(opts, rows) {
   const looms = await loadXProfileLoomsSettings();
-  const sourceUrl =
-    (opts && opts.sourceUrl) ||
-    (rows && rows[0] && rows[0].tbccSourcePageUrl) ||
-    "";
-  const profileName =
-    typeof TbccZipNaming !== "undefined"
-      ? TbccZipNaming.profileNameFromSourceUrl(sourceUrl) || "media"
-      : "media";
+  const zipContext = await resolveZipNamingContext(opts, rows);
+  const sourceUrl = zipContext.sourceUrl || (opts && opts.sourceUrl) || "";
+  const harvestZip = !!(opts && (opts.harvestZip || opts.loomsZip));
+  const heuristicNaming = settings.zipHeuristicNaming !== false;
+  const entryTpl =
+    (settings.zipEntryTemplate && String(settings.zipEntryTemplate).trim()) ||
+    looms.zipNameTemplate ||
+    (typeof TbccZipNaming !== "undefined" ? TbccZipNaming.DEFAULT_TEMPLATE : "");
+  const bundleTpl =
+    (settings.zipBundleTemplate && String(settings.zipBundleTemplate).trim()) || "";
   return {
-    harvestZip: !!(opts && (opts.harvestZip || opts.loomsZip)),
-    skipWatermark: looms.zipSkipWatermark !== false,
-    zipNameTemplate: looms.zipNameTemplate || (typeof TbccZipNaming !== "undefined" ? TbccZipNaming.DEFAULT_TEMPLATE : ""),
-    profileName,
+    harvestZip,
+    useEntryTemplate: harvestZip || heuristicNaming,
+    heuristicNaming,
+    skipWatermark: harvestZip ? looms.zipSkipWatermark !== false : settings.skipPromoWatermark === true,
+    zipNameTemplate: entryTpl,
+    zipBundleTemplate: bundleTpl,
+    profileName: zipContext.name,
     sourceUrl,
+    zipContext,
     stallTimeoutMs: opts && opts.stallTimeoutMs != null ? Number(opts.stallTimeoutMs) : undefined,
   };
 }
@@ -6422,20 +6541,37 @@ function filenameForCropUrl(url) {
   return (n.replace(/\.[^.]+$/, "") || "media") + ".jpg";
 }
 
-async function tbccApplyPromoWatermarkBlob(blob, mediaTypeHint) {
-  if (settings && settings.skipPromoWatermark === true) return blob;
-  try {
-    const form = new FormData();
-    form.append("file", blob, "media.bin");
-    form.append("media_type", mediaTypeHint || "photo");
-    form.append("skip_watermark", "false");
-    const r = await fetch(API_BASE + "/import/watermark-bytes", { method: "POST", body: form });
-    if (!r.ok) return blob;
-    const ct = r.headers.get("content-type") || blob.type || "application/octet-stream";
-    return new Blob([await r.arrayBuffer()], { type: ct });
-  } catch (_) {
-    return blob;
+async function tbccGetPromoWatermarkConfig() {
+  if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.promoWatermarkFromGallerySettings) {
+    return TbccPromoWatermark.promoWatermarkFromGallerySettings(settings);
   }
+  return { enabled: settings.skipPromoWatermark !== true };
+}
+
+async function tbccApplyPromoWatermarkBlob(blob, mediaTypeHint) {
+  const cfg = await tbccGetPromoWatermarkConfig();
+  if (!cfg.enabled) return blob;
+  const PW = typeof TbccPromoWatermark !== "undefined" ? TbccPromoWatermark : null;
+  if (PW && PW.appendWatermarkConfigToForm) {
+    try {
+      const form = new FormData();
+      form.append("file", blob, "media.bin");
+      form.append("media_type", mediaTypeHint || "photo");
+      form.append("skip_watermark", "false");
+      PW.appendWatermarkConfigToForm(form, cfg);
+      const r = await fetch(API_BASE + "/import/watermark-bytes", { method: "POST", body: form });
+      if (r.ok) {
+        const ct = r.headers.get("content-type") || blob.type || "application/octet-stream";
+        return new Blob([await r.arrayBuffer()], { type: ct });
+      }
+    } catch (_) {}
+  }
+  if (PW && PW.applyPromoWatermarkBlob) {
+    try {
+      return await PW.applyPromoWatermarkBlob(blob, mediaTypeHint, cfg);
+    } catch (_) {}
+  }
+  return blob;
 }
 
 /** WebP → JPG when ⚙ Format is "Convert to JPG"; then optional crop/watermark pipeline. */
@@ -8902,8 +9038,10 @@ async function downloadSelectedAsZip(opts) {
     opts && opts.zipFetchOpts
       ? opts.zipFetchOpts
       : opts && opts.harvestZip
-        ? await buildHarvestZipFetchOpts(opts, opts.explicitItems || [])
-        : null;
+        ? await buildZipFetchOpts(opts, opts.explicitItems || selected)
+        : settings.zipHeuristicNaming !== false
+          ? await buildZipFetchOpts(opts || {}, selected)
+          : null;
   try {
   if (typeof JSZip === "undefined") {
     if (progressEl) progressEl.classList.add("visible");
@@ -8969,19 +9107,30 @@ async function downloadSelectedAsZip(opts) {
     const destEl = document.getElementById("zipFlywheelDest");
     const flyDest = (destEl && destEl.value) || "downloads_promo";
     const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+    const zipCtx = (zipFetchOpts && zipFetchOpts.zipContext) || {};
     const profileHint =
+      zipCtx.sourceUrl ||
       (opts && (opts.profileName || opts.name)) ||
-      (selected[0] && selected[0].pageUrl) ||
+      (selected[0] && (selected[0].tbccSourcePageUrl || selected[0].pageUrl)) ||
+      "";
+    const bundleTpl =
+      (settings.zipBundleTemplate && String(settings.zipBundleTemplate).trim()) ||
+      (zipFetchOpts && zipFetchOpts.zipBundleTemplate) ||
       "";
     let zipFilename =
       naming && typeof naming.buildDestinationFilename === "function"
         ? naming.buildDestinationFilename(flyDest, {
-            name: opts && opts.name,
-            profileName: opts && opts.profileName,
+            name: zipCtx.name || (opts && opts.name),
+            profileName: zipCtx.name || (opts && opts.profileName),
             sourceUrl: profileHint,
+            site: zipCtx.site,
+            gallery: zipCtx.gallery,
+            title: zipCtx.title,
+            seoTitle: zipCtx.title,
+            bundleTemplate: bundleTpl || undefined,
             ext: "zip",
           })
-        : tbccZipBundleDownloadFilename(opts, selected);
+        : tbccZipBundleDownloadFilename({ ...opts, zipFetchOpts }, selected);
 
     if (flyDest && flyDest !== "downloads_promo") {
       if (progressStatus) progressStatus.textContent = "Uploading zip flywheel (" + flyDest + ")…";
@@ -9015,13 +9164,18 @@ async function downloadSelectedAsZip(opts) {
       if (!String(zipFilename).startsWith("tbcc/") && naming) {
         zipFilename = naming.downloadPathForBundle
           ? naming.downloadPathForBundle({
-              name: opts && opts.name,
-              profileName: opts && opts.profileName,
+              name: zipCtx.name || (opts && opts.name),
+              profileName: zipCtx.name || (opts && opts.profileName),
               sourceUrl: profileHint,
+              site: zipCtx.site,
+              gallery: zipCtx.gallery,
+              title: zipCtx.title,
+              bundleTemplate: bundleTpl || undefined,
+              ext: "zip",
             })
           : "tbcc/" + zipFilename;
       } else if (!String(zipFilename).startsWith("tbcc/")) {
-        zipFilename = tbccZipBundleDownloadFilename(opts, selected);
+        zipFilename = tbccZipBundleDownloadFilename({ ...opts, zipFetchOpts }, selected);
       }
       await new Promise((resolve) => {
         chrome.downloads.download(
@@ -9139,6 +9293,7 @@ async function downloadSelectedBuffered(selected) {
   const run = tbccBeginProgressRun("download");
   const jobId = await beginGalleryJob("download", "Gallery download");
   run.jobId = jobId;
+  const exportFetchOpts = await buildZipFetchOpts({}, selected);
   try {
     btnDownload.disabled = true;
     if (btnDownloadZip) btnDownloadZip.disabled = true;
@@ -9154,8 +9309,12 @@ async function downloadSelectedBuffered(selected) {
       if (progressStatus) progressStatus.textContent = `Fetching ${i + 1} / ${total}…`;
       if (progressFill) progressFill.style.width = Math.round(((i + 1) / total) * 50) + "%";
       try {
-        const { filename, blob } = await getBlobAndNameForZipItem(selected[i], i);
-        staged.push({ filename: "tbcc/" + filename.replace(/^[\d_]+_/, ""), blob });
+        const { filename, blob } = await getBlobAndNameForZipItem(selected[i], i, false, exportFetchOpts);
+        const downloadPath =
+          typeof TbccZipNaming !== "undefined" && TbccZipNaming.tbccDownloadFolderPath
+            ? TbccZipNaming.tbccDownloadFolderPath(filename)
+            : "tbcc/" + String(filename).replace(/^\/+/, "");
+        staged.push({ filename: downloadPath, blob });
       } catch (e) {
         if (progressError)
           progressError.textContent = (progressError.textContent || "") + (e.message || "fetch failed") + "; ";
@@ -9205,6 +9364,7 @@ async function downloadSelectedDirect(selected) {
   const run = tbccBeginProgressRun("download");
   const jobId = await beginGalleryJob("download", "Gallery download");
   run.jobId = jobId;
+  const exportFetchOpts = await buildZipFetchOpts({}, selected);
   try {
   btnDownload.disabled = true;
   if (btnDownloadZip) btnDownloadZip.disabled = true;
@@ -9215,7 +9375,6 @@ async function downloadSelectedDirect(selected) {
   for (let i = 0; i < selected.length; i++) {
     if (tbccProgressRunAborted(run)) break;
     const it = selected[i];
-    const idx = String(i + 1).padStart(2, "0");
     try {
       if (it.file) {
         let name = (it.name || "file").replace(/[^\w.\-]+/g, "_");
@@ -9229,9 +9388,10 @@ async function downloadSelectedDirect(selected) {
           dlBlob = prep.blob;
           name = prep.name.replace(/[^\w.\-]+/g, "_");
         }
+        const filename = await tbccGalleryExportDownloadPath(it, i, name, dlBlob, exportFetchOpts);
         const blobUrl = URL.createObjectURL(dlBlob);
         await new Promise((resolve) => {
-          chrome.downloads.download({ url: blobUrl, filename: "tbcc/" + name, saveAs: false }, () => {
+          chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
             URL.revokeObjectURL(blobUrl);
             resolve();
           });
@@ -9256,7 +9416,7 @@ async function downloadSelectedDirect(selected) {
           const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
           if (!raw || !raw.size) throw new Error("Could not fetch image for processing");
           const prep = await tbccPrepareRasterBlob(raw, it.url, filenameFromUrl(httpFetchUrl));
-          const filename = "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_");
+          const filename = await tbccGalleryExportDownloadPath(it, i, prep.name, prep.blob, exportFetchOpts);
           const blobUrl = URL.createObjectURL(prep.blob);
           await new Promise((resolve, reject) => {
             chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
@@ -9282,7 +9442,8 @@ async function downloadSelectedDirect(selected) {
                 : ".mp4"
               : "";
           const hasExt = /\.\w{2,5}$/i.test(base);
-          const filename = ("tbcc/" + idx + "_" + (hasExt ? base : base + ext)).replace(/[^\w.\-]+/g, "_");
+          const leafBase = hasExt ? base : base + ext;
+          const filename = await tbccGalleryExportDownloadPath(it, i, leafBase, dlBlob, exportFetchOpts);
           const blobUrl = URL.createObjectURL(dlBlob);
           await new Promise((resolve, reject) => {
             chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
@@ -9300,7 +9461,7 @@ async function downloadSelectedDirect(selected) {
           const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
           if (!raw || !raw.size) throw new Error("Could not fetch WebP for conversion");
           const prep = await tbccPrepareRasterBlob(raw, it.url, filenameFromUrl(httpFetchUrl));
-          const filename = "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_");
+          const filename = await tbccGalleryExportDownloadPath(it, i, prep.name, prep.blob, exportFetchOpts);
           const blobUrl = URL.createObjectURL(prep.blob);
           await new Promise((resolve, reject) => {
             chrome.downloads.download({ url: blobUrl, filename, saveAs: false }, () => {
@@ -9313,7 +9474,8 @@ async function downloadSelectedDirect(selected) {
           const base = filenameFromUrl(httpFetchUrl);
           const ext = it.mediaType === "video" || (it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
           const hasExt = /\.\w{2,5}$/i.test(base);
-          const filename = "tbcc/" + idx + "_" + (hasExt ? base : base + ext);
+          const leafBase = hasExt ? base : base + ext;
+          const filename = await tbccGalleryExportDownloadPath(it, i, leafBase, null, exportFetchOpts);
           await new Promise((resolve, reject) => {
             chrome.downloads.download({ url: httpFetchUrl, filename, saveAs: false }, () => {
               if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -9325,12 +9487,13 @@ async function downloadSelectedDirect(selected) {
         try {
           const r = await fetch(it.url);
           let b = await r.blob();
-          let fname = "tbcc/" + idx + "_" + filenameFromUrl(it.url);
+          let leafName = filenameFromUrl(it.url);
           if (isImageItem(it)) {
             const prep = await tbccPrepareRasterBlob(b, it.url, filenameForCropUrl(it.url));
             b = prep.blob;
-            fname = "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_");
+            leafName = prep.name;
           }
+          const fname = await tbccGalleryExportDownloadPath(it, i, leafName, b, exportFetchOpts);
           const blobUrl = URL.createObjectURL(b);
           await new Promise((resolve, reject) => {
             chrome.downloads.download(
@@ -9351,9 +9514,10 @@ async function downloadSelectedDirect(selected) {
           const b0 = await r.blob();
           const prep = await tbccPrepareRasterBlob(b0, it.url, "media.webp");
           const blobUrl = URL.createObjectURL(prep.blob);
+          const filename = await tbccGalleryExportDownloadPath(it, i, prep.name, prep.blob, exportFetchOpts);
           await new Promise((resolve) => {
             chrome.downloads.download(
-              { url: blobUrl, filename: "tbcc/" + idx + "_" + prep.name.replace(/[^\w.\-]+/g, "_"), saveAs: false },
+              { url: blobUrl, filename, saveAs: false },
               () => {
               URL.revokeObjectURL(blobUrl);
               resolve();
@@ -9374,9 +9538,10 @@ async function downloadSelectedDirect(selected) {
             const ext =
               it.mediaType === "video" || String(it.tagName || "").toLowerCase() === "video" ? ".mp4" : "";
             const blobUrl = URL.createObjectURL(b);
+            const filename = await tbccGalleryExportDownloadPath(it, i, "media" + ext, b, exportFetchOpts);
             await new Promise((resolve, reject) => {
               chrome.downloads.download(
-                { url: blobUrl, filename: "tbcc/" + idx + "_media" + ext, saveAs: false },
+                { url: blobUrl, filename, saveAs: false },
                 () => {
                   URL.revokeObjectURL(blobUrl);
                   if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
@@ -11673,7 +11838,16 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
     if (typeof settings.subtabAutoCapture !== "boolean") settings.subtabAutoCapture = true;
     settings.subtabCap = Math.max(1, Math.min(5, parseInt(String(settings.subtabCap || 3), 10) || 3));
     if (typeof settings.gridSortMode !== "string") settings.gridSortMode = "default";
-    if (settings.gridViewMode !== "details") settings.gridViewMode = "grid";
+    if (typeof settings.zipHeuristicNaming !== "boolean") settings.zipHeuristicNaming = true;
+    if (typeof settings.zipEntryTemplate !== "string") settings.zipEntryTemplate = "";
+    if (typeof settings.zipBundleTemplate !== "string") settings.zipBundleTemplate = "";
+    if (!settings.promoWatermark || typeof settings.promoWatermark !== "object") {
+      settings.promoWatermark = {};
+    }
+    if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.normalizePromoWatermark) {
+      settings.promoWatermark = TbccPromoWatermark.normalizePromoWatermark(settings.promoWatermark);
+      if (settings.skipPromoWatermark === true) settings.promoWatermark.enabled = false;
+    }
   }
   if (settings.clearSelectionOnOpen === true) {
     await clearSelectionForNewCapture();

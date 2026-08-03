@@ -43,7 +43,7 @@ def topic_deep_link(message_thread_id: int) -> str:
 
 # Operator quarantine review cards (forum subtopic). Create in hangar, then set env.
 # Until set, review cards post to the hub root / General when TBCC_GATEKEEPER_REVIEW_THREAD_ID is unset.
-GATEKEEPER_REVIEW_TOPIC_ID: int | None = None
+GATEKEEPER_REVIEW_TOPIC_ID: int | None = 1
 
 # AOF STORAGE lanes — synced from live group 2026-06-13
 AOF_STORAGE_TOPIC_MAP: tuple[StorageTopicMap, ...] = (
@@ -117,15 +117,17 @@ def content_lane_storage_topics() -> tuple[StorageTopicMap, ...]:
     return tuple(m for m in AOF_STORAGE_TOPIC_MAP if m.network_key in CONTENT_LANE_NETWORK_KEYS)
 
 
-# SENT CACHE — archived media after /deposit (forum subtopic in Storage & Bot Hangar).
+# SENT VAULT — permanent master archive after /deposit (forum subtopic). Never bulk-delete.
+# Env keys keep TBCC_STORAGE_SENT_CACHE_* for backward compatibility.
+SENT_VAULT_DISPLAY_NAME = "SENT VAULT"
 SENT_CACHE_TOPIC = StorageTopicMap(
     12345,
-    "SENT CACHE",
+    "SENT VAULT",
     "",
-    notes="TBCC_STORAGE_SENT_CACHE_TOPIC_ID=12345; t.me/c/3812457581/12345",
+    notes="TBCC_STORAGE_SENT_CACHE_TOPIC_ID=12345; permanent AOF master media archive — t.me/c/3812457581/12345",
 )
 
-# Category emoji stamps (paired with ✅ when moved to SENT CACHE).
+# Category emoji stamps (paired with ✅ when moved to SENT VAULT).
 STORAGE_CATEGORY_EMOJI: dict[str, str] = {
     "ass": "🍑",
     "big_tits": "🍒",

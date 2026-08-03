@@ -75,11 +75,21 @@ def is_undress_signal(
     ).lower()
     needles = (
         "undress",
+        "undr_ss",
         "nodress",
+        "nudress",
+        "ndfy",
         "braundress",
         "aifastedit",
+        "alfastedit",
+        "okbraoff",
+        "teststtscr",
+        "star_cafe",
+        "starcafe",
+        "remove_shirt",
         "delete_my_panties",
         "deletemypanties",
+        "easy_ai_photo",
     )
     return any(n in blob for n in needles)
 

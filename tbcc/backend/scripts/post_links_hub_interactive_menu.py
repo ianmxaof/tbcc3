@@ -33,7 +33,7 @@ from app.services.telegram_bot_markup import send_photo_with_inline_keyboard
 def main() -> None:
     p = argparse.ArgumentParser(description="Post interactive LINK HUB menu to Telegram")
     p.add_argument("--kind", choices=["channels", "ai"], default="channels")
-    p.add_argument("--variant", choices=["v1", "v2", "v3"], default="v1")
+    p.add_argument("--variant", choices=["v1", "v2", "v3", "v4", "v5", "v6", "v7"], default="v1")
     p.add_argument("--chat", default=MAINHUB_CHANNEL_IDENT, help="Telegram chat id (default @aofmainhub)")
     p.add_argument("--columns", type=int, default=2, help="Inline button columns (1-3)")
     p.add_argument("--dry-run", action="store_true", default=True)

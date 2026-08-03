@@ -8,6 +8,7 @@
   .\scripts\tbcc-uncensored-chat.ps1
   .\scripts\tbcc-uncensored-chat.ps1 -ListFree
   .\scripts\tbcc-uncensored-chat.ps1 -Model nousresearch/hermes-3-llama-3.1-405b:free
+  .\scripts\tbcc-dolphin-lab.ps1 -Probe    # paid Dolphin (cheap)
   .\scripts\tbcc-uncensored-chat.ps1 -Verify
 #>
 param(

@@ -53,7 +53,7 @@ if (-not $key -or $key.Length -lt 20 -or $key -eq "sk-or-v1-" -or $key -match "P
   exit 1
 }
 
-$model = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+$model = "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 $uri = "https://openrouter.ai/api/v1/chat/completions"
 
 $headers = @{

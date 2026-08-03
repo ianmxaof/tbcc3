@@ -42,9 +42,13 @@ def test_parse_review_callback_toggle_lane():
     assert parse_review_callback("gk:t:42:bop") == ("toggle_lane", 42, "bop")
 
 
-def test_lane_picker_keyboard_has_toggle_and_approve():
-    kb = review_lane_picker_keyboard(99, selected=["bop", "ass"])
+def test_lane_picker_keyboard_review_all_uses_lane_context():
+    from app.services.gatekeeper_review import panel_open_callback
+
+    kb = review_lane_picker_keyboard(99, selected=["bop", "ass"], default_lane_key="ai")
     flat = [b for row in kb["inline_keyboard"] for b in row]
+    review_btn = next(b for b in flat if b["text"] == "📋 Review all waiting")
+    assert review_btn["callback_data"] == panel_open_callback("ai")
     callbacks = [b["callback_data"] for b in flat]
     assert "gk:t:99:bop" in callbacks
     assert "gk:a:99" in callbacks

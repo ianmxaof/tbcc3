@@ -199,6 +199,7 @@ def create_channel_import_job(
     network_key: str | None = None,
     sent_cache: bool = False,
     message_ids: list[int] | None = None,
+    auto_pipe: bool = False,
 ) -> ImportJob:
     job_id = new_import_job_id()
     ids = [int(x) for x in (message_ids or []) if int(x) > 0][:200]
@@ -213,6 +214,7 @@ def create_channel_import_job(
         "index_only": bool(index_only),
         "network_key": (network_key or "").strip() or None,
         "sent_cache": bool(sent_cache),
+        "auto_pipe": bool(auto_pipe),
     }
     if ids:
         params["message_ids"] = ids

@@ -14,6 +14,8 @@ def test_is_undress_signal_matches_refs():
     assert surge.is_undress_signal(source_ref="src_aff_undress_ai_dm")
     assert surge.is_undress_signal(link_label="Undress AI bot")
     assert surge.is_undress_signal(url="https://nodress.site/tg/bot")
+    assert surge.is_undress_signal(url="https://ndfy.space/tg/bot?username=Aifasteditbot")
+    assert surge.is_undress_signal(url="https://nudress.store/tg/bot?username=Okbraoffbot")
     assert not surge.is_undress_signal(source_ref="src_aff_bangbros_footer")
 
 

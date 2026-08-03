@@ -153,7 +153,7 @@ def _list_free() -> int:
     for mid in FREE_OPENROUTER_CHAT_MODELS:
         note = ""
         if "dolphin" in mid:
-            note = "  # least censored; OpenRouter sunset ~2026-07-19"
+            note = "  # use tbcc-dolphin-lab.ps1 — Dolphin is paid on OpenRouter now"
         elif "hermes" in mid:
             note = "  # less aligned than stock Llama; good post-Dolphin fallback"
         elif mid == "openrouter/free":

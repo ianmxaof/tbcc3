@@ -20,7 +20,21 @@
   const elNotifySendChannel = document.getElementById("captureSettingNotifySendChannel");
   const elNotificationStyle = document.getElementById("captureSettingNotificationStyle");
   const elDownloadMode = document.getElementById("captureSettingDownloadMode");
-  const elSkipPromoWatermark = document.getElementById("captureSettingSkipPromoWatermark");
+  const elWmEnabled = document.getElementById("captureSettingPromoWatermarkEnabled");
+  const elWmText = document.getElementById("captureSettingWmText");
+  const elWmText2 = document.getElementById("captureSettingWmText2");
+  const elWmText3 = document.getElementById("captureSettingWmText3");
+  const elWmOpacity = document.getElementById("captureSettingWmOpacity");
+  const elWmOpacityVal = document.getElementById("captureSettingWmOpacityVal");
+  const elWmSizeRatio = document.getElementById("captureSettingWmSizeRatio");
+  const elWmColor = document.getElementById("captureSettingWmColor");
+  const elWmColorHex = document.getElementById("captureSettingWmColorHex");
+  const elWmPosition = document.getElementById("captureSettingWmPosition");
+  const elWmMode = document.getElementById("captureSettingWmMode");
+  const elWmStripPrevious = document.getElementById("captureSettingWmStripPrevious");
+  const elZipHeuristic = document.getElementById("captureSettingZipHeuristic");
+  const elZipBundleTemplate = document.getElementById("captureSettingZipBundleTemplate");
+  const elZipEntryTemplate = document.getElementById("captureSettingZipEntryTemplate");
   const btnClear = document.getElementById("captureSettingClearCache");
   const apiStatus = document.getElementById("tbccApiStatus");
 
@@ -32,6 +46,78 @@
         chrome.storage.local.set({ [STORAGE_SETTINGS]: next }, resolve);
       });
     });
+  }
+
+  function normalizeWmFromStorage(s) {
+    const PW = typeof TbccPromoWatermark !== "undefined" ? TbccPromoWatermark : null;
+    const raw = (s && s.promoWatermark) || {};
+    let wm = PW ? PW.normalizePromoWatermark(raw) : raw;
+    if (s && s.skipPromoWatermark === true) wm = { ...wm, enabled: false };
+    return wm;
+  }
+
+  function readWmFromForm() {
+    const opacity = elWmOpacity ? Number(elWmOpacity.value) : 0.58;
+    const sizePct = elWmSizeRatio ? Number(elWmSizeRatio.value) : 4.5;
+    const color = (elWmColorHex && elWmColorHex.value.trim()) || (elWmColor && elWmColor.value) || "#ffffff";
+    return {
+      enabled: elWmEnabled ? !!elWmEnabled.checked : true,
+      text: (elWmText && elWmText.value.trim()) || "telegram.me/aofmainhub",
+      textSecondary: (elWmText2 && elWmText2.value.trim()) || "",
+      textTertiary: (elWmText3 && elWmText3.value.trim()) || "",
+      opacity: Number.isFinite(opacity) ? opacity : 0.58,
+      color,
+      position: (elWmPosition && elWmPosition.value) || "bottom_right",
+      mode: (elWmMode && elWmMode.value) || "rotate",
+      sizeRatio: Number.isFinite(sizePct) ? Math.max(1.2, Math.min(8, sizePct)) / 100 : 0.045,
+      stripPrevious: !!(elWmStripPrevious && elWmStripPrevious.checked),
+    };
+  }
+
+  function applyWmToForm(wm) {
+    const w = typeof TbccPromoWatermark !== "undefined" ? TbccPromoWatermark.normalizePromoWatermark(wm) : wm;
+    if (elWmEnabled) elWmEnabled.checked = w.enabled !== false;
+    if (elWmText) elWmText.value = w.text || "";
+    if (elWmText2) elWmText2.value = w.textSecondary || "";
+    if (elWmText3) elWmText3.value = w.textTertiary || "";
+    if (elWmOpacity) elWmOpacity.value = String(w.opacity != null ? w.opacity : 0.58);
+    if (elWmOpacityVal) elWmOpacityVal.textContent = Number(w.opacity != null ? w.opacity : 0.58).toFixed(2);
+    if (elWmSizeRatio) elWmSizeRatio.value = String(((w.sizeRatio != null ? w.sizeRatio : 0.045) * 100).toFixed(1));
+    const col = w.color || "#ffffff";
+    if (elWmColor) elWmColor.value = col.startsWith("#") ? col : "#ffffff";
+    if (elWmColorHex) elWmColorHex.value = col;
+    if (elWmPosition) elWmPosition.value = w.position || "bottom_right";
+    if (elWmMode) elWmMode.value = w.mode === "fixed" ? "fixed" : "rotate";
+    if (elWmStripPrevious) elWmStripPrevious.checked = !!w.stripPrevious;
+  }
+
+  async function savePromoWatermark() {
+    const promoWatermark =
+      typeof TbccPromoWatermark !== "undefined"
+        ? TbccPromoWatermark.normalizePromoWatermark(readWmFromForm())
+        : readWmFromForm();
+    await mergeSave({
+      promoWatermark,
+      skipPromoWatermark: !promoWatermark.enabled,
+    });
+    if (typeof tbccFetchApi === "function" && typeof TbccPromoWatermark !== "undefined") {
+      try {
+        const payload = TbccPromoWatermark.configToApiPayload(promoWatermark);
+        await tbccFetchApi("/watermark-settings", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            enabled: payload.enabled,
+            text_primary: payload.text,
+            text_secondary: payload.text_secondary,
+            text_tertiary: payload.text_tertiary,
+            opacity: payload.opacity,
+            color: payload.color,
+            strip_previous: payload.strip_previous,
+          }),
+        });
+      } catch (_) {}
+    }
   }
 
   async function load() {
@@ -51,7 +137,10 @@
     if (elNotifySendChannel) elNotifySendChannel.checked = s.notifyOnSendChannelComplete !== false;
     if (elNotificationStyle) elNotificationStyle.value = s.notificationStyle || "full";
     if (elDownloadMode) elDownloadMode.value = s.downloadMode === "direct" ? "direct" : "buffered";
-    if (elSkipPromoWatermark) elSkipPromoWatermark.checked = s.skipPromoWatermark === true;
+    applyWmToForm(normalizeWmFromStorage(s));
+    if (elZipHeuristic) elZipHeuristic.checked = s.zipHeuristicNaming !== false;
+    if (elZipBundleTemplate) elZipBundleTemplate.value = s.zipBundleTemplate || "";
+    if (elZipEntryTemplate) elZipEntryTemplate.value = s.zipEntryTemplate || "";
     if (elPageMediaMenu) elPageMediaMenu.checked = o[STORAGE_PAGE_MEDIA_MENU] !== false;
     if (elLazy) {
       const d = parseInt(String(s.captureLazyDelayMs || 0), 10);
@@ -89,9 +178,42 @@
     elDownloadMode.addEventListener("change", () =>
       mergeSave({ downloadMode: elDownloadMode.value === "direct" ? "direct" : "buffered" })
     );
-  if (elSkipPromoWatermark)
-    elSkipPromoWatermark.addEventListener("change", () =>
-      mergeSave({ skipPromoWatermark: !!elSkipPromoWatermark.checked })
+  if (elWmEnabled) elWmEnabled.addEventListener("change", () => void savePromoWatermark());
+  if (elWmText) elWmText.addEventListener("change", () => void savePromoWatermark());
+  if (elWmText2) elWmText2.addEventListener("change", () => void savePromoWatermark());
+  if (elWmText3) elWmText3.addEventListener("change", () => void savePromoWatermark());
+  if (elWmOpacity)
+    elWmOpacity.addEventListener("input", () => {
+      if (elWmOpacityVal) elWmOpacityVal.textContent = Number(elWmOpacity.value).toFixed(2);
+    });
+  if (elWmOpacity) elWmOpacity.addEventListener("change", () => void savePromoWatermark());
+  if (elWmSizeRatio) elWmSizeRatio.addEventListener("change", () => void savePromoWatermark());
+  if (elWmColor)
+    elWmColor.addEventListener("input", () => {
+      if (elWmColorHex) elWmColorHex.value = elWmColor.value;
+    });
+  if (elWmColor) elWmColor.addEventListener("change", () => void savePromoWatermark());
+  if (elWmColorHex)
+    elWmColorHex.addEventListener("change", () => {
+      if (elWmColor && /^#[0-9a-f]{3,6}$/i.test(elWmColorHex.value.trim())) {
+        elWmColor.value = elWmColorHex.value.trim();
+      }
+      void savePromoWatermark();
+    });
+  if (elWmPosition) elWmPosition.addEventListener("change", () => void savePromoWatermark());
+  if (elWmMode) elWmMode.addEventListener("change", () => void savePromoWatermark());
+  if (elWmStripPrevious) elWmStripPrevious.addEventListener("change", () => void savePromoWatermark());
+  if (elZipHeuristic)
+    elZipHeuristic.addEventListener("change", () =>
+      mergeSave({ zipHeuristicNaming: !!elZipHeuristic.checked })
+    );
+  if (elZipBundleTemplate)
+    elZipBundleTemplate.addEventListener("change", () =>
+      mergeSave({ zipBundleTemplate: (elZipBundleTemplate.value || "").trim() })
+    );
+  if (elZipEntryTemplate)
+    elZipEntryTemplate.addEventListener("change", () =>
+      mergeSave({ zipEntryTemplate: (elZipEntryTemplate.value || "").trim() })
     );
   if (elLazy)
     elLazy.addEventListener("change", () => {
@@ -139,7 +261,21 @@
     }
   }
 
+  async function loadWatermarkFromApiIfNeeded() {
+    if (typeof tbccFetchApi !== "function" || typeof TbccPromoWatermark === "undefined") return;
+    const o = await new Promise((r) => chrome.storage.local.get(STORAGE_SETTINGS, r));
+    const s = o[STORAGE_SETTINGS] || {};
+    if (s.promoWatermark && Object.keys(s.promoWatermark).length > 1) return;
+    try {
+      const data = await tbccFetchApiJson("/import/watermark-config");
+      const wm = TbccPromoWatermark.effectiveFromApiResponse(data);
+      applyWmToForm(wm);
+      await mergeSave({ promoWatermark: wm, skipPromoWatermark: !wm.enabled });
+    } catch (_) {}
+  }
+
   load();
+  void loadWatermarkFromApiIfNeeded();
   pingApi();
   setInterval(pingApi, 30000);
 })();

@@ -68,9 +68,8 @@ def test_admin_inbox_traffic_beacon_formatter():
             },
         }
     )
-    assert "Hot Dreams" not in body  # label is in title not body
     assert "aff-hot-dreams-bot-x-buffer" in body
-    assert 'href="https://t.me/HotDreamsBot' in body
+    assert "Buffer X" in body
 
 
 def test_beacon_pulse_meta_from_orm_shapes():

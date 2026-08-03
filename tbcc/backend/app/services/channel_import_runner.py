@@ -148,6 +148,7 @@ def run_channel_import_job_sync(job_id: str) -> dict:
         index_only = bool(params.get("index_only"))
         network_key = str(params.get("network_key") or "").strip() or None
         sent_cache = bool(params.get("sent_cache"))
+        auto_pipe = bool(params.get("auto_pipe"))
         raw_ids = params.get("message_ids")
         message_ids: list[int] | None = None
         if isinstance(raw_ids, list) and raw_ids:
@@ -178,6 +179,7 @@ def run_channel_import_job_sync(job_id: str) -> dict:
                     stored_messages=list(result.get("stored_messages") or []),
                     network_key=network_key,
                     hub_ident=channel,
+                    force_flush=True,
                 )
                 result["sent_cache"] = cache_body
                 if int(cache_body.get("moved") or 0) > 0:
@@ -208,9 +210,31 @@ def run_channel_import_job_sync(job_id: str) -> dict:
                             pool_id=int(job.pool_id) if job.pool_id else None,
                             storage_thread_id=message_thread_id,
                             moved_items=list(cache_body.get("moved_items") or []),
+                            skip_cache_rebundle=int(cache_body.get("albums_posted") or 0) > 0,
                         )
                     except Exception:
                         logger.debug("sent cache composer enqueue skipped", exc_info=True)
+            dup_lane_ids = list(result.get("duplicate_lane_message_ids") or [])
+            if (
+                sent_cache
+                and dup_lane_ids
+                and message_thread_id is not None
+            ):
+                from app.services.storage_sent_cache import (
+                    evict_lane_messages,
+                    storage_deposit_lane_evict_enabled,
+                )
+
+                if storage_deposit_lane_evict_enabled():
+                    update_job(db, job, status="processing", stage="lane_evict")
+                    evict_body = await evict_lane_messages(storage, channel, dup_lane_ids)
+                    result["lane_evict"] = evict_body
+            if auto_pipe:
+                from app.services.intake_scheduler import mark_lane_run
+
+                if network_key:
+                    mark_lane_run(network_key)
+                result["auto_pipe"] = True
             return result
 
         timeout = channel_import_timeout_s(

@@ -263,3 +263,33 @@ Use when recruiting **users** to an undress affiliate — not for `/model` creat
 
 *Note: `nudify.systems/?r=…` in your screenshot decodes to operator id <code>7787282561</code> — you may already be on their program; TBCC seed still has <code>nudify.now</code> not <code>nudify.systems</code>. Add enrolled URL to <code>seed_promo_affiliate_links.py</code> + beacon wrap.*
 
+---
+
+## Scheduled daily posts (Celery)
+
+Code: `backend/app/services/loot_creator_recruitment_posts.py` + `loot_creator_recruitment_worker.py`
+
+| Slot | Default UTC | Target |
+|------|-------------|--------|
+| Loot Room | 14 | `MAIN_GROUP_IDENT` |
+| Random lane | 20 | ai · bop · taboo · blowjob · … (rotates daily) |
+
+Variants rotate by day: **G → H → I → J → V4_ORANGE → V4_MATRIX → V4_REVEAL → V4_DARK**
+
+Env: `TBCC_CREATOR_RECRUITMENT_LOOT_HOUR_UTC`, `TBCC_CREATOR_RECRUITMENT_LANE_HOUR_UTC`, `TBCC_CREATOR_RECRUITMENT_BUFFER_MIRROR=1` for X.
+
+Manual: `python scripts/post_loot_creator_recruitment.py --variant V4_REVEAL --execute`
+
+---
+
+## V4 mechanical styles (code-backed)
+
+| ID | Style |
+|----|-------|
+| `V4_ORANGE` | Box-frame orange panel, `/model` in pre |
+| `V4_MATRIX` | Green STORAGE HUB `>>>` rows inside blockquote |
+| `V4_REVEAL` | Dot-trail reveal board, expandable blockquote |
+| `V4_DARK` | `▶ ⏺ ⏺` symmetric mechanical rows |
+
+Canonical index: `docs/LINK_HUB_MENU_CANON.md`
+

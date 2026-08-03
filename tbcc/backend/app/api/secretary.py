@@ -126,9 +126,9 @@ def patch_secretary_settings(body: SecretarySettingsPatch, db: Session = Depends
 
 @router.post("/secretary-settings/test-llm")
 def test_secretary_llm_endpoint(db: Session = Depends(get_db)):
-    from app.services.secretary_llm_config import test_secretary_llm
+    from app.services.secretary_llm_config import probe_secretary_llm
 
-    return test_secretary_llm(db=db)
+    return probe_secretary_llm(db=db)
 
 
 @router.get("/secretary-contexts")

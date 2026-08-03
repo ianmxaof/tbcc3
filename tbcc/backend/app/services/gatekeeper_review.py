@@ -28,6 +28,60 @@ CALLBACK_PANEL_APPROVE = "gk:p:approve"
 CALLBACK_PANEL_APPROVE_CONFIRM = "gk:p:approve:yes"
 CALLBACK_PANEL_REFRESH = "gk:p:refresh"
 CALLBACK_PANEL_CANCEL = "gk:p:cancel"
+CALLBACK_PANEL_OPEN = "gk:p:open"
+
+
+def panel_open_callback(lane_key: str | None = None) -> str:
+    lane = _normalize_panel_lane_key(lane_key)
+    return f"{CALLBACK_PANEL_OPEN}:{lane}" if lane else CALLBACK_PANEL_OPEN
+
+
+def panel_refresh_callback(lane_key: str | None = None) -> str:
+    lane = _normalize_panel_lane_key(lane_key)
+    return f"{CALLBACK_PANEL_REFRESH}:{lane}" if lane else CALLBACK_PANEL_REFRESH
+
+
+def panel_approve_callback(lane_key: str | None = None) -> str:
+    lane = _normalize_panel_lane_key(lane_key)
+    return f"{CALLBACK_PANEL_APPROVE}:{lane}" if lane else CALLBACK_PANEL_APPROVE
+
+
+def panel_approve_confirm_callback(lane_key: str | None = None) -> str:
+    lane = _normalize_panel_lane_key(lane_key)
+    return f"{CALLBACK_PANEL_APPROVE_CONFIRM}:{lane}" if lane else CALLBACK_PANEL_APPROVE_CONFIRM
+
+
+def panel_cancel_callback(lane_key: str | None = None) -> str:
+    lane = _normalize_panel_lane_key(lane_key)
+    return f"{CALLBACK_PANEL_CANCEL}:{lane}" if lane else CALLBACK_PANEL_CANCEL
+
+
+def parse_panel_callback(data: str | None) -> tuple[str, str | None] | None:
+    """Parse gk:p:* panel callbacks → (action, lane_key)."""
+    raw = (data or "").strip()
+    if not raw.startswith("gk:p:"):
+        return None
+    rest = raw[len("gk:p:"):]
+    if rest == "open":
+        return ("open", None)
+    if rest.startswith("open:"):
+        return ("open", _normalize_panel_lane_key(rest[5:]))
+    if rest == "refresh":
+        return ("refresh", None)
+    if rest.startswith("refresh:"):
+        return ("refresh", _normalize_panel_lane_key(rest[8:]))
+    if rest == "cancel":
+        return ("cancel", None)
+    if rest.startswith("cancel:"):
+        return ("cancel", _normalize_panel_lane_key(rest[7:]))
+    if rest == "approve":
+        return ("approve", None)
+    if rest.startswith("approve:yes"):
+        suffix = rest[len("approve:yes"):].lstrip(":")
+        return ("approve_yes", _normalize_panel_lane_key(suffix) if suffix else None)
+    if rest.startswith("approve:"):
+        return ("approve", _normalize_panel_lane_key(rest[8:]))
+    return None
 
 _QUARANTINE_JSON_MARKERS = ('"verdict": "quarantine"', '"verdict":"quarantine"')
 
@@ -149,18 +203,20 @@ def html_escape(text: str) -> str:
     return html.escape(str(text or ""), quote=False)
 
 
-def review_inline_keyboard(media_id: int) -> dict[str, Any]:
+def review_inline_keyboard(media_id: int, *, default_lane_key: str | None = None) -> dict[str, Any]:
     from app.services.gatekeeper_lane_picker import lane_picker_enabled, review_lane_picker_keyboard
 
     if lane_picker_enabled():
-        return review_lane_picker_keyboard(media_id)
+        return review_lane_picker_keyboard(media_id, default_lane_key=default_lane_key)
     mid = int(media_id)
+    open_cb = panel_open_callback(default_lane_key)
     return {
         "inline_keyboard": [
             [
                 {"text": "✅ Approve", "callback_data": f"{CALLBACK_APPROVE}{mid}"},
                 {"text": "🗑 Reject", "callback_data": f"{CALLBACK_REJECT}{mid}"},
-            ]
+            ],
+            [{"text": "📋 Review all waiting", "callback_data": open_cb}],
         ]
     }
 
@@ -229,6 +285,56 @@ def enqueue_lane_route_for_media(media_id: int, lane_keys: list[str]) -> None:
         logger.debug("lane route enqueue failed media_id=%s", media_id, exc_info=True)
 
 
+def maybe_vault_and_evict_approved_media(db: Session, media_id: int) -> dict[str, Any]:
+    """After operator approve — move to SENT VAULT and evict from work lane."""
+    from app.models.media import Media
+    from app.services.storage_sent_cache import (
+        move_deposit_batch_to_sent_cache,
+        storage_sent_cache_enabled,
+    )
+
+    if not storage_sent_cache_enabled():
+        return {"skipped": True, "reason": "sent_cache_disabled"}
+    media = db.query(Media).filter(Media.id == int(media_id)).first()
+    if not media or (media.status or "").lower() != "approved":
+        return {"skipped": True, "reason": "not_approved"}
+    msg_id = int(getattr(media, "telegram_message_id", 0) or 0)
+    if msg_id <= 0:
+        return {"skipped": True, "reason": "no_telegram_message_id"}
+    lane = resolve_media_lane_key(db, media)
+    if not lane or lane in ("inbox", "packs"):
+        return {"skipped": True, "reason": "no_lane"}
+    try:
+        from app.services.telegram_admin import run_telegram_import_io
+        from app.services.telegram_storage import TelegramStorage
+
+        async def _vault(storage: TelegramStorage):
+            return await move_deposit_batch_to_sent_cache(
+                storage,
+                db,
+                stored_messages=[{"message_id": msg_id, "media_id": int(media.id)}],
+                network_key=lane,
+                hub_ident=STORAGE_HUB_IDENT,
+                force_flush=True,
+            )
+
+        import asyncio
+
+        return asyncio.run(run_telegram_import_io(_vault))
+    except Exception as e:
+        logger.warning("vault approved media failed media_id=%s: %s", media_id, e, exc_info=True)
+        return {"ok": False, "error": str(e)[:200]}
+
+
+def enqueue_vault_approved_media(media_id: int) -> None:
+    try:
+        from app.workers.gatekeeper_review_worker import vault_approved_media_task
+
+        vault_approved_media_task.delay(int(media_id))
+    except Exception:
+        logger.debug("vault approved enqueue failed media_id=%s", media_id, exc_info=True)
+
+
 def operator_approve_media(
     db: Session,
     media_id: int,
@@ -290,6 +396,7 @@ def operator_approve_media(
         selected,
         micro_pull_lanes,
     )
+    enqueue_vault_approved_media(media_id)
     return {
         "ok": True,
         "media_id": media_id,
@@ -309,25 +416,66 @@ def bulk_approve_max() -> int:
         return 200
 
 
-def _quarantine_pending_query(db: Session):
+def _normalize_panel_lane_key(lane_key: str | None) -> str | None:
+    from app.data.aof_storage_hub_map import CONTENT_LANE_NETWORK_KEYS
+
+    key = (lane_key or "").strip().lower()
+    if not key or key not in CONTENT_LANE_NETWORK_KEYS:
+        return None
+    return key
+
+
+def _lane_quarantine_filter(db: Session, lane_key: str):
+    from sqlalchemy import or_
+
+    from app.data.aof_storage_hub_map import storage_map_by_key
+    from app.models.media import Media
+    from app.services.export_flywheel_service import pool_id_for_network_key
+
+    clauses: list[Any] = []
+    row = storage_map_by_key().get(lane_key)
+    if row:
+        clauses.append(Media.source_channel.like(f"%#topic:{int(row.message_thread_id)}%"))
+    pid = pool_id_for_network_key(db, lane_key)
+    if pid:
+        clauses.append(Media.pool_id == int(pid))
+    clauses.append(Media.classification_json.like(f'%\"expected\": \"{lane_key}\"%'))
+    clauses.append(Media.classification_json.like(f'%\"expected\":\"{lane_key}\"%'))
+    if not clauses:
+        return None
+    return or_(*clauses)
+
+
+def _quarantine_pending_query(db: Session, lane_key: str | None = None):
     from sqlalchemy import or_
 
     from app.models.media import Media
 
     clauses = [Media.classification_json.like(f"%{marker}%") for marker in _QUARANTINE_JSON_MARKERS]
-    return db.query(Media).filter(Media.status == "pending").filter(or_(*clauses))
+    q = db.query(Media).filter(Media.status == "pending").filter(or_(*clauses))
+    lane = _normalize_panel_lane_key(lane_key)
+    if lane:
+        lane_filter = _lane_quarantine_filter(db, lane)
+        if lane_filter is not None:
+            q = q.filter(lane_filter)
+    return q
 
 
-def count_quarantine_waiting(db: Session) -> int:
-    return int(_quarantine_pending_query(db).count())
+def count_quarantine_waiting(db: Session, lane_key: str | None = None) -> int:
+    return int(_quarantine_pending_query(db, lane_key=lane_key).count())
 
 
-def list_quarantine_waiting_ids(db: Session, *, limit: int | None = None) -> list[int]:
+def list_quarantine_waiting_ids(
+    db: Session,
+    *,
+    limit: int | None = None,
+    lane_key: str | None = None,
+) -> list[int]:
     from app.models.media import Media
 
     cap = int(limit) if limit is not None else bulk_approve_max()
     rows = (
-        _quarantine_pending_query(db)
+        _quarantine_pending_query(db, lane_key=lane_key)
         .order_by(Media.id.asc())
         .limit(max(1, cap))
         .all()
@@ -344,42 +492,125 @@ def inbox_quarantine_buffer_count() -> int:
         return 0
 
 
-def format_review_panel_html(db: Session) -> str:
-    from app.data.aof_storage_hub_map import GATEKEEPER_REVIEW_TOPIC_TITLE
+def format_lane_pool_depth_html(db: Session, *, max_lanes: int = 14) -> str:
+    """
+    Per-lane approved pool counts for Q&A topic 1 — same depth signal as revenue brief /
+    export flywheel backlog pressure (🟠 = depth ≥ 2× policy min).
+    """
+    from app.services.export_flywheel_service import flywheel_mode, pool_depth_by_lane
 
-    waiting = count_quarantine_waiting(db)
-    buffered = inbox_quarantine_buffer_count()
-    lines = [
-        f"🟡 <b>{html_escape(GATEKEEPER_REVIEW_TOPIC_TITLE)}</b>",
-        f"Waiting quarantine: <b>{waiting}</b> media row(s)",
-    ]
-    if buffered > 0:
-        lines.append(
-            f"Inbox buffer (not yet album-posted): <b>{buffered}</b> — use /intake → Flush inbox albums first."
-        )
-    lines.append(
-        f"<i>Bulk approve uses auto lane from source topic (max {bulk_approve_max()} per run). "
-        f"Per-card lane emoji picks still apply when you approve one-by-one.</i>"
+    rows = pool_depth_by_lane(db)
+    stocked = [r for r in rows if int(r.get("approved_depth") or 0) > 0]
+    if not stocked:
+        return "Pool approved: <i>none</i>"
+
+    chunks: list[str] = []
+    for row in stocked[: max(1, int(max_lanes))]:
+        nk = html_escape(str(row.get("network_key") or "?"))
+        depth = int(row.get("approved_depth") or 0)
+        suffix = "🟠" if row.get("backlog_pressure") else ""
+        chunks.append(f"{nk} <b>{depth}</b>{suffix}")
+
+    mode = html_escape(flywheel_mode())
+    return (
+        f"Pool approved (flywheel <code>{mode}</code>, 🟠 backlog): "
+        + " · ".join(chunks)
     )
+
+
+def format_review_panel_html(db: Session, lane_key: str | None = None) -> str:
+    from app.data.aof_storage_hub_map import (
+        GATEKEEPER_REVIEW_TOPIC_TITLE,
+        category_emoji_for_network_key,
+    )
+    from app.services.export_flywheel_service import flywheel_mode, pool_depth_by_lane
+    from app.services.quarantine_batch_review import lane_quarantine_buffer_count
+
+    lane = _normalize_panel_lane_key(lane_key)
+    waiting = count_quarantine_waiting(db, lane_key=lane)
+    lines: list[str] = []
+
+    if lane:
+        emoji = category_emoji_for_network_key(lane)
+        lines.append(
+            f"🟡 <b>{html_escape(GATEKEEPER_REVIEW_TOPIC_TITLE)}</b> · {emoji} <b>{html_escape(lane)}</b>"
+        )
+        lines.append(f"Lane quarantine waiting: <b>{waiting}</b> media row(s)")
+        lane_row = next(
+            (r for r in pool_depth_by_lane(db) if str(r.get("network_key") or "") == lane),
+            None,
+        )
+        if lane_row:
+            depth = int(lane_row.get("approved_depth") or 0)
+            suffix = "🟠" if lane_row.get("backlog_pressure") else ""
+            mode = html_escape(flywheel_mode())
+            lines.append(f"Pool approved (<code>{mode}</code>): <b>{depth}</b>{suffix}")
+        buf = lane_quarantine_buffer_count(lane)
+        if buf > 0:
+            lines.append(f"Q&A batch buffer (not yet posted): <b>{buf}</b>")
+        lines.append(
+            f"<i>Bulk approve assigns <b>{html_escape(lane)}</b> to all waiting rows "
+            f"(max {bulk_approve_max()} per run).</i>"
+        )
+    else:
+        buffered = inbox_quarantine_buffer_count()
+        lines.append(f"🟡 <b>{html_escape(GATEKEEPER_REVIEW_TOPIC_TITLE)}</b>")
+        lines.append(f"Waiting quarantine: <b>{waiting}</b> media row(s)")
+        lines.append(format_lane_pool_depth_html(db))
+        if buffered > 0:
+            lines.append(
+                f"Inbox buffer (not yet album-posted): <b>{buffered}</b> — use /intake → Flush inbox albums first."
+            )
+        try:
+            from app.data.aof_storage_hub_map import CONTENT_LANE_NETWORK_KEYS
+
+            lane_bufs = []
+            for lk in sorted(CONTENT_LANE_NETWORK_KEYS):
+                if lk in ("inbox", "packs"):
+                    continue
+                n = lane_quarantine_buffer_count(lk)
+                if n > 0:
+                    lane_bufs.append(f"{lk}:{n}")
+            if lane_bufs:
+                lines.append(f"Lane Q&A buffers: <code>{', '.join(lane_bufs[:10])}</code>")
+        except Exception:
+            pass
+        lines.append(
+            f"<i>Bulk approve uses auto lane from source topic (max {bulk_approve_max()} per run). "
+            f"Per-card lane emoji picks still apply when you approve one-by-one.</i>"
+        )
     return "\n".join(lines)
 
 
-def review_panel_keyboard(*, waiting: int) -> dict[str, Any]:
+def review_panel_keyboard(*, waiting: int, lane_key: str | None = None) -> dict[str, Any]:
+    lane = _normalize_panel_lane_key(lane_key)
     rows: list[list[dict[str, str]]] = []
     if waiting > 0:
+        label_lane = f" {lane.upper()}" if lane else ""
         rows.append(
-            [{"text": f"✅ Approve all ({waiting})", "callback_data": CALLBACK_PANEL_APPROVE}]
+            [
+                {
+                    "text": f"✅ Approve all{label_lane} ({waiting})",
+                    "callback_data": panel_approve_callback(lane),
+                }
+            ]
         )
-    rows.append([{"text": "🔄 Refresh", "callback_data": CALLBACK_PANEL_REFRESH}])
+    rows.append([{"text": "🔄 Refresh", "callback_data": panel_refresh_callback(lane)}])
+    if lane:
+        rows.append([{"text": "📋 All lanes", "callback_data": CALLBACK_PANEL_OPEN}])
     return {"inline_keyboard": rows}
 
 
-def review_panel_confirm_keyboard(*, waiting: int) -> dict[str, Any]:
+def review_panel_confirm_keyboard(*, waiting: int, lane_key: str | None = None) -> dict[str, Any]:
+    lane = _normalize_panel_lane_key(lane_key)
     return {
         "inline_keyboard": [
             [
-                {"text": f"✅ Confirm approve {waiting}", "callback_data": CALLBACK_PANEL_APPROVE_CONFIRM},
-                {"text": "Cancel", "callback_data": CALLBACK_PANEL_CANCEL},
+                {
+                    "text": f"✅ Confirm approve {waiting}",
+                    "callback_data": panel_approve_confirm_callback(lane),
+                },
+                {"text": "Cancel", "callback_data": panel_cancel_callback(lane)},
             ]
         ]
     }
@@ -390,16 +621,19 @@ def operator_approve_all_waiting(
     *,
     operator_id: int | None = None,
     limit: int | None = None,
+    lane_key: str | None = None,
 ) -> dict[str, Any]:
-    ids = list_quarantine_waiting_ids(db, limit=limit)
+    lane = _normalize_panel_lane_key(lane_key)
+    ids = list_quarantine_waiting_ids(db, limit=limit, lane_key=lane)
     if not ids:
-        return {"ok": True, "approved": 0, "total": 0, "skipped": 0, "media_ids": []}
+        return {"ok": True, "approved": 0, "total": 0, "skipped": 0, "media_ids": [], "lane_key": lane}
 
     approved = 0
     skipped = 0
     results: list[dict[str, Any]] = []
+    bulk_lanes = [lane] if lane else None
     for mid in ids:
-        out = operator_approve_media(db, mid, operator_id=operator_id)
+        out = operator_approve_media(db, mid, operator_id=operator_id, lane_keys=bulk_lanes)
         results.append(out)
         if out.get("ok"):
             approved += 1
@@ -411,6 +645,7 @@ def operator_approve_all_waiting(
         "skipped": skipped,
         "total": len(ids),
         "media_ids": ids,
+        "lane_key": lane,
         "results": results,
     }
 
@@ -529,7 +764,8 @@ def send_quarantine_review_message(db: Session, media_id: int) -> dict[str, Any]
         text = f"{text}\n<i>{html_escape(format_lane_pick_hint([]))}</i>"
     dest_chat = review_chat_id()
     dest_thread = review_thread_id()
-    keyboard = review_inline_keyboard(media_id)
+    default_lane = resolve_media_lane_key(db, media)
+    keyboard = review_inline_keyboard(media_id, default_lane_key=default_lane)
 
     preview = resolve_preview_copy_target(media) if review_preview_copy_enabled() else None
     if preview:
@@ -592,20 +828,32 @@ def enqueue_quarantine_review(media_id: int) -> None:
         from app.services.inbox_intake_review import (
             inbox_intake_enabled,
             is_inbox_media,
+            post_inbox_quarantine_batch,
             queue_inbox_quarantine_media,
+        )
+        from app.services.quarantine_batch_review import (
+            is_storage_lane_source,
+            post_lane_quarantine_batch,
+            queue_lane_quarantine_media,
         )
 
         with SessionLocal() as db:
             media = db.query(Media).filter(Media.id == int(media_id)).first()
-            if media and inbox_intake_enabled() and is_inbox_media(media):
+            if not media:
+                return
+            if inbox_intake_enabled() and is_inbox_media(media):
                 out = queue_inbox_quarantine_media(int(media_id))
                 if out.get("flushing") and out.get("media_ids"):
-                    from app.services.inbox_intake_review import post_inbox_quarantine_batch
-
                     post_inbox_quarantine_batch(db, list(out["media_ids"]))
                 return
+            if is_storage_lane_source(media):
+                lane = resolve_media_lane_key(db, media) or ""
+                out = queue_lane_quarantine_media(int(media_id), lane)
+                if out.get("flushing") and out.get("media_ids"):
+                    post_lane_quarantine_batch(db, lane, list(out["media_ids"]))
+                return
     except Exception:
-        logger.debug("inbox quarantine route failed media_id=%s", media_id, exc_info=True)
+        logger.debug("quarantine batch route failed media_id=%s", media_id, exc_info=True)
     try:
         from app.workers.gatekeeper_review_worker import send_quarantine_review_task
 

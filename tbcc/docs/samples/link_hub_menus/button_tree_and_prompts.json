@@ -1,0 +1,155 @@
+{
+  "columns": 2,
+  "image_spec": {
+    "button_tree_fit_variants": [
+      "v5",
+      "v6",
+      "v7"
+    ],
+    "width_px": 1280,
+    "height_px": 960,
+    "aspect": "4:3"
+  },
+  "prompts": {
+    "channels_v1": "Telegram menu card for channels_v1_classic_orange_panel.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Dark charcoal, burnt-orange monospace box frame, soft glow.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 ADDLIST · ALL CHANNELS\n  - 02 AOF AI\n  - 03 AOF ASS\n  - 04 AOF BOP\n  - 05 AOF BIG TITS\n  - 06 AOF PACKS\n  - 07 AOF TABOO\n  - 08 AOF MILF / GILF\n  - 09 AOF ABG / LBFM\n  - 10 AOF GOON\n  - 11 AOF BLOWJOB\n  - 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "channels_v2": "Telegram menu card for channels_v2_neon_grid.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Cyberpunk neon grid, cyan/magenta tiles, holographic UI.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 ADDLIST · ALL CHANNELS\n  - 02 AOF AI\n  - 03 AOF ASS\n  - 04 AOF BOP\n  - 05 AOF BIG TITS\n  - 06 AOF PACKS\n  - 07 AOF TABOO\n  - 08 AOF MILF / GILF\n  - 09 AOF ABG / LBFM\n  - 10 AOF GOON\n  - 11 AOF BLOWJOB\n  - 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "channels_v3": "Telegram menu card for channels_v3_vhs_broadcast.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Retro VHS TV guide, scanlines, cream/amber CRT text.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 ADDLIST · ALL CHANNELS\n  - 02 AOF AI\n  - 03 AOF ASS\n  - 04 AOF BOP\n  - 05 AOF BIG TITS\n  - 06 AOF PACKS\n  - 07 AOF TABOO\n  - 08 AOF MILF / GILF\n  - 09 AOF ABG / LBFM\n  - 10 AOF GOON\n  - 11 AOF BLOWJOB\n  - 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "channels_v4": "Telegram menu card for channels_v4_uniform_rails.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Uniform centered rails — each lane as —— LABEL —— amber on dark panel.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 ADDLIST · ALL CHANNELS\n  - 02 AOF AI\n  - 03 AOF ASS\n  - 04 AOF BOP\n  - 05 AOF BIG TITS\n  - 06 AOF PACKS\n  - 07 AOF TABOO\n  - 08 AOF MILF / GILF\n  - 09 AOF ABG / LBFM\n  - 10 AOF GOON\n  - 11 AOF BLOWJOB\n  - 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "channels_v5": "CRITICAL LAYOUT: 1280×960px (4:3) wide card — edge-to-edge full width, NO side margins, NO tall 9:16 portrait. Artwork width must match Telegram inline keyboard button-tree width exactly. Render items in a visible TWO-COLUMN grid (left col = odd rows, right col = even rows) mirroring the 2-wide inline keyboard below the image.\nStyle: Reveal board: orange checkmarks, dot rails, 2-col grid, full bubble width.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nUse the L/R pairs as left column | right column in the artwork.\nEach row: number, name, short sell blurb — readable at phone scale:\n  L: 01 ADDLIST · ALL CHANNELS  |  R: 02 AOF AI\n  L: 03 AOF ASS  |  R: 04 AOF BOP\n  L: 05 AOF BIG TITS  |  R: 06 AOF PACKS\n  L: 07 AOF TABOO  |  R: 08 AOF MILF / GILF\n  L: 09 AOF ABG / LBFM  |  R: 10 AOF GOON\n  L: 11 AOF BLOWJOB  |  R: 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "channels_v6": "CRITICAL LAYOUT: 1280×960px (4:3) wide card — edge-to-edge full width, NO side margins, NO tall 9:16 portrait. Artwork width must match Telegram inline keyboard button-tree width exactly. Render items in a visible TWO-COLUMN grid (left col = odd rows, right col = even rows) mirroring the 2-wide inline keyboard below the image.\nStyle: Dark panel mechanical ▶ ⏺ ⏺ symmetry, 2-col rows, amber on charcoal.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nUse the L/R pairs as left column | right column in the artwork.\nEach row: number, name, short sell blurb — readable at phone scale:\n  L: 01 ADDLIST · ALL CHANNELS  |  R: 02 AOF AI\n  L: 03 AOF ASS  |  R: 04 AOF BOP\n  L: 05 AOF BIG TITS  |  R: 06 AOF PACKS\n  L: 07 AOF TABOO  |  R: 08 AOF MILF / GILF\n  L: 09 AOF ABG / LBFM  |  R: 10 AOF GOON\n  L: 11 AOF BLOWJOB  |  R: 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "channels_v7": "CRITICAL LAYOUT: 1280×960px (4:3) wide card — edge-to-edge full width, NO side margins, NO tall 9:16 portrait. Artwork width must match Telegram inline keyboard button-tree width exactly. Render items in a visible TWO-COLUMN grid (left col = odd rows, right col = even rows) mirroring the 2-wide inline keyboard below the image.\nStyle: Matrix green >>> arrows, 2-col channel grid, digital rain header strip.\nHeader: AOF NETWORK · LINK INDEX\nRender exactly 12 channel lanes numbered 01–12 in row-major 2-column order (matches inline keyboard).\nUse the L/R pairs as left column | right column in the artwork.\nEach row: number, name, short sell blurb — readable at phone scale:\n  L: 01 ADDLIST · ALL CHANNELS  |  R: 02 AOF AI\n  L: 03 AOF ASS  |  R: 04 AOF BOP\n  L: 05 AOF BIG TITS  |  R: 06 AOF PACKS\n  L: 07 AOF TABOO  |  R: 08 AOF MILF / GILF\n  L: 09 AOF ABG / LBFM  |  R: 10 AOF GOON\n  L: 11 AOF BLOWJOB  |  R: 12 AOF LOOT ROOM\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v1": "Telegram menu card for ai_v1_dark_panel.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Dark noir orange panel, box-drawing frame, mechanical symmetry.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 Musebox AI · AI creative playground\n  - 02 Nakedly (nudify.now) · AI tools hub\n  - 03 Playbun · NSFW AI video\n  - 04 Fapify · AI generator suite\n  - 05 DrawAI · photo to motion\n  - 06 Vixal — image to video · still → motion (115k/mo)\n  - 07 Hot Dreams Bot · photo/video dream engine\n  - 08 Video Generator bot · image2video TG bot\n  - 09 DeleteMyPanties Bot · undress TG bot\n  - 10 AI Bot Gateway · img2vid / img2img gateway\n  - 11 Undress AI bot · free credits\n  - 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v2": "Telegram menu card for ai_v2_reveal_board.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Reveal board: green checkmarks, dot trails, purple gradient cards.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 Musebox AI · AI creative playground\n  - 02 Nakedly (nudify.now) · AI tools hub\n  - 03 Playbun · NSFW AI video\n  - 04 Fapify · AI generator suite\n  - 05 DrawAI · photo to motion\n  - 06 Vixal — image to video · still → motion (115k/mo)\n  - 07 Hot Dreams Bot · photo/video dream engine\n  - 08 Video Generator bot · image2video TG bot\n  - 09 DeleteMyPanties Bot · undress TG bot\n  - 10 AI Bot Gateway · img2vid / img2img gateway\n  - 11 Undress AI bot · free credits\n  - 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v3": "Telegram menu card for ai_v3_uniform_grid.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Gold grid matrix, 3-column catalog, architectural alignment.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 Musebox AI · AI creative playground\n  - 02 Nakedly (nudify.now) · AI tools hub\n  - 03 Playbun · NSFW AI video\n  - 04 Fapify · AI generator suite\n  - 05 DrawAI · photo to motion\n  - 06 Vixal — image to video · still → motion (115k/mo)\n  - 07 Hot Dreams Bot · photo/video dream engine\n  - 08 Video Generator bot · image2video TG bot\n  - 09 DeleteMyPanties Bot · undress TG bot\n  - 10 AI Bot Gateway · img2vid / img2img gateway\n  - 11 Undress AI bot · free credits\n  - 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v4": "Telegram menu card for ai_v4_storage_matrix.png. Prefer readable list; v1–v4 may use taller portrait if needed.\nStyle: Matrix green STORAGE HUB style, >>> arrows, digital rain behind AI-TOOLS header.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nSingle-column or decorative layout OK.\nEach row: number, name, short sell blurb — readable at phone scale:\n  - 01 Musebox AI · AI creative playground\n  - 02 Nakedly (nudify.now) · AI tools hub\n  - 03 Playbun · NSFW AI video\n  - 04 Fapify · AI generator suite\n  - 05 DrawAI · photo to motion\n  - 06 Vixal — image to video · still → motion (115k/mo)\n  - 07 Hot Dreams Bot · photo/video dream engine\n  - 08 Video Generator bot · image2video TG bot\n  - 09 DeleteMyPanties Bot · undress TG bot\n  - 10 AI Bot Gateway · img2vid / img2img gateway\n  - 11 Undress AI bot · free credits\n  - 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v5": "CRITICAL LAYOUT: 1280×960px (4:3) wide card — edge-to-edge full width, NO side margins, NO tall 9:16 portrait. Artwork width must match Telegram inline keyboard button-tree width exactly. Render items in a visible TWO-COLUMN grid (left col = odd rows, right col = even rows) mirroring the 2-wide inline keyboard below the image.\nStyle: Orange reveal board, ✓ checkmarks, 2-col partner grid, full keyboard width.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nUse the L/R pairs as left column | right column in the artwork.\nEach row: number, name, short sell blurb — readable at phone scale:\n  L: 01 Musebox AI · AI creative playground  |  R: 02 Nakedly (nudify.now) · AI tools hub\n  L: 03 Playbun · NSFW AI video  |  R: 04 Fapify · AI generator suite\n  L: 05 DrawAI · photo to motion  |  R: 06 Vixal — image to video · still → motion (115k/mo)\n  L: 07 Hot Dreams Bot · photo/video dream engine  |  R: 08 Video Generator bot · image2video TG bot\n  L: 09 DeleteMyPanties Bot · undress TG bot  |  R: 10 AI Bot Gateway · img2vid / img2img gateway\n  L: 11 Undress AI bot · free credits  |  R: 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v6": "CRITICAL LAYOUT: 1280×960px (4:3) wide card — edge-to-edge full width, NO side margins, NO tall 9:16 portrait. Artwork width must match Telegram inline keyboard button-tree width exactly. Render items in a visible TWO-COLUMN grid (left col = odd rows, right col = even rows) mirroring the 2-wide inline keyboard below the image.\nStyle: Dark panel ▶ ◀ symmetry, 2-col affiliate rows, burnt orange monospace.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nUse the L/R pairs as left column | right column in the artwork.\nEach row: number, name, short sell blurb — readable at phone scale:\n  L: 01 Musebox AI · AI creative playground  |  R: 02 Nakedly (nudify.now) · AI tools hub\n  L: 03 Playbun · NSFW AI video  |  R: 04 Fapify · AI generator suite\n  L: 05 DrawAI · photo to motion  |  R: 06 Vixal — image to video · still → motion (115k/mo)\n  L: 07 Hot Dreams Bot · photo/video dream engine  |  R: 08 Video Generator bot · image2video TG bot\n  L: 09 DeleteMyPanties Bot · undress TG bot  |  R: 10 AI Bot Gateway · img2vid / img2img gateway\n  L: 11 Undress AI bot · free credits  |  R: 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly.",
+    "ai_v7": "CRITICAL LAYOUT: 1280×960px (4:3) wide card — edge-to-edge full width, NO side margins, NO tall 9:16 portrait. Artwork width must match Telegram inline keyboard button-tree width exactly. Render items in a visible TWO-COLUMN grid (left col = odd rows, right col = even rows) mirroring the 2-wide inline keyboard below the image.\nStyle: Green matrix >>> 2-col grid, compact STORAGE HUB header, edge-to-edge.\nHeader: UNDRESS · GENERATOR · LINKS\nRender exactly 12 AI partner rows numbered 01–12 in row-major 2-column order (matches inline keyboard).\nUse the L/R pairs as left column | right column in the artwork.\nEach row: number, name, short sell blurb — readable at phone scale:\n  L: 01 Musebox AI · AI creative playground  |  R: 02 Nakedly (nudify.now) · AI tools hub\n  L: 03 Playbun · NSFW AI video  |  R: 04 Fapify · AI generator suite\n  L: 05 DrawAI · photo to motion  |  R: 06 Vixal — image to video · still → motion (115k/mo)\n  L: 07 Hot Dreams Bot · photo/video dream engine  |  R: 08 Video Generator bot · image2video TG bot\n  L: 09 DeleteMyPanties Bot · undress TG bot  |  R: 10 AI Bot Gateway · img2vid / img2img gateway\n  L: 11 Undress AI bot · free credits  |  R: 12 HeatMe · invite credits\nFooter sections (compact strip at bottom): MAINBOTS — Secretary, Loot God, Spicy Bot; SUPPORT — /loot /subscribe /refer, Email list powercore.kit.com; PARTNERS — Nutaku Lust Goddess.\nNo explicit nudity. Abstract app icons only. No gibberish — labels must match list exactly."
+  },
+  "button_tree": {
+    "channels": [
+      {
+        "num": "01",
+        "key": "addlist",
+        "label": "ADDLIST · ALL CHANNELS"
+      },
+      {
+        "num": "02",
+        "key": "ai",
+        "label": "AOF AI"
+      },
+      {
+        "num": "03",
+        "key": "ass",
+        "label": "AOF ASS"
+      },
+      {
+        "num": "04",
+        "key": "bop",
+        "label": "AOF BOP"
+      },
+      {
+        "num": "05",
+        "key": "big_tits",
+        "label": "AOF BIG TITS"
+      },
+      {
+        "num": "06",
+        "key": "packs",
+        "label": "AOF PACKS"
+      },
+      {
+        "num": "07",
+        "key": "taboo",
+        "label": "AOF TABOO"
+      },
+      {
+        "num": "08",
+        "key": "milf",
+        "label": "AOF MILF / GILF"
+      },
+      {
+        "num": "09",
+        "key": "abg",
+        "label": "AOF ABG / LBFM"
+      },
+      {
+        "num": "10",
+        "key": "goon",
+        "label": "AOF GOON"
+      },
+      {
+        "num": "11",
+        "key": "blowjob",
+        "label": "AOF BLOWJOB"
+      },
+      {
+        "num": "12",
+        "key": "loot",
+        "label": "AOF LOOT ROOM"
+      }
+    ],
+    "ai": [
+      {
+        "num": "01",
+        "label": "Musebox AI",
+        "blurb": "AI creative playground"
+      },
+      {
+        "num": "02",
+        "label": "Nakedly (nudify.now)",
+        "blurb": "AI tools hub"
+      },
+      {
+        "num": "03",
+        "label": "Playbun",
+        "blurb": "NSFW AI video"
+      },
+      {
+        "num": "04",
+        "label": "Fapify",
+        "blurb": "AI generator suite"
+      },
+      {
+        "num": "05",
+        "label": "DrawAI",
+        "blurb": "photo to motion"
+      },
+      {
+        "num": "06",
+        "label": "Vixal — image to video",
+        "blurb": "still → motion (115k/mo)"
+      },
+      {
+        "num": "07",
+        "label": "Hot Dreams Bot",
+        "blurb": "photo/video dream engine"
+      },
+      {
+        "num": "08",
+        "label": "Video Generator bot",
+        "blurb": "image2video TG bot"
+      },
+      {
+        "num": "09",
+        "label": "DeleteMyPanties Bot",
+        "blurb": "undress TG bot"
+      },
+      {
+        "num": "10",
+        "label": "AI Bot Gateway",
+        "blurb": "img2vid / img2img gateway"
+      },
+      {
+        "num": "11",
+        "label": "Undress AI bot",
+        "blurb": "free credits"
+      },
+      {
+        "num": "12",
+        "label": "HeatMe",
+        "blurb": "invite credits"
+      }
+    ]
+  }
+}

@@ -194,6 +194,9 @@ def rank_pool_media(
 
     q = db.query(Media).filter(Media.pool_id == int(pool_id), Media.status == "approved")
     rows = q.order_by(Media.id.asc()).limit(500).all()
+    from app.services.media_album_dedupe import filter_media_older_than_schedule_min_age
+
+    rows = filter_media_older_than_schedule_min_age(rows)
     if not rows:
         return []
     nk = network_key_for_pool(db, pool_id)

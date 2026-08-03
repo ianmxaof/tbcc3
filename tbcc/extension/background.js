@@ -11,7 +11,8 @@ importScripts(
   "tbcc-extension-modules.js",
   "launch-full-stack.js",
   "severity-toast-colors.js",
-  "tbcc-zip-naming.js"
+  "tbcc-zip-naming.js",
+  "tbcc-promo-watermark.js"
 );
 
 const SAVED_ALBUM_CHUNK = 10;
@@ -4206,10 +4207,10 @@ function tbccInboxRelPath(prefix, leafName) {
           Number.isFinite(indexHint) && indexHint >= 1
             ? Math.floor(indexHint)
             : Math.floor(10000 + Math.random() * 90000);
-        let fileName =
-          naming && naming.buildZipFilename
-            ? naming.buildZipFilename(naming.DEFAULT_TEMPLATE, { name: profile, index, ext: extHint })
-            : tbccBuildAofDownloadName(url, referer, extHint);
+        let fileName = await tbccBuildAofDownloadName(url, referer, extHint, {
+          profileHint: profile,
+          index,
+        });
         const prefix = await tbccGetWatchInboxPrefix();
         let relMedia = tbccInboxRelPath(prefix, fileName);
         let sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
@@ -5497,8 +5498,24 @@ const TBCC_R2_UPLOAD_MAX_BYTES = 80 * 1024 * 1024;
 const TBCC_ZIP_FLYWHEEL_MAX_BYTES = 200 * 1024 * 1024;
 const TBCC_WM_TEXT = "telegram.me/aofmainhub";
 
+async function tbccGetPromoWatermarkConfigFromStorage() {
+  try {
+    const data = await chrome.storage.local.get("tbcc_gallery_settings");
+    const s = data.tbcc_gallery_settings || {};
+    if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.promoWatermarkFromGallerySettings) {
+      return TbccPromoWatermark.promoWatermarkFromGallerySettings(s);
+    }
+    return { enabled: s.skipPromoWatermark !== true };
+  } catch (_) {
+    return typeof TbccPromoWatermark !== "undefined"
+      ? TbccPromoWatermark.normalizePromoWatermark({})
+      : { enabled: true };
+  }
+}
+
 async function tbccWatermarkBytesViaApi(arrayBuffer, mediaTypeHint) {
   const bases = await tbccResolveApiBases();
+  const cfg = await tbccGetPromoWatermarkConfigFromStorage();
   let lastErr = null;
   for (const base of bases) {
     try {
@@ -5508,7 +5525,10 @@ async function tbccWatermarkBytesViaApi(arrayBuffer, mediaTypeHint) {
       const form = new FormData();
       form.append("file", blob, mediaTypeHint === "video" ? "media.mp4" : "media.jpg");
       form.append("media_type", mediaTypeHint === "video" ? "video" : "photo");
-      form.append("skip_watermark", "false");
+      form.append("skip_watermark", cfg.enabled ? "false" : "true");
+      if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.appendWatermarkConfigToForm) {
+        TbccPromoWatermark.appendWatermarkConfigToForm(form, cfg);
+      }
       const headers = await tbccInternalApiHeaders();
       const r = await fetch(base.replace(/\/+$/, "") + API_WATERMARK_BYTES_PATH, {
         method: "POST",
@@ -5623,7 +5643,15 @@ async function tbccFetchBrowseIntelSummary(urlHint, days) {
 }
 
 /** SW-local image burn-in when API is down (photos only). */
-async function tbccWatermarkImageBytesLocal(arrayBuffer, mimeHint) {
+async function tbccWatermarkImageBytesLocal(arrayBuffer, mimeHint, cfg) {
+  const wmCfg = cfg || (await tbccGetPromoWatermarkConfigFromStorage());
+  if (!wmCfg.enabled) return arrayBuffer;
+  if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.applyPromoWatermarkBlob) {
+    const mime = String(mimeHint || "image/jpeg").split(";")[0] || "image/jpeg";
+    const blob = new Blob([arrayBuffer], { type: mime.startsWith("image/") ? mime : "image/jpeg" });
+    const out = await TbccPromoWatermark.applyPromoWatermarkBlob(blob, "photo", wmCfg);
+    return await out.arrayBuffer();
+  }
   if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
     throw new Error("OffscreenCanvas unavailable");
   }
@@ -5675,7 +5703,8 @@ async function tbccApplySaveAofWatermark(body, kind, mime) {
   }
   if (!asVideo) {
     try {
-      const local = await tbccWatermarkImageBytesLocal(body, mime);
+      const wmCfg = await tbccGetPromoWatermarkConfigFromStorage();
+      const local = await tbccWatermarkImageBytesLocal(body, mime, wmCfg);
       if (local && local.byteLength) return { buffer: local, applied: true, via: "local" };
     } catch (e) {
       console.warn("[TBCC] Save AOF local image watermark failed", e);
@@ -5735,15 +5764,38 @@ function tbccGuessMediaKind(url, mime) {
   return "photo";
 }
 
-function tbccBuildAofDownloadName(url, refererPageUrl, extHint) {
-  const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
-  let name = "media";
-  if (naming) {
-    name =
-      naming.profileNameFromSourceUrl(refererPageUrl || "") ||
-      naming.profileNameFromSourceUrl(url || "") ||
-      "media";
+async function tbccGetExportNamingPrefs() {
+  try {
+    const data = await chrome.storage.local.get(["tbcc_gallery_settings", "tbccXProfileGallerySettings"]);
+    const s =
+      data.tbcc_gallery_settings && typeof data.tbcc_gallery_settings === "object"
+        ? data.tbcc_gallery_settings
+        : {};
+    const looms =
+      data.tbccXProfileGallerySettings && typeof data.tbccXProfileGallerySettings === "object"
+        ? data.tbccXProfileGallerySettings
+        : {};
+    const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+    const heuristicNaming = s.zipHeuristicNaming !== false;
+    const entryTemplate =
+      (s.zipEntryTemplate && String(s.zipEntryTemplate).trim()) ||
+      (looms.zipNameTemplate && String(looms.zipNameTemplate).trim()) ||
+      (naming ? naming.DEFAULT_TEMPLATE : "");
+    return { heuristicNaming, entryTemplate, naming };
+  } catch (_) {
+    const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+    return {
+      heuristicNaming: true,
+      entryTemplate: naming ? naming.DEFAULT_TEMPLATE : "",
+      naming,
+    };
   }
+}
+
+async function tbccBuildAofDownloadName(url, refererPageUrl, extHint, opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const prefs = await tbccGetExportNamingPrefs();
+  const naming = prefs.naming;
   const ext =
     (extHint || "").replace(/^\./, "") ||
     (() => {
@@ -5755,7 +5807,32 @@ function tbccBuildAofDownloadName(url, refererPageUrl, extHint) {
       } catch (_) {}
       return "jpg";
     })();
-  const index = Math.floor(10000 + Math.random() * 90000);
+  const index =
+    o.index != null && Number.isFinite(Number(o.index)) && Number(o.index) >= 1
+      ? Math.floor(Number(o.index))
+      : Math.floor(10000 + Math.random() * 90000);
+  if (naming && naming.buildExportFilename) {
+    return naming.buildExportFilename({
+      sourceUrl: refererPageUrl || url || "",
+      pageTitle: o.pageTitle || "",
+      profileHint: o.profileHint || o.profileName || "",
+      index,
+      ext,
+      baseName: o.baseName,
+      mime: o.mime,
+      template: prefs.entryTemplate,
+      heuristicNaming: prefs.heuristicNaming,
+    });
+  }
+  let name = "media";
+  if (naming && naming.inferZipContext) {
+    name = naming.inferZipContext({ sourceUrl: refererPageUrl || url || "" }).name;
+  } else if (naming) {
+    name =
+      naming.profileNameFromSourceUrl(refererPageUrl || "") ||
+      naming.profileNameFromSourceUrl(url || "") ||
+      "media";
+  }
   if (naming && naming.buildZipFilename) {
     return naming.buildZipFilename(naming.DEFAULT_TEMPLATE, { name, index, ext });
   }
@@ -5847,7 +5924,7 @@ async function tbccSaveAofMediaToWatch(opts) {
           : mime.includes("gif")
             ? "gif"
             : "jpg";
-  const fileName = tbccBuildAofDownloadName(downloadUrl, refererPageUrl, extHint);
+  const fileName = await tbccBuildAofDownloadName(downloadUrl, refererPageUrl, extHint);
 
   const relMedia = `${prefix}/${fileName}`.replace(/\/+/g, "/");
   const sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
@@ -5860,9 +5937,12 @@ async function tbccSaveAofMediaToWatch(opts) {
     aof_preprocessed: !!watermarkApplied,
     watermark_applied: !!watermarkApplied,
     watermark_via: watermarkVia || undefined,
-    name: (typeof TbccZipNaming !== "undefined" && TbccZipNaming.profileNameFromSourceUrl
-      ? TbccZipNaming.profileNameFromSourceUrl(refererPageUrl || downloadUrl)
-      : "") || "media",
+    name:
+      (typeof TbccZipNaming !== "undefined" && TbccZipNaming.inferZipContext
+        ? TbccZipNaming.inferZipContext({ sourceUrl: refererPageUrl || downloadUrl }).name
+        : typeof TbccZipNaming !== "undefined" && TbccZipNaming.profileNameFromSourceUrl
+          ? TbccZipNaming.profileNameFromSourceUrl(refererPageUrl || downloadUrl)
+          : "") || "media",
     source_file: fileName,
     route_hint: "extension_save_aof",
   };
@@ -6065,7 +6145,7 @@ async function tbccWatermarkUploadToR2(opts) {
   mime = (prep && prep.type) || "";
   const body = (prep && prep.buffer) || ab;
   const kind = tbccGuessMediaKind(downloadUrl, mime);
-  const fileName = tbccBuildAofDownloadName(
+  const fileName = await tbccBuildAofDownloadName(
     downloadUrl,
     refererPageUrl,
     kind === "video" ? "mp4" : mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg"
@@ -7359,15 +7439,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           try {
             const u = new URL(downloadUrl);
             const base = (u.pathname.split("/").pop() || "media").replace(/[^\w.\-]+/g, "_");
-            return base || "media";
+            const dot = base.lastIndexOf(".");
+            return dot > 0 ? base.slice(dot + 1).toLowerCase().replace(/[^\w]/g, "").slice(0, 5) : "jpg";
           } catch (_) {
-            return "media";
+            return "jpg";
           }
         })();
+        const leaf = await tbccBuildAofDownloadName(downloadUrl, refererPageUrl, path, { index: 1 });
+        const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+        const filename =
+          naming && naming.tbccDownloadFolderPath ? naming.tbccDownloadFolderPath(leaf) : "tbcc/" + leaf;
         chrome.downloads.download(
           {
             url: downloadUrl,
-            filename: path,
+            filename,
             saveAs: false,
             conflictAction: "uniquify",
           },

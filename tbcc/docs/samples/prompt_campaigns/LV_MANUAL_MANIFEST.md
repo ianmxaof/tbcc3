@@ -464,3 +464,216 @@ Full Jackal Tapes filmstrip — all 5 panels, one Telegram scroll.
 ```
 
 ---
+
+## Campaign: `spicy_reveal_drops`
+
+### `spicy_reveal_01_trial_photo`
+
+- **Prompt file:** `docs/samples/spicy_reveal_drops/packs/01_trial_photo_reveal_pack.txt`
+- **Rollout day:** 0
+- **LV title:** `AOF Prompt Spicy Reveal 01 Trial Photo Card Lab Access`
+- **LV URL:** `https://link-target.net/1367336/PASTE_SLUG_HERE`
+
+**LV Text body** (paste into Text asset):
+
+```
+AOF SPICY REVEAL — DROP 01 PROMPT PACK
+Portrait trial + flirt DM scene (copy into your image tool or use with @aof_spicybot_bot)
+
+=== MASTER SCENE ===
+Intimate smartphone DM aesthetic, soft magenta rim light on dark navy, realistic phone UI frame, flirtatious companion energy, SFW suggestive silhouette only, cinematic shallow depth of field, no explicit anatomy.
+
+=== VARIATION A — "She saw it first" ===
+Close-up phone screen, blurred portrait thumbnail in sent bubble, typing indicator active, warm bedroom bokeh, companion waiting mood, text overlay space empty.
+
+=== VARIATION B — "Typing back" ===
+Same thread, her reply bubble glowing coral, heart-react micro-animation implied, intimate late-night palette, no readable gibberish text.
+
+=== VARIATION C — "Reveal frame" ===
+Phone held in hand POV, screen shows locked reveal state with soft glow (not explicit), anticipation composition, thumb near send button.
+
+=== VARIATION D — "Trial sparkle" ===
+Minimal poster cell: single sparkle icon over silhouette, TRIAL badge corner, @aof_spicybot_bot CTA strip at bottom.
+
+=== USE ===
+Upload your portrait in @aof_spicybot_bot → chat → reveal. Refer a friend through the gate for +1 reveal credit.
+```
+
+**Telegram HTML** (single gate — no addlist footer):
+
+```html
+🎴 <b>AOF PROMPT DROP</b> — Spicy Reveal: Trial Photo <i>(promo)</i>
+
+Drop 01 — trial photo tease. Upload, chat, reveal.
+
+<a href="https://link-target.net/1367336/PASTE_SLUG_HERE">Unlock prompt</a>
+```
+
+---
+
+### `spicy_reveal_02_chat_persona`
+
+- **Prompt file:** `docs/samples/spicy_reveal_drops/packs/02_chat_persona_pack.txt`
+- **Rollout day:** 2
+- **LV title:** `AOF Prompt Spicy Reveal 02 Chat Persona Card Lab Access`
+- **LV URL:** `https://link-target.net/1367336/PASTE_SLUG_HERE`
+
+**LV Text body** (paste into Text asset):
+
+```
+AOF SPICY REVEAL — DROP 02 PROMPT PACK
+Companion persona + flirt reply scenes
+
+=== MASTER SCENE ===
+Telegram DM thread aesthetic, companion remembers prior messages, warm violet UI, coral accent on her bubbles, intimate late-night mood, SFW, cinematic.
+
+=== VARIATION A — "Hey baby" ===
+Opening flirt line bubble, soft emoji glow, empty user reply slot, anticipation framing.
+
+=== VARIATION B — "Only you" ===
+Companion bubble dominant, exclusivity tone, heart react, shallow DOF on phone bezel.
+
+=== VARIATION C — "What's on your mind" ===
+Question hook bubble, typing indicator from user side, reciprocal intimacy composition.
+
+=== VARIATION D — "Missed you" ===
+Re-engage DM mockup, 3-day gap implied by timestamp style, warm return energy.
+
+=== USE ===
+@aof_spicybot_bot — chat builds context before reveal unlock.
+```
+
+**Telegram HTML** (single gate — no addlist footer):
+
+```html
+🎴 <b>AOF PROMPT DROP</b> — Spicy Reveal: Chat Persona <i>(promo)</i>
+
+Drop 02 — companion persona pack. She remembers the thread.
+
+<a href="https://link-target.net/1367336/PASTE_SLUG_HERE">Unlock prompt</a>
+```
+
+---
+
+### `spicy_reveal_03_referral_earn`
+
+- **Prompt file:** `docs/samples/spicy_reveal_drops/packs/03_referral_earn_pack.txt`
+- **Rollout day:** 4
+- **LV title:** `AOF Prompt Spicy Reveal 03 Referral Earn Card Lab Access`
+- **LV URL:** `https://link-target.net/1367336/PASTE_SLUG_HERE`
+
+**LV Text body** (paste into Text asset):
+
+```
+AOF SPICY REVEAL — DROP 03 PROMPT PACK
+Referral-flirt copy variants (share after your own reveal)
+
+=== MASTER HOOK ===
+You unlocked one reveal. Want another without paying yet? One real friend through the gate = one more credit.
+
+=== COPY A — Soft flirt ===
+"Hey 🥰 I found this companion bot that actually remembers the chat… try it? I get an extra reveal if you finish the quick gate."
+
+=== COPY B — Direct ===
+"Upload a photo, flirt in DM, reveal unlocks. I earned a bonus when you complete the gate — link below."
+
+=== COPY C — Mysterious ===
+"She replies like she already knows you. I can't explain it — just try the bot and complete the gate."
+
+=== COPY D — Story ===
+"Started as a joke upload. Now I'm out of trial reveals unless someone I send actually finishes the gate."
+
+=== RULES ===
+Credit only when invitee completes full AOF gate — not on click. Share personal compref link from /referral in bot.
+```
+
+**Telegram HTML** (single gate — no addlist footer):
+
+```html
+🎴 <b>AOF PROMPT DROP</b> — Spicy Reveal: Referral Earn <i>(promo)</i>
+
+Drop 03 — referral copy variants. Earn, do not buy.
+
+<a href="https://link-target.net/1367336/PASTE_SLUG_HERE">Unlock prompt</a>
+```
+
+---
+
+### `spicy_reveal_04_scene_builder`
+
+- **Prompt file:** `docs/samples/spicy_reveal_drops/packs/04_scene_builder_pack.txt`
+- **Rollout day:** 6
+- **LV title:** `AOF Prompt Spicy Reveal 04 Scene Builder Card Lab Access`
+- **LV URL:** `https://link-target.net/1367336/PASTE_SLUG_HERE`
+
+**LV Text body** (paste into Text asset):
+
+```
+AOF SPICY REVEAL — DROP 04 PROMPT PACK
+Three-step scene builder (portrait → context → reveal)
+
+=== STEP 1 — PORTRAIT INPUT ===
+Master: clear face-forward portrait, neutral expression, soft key light, phone-camera realism, SFW.
+Delta A: slight smile. Delta B: over-shoulder glance. Delta C: hood up mystery.
+
+=== STEP 2 — CHAT CONTEXT ===
+Master: DM thread with 2-3 flirt exchanges establishing mood before reveal (no explicit).
+Delta A: playful tease. Delta B: jealous-possessive tone. Delta C: sweet reassurance.
+
+=== STEP 3 — REVEAL FRAME ===
+Master: locked reveal UI glow, anticipation, companion "ready" state — SFW silhouette only.
+Delta A: warm blush palette. Delta B: cool midnight palette. Delta C: coral accent match brand.
+
+=== WORKFLOW ===
+@aof_spicybot_bot — do not skip chat; reveal lands harder with context.
+```
+
+**Telegram HTML** (single gate — no addlist footer):
+
+```html
+🎴 <b>AOF PROMPT DROP</b> — Spicy Reveal: Scene Builder <i>(promo)</i>
+
+Drop 04 — three-step scene builder pack.
+
+<a href="https://link-target.net/1367336/PASTE_SLUG_HERE">Unlock prompt</a>
+```
+
+---
+
+### `spicy_reveal_05_full_bundle`
+
+- **Prompt file:** `docs/samples/spicy_reveal_drops/packs/05_full_bundle_pack.txt`
+- **Rollout day:** 8
+- **LV title:** `AOF Prompt Spicy Reveal 05 Full Bundle Card Lab Access`
+- **LV URL:** `https://link-target.net/1367336/PASTE_SLUG_HERE`
+
+**LV Text body** (paste into Text asset):
+
+```
+AOF SPICY REVEAL — FULL 5-PACK BUNDLE (behind single depth gate)
+
+This bundle unlocks Drops 01–04 prompt packs in one LV completion.
+
+Includes:
+• Drop 01 — Trial photo tease pack (4 variations)
+• Drop 02 — Chat persona pack (4 variations)
+• Drop 03 — Referral earn copy (4 variants)
+• Drop 04 — Scene builder (portrait → chat → reveal)
+
+Entry: @aof_spicybot_bot?start=src_prompt_pack
+Hub arc: @aofmainhub for serial drops; one gate per Telegram message.
+
+Do not dump all prompts in one TG post — serial tension per ENGAGEMENT_DOCTRINE.
+```
+
+**Telegram HTML** (single gate — no addlist footer):
+
+```html
+🎴 <b>AOF PROMPT DROP</b> — Spicy Reveal: Full 5-Pack <i>(promo)</i>
+
+Full 5-pack bundle behind one depth gate.
+
+<a href="https://link-target.net/1367336/PASTE_SLUG_HERE">Unlock prompt</a>
+```
+
+---

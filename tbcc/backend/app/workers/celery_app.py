@@ -41,11 +41,14 @@ celery.conf.include = [
     "app.workers.listening_relay_worker",
     "app.workers.goblin_worker",
     "app.workers.loot_promo_worker",
+    "app.workers.loot_creator_recruitment_worker",
+    "app.workers.mainhub_channel_spotlight_worker",
     "app.workers.import_telegram_worker",
     "app.workers.myjd_worker",
     "app.workers.mega_scraper_worker",
     "app.workers.buffer_armory_worker",
     "app.workers.stars_bait_outreach_worker",
+    "app.workers.lifecycle_dm_worker",
     "app.workers.content_performance_worker",
     "app.workers.drop_countdown_worker",
     "app.workers.topic_mirror_worker",
@@ -162,6 +165,22 @@ celery.conf.beat_schedule = {
     "loot-daily-promo": {
         "task": "app.workers.loot_promo_worker.send_loot_daily_promo",
         "schedule": crontab(minute=0, hour="*"),
+    },
+    "loot-creator-recruitment-room": {
+        "task": "app.workers.loot_creator_recruitment_worker.send_loot_room_creator_recruitment",
+        "schedule": crontab(minute=5, hour="*"),
+    },
+    "loot-creator-recruitment-lane": {
+        "task": "app.workers.loot_creator_recruitment_worker.send_random_lane_creator_recruitment",
+        "schedule": crontab(minute=10, hour="*"),
+    },
+    "mainhub-channel-spotlight": {
+        "task": "app.workers.mainhub_channel_spotlight_worker.send_mainhub_channel_spotlight",
+        "schedule": crontab(minute=15, hour="*"),
+    },
+    "lane-of-day-liveness-refresh": {
+        "task": "app.workers.mainhub_channel_spotlight_worker.refresh_lane_of_the_day_liveness",
+        "schedule": crontab(minute=5, hour=0),
     },
     "listening-relay-lastfm": {
         "task": "app.workers.listening_relay_worker.poll_listening_relay_lastfm",
@@ -419,6 +438,20 @@ if (os.getenv("TBCC_BUFFER_METRICS_SYNC_ENABLED") or "1").strip().lower() not in
         "schedule": crontab(minute=45, hour=_buffer_metrics_sync_crontab_hours()),
     }
 
+
+def _lifecycle_dm_crontab_hour() -> int:
+    raw = (os.getenv("TBCC_LIFECYCLE_DM_HOUR_UTC") or "14").strip()
+    try:
+        return max(0, min(23, int(raw)))
+    except ValueError:
+        return 14
+
+
+if (os.getenv("TBCC_LIFECYCLE_DM_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on"):
+    celery.conf.beat_schedule["lifecycle-dm-tick"] = {
+        "task": "app.workers.lifecycle_dm_worker.run_lifecycle_dm_tick",
+        "schedule": crontab(minute=20, hour=_lifecycle_dm_crontab_hour()),
+    }
 
 if (os.getenv("TBCC_STARS_BAIT_DM_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on"):
     _sb_min = (os.getenv("TBCC_STARS_BAIT_DM_INTERVAL_MIN") or "45").strip()

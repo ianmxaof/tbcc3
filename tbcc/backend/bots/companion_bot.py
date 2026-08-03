@@ -61,6 +61,7 @@ from app.services.companion_access import (
     main_group_invite_url,
     mark_lv_acknowledged,
     refund_generation_allowance,
+    touch_companion_activity,
     verify_aof_membership,
 )
 from app.services.companion_body_prefs import (
@@ -83,10 +84,11 @@ from app.services.companion_character import (
 from app.services.companion_referral import (
     maybe_credit_referrer_on_gate_complete,
     record_referral_by_code,
-    referral_bonus_photos,
     referral_link,
+    referral_reward_description,
     referrals_enabled,
 )
+from app.services.companion_reveal_paywall import reveal_paywall_lines, send_reveal_paywall
 from app.services.companion_stars import (
     parse_invoice_payload,
     send_photo_invoice,
@@ -231,8 +233,10 @@ def _companion_system_prompt(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
         lines.append(f"User selected reveal style/pose: {pose}")
     if body.to_api_kwargs() and not char:
         lines.append(f"User body prefs: {body.summary()}")
-    if stars_enabled():
-        lines.append(f"Extra photos cost {stars_per_photo()} Telegram Stars via /buy")
+    if stars_enabled() and acc.generations_remaining() <= 0:
+        lines.append(
+            f"User has no reveals left — next reveal costs {stars_per_photo()} Stars or /referral credits"
+        )
     return "\n".join(lines)
 
 
@@ -249,12 +253,6 @@ def _start_menu_text(user_id: int, acc) -> str:
             f"Allowance now: {acc.generations_remaining()}."
         )
     allowance = companion_allowance_label(user_id)
-    stars_line = ""
-    if stars_enabled():
-        from app.services.operator_sandbox import skip_stars_checkout
-
-        if not skip_stars_checkout(user_id):
-            stars_line = f"\n<b>Stars</b>: {stars_per_photo()}⭐ per extra reveal"
     op_line = operator_status_line(user_id)
     op_suffix = f"\n\n<i>{op_line}</i>" if op_line else ""
     text = (
@@ -265,7 +263,6 @@ def _start_menu_text(user_id: int, acc) -> str:
         "4. <b>Send a photo</b> — she comes to life from your pic\n"
         "5. <b>Chat</b> — talk to her in first person; she remembers you\n\n"
         f"<b>Photo allowance</b>: {allowance}"
-        f"{stars_line}"
         f"{vip_line}"
         f"{op_suffix}"
     )
@@ -286,13 +283,10 @@ def _main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE, *, user_id: int | No
     rows: list[list[InlineKeyboardButton]] = [row1]
 
     row2 = [
+        InlineKeyboardButton("Reveal", callback_data="comp_menu:reveal"),
         InlineKeyboardButton("Rename", callback_data="comp_menu:name"),
         InlineKeyboardButton("Balance", callback_data="comp_menu:balance"),
     ]
-    from app.services.operator_sandbox import skip_stars_checkout
-
-    if stars_enabled() and user_id is not None and not skip_stars_checkout(user_id):
-        row2.append(InlineKeyboardButton("Buy reveal", callback_data="comp_menu:buy"))
     rows.append(row2)
     rows.append([InlineKeyboardButton("Clear chat memory", callback_data="comp_menu:reset")])
     return InlineKeyboardMarkup(rows)
@@ -311,6 +305,7 @@ async def _send_start_menu(
     edit_message_id: int | None = None,
 ) -> None:
     acc = get_access(user_id)
+    touch_companion_activity(user_id)
     text = _start_menu_text(user_id, acc)
     kb = _main_menu_keyboard(context, user_id=user_id)
     if edit_message_id is not None:
@@ -398,14 +393,30 @@ async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 async def _notify_referrer_credit(context: ContextTypes.DEFAULT_TYPE, result: dict) -> None:
     referrer_id = int(result.get("referrer_user_id") or 0)
-    bonus = int(result.get("bonus_granted") or 0)
-    if referrer_id <= 0 or bonus <= 0:
+    if referrer_id <= 0:
         return
+    bonus = int(result.get("bonus_granted") or 0)
     try:
+        if result.get("deferred_until_reveal"):
+            await context.bot.send_message(
+                chat_id=referrer_id,
+                text=(
+                    "Your invite completed the AOF gate — you'll earn photo credits "
+                    "when they send their first reveal."
+                ),
+            )
+            return
+        if bonus <= 0:
+            return
+        reason = (
+            "your invite sent their first reveal"
+            if result.get("credit_reason") == "first_reveal"
+            else "your invite completed the AOF gate"
+        )
         await context.bot.send_message(
             chat_id=referrer_id,
             text=(
-                f"Referral reward: +{bonus} photo credit(s) — your invite completed the AOF gate.\n"
+                f"Referral reward: +{bonus} photo credit(s) — {reason}.\n"
                 f"Balance: {result.get('referrer_credits', '?')}"
             ),
         )
@@ -442,6 +453,23 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not msg or not user:
         return
     arg = _parse_start_arg(context)
+    if arg == "missed_you":
+        acc = await _gate_access(context, user.id)
+        touch_companion_activity(user.id)
+        if gate_enabled() and not acc.gate_complete:
+            await _reply_gate_required(
+                msg,
+                user.id,
+                prefix="I missed you too 🥰 — finish the quick gate first, then we can talk.",
+            )
+            return
+        await msg.reply_text(
+            "Hey you 🥰 I'm glad you're back.\n\n"
+            "Talk to me here — or send a photo if you want to pick up where we left off.",
+            parse_mode="HTML",
+            reply_markup=_main_menu_keyboard(context, user_id=user.id),
+        )
+        return
     if arg:
         try:
             from app.services.traffic_attribution import record_traffic_touch_from_bot
@@ -489,6 +517,7 @@ async def cmd_verify(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "Now confirm 18+ and send a photo, or chat freely.",
             parse_mode="HTML",
         )
+        touch_companion_activity(user.id)
     else:
         await msg.reply_text(
             "I can't see you in any AOF channel yet.\n"
@@ -544,11 +573,8 @@ async def cmd_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     uname = await _bot_username(context)
     link = referral_link(uname, user.id)
-    bonus = referral_bonus_photos()
     await msg.reply_text(
-        f"<b>Your invite link</b>\n{link}\n\n"
-        f"When a friend completes the AOF gate (LV + channel verify), you earn "
-        f"<b>+{bonus}</b> photo credit(s).",
+        f"<b>Your invite link</b>\n{link}\n\n{referral_reward_description()}",
         parse_mode="HTML",
     )
 
@@ -693,17 +719,42 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             f"<b>Your allowance</b>: {acc.generations_remaining()} photo(s)",
             f"Trial used: {acc.trial_used} · Bonus credits: {acc.credits}",
         ]
-        if stars_enabled():
-            lines.append(f"Extra reveals: {stars_per_photo()}⭐ — tap Buy reveal on the menu.")
+        if acc.generations_remaining() <= 0:
+            lines.extend(reveal_paywall_lines())
         await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
         return
 
-    if action == "buy":
-        if not stars_enabled():
-            await query.answer("Stars checkout is off.", show_alert=True)
-            return
+    if action in ("buy", "reveal"):
         await query.answer()
-        await send_photo_invoice(context.bot, chat_id=chat_id, user_id=user.id)
+        acc = get_access(user.id)
+        if acc.generations_remaining() > 0:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Send a photo when you're ready — I'll reveal her from your pic.",
+                parse_mode="HTML",
+            )
+            return
+        uname = await _bot_username(context)
+        await send_reveal_paywall(
+            context.bot,
+            chat_id=chat_id,
+            user_id=user.id,
+            bot_username=uname,
+        )
+        return
+
+    if action == "referral":
+        await query.answer()
+        if not referrals_enabled():
+            await context.bot.send_message(chat_id=chat_id, text="Referrals are off.")
+            return
+        uname = await _bot_username(context)
+        link = referral_link(uname, user.id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"<b>Your invite link</b>\n{link}\n\n{referral_reward_description()}",
+            parse_mode="HTML",
+        )
         return
 
     if action == "reset":
@@ -779,8 +830,8 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lines = [f"<b>Your allowance</b>: {companion_allowance_label(user.id)} photo(s)"]
     if not skip_stars_checkout(user.id):
         lines.append(f"Trial used: {acc.trial_used} · Bonus credits: {acc.credits}")
-        if stars_enabled():
-            lines.append(f"Need more? Tap <b>Buy reveal</b> on the menu ({stars_per_photo()}⭐).")
+        if acc.generations_remaining() <= 0:
+            lines.extend(reveal_paywall_lines())
     op_line = operator_status_line(user.id)
     if op_line:
         lines.append(f"<i>{op_line}</i>")
@@ -902,6 +953,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if gate_enabled() and not acc.gate_complete:
         await _reply_gate_required(msg, user.id)
         return
+    touch_companion_activity(user.id)
     if not _allow_rate_limit(user.id):
         await msg.reply_text("Slow down — rate limit. Try again in a minute.")
         return
@@ -1018,9 +1070,12 @@ async def _queue_user_photo(
     except Exception:
         pass
 
-    if not consume_generation_allowance(user.id):
+    ok, referral_credit = consume_generation_allowance(user.id)
+    if not ok:
         await status_msg.edit_text("Allowance exhausted.")
         return False
+    if referral_credit and int(referral_credit.get("bonus_granted") or 0) > 0:
+        await _notify_referrer_credit(context, referral_credit)
 
     body = load_body_prefs(context.user_data)
     api = body.to_api_kwargs()
@@ -1075,34 +1130,15 @@ async def _offer_paid_photo_path(
             parse_mode="HTML",
         )
         return
-    from app.database.session import SessionLocal
-    from app.services.companion_monetize_cta import (
-        companion_exhaustion_cta_html,
-        companion_exhaustion_inline_keyboard,
-    )
-
-    db = SessionLocal()
-    try:
-        aff = affiliate_undress_url_wrapped(db=db)
-    finally:
-        db.close()
-    cta = companion_exhaustion_cta_html(include_undress=bool(aff), undress_url=aff)
-    kb = companion_exhaustion_inline_keyboard()
     if stars_enabled():
         save_pending_photo(user_id=user.id, chat_id=msg.chat_id, file_id=file_id, filename=filename)
-        await send_photo_invoice(context.bot, chat_id=msg.chat_id, user_id=user.id)
-        await msg.reply_text(
-            f"Free trial used. Pay <b>{stars_per_photo()}⭐</b> above — I'll process this photo right after payment.\n"
-            "Or /referral to earn credits by inviting friends.",
-            parse_mode="HTML",
-        )
-        if cta:
-            await msg.reply_text(cta, parse_mode="HTML", reply_markup=kb)
-        return
-    await msg.reply_text(
-        "No free generations left on this bot.\n\n" + (cta or "Try Loot God or VIP below."),
-        parse_mode="HTML",
-        reply_markup=kb,
+    uname = await _bot_username(context)
+    await send_reveal_paywall(
+        context.bot,
+        chat_id=msg.chat_id,
+        user_id=user.id,
+        pending_photo=bool(stars_enabled()),
+        bot_username=uname,
     )
 
 
@@ -1162,6 +1198,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     from app.services.companion_access import grant_credits
 
     grant_credits(user.id, 1)
+    touch_companion_activity(user.id)
     pending = pop_pending_photo(user.id)
     if not pending:
         await msg.reply_text("Credit added. Send a photo when you're ready.")
@@ -1226,6 +1263,7 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if gate_enabled() and not acc.gate_complete:
         await _reply_gate_required(msg, user.id)
         return
+    touch_companion_activity(user.id)
     allowed, reason = can_spend_operator_api(user.id)
     if not allowed:
         if reason == "complete_gate":
@@ -1236,7 +1274,13 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if fid:
                 await _offer_paid_photo_path(update, context, file_id=fid[0], filename=fid[1])
             else:
-                await msg.reply_text("No allowance left. Use /buy or /referral.")
+                uname = await _bot_username(context)
+                await send_reveal_paywall(
+                    context.bot,
+                    chat_id=msg.chat_id,
+                    user_id=user.id,
+                    bot_username=uname,
+                )
             return
     if not _allow_rate_limit(user.id):
         await msg.reply_text("Slow down — rate limit.")

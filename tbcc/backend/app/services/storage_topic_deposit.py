@@ -27,7 +27,7 @@ from app.services.aof_growth_hub import _ensure_channel_row, _ensure_pool_row, s
 logger = logging.getLogger(__name__)
 
 _DEPOSIT_CMD = re.compile(
-    r"^/deposit(?:@\w+)?(?:\s+(\d+))?(?:\s+(both|photos|videos))?\s*$",
+    r"^/deposit(?:@\w+)?(?:\s+(\d+))?(?:\s+(both|photos|videos|image|images))?\s*$",
     re.I,
 )
 
@@ -50,6 +50,8 @@ def parse_deposit_command(text: str | None) -> tuple[int | None, str | None] | N
         except ValueError:
             limit = storage_pool_seed_batch_size()
     media = (m.group(2) or "").strip().lower() or None
+    if media in ("image", "images"):
+        media = "photos"
     if media and media not in ("both", "photos", "videos"):
         media = None
     return limit, media
@@ -277,6 +279,13 @@ def format_deposit_complete_text(
             f"\n\n📦 Cache composer: {composer_body.get('albums_built')} album(s) "
             f"× {composer_body.get('album_size', 5)} — check topic for Erome links."
         )
+    lane_evict_body = result.get("lane_evict") if isinstance(result.get("lane_evict"), dict) else None
+    lane_evict_line = ""
+    if lane_evict_body and int(lane_evict_body.get("evicted") or 0) > 0:
+        lane_evict_line = (
+            f"\n\n🧹 Removed {lane_evict_body.get('evicted')} duplicate(s) from this lane "
+            "(already in pool — vault archive unchanged)."
+        )
 
     headline = "Media finished uploading" if stored > 0 else "Storage deposit complete"
     if html:
@@ -286,7 +295,7 @@ def format_deposit_complete_text(
             f"<b>Pool:</b> {pool}\n"
             f"<b>Media:</b> <code>{mt}</code> · scanned {scanned}\n"
             f"<b>Job:</b> <code>{job_id}</code>\n\n"
-            f"{outcome}{mirror_line}{cache_line}{composer_line}{clip}"
+            f"{outcome}{mirror_line}{cache_line}{composer_line}{lane_evict_line}{clip}"
         )
     return (
         f"{'✅' if stored > 0 else '📥'} {_lbl(headline, html=False, markdown=markdown)}\n\n"
@@ -294,7 +303,7 @@ def format_deposit_complete_text(
         f"{_lbl('Pool', html=False, markdown=markdown)}: {pool}\n"
         f"{_lbl('Media', html=False, markdown=markdown)}: {_mono(mt, html=False, markdown=markdown)} · scanned {scanned}\n"
         f"{_lbl('Job', html=False, markdown=markdown)}: {_mono(job_id, html=False, markdown=markdown)}\n\n"
-        f"{outcome}{mirror_line}{cache_line}{composer_line}{clip}"
+        f"{outcome}{mirror_line}{cache_line}{composer_line}{lane_evict_line}{clip}"
     )
 
 
@@ -572,6 +581,8 @@ def queue_storage_topic_deposit(
     commit: bool = True,
     countdown: int = 0,
     message_ids: list[int] | None = None,
+    sent_cache: bool | None = None,
+    auto_pipe: bool = False,
 ) -> dict[str, Any]:
     """
     Import up to `limit` NEW deduped items from one Storage Hub forum topic into its pool.
@@ -636,7 +647,13 @@ def queue_storage_topic_deposit(
     index_only = storage_deposit_index_only_enabled() and not apply_watermark
     from app.services.storage_sent_cache import storage_sent_cache_enabled
 
-    sent_cache = storage_sent_cache_enabled() and bool(row.network_key)
+    sent_cache_val = (
+        bool(sent_cache)
+        if sent_cache is not None
+        else (storage_sent_cache_enabled() and bool(row.network_key))
+    )
+    if auto_pipe:
+        sent_cache_val = False
 
     job = create_channel_import_job(
         db,
@@ -650,10 +667,13 @@ def queue_storage_topic_deposit(
         apply_watermark=apply_watermark,
         index_only=index_only,
         network_key=row.network_key,
-        sent_cache=sent_cache,
+        sent_cache=sent_cache_val,
         message_ids=message_ids,
+        auto_pipe=bool(auto_pipe),
     )
 
+    if auto_pipe:
+        include_topic_mirror = False
     mirror_limit = int(lim)
     mirror_report: dict[str, Any] | None = None
     task_id: str | None = None
@@ -744,7 +764,8 @@ def queue_storage_topic_deposit(
             "limit": lim,
             "media_types": mt,
             "index_only": index_only,
-            "sent_cache": sent_cache,
+            "sent_cache": sent_cache_val,
+            "auto_pipe": bool(auto_pipe),
             "staged": bool(message_ids),
             "topic_mirror": mirror_report,
         }

@@ -45,6 +45,11 @@ DISPLAY_TITLES: dict[str, str] = {
     "jackal_tapes_mikes_bar": "Jackal Tapes: Mike's Bar",
     "jackal_tapes_monster_display": "Jackal Tapes: The Display",
     "jackal_tapes_filmstrip_5x": "Jackal Tapes: Filmstrip 5×",
+    "spicy_reveal_01_trial_photo": "Spicy Reveal: Trial Photo",
+    "spicy_reveal_02_chat_persona": "Spicy Reveal: Chat Persona",
+    "spicy_reveal_03_referral_earn": "Spicy Reveal: Referral Earn",
+    "spicy_reveal_04_scene_builder": "Spicy Reveal: Scene Builder",
+    "spicy_reveal_05_full_bundle": "Spicy Reveal: Full 5-Pack",
 }
 
 

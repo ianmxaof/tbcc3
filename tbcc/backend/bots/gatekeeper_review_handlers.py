@@ -20,7 +20,7 @@ from app.services.gatekeeper_review import (
     operator_reject_media,
     parse_review_callback,
 )
-from app.services.inbox_intake_review import (
+from app.services.quarantine_batch_review import (
     operator_approve_batch,
     operator_reject_batch,
     parse_batch_review_callback,
@@ -88,7 +88,17 @@ async def on_gatekeeper_review_callback(
         await query.answer(format_lane_pick_hint(selected), show_alert=False)
         if query.message:
             try:
-                kb = review_lane_picker_keyboard(media_id, selected)
+                from app.models.media import Media
+                from app.services.gatekeeper_review import resolve_media_lane_key
+
+                with SessionLocal() as db:
+                    media = db.query(Media).filter(Media.id == media_id).first()
+                    default_lane = resolve_media_lane_key(db, media) if media else None
+                kb = review_lane_picker_keyboard(
+                    media_id,
+                    selected,
+                    default_lane_key=default_lane,
+                )
                 rows = [
                     [InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row]
                     for row in kb["inline_keyboard"]

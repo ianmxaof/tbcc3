@@ -17,6 +17,11 @@ from app.services.intake_scheduler import (
     get_batch_size,
     get_interval_minutes,
 )
+from app.services.storage_auto_pipe import (
+    format_auto_pipe_status,
+    set_storage_auto_pipe_enabled,
+    storage_auto_pipe_enabled,
+)
 from app.services.tbcc_telegram_admin import can_operate_storage_hub_bot_api
 
 logger = logging.getLogger(__name__)
@@ -47,8 +52,20 @@ def intake_control_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📤 Flush inbox albums", callback_data=f"{CALLBACK_PREFIX}flush:inbox"),
+            InlineKeyboardButton("📦 Flush hub albums", callback_data=f"{CALLBACK_PREFIX}flush:hub"),
+        ],
+        [
+            InlineKeyboardButton("📦 Post vault staging", callback_data=f"{CALLBACK_PREFIX}flush:sentcache"),
         ],
     ]
+    if storage_auto_pipe_enabled():
+        rows.append(
+            [InlineKeyboardButton("⏸ Auto-pipe OFF", callback_data=f"{CALLBACK_PREFIX}autopipe:off")]
+        )
+    else:
+        rows.append(
+            [InlineKeyboardButton("▶ Auto-pipe ON", callback_data=f"{CALLBACK_PREFIX}autopipe:on")]
+        )
     return InlineKeyboardMarkup(rows)
 
 
@@ -63,6 +80,7 @@ async def cmd_intake(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     text = (
         f"{format_status_text()}\n\n"
+        f"{format_auto_pipe_status()}\n\n"
         f"<i>Batch {get_batch_size()} · interval {get_interval_minutes()}m · album {get_album_size()}</i>"
     )
     await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=intake_control_keyboard())
@@ -106,6 +124,22 @@ async def on_intake_control_callback(update: Update, context: ContextTypes.DEFAU
 
         flush_inbox_quarantine_albums.delay(force=True)
         note = "Queued inbox quarantine album flush"
+    elif action == "flush:hub":
+        from app.workers.storage_hub_album_worker import flush_storage_hub_album_buffers_task
+
+        flush_storage_hub_album_buffers_task.delay(force=True)
+        note = "Queued Storage Hub album buffer flush"
+    elif action == "flush:sentcache":
+        from app.workers.sent_cache_flush_worker import flush_sent_cache_emoji_buffers_task
+
+        flush_sent_cache_emoji_buffers_task.delay(force=True)
+        note = "Queued SENT VAULT staging album post (does not delete vault media)"
+    elif action == "autopipe:on":
+        set_storage_auto_pipe_enabled(True)
+        note = "Auto-pipe ON"
+    elif action == "autopipe:off":
+        set_storage_auto_pipe_enabled(False)
+        note = "Auto-pipe OFF"
     else:
         await query.answer("Unknown action", show_alert=True)
         return True
@@ -114,6 +148,7 @@ async def on_intake_control_callback(update: Update, context: ContextTypes.DEFAU
     if query.message:
         text = (
             f"{format_status_text()}\n\n"
+            f"{format_auto_pipe_status()}\n\n"
             f"<i>Batch {get_batch_size()} · interval {get_interval_minutes()}m · album {get_album_size()}</i>\n"
             f"<b>{note}</b>"
         )

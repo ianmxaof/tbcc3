@@ -138,7 +138,7 @@ async def maybe_offer_stars_after_delivery(*, chat_id: int, user_id: int) -> boo
         chat_id=int(chat_id),
         text=(
             f"Free trial used — next reveal is {stars}⭐.\n"
-            "Pay the invoice below (or /buy anytime). /referral earns free credits."
+            "Pay the invoice below, tap Reveal, or /buy. /referral earns free credits."
         ),
         parse_mode=None,
     )

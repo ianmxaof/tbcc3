@@ -1,4 +1,4 @@
-"""SENT CACHE composer — bundle stamped items into albums, export to main group + Erome."""
+"""SENT VAULT composer — bundle stamped items into albums, export to main group + Erome."""
 
 from __future__ import annotations
 
@@ -9,54 +9,29 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.data.aof_main_group_topic_map import main_topic_for_network_key
 from app.data.aof_network import MAIN_GROUP_IDENT
 from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
 from app.models.media import Media
 from app.services.album_service import chunk_into_full_albums, post_album
 from app.services.cache_album_caption import build_cache_album_caption_html, build_main_group_caption_html
+from app.services.hub_lane_control import lane_loot_preview_enabled
+from app.services.main_group_topic_resolve import fetch_live_loot_room_topics, resolve_loot_room_thread_id
+from app.services.sent_cache_control import (
+    composer_album_size as cache_album_size,
+)
+from app.services.sent_cache_control import (
+    composer_enabled,
+    erome_export_enabled,
+    main_group_export_enabled,
+    preview_max_loot_albums_per_run,
+)
 from app.services.storage_sent_cache import storage_sent_cache_topic_id
 
 logger = logging.getLogger(__name__)
 
 
-def composer_enabled() -> bool:
-    return (os.getenv("TBCC_SENT_CACHE_COMPOSER_ENABLED") or "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-
-
-def cache_album_size() -> int:
-    raw = (os.getenv("TBCC_SENT_CACHE_ALBUM_SIZE") or "5").strip()
-    try:
-        return max(2, min(10, int(raw)))
-    except ValueError:
-        return 5
-
-
 def rebundle_cache_enabled() -> bool:
     return (os.getenv("TBCC_SENT_CACHE_COMPOSER_REBUNDLE_CACHE") or "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-
-
-def main_group_export_enabled() -> bool:
-    return (os.getenv("TBCC_SENT_CACHE_COMPOSER_MAIN_GROUP") or "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-
-
-def erome_export_enabled() -> bool:
-    return (os.getenv("TBCC_SENT_CACHE_COMPOSER_EROME") or "1").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -71,13 +46,33 @@ def _media_type_bucket(m: Media) -> str:
     return t
 
 
-def _chunk_media_rows(rows: list[Media], size: int) -> list[list[Media]]:
-    by_type: dict[str, list[Media]] = defaultdict(list)
-    for m in sorted(rows, key=lambda x: int(x.id)):
-        by_type[_media_type_bucket(m)].append(m)
+def _chunk_media_rows(
+    rows: list[Media],
+    size: int,
+    *,
+    network_key: str | None = None,
+    randomize: bool = False,
+) -> list[list[Media]]:
+    """Full albums only — deduped, optionally shuffled, partitioned by lane then media type."""
+    import random as rnd
+
+    from app.services.media_album_dedupe import dedupe_media_for_album
+
+    unique = dedupe_media_for_album(list(rows))
+    if randomize:
+        rnd.shuffle(unique)
+    by_lane: dict[str, list[Media]] = defaultdict(list)
+    lane_key = (network_key or "default").strip().lower()
+    for m in sorted(unique, key=lambda x: int(x.id)):
+        by_lane[lane_key].append(m)
+
     albums: list[list[Media]] = []
-    for bucket in by_type.values():
-        albums.extend(chunk_into_full_albums(bucket, size))
+    for lane_rows in by_lane.values():
+        by_type: dict[str, list[Media]] = defaultdict(list)
+        for m in lane_rows:
+            by_type[_media_type_bucket(m)].append(m)
+        for bucket in by_type.values():
+            albums.extend(chunk_into_full_albums(bucket, size))
     return albums
 
 
@@ -97,6 +92,7 @@ async def compose_sent_cache_albums_async(
     media_ids: list[int],
     pool_id: int | None,
     moved_items: list[dict[str, Any]] | None = None,
+    skip_cache_rebundle: bool = False,
 ) -> dict[str, Any]:
     """Build full albums from a deposit batch; rebundle cache, mirror main, upload Erome."""
     if not composer_enabled():
@@ -110,7 +106,7 @@ async def compose_sent_cache_albums_async(
         return {"ok": False, "error": "no_media_rows"}
 
     size = cache_album_size()
-    albums = _chunk_media_rows(rows, size)
+    albums = _chunk_media_rows(rows, size, network_key=nk, randomize=True)
     if not albums:
         return {
             "ok": True,
@@ -124,9 +120,27 @@ async def compose_sent_cache_albums_async(
 
     hub_entity = await resolve_telethon_entity(storage.client, STORAGE_HUB_IDENT)
     cache_tid = storage_sent_cache_topic_id()
-    main_row = main_topic_for_network_key(nk) if main_group_export_enabled() else None
+
+    live_topics: list[dict] | None = None
+    loot_thread_id: int | None = None
+    loot_thread_source = "disabled"
+    preview_cap = preview_max_loot_albums_per_run()
+    loot_preview_on = lane_loot_preview_enabled(nk)
+    if main_group_export_enabled() and loot_preview_on and preview_cap > 0:
+        try:
+            live_topics = await fetch_live_loot_room_topics(storage)
+            loot_thread_id, loot_thread_source = resolve_loot_room_thread_id(nk, live_topics=live_topics)
+            if loot_thread_id is None:
+                logger.error(
+                    "sent-cache composer: no Loot Room subtopic for lane=%s (source=%s) — skip main preview",
+                    nk,
+                    loot_thread_source,
+                )
+        except Exception as e:
+            logger.warning("sent-cache composer: live Loot Room topic fetch failed: %s", e)
+
     main_entity = None
-    if main_row:
+    if loot_thread_id is not None:
         main_entity = await resolve_telethon_entity(storage.client, MAIN_GROUP_IDENT)
 
     cache_cap = build_cache_album_caption_html(db, nk)
@@ -134,6 +148,7 @@ async def compose_sent_cache_albums_async(
     moved_items = moved_items or []
 
     report_albums: list[dict[str, Any]] = []
+    loot_albums_posted = 0
     for idx, chunk in enumerate(albums, start=1):
         mids = [int(m.id) for m in chunk]
         album_rec: dict[str, Any] = {
@@ -145,7 +160,7 @@ async def compose_sent_cache_albums_async(
             "erome": None,
         }
 
-        if rebundle_cache_enabled():
+        if rebundle_cache_enabled() and not skip_cache_rebundle:
             try:
                 old_cache_ids = _cache_message_ids_for_chunk(chunk, moved_items)
                 msg_ids = await post_album(
@@ -162,29 +177,31 @@ async def compose_sent_cache_albums_async(
                         await storage.client.delete_messages(hub_entity, old_cache_ids)
                     except Exception:
                         logger.debug("cache single cleanup failed", exc_info=True)
-                if msg_ids:
-                    anchor = int(msg_ids[0])
-                    for m in chunk:
-                        m.telegram_message_id = anchor
-                    db.commit()
             except Exception as e:
                 album_rec["cache"] = {"ok": False, "error": str(e)[:200]}
         else:
             album_rec["cache"] = {"ok": True, "skipped": True}
 
-        if main_row and main_entity:
+        if (
+            loot_thread_id is not None
+            and main_entity
+            and loot_albums_posted < preview_cap
+        ):
             try:
                 main_msg_ids = await post_album(
                     storage.client,
                     main_entity,
                     chunk,
                     caption=main_cap,
-                    reply_to=int(main_row.message_thread_id),
+                    reply_to=int(loot_thread_id),
                     send_silent=True,
                 )
+                if main_msg_ids:
+                    loot_albums_posted += 1
                 album_rec["main_group"] = {
                     "ok": bool(main_msg_ids),
-                    "topic_id": int(main_row.message_thread_id),
+                    "topic_id": int(loot_thread_id),
+                    "topic_source": loot_thread_source,
                     "telegram_message_ids": main_msg_ids,
                 }
                 if main_msg_ids and pool_id:
@@ -209,6 +226,12 @@ async def compose_sent_cache_albums_async(
                         logger.debug("cache composer delivery metric skipped", exc_info=True)
             except Exception as e:
                 album_rec["main_group"] = {"ok": False, "error": str(e)[:200]}
+        elif main_group_export_enabled() and loot_preview_on and preview_cap > 0:
+            album_rec["main_group"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "preview_cap_reached" if loot_albums_posted >= preview_cap else "no_subtopic",
+            }
 
         if erome_export_enabled() and pool_id:
             try:
@@ -245,6 +268,9 @@ async def compose_sent_cache_albums_async(
         "network_key": nk,
         "album_size": size,
         "albums_built": len(report_albums),
+        "loot_preview_cap": preview_cap,
+        "loot_preview_posted": loot_albums_posted,
+        "loot_thread_source": loot_thread_source,
         "albums": report_albums,
         "leftover_singles": max(0, len(rows) - sum(len(a["media_ids"]) for a in report_albums)),
     }
@@ -257,6 +283,7 @@ def compose_sent_cache_albums_sync(
     media_ids: list[int],
     pool_id: int | None,
     moved_items: list[dict[str, Any]] | None = None,
+    skip_cache_rebundle: bool = False,
 ) -> dict[str, Any]:
     from app.services.import_job_runner import _run_on_worker_loop
     from app.services.telegram_admin import run_telegram_import_io
@@ -269,6 +296,7 @@ def compose_sent_cache_albums_sync(
             media_ids=media_ids,
             pool_id=pool_id,
             moved_items=moved_items,
+            skip_cache_rebundle=skip_cache_rebundle,
         )
 
     return _run_on_worker_loop(run_telegram_import_io(_go))
@@ -285,7 +313,7 @@ def notify_composer_bot(
     if not token:
         return {"ok": False, "skipped": True, "reason": "no_bot_token"}
 
-    from app.data.aof_storage_hub_map import category_emoji_for_network_key
+    from app.data.aof_storage_hub_map import SENT_VAULT_DISPLAY_NAME, category_emoji_for_network_key
     from app.services.storage_topic_deposit import storage_hub_chat_id_int
 
     nk = (network_key or "").strip().lower()
@@ -296,7 +324,7 @@ def notify_composer_bot(
     main_ok = sum(1 for a in report.get("albums") or [] if (a.get("main_group") or {}).get("ok"))
 
     lines = [
-        f"📦 SENT CACHE composer — {emoji} {nk}",
+        f"📦 {SENT_VAULT_DISPLAY_NAME} composer — {emoji} {nk}",
         f"Albums: {built} × {report.get('album_size', 5)} items",
     ]
     if leftover:
@@ -337,6 +365,7 @@ def enqueue_cache_composer_after_deposit(
     pool_id: int | None,
     storage_thread_id: int | None,
     moved_items: list[dict[str, Any]] | None = None,
+    skip_cache_rebundle: bool = False,
 ) -> dict[str, Any]:
     if not composer_enabled():
         return {"ok": True, "skipped": True, "reason": "disabled"}
@@ -354,6 +383,7 @@ def enqueue_cache_composer_after_deposit(
                 "pool_id": pool_id,
                 "storage_thread_id": storage_thread_id,
                 "moved_items": moved_items,
+                "skip_cache_rebundle": skip_cache_rebundle,
             },
             countdown=max(0, int(os.getenv("TBCC_SENT_CACHE_COMPOSER_COUNTDOWN_S") or "8")),
         )

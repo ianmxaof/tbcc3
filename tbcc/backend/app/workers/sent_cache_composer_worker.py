@@ -19,6 +19,7 @@ def compose_sent_cache_albums_task(
     pool_id: int | None,
     storage_thread_id: int | None,
     moved_items: list[dict[str, Any]] | None = None,
+    skip_cache_rebundle: bool = False,
 ):
     from app.database.session import SessionLocal
     from app.models.import_job import ImportJob
@@ -35,6 +36,7 @@ def compose_sent_cache_albums_task(
             media_ids=media_ids,
             pool_id=pool_id,
             moved_items=moved_items,
+            skip_cache_rebundle=skip_cache_rebundle,
         )
         if storage_thread_id:
             notify = notify_composer_bot(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -17,23 +18,71 @@ from app.services.promo_affiliate_rotation import (
     list_candidates,
 )
 
-MenuKind = Literal["channels", "ai"]
-VariantId = Literal["v1", "v2", "v3"]
+MenuKind = Literal["channels", "ai", "loot"]
+VariantId = Literal["v1", "v2", "v3", "v4", "v5", "v6", "v7"]
 
-CHANNEL_VARIANTS: tuple[VariantId, ...] = ("v1", "v2", "v3")
-AI_VARIANTS: tuple[VariantId, ...] = ("v1", "v2", "v3")
+CHANNEL_VARIANTS: tuple[VariantId, ...] = ("v1", "v2", "v3", "v4", "v5", "v6", "v7")
+AI_VARIANTS: tuple[VariantId, ...] = ("v1", "v2", "v3", "v4", "v5", "v6", "v7")
+LOOT_VARIANTS: tuple[VariantId, ...] = ("v5", "v6", "v7")
 
-TBCC_ROOT = Path(__file__).resolve().parents[3]
-MENU_IMAGE_DIR = TBCC_ROOT / "docs" / "samples" / "link_hub_menus" / "images"
+# v5–v7: wide cards sized to match Telegram 2-col inline keyboard width (not tall 9:16).
+BUTTON_TREE_FIT_VARIANTS: tuple[VariantId, ...] = ("v5", "v6", "v7")
+MENU_IMAGE_WIDTH_PX = 1280
+MENU_IMAGE_HEIGHT_PX = 960  # 4:3 — aligns with bubble + button-tree width on mobile/desktop
+MENU_IMAGE_ASPECT = "4:3"
+
+
+def _tbcc_root() -> Path:
+    env = (os.getenv("TBCC_ROOT") or "").strip()
+    if env:
+        return Path(env)
+    p = Path(__file__).resolve().parents[3]
+    if (p / "docs" / "samples").is_dir():
+        return p
+    app = Path(__file__).resolve().parents[2]
+    if (app / "docs" / "samples").is_dir():
+        return app
+    # Revenue island: docs copied to /docs/samples/...
+    if Path("/docs/samples").is_dir():
+        return Path("/docs")
+    return p
+
+
+def _menu_image_dir() -> Path:
+    for base in (
+        _tbcc_root() / "docs" / "samples" / "link_hub_menus" / "images",
+        _tbcc_root() / "samples" / "link_hub_menus" / "images",
+        Path("/docs/samples/link_hub_menus/images"),
+    ):
+        if base.is_dir():
+            return base
+    return _tbcc_root() / "docs" / "samples" / "link_hub_menus" / "images"
+
+
+TBCC_ROOT = _tbcc_root()
+MENU_IMAGE_DIR = _menu_image_dir()
 
 MENU_IMAGE_FILES: dict[tuple[MenuKind, VariantId], str] = {
     ("channels", "v1"): "channels_v1_classic_orange_panel.png",
     ("channels", "v2"): "channels_v2_neon_grid.png",
     ("channels", "v3"): "channels_v3_vhs_broadcast.png",
+    ("channels", "v4"): "channels_v4_uniform_rails.png",
+    ("channels", "v5"): "channels_v5_network_reveal.png",
+    ("channels", "v6"): "channels_v6_network_dark_panel.png",
+    ("channels", "v7"): "channels_v7_network_matrix.png",
     ("ai", "v1"): "ai_v1_dark_panel.png",
     ("ai", "v2"): "ai_v2_reveal_board.png",
     ("ai", "v3"): "ai_v3_uniform_grid.png",
+    ("ai", "v4"): "ai_v4_storage_matrix.png",
+    ("ai", "v5"): "ai_v5_button_tree_reveal.png",
+    ("ai", "v6"): "ai_v6_button_tree_dark_panel.png",
+    ("ai", "v7"): "ai_v7_button_tree_matrix.png",
+    ("loot", "v5"): "loot_v5_growth_reveal.png",
+    ("loot", "v6"): "loot_v6_growth_dark_panel.png",
+    ("loot", "v7"): "loot_v7_growth_matrix.png",
 }
+
+KIT_EMAIL_LIST_URL = "https://powercore.kit.com/"
 
 CHANNEL_PIPES: tuple[tuple[str, str, str], ...] = (
     ("01", "addlist", "ADDLIST · ALL CHANNELS"),
@@ -79,7 +128,16 @@ def menu_image_path(kind: MenuKind, variant: VariantId) -> Path:
     name = MENU_IMAGE_FILES.get((kind, variant))
     if not name:
         raise KeyError(f"no menu image for {kind}/{variant}")
-    return MENU_IMAGE_DIR / name
+    candidates = [
+        MENU_IMAGE_DIR / name,
+        TBCC_ROOT / "docs" / "samples" / "link_hub_menus" / "images" / name,
+        Path("/docs/samples/link_hub_menus/images") / name,
+        Path("/app/docs/samples/link_hub_menus/images") / name,
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return candidates[0]
 
 
 def _short_btn(text: str, *, max_len: int = 64) -> str:
@@ -147,17 +205,71 @@ def build_ai_inline_buttons(db: Session, *, columns: int = 2, limit: int = 18) -
     return _chunk_buttons(buttons, columns=columns) + [footer, nav]
 
 
-def _interactive_menu_caption(kind: MenuKind, title: str) -> str:
+# Top lanes on Loot Room growth board (wrapped gates — outbound discovery).
+LOOT_LANE_SHORTCUTS: tuple[tuple[str, str], ...] = (
+    ("ai", "AOF AI"),
+    ("ass", "AOF ASS"),
+    ("milf", "MILF / GILF"),
+    ("taboo", "TABOO"),
+    ("big_tits", "BIG TITS"),
+    ("blowjob", "BLOWJOB"),
+)
+
+
+def _payment_bot_username() -> str:
+    return (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+
+
+def build_loot_inline_buttons(db: Session, *, columns: int = 2) -> list[list[dict[str, str]]]:
+    """Loot Room growth board — monetization row + lane shortcuts + nav."""
+    lv = lv_urls(db)
+    pay = _payment_bot_username()
+    rows: list[list[dict[str, str]]] = []
+    monetize = [
+        {"text": "🎲 Free roll", "url": "https://t.me/aof_lootgod_bot?start=loot_free"},
+        {"text": "🗝 24h room key", "url": f"https://t.me/{pay}?start=loot"},
+        {"text": "💎 VIP / subscribe", "url": f"https://t.me/{pay}?start=subscribe"},
+    ]
+    rows.append(monetize[:2])
+    rows.append([monetize[2]])
+    lane_btns: list[dict[str, str]] = []
+    for key, label in LOOT_LANE_SHORTCUTS:
+        url = _gate_href(lv, key)
+        if not url:
+            continue
+        lane_btns.append({"text": _short_btn(label), "url": url})
+    rows.extend(_chunk_buttons(lane_btns, columns=columns))
+    addlist = _gate_href(lv, "addlist") or ADDLIST_RAW
+    nav = [
+        {"text": "🔗 Hub", "url": MAINHUB_RAW},
+        {"text": "📌 Addlist", "url": addlist},
+    ]
+    rows.append(nav)
+    return rows
+
+
+def _interactive_menu_caption(kind: MenuKind, title: str, *, variant: VariantId = "v1") -> str:
     """Short caption under menu PNG — in-world copy only (no meta about buttons/attribution)."""
+    fit = variant in BUTTON_TREE_FIT_VARIANTS
     if kind == "channels":
+        sub = "lane index below · tap a pipe" if fit else "lane index below"
         return (
             f"<b>📌 AOF LINK HUB</b> · <i>{title}</i>\n"
-            "<b>MAIN · COMM · UNITY</b> · lane index below\n"
+            f"<b>AOF NETWORK · LINKS</b> · {sub}\n"
             "<i>Subscribe & enjoy.</i>"
         )
+    if kind == "loot":
+        invite = MAIN_GROUP_INVITE
+        return (
+            f"<b>🪙 AOF LOOT ROOM</b> · <i>{title}</i>\n"
+            f"Keys · drops · network feed — the live hub.\n"
+            f'🔞 <b>Adults only (18+).</b> NSFW content inside.\n'
+            f'Invite (share): <a href="{_esc(invite)}">Loot Room</a>'
+        )
+    sub = "pick a lane below · buttons match art" if fit else "pick a lane below"
     return (
         f"<b>🧠 AOF AI PARTNERS</b> · <i>{title}</i>\n"
-        "<b>UNDRESS · GENERATOR</b> · pick a lane below\n"
+        f"<b>UNDRESS · GENERATOR</b> · {sub}\n"
         "<i>Eighteen partners · unlimited possibilities.</i>"
     )
 
@@ -173,11 +285,15 @@ def build_interactive_menu_post(
     if kind == "channels":
         menu = build_channel_menu_variant(db, variant)
         keyboard = build_channel_inline_buttons(db, columns=button_columns)
-        caption = _interactive_menu_caption("channels", menu.title)
+        caption = _interactive_menu_caption("channels", menu.title, variant=variant)
+    elif kind == "loot":
+        menu = build_loot_menu_variant(db, variant)
+        keyboard = build_loot_inline_buttons(db, columns=button_columns)
+        caption = _interactive_menu_caption("loot", menu.title, variant=variant)
     else:
         menu = build_ai_menu_variant(db, variant)
         keyboard = build_ai_inline_buttons(db, columns=button_columns)
-        caption = _interactive_menu_caption("ai", menu.title)
+        caption = _interactive_menu_caption("ai", menu.title, variant=variant)
     return InteractiveMenuPost(
         kind=kind,
         variant=variant,
@@ -232,16 +348,83 @@ def _pre_block(lines: list[str]) -> str:
     return f"<pre>{html.escape(body)}</pre>"
 
 
-def _ai_rows(db: Session, *, limit: int = 18) -> list[tuple[str, str]]:
+def _sales_blurb(row: Any) -> str:
+    """Short sell line from copy_template or label — for menus + image prompts."""
+    template = (getattr(row, "copy_template", None) or "").strip()
+    for sep in ("—", " - ", " · "):
+        if sep in template and "{link}" not in template.split(sep, 1)[-1]:
+            tail = template.split(sep, 1)[-1].strip()
+            if tail:
+                return tail
+    label = (row.label or "Partner").strip()
+    if "(" in label:
+        return label.split("(", 1)[0].strip()
+    return label
+
+
+def _ai_partner_rows(db: Session, *, limit: int = 18) -> list[Any]:
     rows = list_candidates(db, "links_hub_ai")[:limit]
     if not rows:
         rows = list_candidates(db, "links_hub", network_key="ai")[:limit]
+    return rows
+
+
+def _ai_rows(db: Session, *, limit: int = 18) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
-    for i, row in enumerate(rows, start=1):
+    for i, row in enumerate(_ai_partner_rows(db, limit=limit), start=1):
         label = (row.label or "Partner").strip()
+        blurb = _sales_blurb(row)
         line_html = build_sponsor_link_html(row)
-        out.append((f"{i:02d}", f"{label} — {line_html}"))
+        out.append((f"{i:02d}", f"{label} · {blurb} — {line_html}"))
     return out
+
+
+def _ai_rows_reveal(db: Session, *, limit: int = 18) -> list[str]:
+    """Reveal-board lines: linked name · blurb + dot trail."""
+    lines: list[str] = []
+    for i, row in enumerate(_ai_partner_rows(db, limit=limit), start=1):
+        label = (row.label or "Partner").strip()
+        blurb = _sales_blurb(row)
+        link = build_sponsor_link_html(row, placement="links_hub_ai")
+        pad = max(4, 36 - len(label) - len(blurb))
+        lines.append(f"✓ {i:02d} {link} · {blurb}{'·' * pad}")
+    return lines
+
+
+def _two_col_plain(left: list[str], right: list[str]) -> str:
+    """Pair rows for monospace 2-column button-tree layout."""
+    rows: list[str] = []
+    n = max(len(left), len(right))
+    for i in range(n):
+        l = left[i] if i < len(left) else ""
+        r = right[i] if i < len(right) else ""
+        rows.append(f"{l:<36}{r}")
+    return "\n".join(rows)
+
+
+def _split_two_col(items: list[str]) -> tuple[list[str], list[str]]:
+    left = [items[i] for i in range(0, len(items), 2)]
+    right = [items[i] for i in range(1, len(items), 2)]
+    return left, right
+
+
+def _ai_button_labels(db: Session, *, limit: int = 18) -> list[str]:
+    out: list[str] = []
+    for i, row in enumerate(_ai_partner_rows(db, limit=limit), start=1):
+        label = (row.label or "Partner").strip()
+        blurb = _sales_blurb(row)
+        out.append(f"{i:02d} {label} · {blurb}")
+    return out
+
+
+def _support_block(lv: dict[str, str]) -> str:
+    addlist = _gate_href(lv, "addlist") or ADDLIST_RAW
+    return (
+        "···· SUPPORT ····\n"
+        "/loot · /subscribe · /refer\n"
+        f'<a href="{_esc(addlist)}">All Channels</a> · Addlist\n'
+        f'<a href="{_esc(KIT_EMAIL_LIST_URL)}">Email list</a> · drops first'
+    )
 
 
 def build_channel_menu_variant(db: Session, variant: VariantId = "v1") -> MenuVariant:
@@ -290,7 +473,7 @@ def build_channel_menu_variant(db: Session, variant: VariantId = "v1") -> MenuVa
             f"<a href=\"{_esc(addlist)}\">ADDLIST</a>"
         )
         title = "NEON GRID"
-    else:
+    elif variant == "v3":
         scan = _pre_block(
             [
                 "┏━ AOF BROADCAST GUIDE ━━━━━━━┓",
@@ -307,6 +490,62 @@ def build_channel_menu_variant(db: Session, variant: VariantId = "v1") -> MenuVa
             f"<a href=\"{_esc(hub)}\">RETURN TO HUB</a>"
         )
         title = "VHS BROADCAST"
+    elif variant == "v4":
+        rails = "\n".join(
+            f"—— {label} ——" for _, _, label in CHANNEL_PIPES
+        )
+        body = (
+            f"<b>📌 AOF LINK HUB</b> · <i>UNIFORM RAILS</i>\n"
+            f"<blockquote expandable>{rails}\n\n"
+            f"== SUBSCRIBE &amp; ENJOY ==\n"
+            f"<a href=\"{_esc(hub)}\">@aofmainhub</a> · "
+            f"<a href=\"{_esc(loot)}\">Loot Room</a> · "
+            f"<a href=\"{_esc(addlist)}\">Addlist</a></blockquote>"
+        )
+        title = "UNIFORM RAILS"
+    elif variant == "v5":
+        labels = [f"{num} {label}" for num, _, label in CHANNEL_PIPES]
+        left, right = _split_two_col(labels)
+        reveal = "\n".join(f"✓ {l}    ✓ {r}" if r else f"✓ {l}" for l, r in zip(left, right))
+        body = (
+            f"<b>🌐 AOF NETWORK · REVEAL BOARD</b> · <i>tap a lane</i>\n"
+            f"<blockquote expandable>···· NETWORK · LINK INDEX ····\n{reveal}\n\n"
+            f"···· ENTRY ····\n"
+            f"<a href=\"{_esc(hub)}\">@aofmainhub</a> · "
+            f"<a href=\"{_esc(loot)}\">Loot Room</a> · "
+            f"<a href=\"{_esc(addlist)}\">Addlist</a></blockquote>"
+        )
+        title = "NETWORK REVEAL"
+    elif variant == "v6":
+        labels = [label for _, _, label in CHANNEL_PIPES]
+        rows = "\n".join(
+            f"▶ ⏺ ⏺  {labels[i]}  ◀ ◀    ▶ ⏺ ⏺  {labels[i+1]}  ◀ ◀"
+            if i + 1 < len(labels)
+            else f"▶ ⏺ ⏺  {labels[i]}  ◀ ◀"
+            for i in range(0, len(labels), 2)
+        )
+        body = (
+            f"<b>📌 AOF NETWORK · DARK PANEL</b> · <i>12 lanes</i>\n"
+            f"<blockquote><pre>{html.escape(rows)}</pre></blockquote>\n"
+            f"<a href=\"{_esc(addlist)}\">Addlist all channels</a>"
+        )
+        title = "NETWORK DARK PANEL"
+    else:
+        labels = [f"{num} {label}" for num, _, label in CHANNEL_PIPES]
+        left, right = _split_two_col(labels)
+        grid = _two_col_plain(
+            [f">>> {x}" for x in left],
+            [f">>> {x}" for x in right],
+        )
+        body = (
+            f"<b>AOF NETWORK · CHANNEL MATRIX</b>\n"
+            f"<blockquote><pre>{html.escape(grid)}</pre>\n"
+            f"————| HUB |————\n"
+            f"<a href=\"{_esc(hub)}\">@aofmainhub</a> · "
+            f"<a href=\"{_esc(loot)}\">Loot</a> · "
+            f"<a href=\"{_esc(addlist)}\">Addlist</a></blockquote>"
+        )
+        title = "NETWORK MATRIX"
 
     return MenuVariant(kind="channels", variant=variant, title=title, html=body)
 
@@ -354,15 +593,19 @@ def build_ai_menu_variant(db: Session, variant: VariantId = "v1") -> MenuVariant
         )
         title = "DARK PANEL"
     elif variant == "v2":
-        lanes = "\n".join(f"✓ {num} {line}" for num, line in ai_rows)
+        lanes = "\n".join(_ai_rows_reveal(db))
         body = (
             f"<b>✅ AOF AI REVEAL BOARD</b> · <i>tap a lane</i>\n"
             f"<b>UNDRESS · GENERATOR</b> · {header_links}\n"
-            f"<blockquote>{lanes}</blockquote>\n"
-            f"🤖 @aof_secretary_bot · @aof_lootgod_bot · @aof_spicybot_bot"
+            f"<blockquote expandable>{lanes}\n\n"
+            f"···· MAINBOTS ····\n"
+            f" Secretary · @aof_secretary_bot\n"
+            f" Loot God · @aof_lootgod_bot\n"
+            f" Spicy · @aof_spicybot_bot\n\n"
+            f"{_support_block(lv)}</blockquote>"
         )
         title = "REVEAL BOARD"
-    else:
+    elif variant == "v3":
         grid = "\n".join(f"| {num} | {line} |" for num, line in ai_rows)
         body = (
             f"<b>▦ AOF AI GRID</b> · <i>UNIFORM PARTNER MATRIX</i>\n"
@@ -370,8 +613,125 @@ def build_ai_menu_variant(db: Session, variant: VariantId = "v1") -> MenuVariant
             f"🔗 {header_links}"
         )
         title = "UNIFORM GRID"
+    elif variant == "v4":
+        matrix_lines: list[str] = []
+        for i, row in enumerate(_ai_partner_rows(db), start=1):
+            label = (row.label or "Partner").strip()
+            blurb = _sales_blurb(row)
+            matrix_lines.append(f"&gt;&gt;&gt; {i:02d} {html.escape(label)} · {html.escape(blurb)}")
+        matrix = "\n".join(matrix_lines)
+        body = (
+            f"<b>STORAGE HUB / MAIN INTAKE</b>\n"
+            f"<blockquote>"
+            f"<b>AI - TOOLS</b>\n"
+            f"UNDRESS · GENERATOR · LINKS\n"
+            f"{matrix}\n"
+            f"————|MAINBOTS|————\n"
+            f" SEC @aof_secretary_bot\n"
+            f" LOOT @aof_lootgod_bot\n"
+            f" SPICY @aof_spicybot_bot\n"
+            f"————| SUPPORT |————\n"
+            f"/loot · /subscribe · /refer\n"
+            f"<a href=\"{_esc(KIT_EMAIL_LIST_URL)}\">Email list</a> · drops first\n"
+            f"————|| PARTNERS ||————\n"
+            f"—||| Nutaku — Lust Goddess|||—"
+            f"</blockquote>"
+        )
+        title = "STORAGE MATRIX"
+    elif variant == "v5":
+        labels = _ai_button_labels(db)
+        left, right = _split_two_col(labels)
+        reveal = "\n".join(
+            f"✓ {l}    ✓ {r}" if r else f"✓ {l}" for l, r in zip(left, right)
+        )
+        body = (
+            f"<b>✅ AOF AI · BUTTON-TREE REVEAL</b> · <i>tap a lane</i>\n"
+            f"<blockquote expandable>···· UNDRESS · GENERATOR · LINKS ····\n{reveal}\n\n"
+            f"{_support_block(lv)}</blockquote>"
+        )
+        title = "BUTTON-TREE REVEAL"
+    elif variant == "v6":
+        labels = _ai_button_labels(db)
+        rows = "\n".join(
+            f"▶ ⏺ ⏺  {labels[i]}  ◀ ◀    ▶ ⏺ ⏺  {labels[i+1]}  ◀ ◀"
+            if i + 1 < len(labels)
+            else f"▶ ⏺ ⏺  {labels[i]}  ◀ ◀"
+            for i in range(0, len(labels), 2)
+        )
+        body = (
+            f"<b>🧠 AOF AI · DARK PANEL</b> · <i>button-tree fit</i>\n"
+            f"<blockquote><pre>{html.escape(rows)}</pre></blockquote>"
+        )
+        title = "BUTTON-TREE DARK PANEL"
+    else:
+        labels = _ai_button_labels(db)
+        left, right = _split_two_col(labels)
+        grid = _two_col_plain(
+            [f">>> {x}" for x in left],
+            [f">>> {x}" for x in right],
+        )
+        body = (
+            f"<b>AI - TOOLS · BUTTON-TREE MATRIX</b>\n"
+            f"<blockquote><pre>{html.escape(grid)}</pre>\n"
+            f"————|MAINBOTS|———— @aof_secretary_bot · @aof_lootgod_bot · @aof_spicybot_bot</blockquote>"
+        )
+        title = "BUTTON-TREE MATRIX"
 
     return MenuVariant(kind="ai", variant=variant, title=title, html=body)
+
+
+def build_loot_menu_variant(db: Session, variant: VariantId = "v5") -> MenuVariant:
+    """Loot Room growth board HTML — v5–v7 button-tree styles."""
+    lv = lv_urls(db)
+    hub = MAINHUB_RAW
+    addlist = _gate_href(lv, "addlist") or ADDLIST_RAW
+    pay = _payment_bot_username()
+    shortcuts = [label for _, label in LOOT_LANE_SHORTCUTS]
+    entry_lines = [
+        "FREE ROLL · @aof_lootgod_bot",
+        f"24H KEY · @{pay} /loot",
+        f"VIP · @{pay} /subscribe",
+        f"HUB · {hub}",
+    ]
+
+    if variant == "v5":
+        left, right = _split_two_col(shortcuts)
+        reveal = "\n".join(f"✓ {l}    ✓ {r}" if r else f"✓ {l}" for l, r in zip(left, right))
+        body = (
+            f"<b>🪙 AOF LOOT ROOM · GROWTH BOARD</b> · <i>tap below</i>\n"
+            f"<blockquote expandable>···· KEYS · DROPS · LANES ····\n"
+            f"{' · '.join(entry_lines)}\n\n"
+            f"{reveal}\n\n"
+            f"···· NAV ····\n"
+            f'<a href="{_esc(hub)}">@aofmainhub</a> · '
+            f'<a href="{_esc(addlist)}">Addlist</a></blockquote>'
+        )
+        title = "GROWTH REVEAL"
+    elif variant == "v6":
+        rows = "\n".join(
+            f"▶ ⏺ ⏺  {shortcuts[i]}  ◀ ◀    ▶ ⏺ ⏺  {shortcuts[i+1]}  ◀ ◀"
+            if i + 1 < len(shortcuts)
+            else f"▶ ⏺ ⏺  {shortcuts[i]}  ◀ ◀"
+            for i in range(0, len(shortcuts), 2)
+        )
+        body = (
+            f"<b>🪙 LOOT ROOM · DARK PANEL</b> · <i>keys &amp; lanes</i>\n"
+            f"<blockquote><pre>{html.escape(rows)}</pre>\n"
+            f"FREE · @aof_lootgod_bot · VIP · @{pay}</blockquote>"
+        )
+        title = "GROWTH DARK PANEL"
+    else:
+        left, right = _split_two_col(shortcuts)
+        grid = _two_col_plain([f">>> {x}" for x in left], [f">>> {x}" for x in right])
+        body = (
+            f"<b>LOOT ROOM · GROWTH MATRIX</b>\n"
+            f"<blockquote><pre>{html.escape(grid)}</pre>\n"
+            f"————| ENTRY |————\n"
+            f"Roll · Key · VIP · Hub</blockquote>"
+        )
+        title = "GROWTH MATRIX"
+
+    return MenuVariant(kind="loot", variant=variant, title=title, html=body)
 
 
 def build_all_menu_variants(db: Session) -> list[MenuVariant]:
@@ -380,4 +740,6 @@ def build_all_menu_variants(db: Session) -> list[MenuVariant]:
         out.append(build_channel_menu_variant(db, v))
     for v in AI_VARIANTS:
         out.append(build_ai_menu_variant(db, v))
+    for v in LOOT_VARIANTS:
+        out.append(build_loot_menu_variant(db, v))
     return out

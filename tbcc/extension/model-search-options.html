@@ -61,10 +61,84 @@
         <option value="direct">Direct (browser stream)</option>
       </select>
     </label>
-    <label class="row" style="margin-top:10px">
-      <input type="checkbox" id="captureSettingSkipPromoWatermark" />
-      Skip AOF promo watermark on export (ZIP / download). Imports still respect <code>skip_watermark</code> on send when checked.
-    </label>
+    <fieldset style="margin-top:14px;border:1px solid var(--tbcc-border,#45475a);border-radius:8px;padding:12px">
+      <legend style="font-size:13px;padding:0 6px">Promo watermark</legend>
+      <label class="row2"><input type="checkbox" id="captureSettingPromoWatermarkEnabled" checked />
+        Apply promo watermark on download, ZIP, and Save AOF exports
+      </label>
+      <div class="row2" style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px">
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span>Primary text</span>
+          <input type="text" id="captureSettingWmText" class="tbcc-input" spellcheck="false" placeholder="telegram.me/aofmainhub" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span>Secondary text</span>
+          <input type="text" id="captureSettingWmText2" class="tbcc-input" spellcheck="false" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span>Tertiary text</span>
+          <input type="text" id="captureSettingWmText3" class="tbcc-input" spellcheck="false" />
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-top:10px">
+        <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px">
+          <span>Opacity <span id="captureSettingWmOpacityVal">0.58</span></span>
+          <input type="range" id="captureSettingWmOpacity" min="0.15" max="1" step="0.01" value="0.58" />
+        </label>
+        <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px">
+          <span>Text size (% of image)</span>
+          <input type="number" id="captureSettingWmSizeRatio" min="1.2" max="8" step="0.1" value="4.5" title="Percent of shorter edge — default 4.5%" />
+        </label>
+        <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px">
+          <span>Color</span>
+          <span style="display:flex;align-items:center;gap:8px">
+            <input type="color" id="captureSettingWmColor" value="#ffffff" style="width:40px;height:28px;padding:0;border:none" />
+            <input type="text" id="captureSettingWmColorHex" class="tbcc-input" value="#ffffff" style="flex:1" spellcheck="false" />
+          </span>
+        </label>
+        <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px">
+          <span>Position</span>
+          <select id="captureSettingWmPosition">
+            <option value="bottom_right">Bottom right</option>
+            <option value="bottom_left">Bottom left</option>
+            <option value="upper_right">Upper right</option>
+            <option value="upper_left">Upper left</option>
+            <option value="center_diagonal">Center diagonal</option>
+          </select>
+        </label>
+        <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px">
+          <span>Placement mode</span>
+          <select id="captureSettingWmMode">
+            <option value="rotate">Rotate corners (multi-line)</option>
+            <option value="fixed">Fixed anchor</option>
+          </select>
+        </label>
+      </div>
+      <label class="row2" style="margin-top:8px"><input type="checkbox" id="captureSettingWmStripPrevious" />
+        Blur edge bands before watermark (re-burn over old promo text)
+      </label>
+      <p class="desc" style="margin:8px 0 0;font-size:12px;color:var(--tbcc-text-muted)">Videos use TBCC backend ffmpeg when API is up. Images fall back to local canvas if API is offline.</p>
+    </fieldset>
+    <fieldset style="margin-top:14px;border:1px solid var(--tbcc-border,#45475a);border-radius:8px;padding:12px">
+      <legend style="font-size:13px;padding:0 6px">Export naming</legend>
+      <label class="row2"><input type="checkbox" id="captureSettingZipHeuristic" checked />
+        Subject-aware names (model, gallery, site) — applies to downloads and ZIPs
+      </label>
+      <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:8px">
+        <span>ZIP bundle filename template</span>
+        <input type="text" id="captureSettingZipBundleTemplate" class="tbcc-input" spellcheck="false"
+          placeholder="TBCC Bundle · {name} · {site} · telegram.me_aofmainhub · allmylinks.comaof69"
+          title="Outer .zip name. Tokens: {name} {site} {gallery} {title} {date}" />
+        <span class="desc">Example: <code>TBCC Bundle · jessica · onlyfans · telegram.me_aofmainhub · allmylinks.comaof69.zip</code></span>
+      </label>
+      <label class="row2" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:8px">
+        <span>Export filename template (single files + ZIP entries)</span>
+        <input type="text" id="captureSettingZipEntryTemplate" class="tbcc-input" spellcheck="false"
+          placeholder="AOF_{name}_{index:5}_telegram.me_aofmainhub"
+          title="Per-file names for gallery downloads and inside ZIPs. {name} = model/gallery, {index:5}, {ext}. X overlay harvest can override when set there." />
+        <span class="desc">OnlyFans → creator handle; Erome/Motherless → gallery id; Fapello → model slug; X → @handle. Leave blank for default.</span>
+      </label>
+    </fieldset>
     <p style="margin:12px 0 6px;font-size:12px;color:var(--tbcc-text-muted)">Edges / watermarks: use <strong>Crop &amp; watermarks</strong> in the gallery overflow menu (percent trims all four sides).</p>
     <button type="button" id="captureSettingClearCache" class="tbcc-btn-secondary">Clear gallery cache</button>
     <p id="tbccApiStatus" style="margin:14px 0 0;font-size:12px;color:var(--tbcc-text-muted)">Checking API…</p>
@@ -406,6 +480,8 @@
   <script src="tbcc-archive-list-ui.js"></script>
   <script src="x-profile-looms-shared.js"></script>
   <script src="x-profile-looms-options.js"></script>
+  <script src="tbcc-api-client.js"></script>
+  <script src="tbcc-promo-watermark.js"></script>
   <script src="gallery-capture-options.js"></script>
   <script src="model-search-shared.js"></script>
   <script src="username-search-history-shared.js"></script>

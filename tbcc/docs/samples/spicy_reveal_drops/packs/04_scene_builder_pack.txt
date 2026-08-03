@@ -1,0 +1,17 @@
+AOF SPICY REVEAL — DROP 04 PROMPT PACK
+Three-step scene builder (portrait → context → reveal)
+
+=== STEP 1 — PORTRAIT INPUT ===
+Master: clear face-forward portrait, neutral expression, soft key light, phone-camera realism, SFW.
+Delta A: slight smile. Delta B: over-shoulder glance. Delta C: hood up mystery.
+
+=== STEP 2 — CHAT CONTEXT ===
+Master: DM thread with 2-3 flirt exchanges establishing mood before reveal (no explicit).
+Delta A: playful tease. Delta B: jealous-possessive tone. Delta C: sweet reassurance.
+
+=== STEP 3 — REVEAL FRAME ===
+Master: locked reveal UI glow, anticipation, companion "ready" state — SFW silhouette only.
+Delta A: warm blush palette. Delta B: cool midnight palette. Delta C: coral accent match brand.
+
+=== WORKFLOW ===
+@aof_spicybot_bot — do not skip chat; reveal lands harder with context.

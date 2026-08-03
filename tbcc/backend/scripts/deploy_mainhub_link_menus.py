@@ -28,9 +28,9 @@ load_tbcc_dotenv()
 from app.data.aof_network import ADDLIST_RAW, MAINHUB_CHANNEL_IDENT, MAINHUB_RAW, MAIN_GROUP_INVITE
 from app.services.aof_links_hub_menu_variants import (
     AI_VARIANTS,
+    BUTTON_TREE_FIT_VARIANTS,
     CHANNEL_PIPES,
     CHANNEL_VARIANTS,
-    MENU_IMAGE_DIR,
     _interactive_menu_caption,
     build_interactive_menu_post,
 )
@@ -111,7 +111,7 @@ def _offline_ai_keyboard(seed: list[dict], *, columns: int = 2, limit: int = 18)
 
 
 def _caption(kind: str, variant: str, title: str) -> str:
-    return _interactive_menu_caption(kind, title)  # type: ignore[arg-type]
+    return _interactive_menu_caption(kind, title, variant=variant)  # type: ignore[arg-type]
 
 
 def _variant_title(kind: str, variant: str) -> str:
@@ -119,18 +119,25 @@ def _variant_title(kind: str, variant: str) -> str:
         ("channels", "v1"): "CLASSIC ORANGE PANEL",
         ("channels", "v2"): "NEON GRID",
         ("channels", "v3"): "VHS BROADCAST",
+        ("channels", "v4"): "UNIFORM RAILS",
+        ("channels", "v5"): "NETWORK REVEAL",
+        ("channels", "v6"): "NETWORK DARK PANEL",
+        ("channels", "v7"): "NETWORK MATRIX",
         ("ai", "v1"): "DARK PANEL",
         ("ai", "v2"): "REVEAL BOARD",
         ("ai", "v3"): "UNIFORM GRID",
+        ("ai", "v4"): "STORAGE MATRIX",
+        ("ai", "v5"): "BUTTON-TREE REVEAL",
+        ("ai", "v6"): "BUTTON-TREE DARK PANEL",
+        ("ai", "v7"): "BUTTON-TREE MATRIX",
     }
     return titles.get((kind, variant), variant.upper())
 
 
 def _image_file(kind: str, variant: str) -> Path:
-    from app.services.aof_links_hub_menu_variants import MENU_IMAGE_FILES
+    from app.services.aof_links_hub_menu_variants import menu_image_path
 
-    name = MENU_IMAGE_FILES[(kind, variant)]  # type: ignore[index]
-    return MENU_IMAGE_DIR / name
+    return menu_image_path(kind, variant)  # type: ignore[arg-type]
 
 
 def _seed_affiliates(execute: bool) -> dict:
@@ -166,13 +173,15 @@ def _sync_affiliate_rotation(execute: bool) -> dict:
         return {"ok": False, "error": str(e)[:300], "skipped": "db_unavailable"}
 
 
-def _build_posts(db=None, *, columns: int = 2) -> list[dict]:
+def _build_posts(db=None, *, columns: int = 2, variants: tuple[str, ...] | None = None) -> list[dict]:
     posts: list[dict] = []
     seed = _load_seed_items()
+    ch_vars = tuple(v for v in CHANNEL_VARIANTS if not variants or v in variants)
+    ai_vars = tuple(v for v in AI_VARIANTS if not variants or v in variants)
     if db is not None:
         try:
-            for kind, variants in (("channels", CHANNEL_VARIANTS), ("ai", AI_VARIANTS)):
-                for variant in variants:
+            for kind, vlist in (("channels", ch_vars), ("ai", ai_vars)):
+                for variant in vlist:
                     post = build_interactive_menu_post(db, kind, variant, button_columns=columns)
                     posts.append(
                         {
@@ -187,8 +196,8 @@ def _build_posts(db=None, *, columns: int = 2) -> list[dict]:
             return posts
         except Exception:
             pass
-    for kind, variants in (("channels", CHANNEL_VARIANTS), ("ai", AI_VARIANTS)):
-        for variant in variants:
+    for kind, vlist in (("channels", ch_vars), ("ai", ai_vars)):
+        for variant in vlist:
             title = _variant_title(kind, variant)
             img = _image_file(kind, variant)
             kb = _offline_channel_keyboard(columns=columns) if kind == "channels" else _offline_ai_keyboard(seed, columns=columns)
@@ -280,7 +289,16 @@ def main() -> int:
     p.add_argument("--columns", type=int, default=2)
     p.add_argument("--delay", type=float, default=2.0, help="Seconds between posts")
     p.add_argument("--skip-seed", action="store_true")
+    p.add_argument(
+        "--network-only",
+        action="store_true",
+        help="Post v5–v7 button-tree-fit AOF NETWORK menus only (3 channel + 3 AI)",
+    )
     args = p.parse_args()
+
+    variant_filter: tuple[str, ...] | None = None
+    if args.network_only:
+        variant_filter = BUTTON_TREE_FIT_VARIANTS
 
     report: dict = {"chat": args.chat, "execute": args.execute, "steps": {}}
     if not args.skip_seed:
@@ -299,7 +317,7 @@ def main() -> int:
             report["db"] = "offline_static_fallback"
 
     try:
-        posts = _build_posts(db, columns=max(1, min(3, args.columns)))
+        posts = _build_posts(db, columns=max(1, min(3, args.columns)), variants=variant_filter)
         report["post_count"] = len(posts)
         report["posts"] = asyncio.run(_post_all(args.chat, posts, execute=args.execute, delay_s=args.delay))
     finally:

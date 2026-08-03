@@ -81,6 +81,8 @@ from app.services.format_engine import (
     prepare_user_turn,
 )
 from app.services.secretary_rag import build_rag_context_suffix
+from app.services.secretary_reply_mode import get_reply_mode, mode_label, set_reply_mode
+from app.services.secretary_sales_coach import build_sales_coach_suffix
 from app.database.session import SessionLocal
 from app.models.secretary_knowledge import SecretaryKnowledgeEntry
 from app.models.secretary_user_context import SecretaryUserContext
@@ -101,16 +103,17 @@ from app.services.focus_profile import apply_focus_profile, get_focus_state, loc
 from app.services.ops_flywheel import approve_action, flywheel_status, list_pending, reject_action
 from app.services.ops_triage_bundle import build_triage_bundle, tail_error_hub
 from app.services.secretary_llm_config import (
+    apply_env_llm_preset,
+    apply_openrouter_preset,
     clear_llm_api_key_override,
     clear_llm_base_url_override,
-    apply_cometapi_preset,
+    env_llm_preset_catalog,
     persist_llm_api_key,
     persist_llm_base_url,
     persist_llm_model,
-    persist_llm_provider,
     secretary_llm_configured,
     secretary_llm_status,
-    test_secretary_llm,
+    probe_secretary_llm,
 )
 from app.services.secretary_llm import (
     REDO_STYLE_HINTS,
@@ -120,6 +123,7 @@ from app.services.secretary_llm import (
     persist_system_prompt,
     resolve_system_prompt,
 )
+from app.services.secretary_affiliate_intake import intake_affiliate_sponsor, parse_affiliate_intake_text
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -217,6 +221,7 @@ PENDING_SYSPROMPT_KEY = "pending_set_sysprompt"
 PENDING_LLM_API_KEY = "pending_llm_api_key"
 PENDING_LLM_BASE_URL = "pending_llm_base_url"
 PENDING_LLM_MODEL = "pending_llm_model"
+PENDING_AFFILIATE_LINK = "pending_affiliate_sponsor_link"
 
 # Reply keyboard labels → handler key
 _FAQ_KEYBOARD: dict[str, str] = {
@@ -382,7 +387,18 @@ def _already_processed_business_msg(bc_id: str, user_id: int, message_id: int) -
     return False
 
 
-def _draft_keyboard(draft_id: str, reply_plain: str) -> InlineKeyboardMarkup:
+def _customer_reply_mode(user_id: int, *, is_business: bool) -> str:
+    with SessionLocal() as db:
+        return get_reply_mode(db, int(user_id), is_business=is_business)
+
+
+def _draft_keyboard(
+    draft_id: str,
+    reply_plain: str,
+    *,
+    user_id: int,
+    reply_mode: str = "pilot",
+) -> InlineKeyboardMarkup:
     copy_text = reply_plain[:256] if len(reply_plain) > 256 else reply_plain
     row0: list[InlineKeyboardButton] = [
         InlineKeyboardButton("✓ Send", callback_data=f"sec:ap:{draft_id}"),
@@ -400,7 +416,19 @@ def _draft_keyboard(draft_id: str, reply_plain: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton("↻ Casual", callback_data=f"sec:rd:{draft_id}:casual"),
         InlineKeyboardButton("↻ Short", callback_data=f"sec:rd:{draft_id}:short"),
     ]
-    return InlineKeyboardMarkup([row0, row1])
+    pilot_mark = "·" if str(reply_mode).lower() == "pilot" else ""
+    auto_mark = "·" if str(reply_mode).lower() == "auto" else ""
+    row2 = [
+        InlineKeyboardButton(
+            f"Pilot{pilot_mark}",
+            callback_data=f"sec:mode:pilot:{int(user_id)}",
+        ),
+        InlineKeyboardButton(
+            f"Auto{auto_mark}",
+            callback_data=f"sec:mode:auto:{int(user_id)}",
+        ),
+    ]
+    return InlineKeyboardMarkup([row0, row1, row2])
 
 
 def _format_draft_card(
@@ -410,12 +438,20 @@ def _format_draft_card(
     user_id: int,
     customer_line: str,
     reply_plain: str,
+    reply_mode: str = "pilot",
+    coach_hint: str = "",
 ) -> str:
     who_disp = f"@{html.escape(who)}" if who and who != "no_username" else "no @"
     cust = html.escape(customer_line[:400])
     reply = html.escape(reply_plain[:2800])
+    mode = html.escape(mode_label(reply_mode))
+    coach_line = ""
+    if coach_hint:
+        coach_line = f"🧭 Coach: <i>{html.escape(coach_hint[:120])}</i>\n"
     return (
         f"<b>{draft_id}</b> · {who_disp} · <code>{user_id}</code>\n"
+        f"Mode: <b>{mode}</b> · next turns use this until you toggle\n"
+        f"{coach_line}"
         f"📩 {cust}\n\n"
         f"<pre>{reply}</pre>"
     )
@@ -429,6 +465,8 @@ async def _send_draft_to_admin(
     user_id: int,
     customer_line: str,
     reply_plain: str,
+    reply_mode: str = "pilot",
+    coach_hint: str = "",
 ) -> None:
     targets = _draft_notify_chat_ids()
     if not targets:
@@ -439,8 +477,10 @@ async def _send_draft_to_admin(
         user_id=user_id,
         customer_line=customer_line,
         reply_plain=reply_plain,
+        reply_mode=reply_mode,
+        coach_hint=coach_hint,
     )
-    markup = _draft_keyboard(draft_id, reply_plain)
+    markup = _draft_keyboard(draft_id, reply_plain, user_id=user_id, reply_mode=reply_mode)
     for admin_id in targets:
         try:
             await context.bot.send_message(
@@ -553,6 +593,8 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     who = str(item.get("who") or "no_username")
     uid = int(item.get("user_id") or 0)
     cust = str(item.get("customer_preview") or "")
+    is_biz = bool(item.get("business_connection_id"))
+    rmode = _customer_reply_mode(uid, is_business=is_biz) if uid else "pilot"
     await _send_draft_to_admin(
         context,
         draft_id=draft_id,
@@ -560,6 +602,8 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user_id=uid,
         customer_line=cust,
         reply_plain=reply[:3500],
+        reply_mode=rmode,
+        coach_hint=str(item.get("coach_hint") or ""),
     )
     await msg.reply_text(f"↻ {draft_id} — new suggestion above.")
 
@@ -575,6 +619,37 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if len(parts) < 3 or parts[0] != "sec":
         return
     action = parts[1]
+
+    if action == "mode" and len(parts) >= 4:
+        mode = parts[2].lower()
+        try:
+            uid = int(parts[3])
+        except ValueError:
+            await query.answer("Bad user id", show_alert=True)
+            return
+        if mode not in ("pilot", "auto"):
+            await query.answer("Bad mode", show_alert=True)
+            return
+        try:
+            with SessionLocal() as db:
+                set_reply_mode(db, uid, mode)
+        except Exception as e:
+            await query.answer(f"Save failed: {e}", show_alert=True)
+            return
+        label = mode_label(mode)
+        await query.answer(f"Mode → {label}")
+        if query.message:
+            note = (
+                f"Mode for <code>{uid}</code> set to <b>{html.escape(label)}</b>. "
+                "Current draft is unchanged — tap ✓ Send if you still want this reply. "
+                "Later turns follow the new mode."
+            )
+            try:
+                await query.message.reply_text(note, parse_mode="HTML")
+            except Exception:
+                await query.message.reply_text(f"Mode for {uid} → {label}")
+        return
+
     draft_id = parts[2].upper()
     await query.answer()
     if action == "ap":
@@ -604,6 +679,8 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         who = str(item.get("who") or "no_username")
         uid = int(item.get("user_id") or 0)
         cust = str(item.get("customer_preview") or "")
+        is_biz = bool(item.get("business_connection_id"))
+        rmode = _customer_reply_mode(uid, is_business=is_biz) if uid else "pilot"
         await _send_draft_to_admin(
             context,
             draft_id=draft_id,
@@ -611,6 +688,8 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             user_id=uid,
             customer_line=cust,
             reply_plain=reply[:3500],
+            reply_mode=rmode,
+            coach_hint=str(item.get("coach_hint") or ""),
         )
         if query.message:
             await query.message.reply_text(f"↻ {draft_id} ({style})")
@@ -633,6 +712,47 @@ async def cmd_drafts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines.append(f"• <code>{did}</code> — @{who} id <code>{uid}</code>")
     lines.append("\nUse <code>/approve DRAFT_ID</code> or <code>/reject DRAFT_ID</code>.")
     await msg.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def cmd_as_customer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: dry-run Format Engine draft flow without a second Telegram account."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await msg.reply_text("Admin only.")
+        return
+    if not context.args:
+        await msg.reply_text(
+            "Usage: <code>/as_customer</code> &lt;message&gt;\n"
+            "Simulates a non-admin customer DM — you get a draft card, nothing is sent to anyone else.",
+            parse_mode="HTML",
+        )
+        return
+    fake_text = " ".join(context.args).strip()
+    if not fake_text:
+        return
+    # Reuse suggest pipeline with a synthetic customer id (negative = never real user).
+    sim_uid = int(context.user_data.get("simulate_customer_uid") or -9_000_001_234)
+    context.user_data["simulate_customer_uid"] = sim_uid - 1
+    from types import SimpleNamespace
+
+    fake_user = SimpleNamespace(id=sim_uid, username="simulate_customer")
+    fake_msg = SimpleNamespace(
+        chat_id=msg.chat_id,
+        text=fake_text,
+        chat=msg.chat,
+        message_id=None,
+        business_connection_id=None,
+    )
+    fake_update = SimpleNamespace(
+        effective_message=fake_msg,
+        effective_user=fake_user,
+    )
+    await on_private_text(fake_update, context)
+    await msg.reply_text(
+        f"Simulated customer uid <code>{sim_uid}</code> — check draft DM above.",
+        parse_mode="HTML",
+    )
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -690,7 +810,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     if _can_manage_drafts(update):
         text += (
-            "\n\n<b>Admin</b> — tap <b>Menu</b> below or send <code>/commands</code> for the full list."
+            f"\n\n<b>Admin</b> — uid <code>{user.id}</code> recognized. "
+            "Tap <b>Menu</b> below or send <code>/commands</code> for the full list.\n"
+            "<i>Format Engine drafts only fire for <b>non-admin</b> customer DMs — "
+            "test with a fourth account or ask a friend to message this bot.</i>"
         )
     menu_kb = _admin_main_menu_keyboard() if _can_manage_drafts(update) else _user_main_menu_keyboard()
     await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True, reply_markup=menu_kb)
@@ -915,6 +1038,8 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         cancelled.append("endpoint URL input")
     if context.user_data.pop(PENDING_LLM_MODEL, None):
         cancelled.append("model id input")
+    if context.user_data.pop(PENDING_AFFILIATE_LINK, None):
+        cancelled.append("sponsor link intake")
     if cancelled:
         await _reply(msg, "Cancelled: " + ", ".join(cancelled) + ".", context)
         return
@@ -973,6 +1098,9 @@ def _admin_commands_reference() -> str:
         "/triage — Cursor bundle (optional <code>event_id</code>)\n"
         "/flywheel — ops flywheel status\n"
         "/deposit <code>N</code> — Storage Hub subtopic → pool (admin, in-topic)\n\n"
+        "<b>Revenue</b>\n"
+        "/menu → More → <b>Add sponsor link</b> — paste affiliate URL; auto-circulates\n"
+        "/addsponsor — same flow from command\n\n"
         "<b>Configuration</b>\n"
         "/config — LLM API key + endpoint URL (button tree, live test)\n"
         "TBCC API URL: <code>TBCC_API_URL</code> in tbcc/.env\n"
@@ -1002,16 +1130,24 @@ def _clear_llm_pending(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _llm_config_keyboard() -> InlineKeyboardMarkup:
+    env_rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for preset in env_llm_preset_catalog():
+        label = preset["label"]
+        if not preset.get("available"):
+            label = f"{label} ✗"
+        row.append(InlineKeyboardButton(label, callback_data=f"sec:llm:env:{preset['id']}"))
+        if len(row) >= 2:
+            env_rows.append(row)
+            row = []
+    if row:
+        env_rows.append(row)
     return InlineKeyboardMarkup(
         [
+            *env_rows,
             [InlineKeyboardButton("➕ Set API key", callback_data="sec:llm:set_key")],
             [InlineKeyboardButton("🔗 Set endpoint URL", callback_data="sec:llm:set_url")],
             [InlineKeyboardButton("🧪 Test API key", callback_data="sec:llm:test")],
-            [
-                InlineKeyboardButton("OpenAI", callback_data="sec:llm:prov:openai"),
-                InlineKeyboardButton("OpenRouter", callback_data="sec:llm:prov:openrouter"),
-                InlineKeyboardButton("☄️ CometAPI", callback_data="sec:llm:cometapi"),
-            ],
             [InlineKeyboardButton("📝 Set model id", callback_data="sec:llm:set_model")],
             [
                 InlineKeyboardButton("🗑 Clear API key", callback_data="sec:llm:clear_key"),
@@ -1080,7 +1216,9 @@ def _build_llm_config_text() -> str:
         f"API key: <code>{html.escape(str(st.get('api_key_hint') or 'not set'))}</code> ({src})\n"
         f"Base URL: <code>{html.escape(str(base))}</code>\n"
         f"Completions: <code>{html.escape(str(endpoint))}</code>\n\n"
-        "Use the buttons below. After setting a key, a live test runs automatically.\n"
+        "Presets: <b>Hcnsec</b> = your Model Square credits (api.hcnsec.cn); "
+        "OpenRouter / OpenAI / Comet are separate wallets.\n"
+        "Swap HF/gateway models with <b>Set model id</b> (must exist in Model Square).\n"
         "<code>/cancel</code> aborts a pending prompt."
     )
 
@@ -1166,18 +1304,60 @@ async def on_llm_config_callback(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data[PENDING_LLM_MODEL] = True
         if query.message:
             await query.message.reply_text(
-                "Send the <b>model id</b> in the next message "
-                "(e.g. <code>gpt-4o-mini</code> or an OpenRouter model slug).\n"
+                "Send the <b>model id</b> in the next message.\n"
+                "• Hcnsec: exact Model Square id (e.g. <code>step-3.5-flash</code>)\n"
+                "• OpenRouter: slug (e.g. <code>openai/gpt-4o-mini</code>)\n"
                 "Cancel: <code>/cancel</code>",
                 parse_mode="HTML",
             )
         return
 
+    if query.data.startswith("sec:llm:env:"):
+        preset_id = query.data.split(":")[-1]
+        try:
+            preset = await asyncio.to_thread(apply_env_llm_preset, preset_id)
+            hint = html.escape(str(preset.get("api_key_hint") or "not set"))
+            missing = preset.get("missing_env")
+            if missing:
+                footer = (
+                    f"<b>{html.escape(str(preset.get('preset')))}</b> preset applied, "
+                    f"but <code>{html.escape(str(missing))}</code> is missing in island <code>.env</code>.\n"
+                    "Tap <b>Set API key</b> or add the env var, then <b>Test API key</b>."
+                )
+            else:
+                test = await asyncio.to_thread(probe_secretary_llm)
+                footer = (
+                    f"✅ <b>{html.escape(str(preset.get('preset')))}</b> env preset applied.\n"
+                    f"Model: <code>{html.escape(str(preset.get('model')))}</code>\n"
+                    f"Key: <code>{hint}</code> (env)\n"
+                    + _format_llm_test_result(test)
+                )
+        except Exception as e:
+            footer = f"Env preset failed: {html.escape(str(e))}"
+        await _send_llm_config_panel(query, context, edit=True, extra_footer=footer)
+        return
+
     if action.startswith("prov:"):
         prov = action.split(":", 1)[-1]
         try:
-            await asyncio.to_thread(persist_llm_provider, prov)
-            footer = f"Provider set to <code>{html.escape(prov)}</code>."
+            if prov == "openrouter":
+                preset = await asyncio.to_thread(apply_openrouter_preset)
+                hint = html.escape(str(preset.get("api_key_hint") or "env TBCC_OPENROUTER_API_KEY"))
+                footer = (
+                    "OpenRouter preset applied.\n"
+                    f"Model: <code>{html.escape(str(preset.get('model')))}</code>\n"
+                    f"URL: <code>{html.escape(str(preset.get('base_url')))}</code>\n"
+                    f"Key: <code>{hint}</code> (dashboard override cleared — uses env)\n"
+                    "Tap <b>Test API key</b> to verify."
+                )
+            else:
+                preset = await asyncio.to_thread(apply_env_llm_preset, prov)
+                hint = html.escape(str(preset.get("api_key_hint") or "not set"))
+                footer = (
+                    f"{html.escape(prov)} env preset applied.\n"
+                    f"Model: <code>{html.escape(str(preset.get('model')))}</code>\n"
+                    f"Key: <code>{hint}</code>"
+                )
         except Exception as e:
             footer = f"Provider update failed: {html.escape(str(e))}"
         await _send_llm_config_panel(query, context, edit=True, extra_footer=footer)
@@ -1186,7 +1366,7 @@ async def on_llm_config_callback(update: Update, context: ContextTypes.DEFAULT_T
     if action == "test":
         if query.message:
             await query.message.reply_text("🧪 Running live LLM test…", parse_mode="HTML")
-        result = await asyncio.to_thread(test_secretary_llm)
+        result = await asyncio.to_thread(probe_secretary_llm)
         footer = _format_llm_test_result(result)
         await _send_llm_config_panel(query, context, edit=False, extra_footer=footer)
         return
@@ -1202,13 +1382,20 @@ async def on_llm_config_callback(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     if action == "cometapi":
-        preset = await asyncio.to_thread(apply_cometapi_preset)
+        preset = await asyncio.to_thread(apply_env_llm_preset, "cometapi")
+        hint = html.escape(str(preset.get("api_key_hint") or "not set"))
+        missing = preset.get("missing_env")
         footer = (
-            "☄️ <b>CometAPI preset applied</b>\n"
+            "☄️ <b>CometAPI env preset applied</b>\n"
             f"URL: <code>{html.escape(str(preset.get('base_url')))}</code>\n"
             f"Provider: <code>openai</code> · Model: <code>{html.escape(str(preset.get('model')))}</code>\n"
-            "Now tap <b>Set API key</b> if you have not already, then <b>Test API key</b>."
+            f"Key: <code>{hint}</code>"
         )
+        if missing:
+            footer += (
+                f"\n\nAdd <code>{html.escape(str(missing))}</code> to island env, "
+                "or tap <b>Set API key</b>, then <b>Test API key</b>."
+            )
         await _send_llm_config_panel(query, context, edit=True, extra_footer=footer)
         return
 
@@ -1853,7 +2040,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     kind = parts[2]
     arg = parts[3] if len(parts) > 3 else ""
 
-    admin_only_kinds = {"hubcopy", "cat", "run", "toast"}
+    admin_only_kinds = {"hubcopy", "cat", "run", "toast", "aff"}
     if kind in admin_only_kinds and not _can_manage_drafts(update):
         await query.answer("Admin only.", show_alert=True)
         return
@@ -1892,6 +2079,32 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 parse_mode="HTML",
                 reply_markup=kb,
             )
+        return
+
+    if kind == "aff":
+        if arg == "add":
+            context.user_data[PENDING_AFFILIATE_LINK] = True
+            if query.message:
+                await query.message.reply_text(
+                    "🔗 <b>Add sponsor link</b>\n\n"
+                    "Paste your affiliate URL in the next message.\n"
+                    "Optional: <code>Label|https://…</code>\n\n"
+                    "Example:\n"
+                    "<code>https://www.cometapi.com/console/login?aff=ogsT</code>\n\n"
+                    "I'll save it, apply FOMO copy, and push into "
+                    "Buffer X · Telegram footers · link hub · loot rolls.\n"
+                    "Cancel: <code>/cancel</code>",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("◀ More menu", callback_data="zeus:more:home")]]
+                    ),
+                )
+        elif arg == "cancel":
+            context.user_data.pop(PENDING_AFFILIATE_LINK, None)
+            if query.message:
+                await query.message.reply_text("Cancelled sponsor link intake.")
+        else:
+            await query.answer("Unknown affiliate action.", show_alert=True)
         return
 
     if kind in ("subscribe", "shop", "reset", "mystatus"):
@@ -1939,7 +2152,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if query.message:
                 await query.message.reply_text(
                     "⋯ <b>More</b>\n\n"
-                    "FAQ previews, payment link hints, LLM config, and the full command list.",
+                    "FAQ previews, payment link hints, sponsor intake, LLM config, and the full command list.",
                     parse_mode="HTML",
                     reply_markup=_admin_more_submenu_keyboard(),
                 )
@@ -2119,6 +2332,44 @@ async def cmd_shop_hint(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def cmd_addsponsor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: start sponsor-link intake (same as menu → More → Add sponsor link)."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    raw = " ".join(context.args or []).strip()
+    if raw:
+        parsed = parse_affiliate_intake_text(raw)
+        if not parsed:
+            await _reply(
+                msg,
+                "Usage: <code>/addsponsor https://…</code> or <code>/addsponsor Label|https://…</code>",
+                context,
+                parse_mode="HTML",
+            )
+            return
+        label, url = parsed
+        db = SessionLocal()
+        try:
+            result = await asyncio.to_thread(
+                intake_affiliate_sponsor, db, label=label, url=url, sync=True
+            )
+        finally:
+            db.close()
+        await _reply(msg, ("✅ " if result.ok else "❌ ") + result.message, context, parse_mode="HTML")
+        return
+    context.user_data[PENDING_AFFILIATE_LINK] = True
+    await _reply(
+        msg,
+        "🔗 Paste your affiliate URL in the next message "
+        "(optional <code>Label|https://…</code>). Cancel: <code>/cancel</code>",
+        context,
+        parse_mode="HTML",
+    )
+
+
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     user = update.effective_user
@@ -2173,7 +2424,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data.pop(PENDING_LLM_API_KEY, None)
             try:
                 saved = await asyncio.to_thread(persist_llm_api_key, user_text)
-                test = await asyncio.to_thread(test_secretary_llm)
+                test = await asyncio.to_thread(probe_secretary_llm)
             except ValueError as e:
                 await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
                 return
@@ -2199,7 +2450,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data.pop(PENDING_LLM_BASE_URL, None)
             try:
                 saved = await asyncio.to_thread(persist_llm_base_url, user_text)
-                test = await asyncio.to_thread(test_secretary_llm)
+                test = await asyncio.to_thread(probe_secretary_llm)
             except ValueError as e:
                 await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
                 return
@@ -2223,7 +2474,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data.pop(PENDING_LLM_MODEL, None)
             try:
                 saved = await asyncio.to_thread(persist_llm_model, user_text)
-                test = await asyncio.to_thread(test_secretary_llm)
+                test = await asyncio.to_thread(probe_secretary_llm)
             except ValueError as e:
                 await _reply(msg, f"Not saved: {html.escape(str(e))}", context, parse_mode="HTML")
                 return
@@ -2233,6 +2484,42 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             model = html.escape(str(saved.get("model") or "—"))
             footer = f"✅ Model set to <code>{model}</code>.\n" + _format_llm_test_result(test)
             await _send_llm_config_panel(msg, context, extra_footer=footer)
+            return
+
+        if context.user_data.get(PENDING_AFFILIATE_LINK):
+            if user_text.startswith("/") and user_text.split()[0] != "/cancel":
+                await _reply(
+                    msg,
+                    "Still waiting for sponsor URL, or send <code>/cancel</code>.",
+                    context,
+                    parse_mode="HTML",
+                )
+                return
+            context.user_data.pop(PENDING_AFFILIATE_LINK, None)
+            parsed = parse_affiliate_intake_text(user_text)
+            if not parsed:
+                await _reply(
+                    msg,
+                    "Need a valid <code>https://</code> URL. "
+                    "Try again via <b>Menu → More → Add sponsor link</b>.",
+                    context,
+                    parse_mode="HTML",
+                )
+                return
+            label, url = parsed
+            db = SessionLocal()
+            try:
+                result = await asyncio.to_thread(
+                    intake_affiliate_sponsor, db, label=label, url=url, sync=True
+                )
+            finally:
+                db.close()
+            await _reply(
+                msg,
+                ("✅ " if result.ok else "❌ ") + result.message,
+                context,
+                parse_mode="HTML",
+            )
             return
 
     if not secretary_llm_configured():
@@ -2300,11 +2587,16 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     is_business = bc_id is not None
-    auto_reply_business = _auto_reply_in_business()
     is_admin_chat = _can_manage_drafts(update)
-    suggest_mode = (is_business and not auto_reply_business) or (
-        not is_business and not is_admin_chat and _suggest_for_direct_dms()
-    )
+    if is_business:
+        customer_mode = await asyncio.to_thread(_customer_reply_mode, user.id, is_business=True)
+        suggest_mode = customer_mode == "pilot"
+    elif is_admin_chat:
+        suggest_mode = False
+        customer_mode = "auto"
+    else:
+        customer_mode = await asyncio.to_thread(_customer_reply_mode, user.id, is_business=False)
+        suggest_mode = customer_mode == "pilot"
 
     if not suggest_mode:
         try:
@@ -2322,16 +2614,25 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         extra = extra + "\n\n" + catalog
 
     format_ctx_id: int | None = None
+    is_new_lead = False
     if format_engine_enabled():
         who = (user.username or "").strip() or None
         try:
-            fe_suffix, format_ctx_id = await asyncio.to_thread(
+            fe_suffix, format_ctx_id, is_new_lead = await asyncio.to_thread(
                 prepare_user_turn, user.id, user_text, username=who
             )
             if fe_suffix:
                 extra = extra + "\n\n" + fe_suffix
         except Exception as e:
             logger.warning("format_engine prepare failed uid=%s: %s", user.id, e)
+
+    coach_hint = ""
+    try:
+        coach_suffix, coach_hint = await asyncio.to_thread(build_sales_coach_suffix, user_text)
+        if coach_suffix:
+            extra = extra + "\n\n" + coach_suffix
+    except Exception as e:
+        logger.warning("secretary sales coach failed uid=%s: %s", user.id, e)
 
     try:
         sec_eff = await asyncio.to_thread(get_effective_secretary_settings)
@@ -2344,6 +2645,38 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             extra = extra + "\n\n" + prompt_extra
     except Exception as e:
         logger.warning("secretary RAG/settings suffix failed uid=%s: %s", user.id, e)
+
+    if is_new_lead:
+        try:
+            who_lead = (user.username or "").strip() or str(user.id)
+            surface = "business" if is_business else "direct"
+            phase = "introduction"
+            try:
+                summary = await asyncio.to_thread(get_user_context_public_summary, user.id)
+                if summary and summary.get("phase"):
+                    phase = str(summary["phase"])
+            except Exception:
+                pass
+            await asyncio.to_thread(
+                push_admin_inbox_event,
+                category="system",
+                severity="important",
+                title=f"New lead · {who_lead}",
+                body=(
+                    f"Surface: <b>{html.escape(surface)}</b> · Mode: <b>{html.escape(mode_label(customer_mode))}</b>\n"
+                    f"Phase: <code>{html.escape(phase)}</code> · uid <code>{user.id}</code>\n\n"
+                    f"📩 {html.escape(user_text[:400])}"
+                ),
+                meta={
+                    "code": "secretary_new_lead",
+                    "telegram_user_id": user.id,
+                    "surface": surface,
+                    "reply_mode": customer_mode,
+                },
+                instant=True,
+            )
+        except Exception:
+            logger.debug("secretary new-lead inbox notify failed", exc_info=True)
 
     if suggest_mode:
         suggest_suffix = (
@@ -2431,6 +2764,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "who": who,
                 "customer_preview": user_text[:500],
                 "llm_messages": [dict(m) for m in messages],
+                "coach_hint": coach_hint,
+                "reply_mode": customer_mode,
                 "created_at": int(time.time()),
             }
             try:
@@ -2441,6 +2776,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     user_id=user.id,
                     customer_line=user_text,
                     reply_plain=safe_reply,
+                    reply_mode=customer_mode,
+                    coach_hint=coach_hint,
                 )
                 try:
                     from app.services.admin_inbox import push_admin_inbox_event
@@ -2566,6 +2903,7 @@ async def post_init(app: Application) -> None:
         BotCommand("approve", "Send draft to customer"),
         BotCommand("reject", "Discard draft"),
         BotCommand("redo", "Regenerate draft (pro/casual/short)"),
+        BotCommand("as_customer", "Simulate customer DM (admin test)"),
         BotCommand("relief", "Apply telegram_relief focus"),
         BotCommand("stack", "Tray stack status (N/M)"),
         BotCommand("focus", "Focus profile status"),
@@ -2668,10 +3006,12 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("set_sysprompt", cmd_set_sysprompt))
     app.add_handler(CommandHandler("clear_sysprompt", cmd_clear_sysprompt))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("addsponsor", cmd_addsponsor))
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("drafts", cmd_drafts))
     app.add_handler(CommandHandler("redo", cmd_redo))
+    app.add_handler(CommandHandler("as_customer", cmd_as_customer))
     app.add_handler(CommandHandler("inbox", cmd_inbox))
     app.add_handler(CommandHandler("now", cmd_inbox_now))
     app.add_handler(CommandHandler("payment", cmd_inbox_payment))
@@ -2697,7 +3037,7 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("deposit", _cmd_deposit))
     app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^(sec:menu:|zeus:)"))
     app.add_handler(CallbackQueryHandler(on_llm_config_callback, pattern=r"^sec:llm:"))
-    app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:(ap|rj|rd):"))
+    app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:(ap|rj|rd|mode):"))
     app.add_handler(CallbackQueryHandler(on_ops_inbox_callback, pattern=r"^ops:"))
     app.add_handler(CallbackQueryHandler(on_invoice_inbox_callback, pattern=r"^inv:"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text))

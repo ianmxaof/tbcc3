@@ -85,6 +85,7 @@ def get_effective_watermark_settings(db: Session | None = None) -> dict[str, Any
         "position": wm.watermark_fixed_position(),
         "opacity": opacity,
         "color": color,
+        "size_ratio": wm.watermark_size_ratio(),
         "strip_previous": strip_previous,
         "apply_on_saved_import": bool(row.apply_on_saved_import) if row else False,
         "apply_on_album_composer": bool(row.apply_on_album_composer) if row else True,
@@ -122,6 +123,16 @@ def build_apply_config(
             base["color"] = (opts.color or "").strip()
         if opts.strip_previous is not None:
             base["strip_previous"] = bool(opts.strip_previous)
+        if opts.position is not None and str(opts.position).strip():
+            pos = str(opts.position).strip().lower()
+            if pos in wm.POSITIONS:
+                base["position"] = pos
+        if opts.mode is not None and str(opts.mode).strip():
+            mode = str(opts.mode).strip().lower()
+            if mode in ("rotate", "fixed"):
+                base["mode"] = mode
+        if opts.size_ratio is not None:
+            base["size_ratio"] = max(0.012, min(0.08, float(opts.size_ratio)))
 
     return wm.WatermarkApplyConfig(
         enabled=bool(base.get("enabled")),
@@ -131,6 +142,7 @@ def build_apply_config(
         mode=str(base.get("mode") or "rotate"),
         position=base.get("position") or "bottom_right",
         strip_previous=bool(base.get("strip_previous", False)),
+        size_ratio=base.get("size_ratio"),
         skip=False,
     )
 

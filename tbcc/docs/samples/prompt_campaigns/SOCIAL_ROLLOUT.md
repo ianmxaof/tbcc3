@@ -39,12 +39,6 @@ Log 02 + full prompt gates → @aofmainhub
 
 > Log 02 — 12:40 AM transcripts. Not erotic. Forensic.
 
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[keyboard clicks] BESTinLIFE — twelve forty-one a.m. [pause] You couldn't stop reading.
-```
-
 ---
 
 ### `he_coming_window_feed` — day 4
@@ -64,12 +58,6 @@ Arc on the hub → @aofmainhub
 **Telegram teaser (before LV link):**
 
 > Log 03 — elliptical feed. Mask in the glass. Staring at you.
-
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[static] She's on the elliptical. [whisper] He's in the window. Looking at you.
-```
 
 ---
 
@@ -91,12 +79,6 @@ Log 04 + prompts → @aofmainhub
 
 > Log 04 — closet cam. Door banging. Same mask, new name.
 
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[door bang] Hello? [yelp] [static hiss]
-```
-
 ---
 
 ### `he_coming_backseat` — day 8
@@ -116,12 +98,6 @@ Full arc + filmstrip → @aofmainhub
 **Telegram teaser (before LV link):**
 
 > Log 05 — parking lot voicemail. Pocket dial. Too late to call back.
-
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[voicemail rustle] …He's coming. [tape end]
-```
 
 ---
 
@@ -200,12 +176,6 @@ Tape 02 breakdown + full prompt pack → @aofmainhub
 
 > Tape 02 — break the mind, not the body. The quote that rewires the arc.
 
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[cassette hiss] You can't break a man the way you break a dog. The harder you beat him… the taller he stands. [pause] Break the mind.
-```
-
 ---
 
 ### `jackal_tapes_war_is_home` — day 4
@@ -225,12 +195,6 @@ Arc + gates on the hub → @aofmainhub
 **Telegram teaser (before LV link):**
 
 > Tape 03 — night convoy. Puppet strings. You're already in the loop.
-
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[engine rumble] War is my home. [cassette click] You think you're watching. You're driving.
-```
 
 ---
 
@@ -272,12 +236,6 @@ Full 5-tape scroll + prompts → @aofmainhub
 
 > Tape 05 — brutality as posture. The display eats the man who believes it.
 
-**TTS hook (optional — not wired in TBCC yet):**
-
-```
-[static burst] It's only a display. Succumb to it… and you're less than a man. [tape stop]
-```
-
 ---
 
 ### `jackal_tapes_filmstrip_5x` — day 10
@@ -317,5 +275,111 @@ Full tape arc + prompt gates on the hub → @aofmainhub
 **Telegram teaser (before LV link):**
 
 > Tape 01 — Reuben's interview. The arms dealer speaks. REC dot burning in.
+
+---
+
+## `spicy_reveal_drops`
+
+**Style anchors:** phone DM noir, magenta-coral companion flirt, SFW poster chrome
+
+**Negative prompt:** `explicit nudity, BUY language on poster, cartoon, gibberish UI, wrong aspect`
+
+**Suggested cadence:** every 2 day(s)
+
+| Day | Key | Tension | X hook |
+| --- | --- | --- | --- |
+| 0 | `spicy_reveal_01_trial_photo` | — | She already saw your photo before you sent it. |
+| 2 | `spicy_reveal_02_chat_persona` | — | The reply is not generic. It remembers. |
+| 4 | `spicy_reveal_03_referral_earn` | — | One friend through the gate. One more reveal. |
+| 6 | `spicy_reveal_04_scene_builder` | — | Upload, chat, reveal. That is the product. |
+| 8 | `spicy_reveal_05_full_bundle` | — | Five drops. One companion. Scroll. |
+
+### `spicy_reveal_02_chat_persona` — day 2
+
+**X / Buffer (clearnet — pair with generated art):**
+
+```
+The reply is not generic. It remembers.
+
+Drop 02 — companion persona pack. She remembers the thread. Full prompt pack behind one gate on Telegram.
+
+Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub
+```
+
+**Telegram teaser (before LV link):**
+
+> Drop 02 — companion persona pack. She remembers the thread.
+
+---
+
+### `spicy_reveal_03_referral_earn` — day 4
+
+**X / Buffer (clearnet — pair with generated art):**
+
+```
+One friend through the gate. One more reveal.
+
+Drop 03 — referral copy variants. Earn, do not buy. Full prompt pack behind one gate on Telegram.
+
+Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub
+```
+
+**Telegram teaser (before LV link):**
+
+> Drop 03 — referral copy variants. Earn, do not buy.
+
+---
+
+### `spicy_reveal_04_scene_builder` — day 6
+
+**X / Buffer (clearnet — pair with generated art):**
+
+```
+Upload, chat, reveal. That is the product.
+
+Drop 04 — three-step scene builder pack. Full prompt pack behind one gate on Telegram.
+
+Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub
+```
+
+**Telegram teaser (before LV link):**
+
+> Drop 04 — three-step scene builder pack.
+
+---
+
+### `spicy_reveal_05_full_bundle` — day 8
+
+**X / Buffer (clearnet — pair with generated art):**
+
+```
+Five drops. One companion. Scroll.
+
+Full 5-pack bundle behind one depth gate. Full prompt pack behind one gate on Telegram.
+
+Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub
+```
+
+**Telegram teaser (before LV link):**
+
+> Full 5-pack bundle behind one depth gate.
+
+---
+
+### `spicy_reveal_01_trial_photo` — day 0
+
+**X / Buffer (clearnet — pair with generated art):**
+
+```
+She already saw your photo before you sent it.
+
+Drop 01 — trial photo tease. Upload, chat, reveal. Full prompt pack behind one gate on Telegram.
+
+Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub
+```
+
+**Telegram teaser (before LV link):**
+
+> Drop 01 — trial photo tease. Upload, chat, reveal.
 
 ---

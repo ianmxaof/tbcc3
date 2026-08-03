@@ -2,10 +2,38 @@
 
 from __future__ import annotations
 
+import os
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.models.media import Media
+
+
+def pool_schedule_min_age_hours() -> float:
+    """
+    Minimum hours after pool ingest before scheduler may pick a row.
+    Prevents same-day scrape → storage deposit → main-group repost loops.
+    Set TBCC_POOL_SCHEDULE_MIN_AGE_HOURS=0 to disable.
+    """
+    raw = (os.getenv("TBCC_POOL_SCHEDULE_MIN_AGE_HOURS") or "24").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 24.0
+
+
+def filter_media_older_than_schedule_min_age(rows: list) -> list:
+    min_h = pool_schedule_min_age_hours()
+    if min_h <= 0 or not rows:
+        return list(rows)
+    cutoff = datetime.utcnow() - timedelta(hours=min_h)
+    out = []
+    for m in rows:
+        created = getattr(m, "created_at", None) or getattr(m, "indexed_at", None)
+        if created is None or created <= cutoff:
+            out.append(m)
+    return out
 
 
 def dedupe_media_for_album(rows: list) -> list:

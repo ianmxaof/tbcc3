@@ -23,16 +23,18 @@ def send_quarantine_review_task(media_id: int) -> dict:
 
 
 @celery.task(name="app.workers.gatekeeper_review_worker.bulk_approve_waiting")
-def bulk_approve_waiting_task(operator_id: int) -> dict:
+def bulk_approve_waiting_task(operator_id: int, lane_key: str = "") -> dict:
     from app.database.session import SessionLocal
     from app.services.gatekeeper_review import operator_approve_all_waiting
 
     op = int(operator_id) if operator_id else None
+    lane = (lane_key or "").strip().lower() or None
     with SessionLocal() as db:
-        out = operator_approve_all_waiting(db, operator_id=op)
+        out = operator_approve_all_waiting(db, operator_id=op, lane_key=lane)
     logger.info(
-        "gatekeeper bulk approve operator=%s approved=%s skipped=%s total=%s",
+        "gatekeeper bulk approve operator=%s lane=%s approved=%s skipped=%s total=%s",
         op,
+        lane,
         out.get("approved"),
         out.get("skipped"),
         out.get("total"),
@@ -66,3 +68,13 @@ def route_approved_lanes_task(media_id: int, lane_keys: list[str]) -> dict:
         return {"ok": False, "media_id": media_id, "error": str(e)[:400]}
 
     return {"ok": True, "media_id": media_id, **out}
+
+
+@celery.task(name="app.workers.gatekeeper_review_worker.vault_approved_media")
+def vault_approved_media_task(media_id: int) -> dict:
+    from app.database.session import SessionLocal
+    from app.services.gatekeeper_review import maybe_vault_and_evict_approved_media
+
+    with SessionLocal() as db:
+        out = maybe_vault_and_evict_approved_media(db, int(media_id))
+    return out if isinstance(out, dict) else {"ok": False, "media_id": media_id}

@@ -1,9 +1,9 @@
 """Smoke: creator promo normalize + island API queue (no Telegram UI)."""
 from __future__ import annotations
 
-import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -17,7 +17,10 @@ load_dotenv(_backend.parent / ".env", override=True)
 
 from app.services.loot_creator_platforms import normalize_creator_url
 
-API = (os.getenv("TBCC_ISLAND_API_URL") or os.getenv("TBCC_API_URL") or "https://api.powercore.app").rstrip("/")
+API = (
+    os.getenv("TBCC_ISLAND_API_URL")
+    or "https://api.powercore.app"
+).rstrip("/")
 KEY = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
 SMOKE_UID = 7787282561  # operator sandbox
 
@@ -34,25 +37,25 @@ def main() -> int:
         out = normalize_creator_url(s)
         print(f"  {'OK' if out else 'REJECT':6} {s}")
 
-    if not KEY:
-        print("SKIP API: TBCC_INTERNAL_API_KEY not set")
-        return 0
-
-    headers = {"X-TBCC-Internal-Key": KEY, "Content-Type": "application/json"}
     with httpx.Client(timeout=30.0) as client:
         r = client.get(f"{API}/health")
         print(f"\n=== health {r.status_code} ===")
 
+        handle = f"tbcc_smoke_{int(time.time())}"
         body = {
-            "url": "https://fansly.com/tbcc_smoke_creator_promo",
+            "url": f"https://fansly.com/{handle}",
             "telegram_user_id": SMOKE_UID,
             "display_name": "Smoke Test",
         }
-        r = client.post(f"{API}/loot/creator-submit", headers=headers, json=body)
+        r = client.post(f"{API}/loot/creator-submit", json=body)
         print(f"=== creator-submit {r.status_code} ===")
-        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text}
-        print(json.dumps(data, indent=2)[:1200])
+        print(r.text[:1200])
 
+        if not KEY:
+            print("\nSKIP queue: TBCC_INTERNAL_API_KEY not set")
+            return 0
+
+        headers = {"X-TBCC-Internal-Key": KEY, "Content-Type": "application/json"}
         r = client.get(f"{API}/loot/creator-submissions?status=pending&limit=5", headers=headers)
         print(f"\n=== pending queue {r.status_code} ===")
         if r.status_code == 200:

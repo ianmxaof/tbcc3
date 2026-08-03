@@ -41,6 +41,7 @@ def record_post_outbound_event(
             channel_id=channel_id,
             scheduled_post_id=scheduled_post_id,
             error_message=error_message,
+            pool_id=pool_id,
         )
     except Exception:
         pass
