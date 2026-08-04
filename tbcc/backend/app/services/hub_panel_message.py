@@ -67,8 +67,11 @@ async def ensure_singleton_panel_message(
         "reply_markup": reply_markup,
         "disable_web_page_preview": True,
     }
-    if message_thread_id:
-        send_kw["message_thread_id"] = int(message_thread_id)
+    from app.utils.telegram_forum import bot_api_forum_thread_id
+
+    api_thread = bot_api_forum_thread_id(message_thread_id)
+    if api_thread:
+        send_kw["message_thread_id"] = api_thread
 
     if stored_mid and not force_new:
         try:
@@ -107,8 +110,8 @@ async def ensure_singleton_panel_message(
                 "message_id": mid,
                 "disable_notification": True,
             }
-            if message_thread_id:
-                pin_kw["message_thread_id"] = int(message_thread_id)
+            if api_thread:
+                pin_kw["message_thread_id"] = api_thread
             await bot.pin_chat_message(**pin_kw)
         except Exception:
             logger.debug(

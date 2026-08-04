@@ -763,8 +763,10 @@ def send_quarantine_review_message(db: Session, media_id: int) -> dict[str, Any]
 
     if lane_picker_enabled():
         text = f"{text}\n<i>{html_escape(format_lane_pick_hint([]))}</i>"
+    from app.utils.telegram_forum import bot_api_forum_thread_id
+
     dest_chat = review_chat_id()
-    dest_thread = review_thread_id()
+    dest_thread = bot_api_forum_thread_id(review_thread_id())
     default_lane = resolve_media_lane_key(db, media)
     keyboard = review_inline_keyboard(media_id, default_lane_key=default_lane)
 
