@@ -149,6 +149,7 @@ def run_channel_import_job_sync(job_id: str) -> dict:
         network_key = str(params.get("network_key") or "").strip() or None
         sent_cache = bool(params.get("sent_cache"))
         auto_pipe = bool(params.get("auto_pipe"))
+        qa_review_only = bool(params.get("qa_review_only"))
         raw_ids = params.get("message_ids")
         message_ids: list[int] | None = None
         if isinstance(raw_ids, list) and raw_ids:
@@ -235,6 +236,30 @@ def run_channel_import_job_sync(job_id: str) -> dict:
                 if network_key:
                     mark_lane_run(network_key)
                 result["auto_pipe"] = True
+            if qa_review_only and network_key:
+                from app.models.media import Media
+                from app.services.quarantine_batch_review import (
+                    flush_lane_quarantine_buffer,
+                    queue_lane_quarantine_media,
+                )
+
+                queued = 0
+                for row in result.get("stored_messages") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    mid = row.get("media_id")
+                    if not mid:
+                        continue
+                    media = db.query(Media).filter(Media.id == int(mid)).first()
+                    if media and (media.status or "") != "quarantine":
+                        media.status = "quarantine"
+                    queue_lane_quarantine_media(int(mid), network_key)
+                    queued += 1
+                if queued:
+                    db.commit()
+                    flush_lane_quarantine_buffer(db, network_key, force=False)
+                result["qa_review_only"] = True
+                result["qa_review_queued"] = queued
             return result
 
         timeout = channel_import_timeout_s(

@@ -8,10 +8,8 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT, SENT_CACHE_TOPIC
+from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT, SENT_CACHE_TOPIC, GATEKEEPER_REVIEW_TOPIC_ID, GATEKEEPER_REVIEW_TOPIC_TITLE
 from app.services.hub_lane_control import (
-    format_lane_hub_panel_html,
-    lane_hub_control_keyboard,
     set_lane_loot_preview_enabled,
 )
 from app.services.sent_cache_control import (
@@ -59,6 +57,8 @@ def _hub_context(update: Update) -> tuple[bool, int | None, str | None, str | No
     if not thread_id:
         return False, None, None, None
     tid = int(thread_id)
+    if tid == int(GATEKEEPER_REVIEW_TOPIC_ID or 0):
+        return True, tid, GATEKEEPER_REVIEW_TOPIC_TITLE, "qa_master"
     if tid == storage_sent_cache_topic_id():
         return True, tid, SENT_CACHE_TOPIC.topic_title, "sent_cache"
     row = resolve_storage_topic_row(tid)
@@ -85,6 +85,13 @@ async def cmd_hubpanel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         out = await ensure_sent_cache_panel(context.bot, force_new=False)
         await msg.reply_text(f"📦 SENT VAULT panel {out.get('action', 'updated')}.")
+        return
+
+    if kind == "qa_master":
+        from app.services.qa_master_panel import ensure_qa_master_panel
+
+        out = await ensure_qa_master_panel(context.bot, force_new=False)
+        await msg.reply_text(f"🟡 Q&A master panel {out.get('action', 'updated')}.")
         return
 
     if kind == "inbox":
@@ -180,10 +187,14 @@ async def on_hub_lane_control_callback(update: Update, context: ContextTypes.DEF
 
     if query.message:
         try:
-            await query.message.edit_text(
-                format_lane_hub_panel_html(thread_title=title, network_key=network_key),
-                parse_mode=ParseMode.HTML,
-                reply_markup=lane_hub_control_keyboard(network_key),
+            from app.services.storage_deposit_panel_pins import ensure_storage_deposit_panel
+
+            await ensure_storage_deposit_panel(
+                context.bot,
+                chat_id=int(query.message.chat_id),
+                message_thread_id=thread_id,
+                topic_title=title or "",
+                force_new=False,
             )
         except Exception:
             logger.debug("hub lane panel refresh failed", exc_info=True)

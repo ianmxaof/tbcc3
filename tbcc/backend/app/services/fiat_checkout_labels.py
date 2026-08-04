@@ -60,8 +60,14 @@ def fiat_vip_link_label() -> str:
     return _DEFAULT_VIP_LINK
 
 
-def fiat_vip_ladder_intro_html() -> str:
-    return f"💎 <b>AOF VIP</b> — same ladder on <b>{fiat_checkout_display_name()}</b>. Pick a term:"
+def fiat_vip_ladder_intro_html(*, include_intro: bool = False) -> str:
+    disp = fiat_checkout_display_name()
+    if include_intro:
+        return (
+            f"✨ <b>First VIP month</b> — intro price for new members only.\n"
+            f"💎 <b>AOF VIP</b> — standard ladder on <b>{disp}</b>. Pick a term:"
+        )
+    return f"💎 <b>AOF VIP</b> — same ladder on <b>{disp}</b>. Pick a term:"
 
 
 def fiat_checkout_disabled_message() -> str:

@@ -308,15 +308,44 @@ def notify_composer_bot(
     network_key: str,
     report: dict[str, Any],
 ) -> dict[str, Any]:
-    """Post a summary into the Storage Hub deposit topic via Album Composer bot."""
+    """
+    Record composer status on the lane panel instead of posting a separate summary message.
+    Legacy lane notify can be re-enabled with TBCC_SENT_CACHE_COMPOSER_LANE_NOTIFY=1.
+    """
+    from app.data.aof_storage_hub_map import storage_map_by_key
+    from app.services.lane_composer_status import record_lane_composer_status
+    from app.services.storage_deposit_panel_pins import refresh_storage_deposit_panel_http
+    from app.services.storage_topic_deposit import storage_hub_chat_id_int
+
+    nk = (network_key or "").strip().lower()
+    record_lane_composer_status(nk, report)
+
+    legacy_notify = (os.getenv("TBCC_SENT_CACHE_COMPOSER_LANE_NOTIFY") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    row = storage_map_by_key(nk)
+    topic_title = row.topic_title if row else nk
+    refresh = refresh_storage_deposit_panel_http(
+        chat_id=storage_hub_chat_id_int(),
+        message_thread_id=int(storage_thread_id),
+        topic_title=topic_title,
+        network_key=nk,
+    )
+    if refresh.get("ok"):
+        return {"ok": True, "action": "panel_refreshed", "panel": refresh}
+
+    if not legacy_notify:
+        return {"ok": True, "action": "status_recorded", "panel_refresh": refresh}
+
     token = (os.getenv("TBCC_ALBUM_COMPOSER_BOT_TOKEN") or "").strip()
     if not token:
         return {"ok": False, "skipped": True, "reason": "no_bot_token"}
 
     from app.data.aof_storage_hub_map import SENT_VAULT_DISPLAY_NAME, category_emoji_for_network_key
-    from app.services.storage_topic_deposit import storage_hub_chat_id_int
 
-    nk = (network_key or "").strip().lower()
     emoji = category_emoji_for_network_key(nk)
     built = int(report.get("albums_built") or 0)
     leftover = int(report.get("leftover_singles") or 0)
@@ -352,7 +381,7 @@ def notify_composer_bot(
         with httpx.Client(timeout=20.0) as client:
             r = client.post(f"https://api.telegram.org/bot{token}/sendMessage", json=payload)
         body = r.json()
-        return {"ok": bool(body.get("ok")), "telegram": body}
+        return {"ok": bool(body.get("ok")), "telegram": body, "legacy_notify": True}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 

@@ -60,6 +60,20 @@ def main_group_checkout_every_n() -> int:
         return 2
 
 
+def checkout_blocked_for_telegram_identifier(channel_identifier: str | Any) -> bool:
+    """Operator-only chats — never attach monetization checkout (Storage & Bot Hangar)."""
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+    from app.utils.telegram_peer import normalize_telethon_peer_identifier
+
+    ident = normalize_telethon_peer_identifier(channel_identifier)
+    if not ident or not isinstance(ident, str):
+        return False
+    try:
+        return int(ident) == int(STORAGE_HUB_IDENT)
+    except (ValueError, TypeError):
+        return ident == STORAGE_HUB_IDENT
+
+
 def checkout_active_for_send(
     post: Any,
     channel_identifier: str,
@@ -72,6 +86,8 @@ def checkout_active_for_send(
     from app.data.aof_network import MAIN_GROUP_IDENT
 
     ident = str(channel_identifier or "").strip()
+    if checkout_blocked_for_telegram_identifier(ident):
+        return False
     try:
         is_main = int(ident) == int(MAIN_GROUP_IDENT)
     except ValueError:
@@ -371,6 +387,12 @@ async def deliver_stars_checkout_bot_followup(
     if not checkout_bot_followup_enabled():
         return None
     if not plan_id or not reply_to_message_id:
+        return None
+    if checkout_blocked_for_telegram_identifier(channel_identifier):
+        logger.debug(
+            "checkout Bot API follow-up skipped: storage hub chat=%s",
+            channel_identifier,
+        )
         return None
 
     from app.utils.telegram_peer import normalize_telethon_peer_identifier

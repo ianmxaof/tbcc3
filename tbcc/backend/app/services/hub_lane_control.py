@@ -73,16 +73,23 @@ def format_lane_hub_panel_html(
     autopipe = lane_auto_pipe_enabled(nk) if nk else False
     preview_on = lane_loot_preview_enabled(nk) if nk else True
     loot_line = format_loot_room_topic_status(nk, live_topics=live_topics) if nk else "—"
-    return (
-        "<b>📥 Lane control panel</b>\n\n"
+    lines = [
+        "<b>📥 Lane control panel</b>\n\n",
         f"{topic_line}"
         f"<b>Lane:</b> <code>{nk or '?'}</code>\n"
         f"<b>Deposit:</b> {lim} · <code>{mt}</code> — <code>{format_deposit_command(lim, get_deposit_media_types())}</code>\n"
         f"<b>Auto-pipe:</b> {'ON' if autopipe else 'OFF'} (debounce {auto_pipe_debounce_s()}s)\n"
         f"<b>Loot preview:</b> {'ON' if preview_on else 'OFF'} (max {preview_max_loot_albums_per_run()} album(s)/deposit)\n"
-        f"<b>Loot subtopic:</b> {loot_line}\n\n"
-        "<i>Deposit imports to pool + SENT VAULT. Loot previews are capped — schedulers own the feed cadence.</i>"
-    )
+        f"<b>Loot subtopic:</b> {loot_line}\n",
+    ]
+    if nk:
+        from app.services.lane_composer_status import format_lane_composer_status_line
+
+        composer_line = format_lane_composer_status_line(nk)
+        if composer_line:
+            lines.append(f"{composer_line}\n")
+    lines.append("\n<i>Deposit imports to pool + SENT VAULT. Loot previews are capped — schedulers own the feed cadence.</i>")
+    return "".join(lines)
 
 
 def lane_hub_control_keyboard(network_key: str | None) -> Any:

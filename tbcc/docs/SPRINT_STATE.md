@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-01 (Secretary Pilot/Auto + sales coach live on island)
+**Last updated:** 2026-08-03 (VIP intro month $10 / first-time gate)
 
 ## Sprint goal
 
@@ -20,7 +20,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | True lean home cold-start | agent | **2026-07-15:** Lean = API + celery + beat + payment + loot; album_composer no longer mandatory; dashboard/secretary/post lanes default Off. Post-cutover: `TBCC_REVENUE_ISLAND_ACTIVE=1` + `mark-home-bots-off.ps1` keeps home payment/loot Off. |
 | Tray trust (Phase B honesty) | operator | Meltdown/`THROTTLE`/`STALE` already in panel — **smoke**, not greenfield. Doc sync done. Lane C only if smoke proves foundation bugs. |
 | Revenue island (dedicated VPS) | operator + agent | **2026-07-20:** Named tunnel `api.powercore.app`; Gumroad Ping 200; VIP ladder plans 10–14; checkout schedulers migrated off dead `start=c6` → plan 10 + `cm10` menu. `/uploads` volume on island for bundle zips. Buffer keys sync via `seed-island-env-from-home.ps1`. Home bots stay Off. |
-| Loot Lane Economy | agent | **2026-07-27:** Module A+B handoffs shipped; **VIP floor $18** in code; `bonus_album_draws` applied to album size. **Operator:** Gumroad `ynnulc` prices + island reseed + `price:1800`…`30000` PRODUCT_MAP + deploy. Lane Pass still shelved (0/11 ready). |
+| Loot Lane Economy | agent | **2026-07-27:** Module A+B handoffs shipped; **VIP floor $18** in code; `bonus_album_draws` applied to album size. **2026-08-03:** **VIP Intro Month** $10 / ~834⭐ — first main-section sub only; standard ladder unchanged. Reseed + island deploy. **Operator:** Gumroad add $10 intro tier (`price:1000` in PRODUCT_MAP). Lane Pass still shelved (0/11 ready). |
 | Mega → R2 vault | agent | **PAUSED 2026-07-16:** Export killed on island. Hold until media-purpose + Cloudflare profit case decided (ThisVid upload experiments inconclusive). Partial R2 prefix may exist — not the vault. |
 | Sale FOMO announce | agent | **2026-07-16:** Hub `main` = **Loot Room** (`-1003927742839`, invite `+97f4…`). Clear `TBCC_SALE_ANNOUNCE_SKIP_KEYS`. Island FOMO targets `network,buffer`. Bake `aof_network.py` into GHCR. |
 | Save AOF + watch lanes | agent | **2026-07-15:** Plan shipped — `aof_lane_tag_map` + watch preprocess/route; Ext Save AOF (watermark-bytes → inbox + `.tbcc-meta.json`); overlay Download = Save AOF by default. Folders: emoji `🍒 AOF BIG TITS` or `TBCC_WATCH_AOF_FOLDER_STYLE=disk` → `AOF NETWORK/AOF BIG TITS`. |

@@ -25,14 +25,9 @@ SCORE_QUARANTINE_MIN = 40
 
 def hub_auto_approve_enabled() -> bool:
     """Trusted Storage Hub ingest may skip quarantine when score clears the hub threshold."""
-    import os
+    from app.services.hub_intake_policy import hub_master_auto_approve_enabled
 
-    return (os.getenv("TBCC_GATEKEEPER_HUB_AUTO_APPROVE") or "1").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-        "off",
-    )
+    return hub_master_auto_approve_enabled()
 
 
 def hub_auto_approve_min_score() -> int:

@@ -35,6 +35,7 @@ py -3.13 -m pytest <path> -x -q
 | **Buffer X link order** | `tests/test_buffer_x_link_order.py` | Affiliate-first preview pin; optional cycle when `AFFILIATE_FIRST=0` |
 | **Sale FOMO announce** | `tests/test_sale_public_announce.py` | Anonymous network + Buffer/X on fulfilled sales (no buyer PII) |
 | **Gumroad Ping fulfill** | `tests/test_gumroad_ping.py`, `tests/test_aof_vip_membership.py` | EPO `tbcc_ref` → fulfill; VIP ladder ↔ ynnulc recurrences / price cents |
+| **VIP intro month** | `tests/test_vip_intro_eligibility.py` | First-time main-section gate; loot subs ignored |
 | **X promo / Gemini** | `tests/test_gemini_promo_prompt.py`, `tests/test_loot_tier_cards.py`, `tests/test_export_perchance_prompt_packs.py`, `tests/test_creative_orchestrator.py`, `tests/test_perchance_image_client.py`, `tests/test_aof_media_brand_naming.py`, `tests/test_r2_promo_upload.py` | Promo + loot builders; R2 `library/` + `sfw-x-promo/` key helpers; Perchance/watermark brand; API needs GEMINI_API_KEY |
 | **LLM completions** | `tests/test_llm_completions_providers.py` | OpenRouter / Featherless / Venice / custom OpenAI-compatible runtime presets (`tbcc_uncensored_chat.py`) |
 | **ThisVid** | `tests/test_thisvid_upload_provision.py` | Playwright upload MVP (local + URL mode) |

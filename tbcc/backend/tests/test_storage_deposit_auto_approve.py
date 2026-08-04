@@ -101,6 +101,7 @@ def test_enrich_kill_switch(monkeypatch):
     monkeypatch.delenv("TBCC_ENRICH_ON_IMPORT", raising=False)
     monkeypatch.delenv("TBCC_CLIP_CATEGORIZE_URL", raising=False)
     monkeypatch.delenv("TBCC_NSFW_DETECT_URL", raising=False)
+    monkeypatch.delenv("TBCC_LUSTPRESS_URL", raising=False)
     monkeypatch.setenv("TBCC_AUTO_TAG_ON_IMPORT", "1")
     assert enrich_pipeline_enabled() is False
 

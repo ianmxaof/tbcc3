@@ -30,6 +30,12 @@ def test_vip_ladder_matches_gumroad_ynnulc() -> None:
     assert by_rec["every_two_years"].duration_days == 730
 
 
+def test_vip_intro_stars_at_default_rate() -> None:
+    from app.data.aof_vip_membership import VIP_INTRO_SKU
+
+    assert usd_to_stars(VIP_INTRO_SKU.price_usd, stars_per_usd=0.012) == 834
+
+
 def test_vip_stars_at_default_rate() -> None:
     assert usd_to_stars(18.0, stars_per_usd=0.012) == 1500
     assert usd_to_stars(48.0, stars_per_usd=0.012) == 4000
@@ -43,6 +49,7 @@ def test_sku_lookups() -> None:
     assert sku_for_duration_days(90).price_usd == 48.0
     assert sku_for_price_cents(5400).gumroad_recurrence == "yearly"
     assert sku_for_price_cents(1800).gumroad_recurrence == "monthly"
+    assert sku_for_price_cents(1000).name == "AOF VIP — Intro Month"
     assert sku_for_price_cents(600).gumroad_recurrence == "monthly"  # legacy grandfather
     legacy = {600, 1500, 3000, 5400, 10000}
     current = {1800, 4800, 9000, 16800, 30000}

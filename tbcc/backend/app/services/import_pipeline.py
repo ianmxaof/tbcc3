@@ -200,6 +200,7 @@ def create_channel_import_job(
     sent_cache: bool = False,
     message_ids: list[int] | None = None,
     auto_pipe: bool = False,
+    qa_review_only: bool = False,
 ) -> ImportJob:
     job_id = new_import_job_id()
     ids = [int(x) for x in (message_ids or []) if int(x) > 0][:200]
@@ -215,6 +216,7 @@ def create_channel_import_job(
         "network_key": (network_key or "").strip() or None,
         "sent_cache": bool(sent_cache),
         "auto_pipe": bool(auto_pipe),
+        "qa_review_only": bool(qa_review_only),
     }
     if ids:
         params["message_ids"] = ids

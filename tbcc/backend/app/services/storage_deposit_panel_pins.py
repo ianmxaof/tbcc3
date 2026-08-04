@@ -106,8 +106,10 @@ async def ensure_storage_deposit_panel(
     topic_title: str,
     force_new: bool = False,
 ) -> dict[str, Any]:
-    """Post or refresh the pinned lane control panel for one Storage Hub topic."""
+    """Post or refresh the lane control panel for one Storage Hub topic (singleton at bottom)."""
     from telegram.constants import ParseMode
+
+    from app.services.hub_panel_message import ensure_singleton_panel_message
 
     target_network_key = None
     for row in AOF_STORAGE_TOPIC_MAP:
@@ -122,56 +124,57 @@ async def ensure_storage_deposit_panel(
         network_key=target_network_key,
     )
     markup = lane_hub_control_keyboard(target_network_key)
-    stored_mid = get_stored_panel_message_id(chat_id, message_thread_id)
 
-    send_kw: dict[str, Any] = {
+    return await ensure_singleton_panel_message(
+        bot,
+        chat_id=int(chat_id),
+        message_thread_id=message_thread_id,
+        text=text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=markup,
+        force_new=force_new,
+        get_stored_message_id=lambda: get_stored_panel_message_id(chat_id, message_thread_id),
+        set_stored_message_id=lambda mid: set_stored_panel_message_id(chat_id, message_thread_id, mid),
+        panel_label="lane_deposit",
+    )
+
+
+async def refresh_storage_deposit_panel_http(
+    *,
+    chat_id: int,
+    message_thread_id: int | None,
+    topic_title: str,
+    network_key: str | None,
+) -> dict[str, Any]:
+    """Refresh a lane panel via Bot API (for Celery / composer workers without a live bot app)."""
+    import httpx
+
+    token = (os.getenv("TBCC_ALBUM_COMPOSER_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+    stored_mid = get_stored_panel_message_id(chat_id, message_thread_id)
+    if not token or not stored_mid:
+        return {"ok": False, "skipped": True, "reason": "no_token_or_panel"}
+
+    text = format_lane_hub_panel_html(thread_title=topic_title, network_key=network_key)
+    markup = lane_hub_control_keyboard(network_key)
+    kb = markup.to_dict() if hasattr(markup, "to_dict") else markup
+
+    payload: dict[str, Any] = {
         "chat_id": int(chat_id),
-        "text": text,
-        "parse_mode": ParseMode.HTML,
-        "reply_markup": markup,
+        "message_id": int(stored_mid),
+        "text": text[:4000],
+        "parse_mode": "HTML",
+        "reply_markup": kb,
         "disable_web_page_preview": True,
     }
-    if message_thread_id:
-        send_kw["message_thread_id"] = int(message_thread_id)
-
-    if stored_mid and not force_new:
-        try:
-            await bot.edit_message_text(message_id=int(stored_mid), **send_kw)
-            return {
-                "ok": True,
-                "action": "edited",
-                "message_id": int(stored_mid),
-                "topic_title": topic_title,
-            }
-        except Exception:
-            logger.debug("deposit panel edit failed chat=%s thread=%s", chat_id, message_thread_id, exc_info=True)
-
-    msg = await bot.send_message(**send_kw)
-    mid = int(msg.message_id)
-    set_stored_panel_message_id(chat_id, message_thread_id, mid)
     try:
-        pin_kw: dict[str, Any] = {
-            "chat_id": int(chat_id),
-            "message_id": mid,
-            "disable_notification": True,
-        }
-        if message_thread_id:
-            pin_kw["message_thread_id"] = int(message_thread_id)
-        await bot.pin_chat_message(**pin_kw)
-    except Exception:
-        logger.debug(
-            "deposit panel pin failed chat=%s thread=%s msg=%s",
-            chat_id,
-            message_thread_id,
-            mid,
-            exc_info=True,
-        )
-    return {
-        "ok": True,
-        "action": "posted",
-        "message_id": mid,
-        "topic_title": topic_title,
-    }
+        with httpx.Client(timeout=20.0) as client:
+            r = client.post(f"https://api.telegram.org/bot{token}/editMessageText", json=payload)
+        body = r.json()
+        if body.get("ok"):
+            return {"ok": True, "action": "edited", "message_id": int(stored_mid)}
+        return {"ok": False, "telegram": body}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
 
 
 async def ensure_all_storage_deposit_panels(bot, *, force_new: bool = False) -> dict[str, Any]:

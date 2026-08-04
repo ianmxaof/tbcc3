@@ -583,6 +583,7 @@ def queue_storage_topic_deposit(
     message_ids: list[int] | None = None,
     sent_cache: bool | None = None,
     auto_pipe: bool = False,
+    qa_review_only: bool = False,
 ) -> dict[str, Any]:
     """
     Import up to `limit` NEW deduped items from one Storage Hub forum topic into its pool.
@@ -670,6 +671,7 @@ def queue_storage_topic_deposit(
         sent_cache=sent_cache_val,
         message_ids=message_ids,
         auto_pipe=bool(auto_pipe),
+        qa_review_only=bool(qa_review_only),
     )
 
     if auto_pipe:
@@ -766,6 +768,7 @@ def queue_storage_topic_deposit(
             "index_only": index_only,
             "sent_cache": sent_cache_val,
             "auto_pipe": bool(auto_pipe),
+            "qa_review_only": bool(qa_review_only),
             "staged": bool(message_ids),
             "topic_mirror": mirror_report,
         }

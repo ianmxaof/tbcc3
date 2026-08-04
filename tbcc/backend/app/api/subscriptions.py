@@ -128,6 +128,14 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
     if not plan:
         return {"error": "Plan not found"}
 
+    from app.services.vip_intro_eligibility import assert_vip_intro_allowed
+
+    intro_err = assert_vip_intro_allowed(
+        db, telegram_user_id=int(telegram_user_id), plan=plan
+    )
+    if intro_err:
+        return {"error": intro_err}
+
     is_bundle = (plan.product_type or "").lower() == "bundle"
 
     # Bundle purchases: no referral rewards; keep referral tracking for a future subscription

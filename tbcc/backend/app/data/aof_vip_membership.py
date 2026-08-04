@@ -25,6 +25,17 @@ class VipMembershipSku:
 # Operator: update Gumroad product tiers + TBCC_GUMROAD_PRODUCT_MAP price:* keys (see handoff).
 GUMROAD_VIP_PRODUCT_URL = "https://aof69.gumroad.com/l/ynnulc"
 
+# One-time intro month for first-time VIP buyers (2026-08-03). Standard ladder unchanged.
+VIP_INTRO_SKU = VipMembershipSku(
+    name="AOF VIP — Intro Month",
+    duration_days=30,
+    price_usd=10.0,
+    gumroad_recurrence="monthly",
+    blurb="First VIP month at intro price · same daily roll + vault + all lanes.",
+)
+VIP_INTRO_PLAN_NAME = VIP_INTRO_SKU.name
+VIP_INTRO_PRICE_CENTS = 1000
+
 VIP_MEMBERSHIP_SKUS: tuple[VipMembershipSku, ...] = (
     VipMembershipSku(
         name="AOF VIP — 1 Month",
@@ -98,5 +109,16 @@ def sku_for_duration_days(days: int) -> VipMembershipSku | None:
 
 
 def sku_for_price_cents(cents: int) -> VipMembershipSku | None:
+    if int(cents) == VIP_INTRO_PRICE_CENTS:
+        return VIP_INTRO_SKU
     rec = VIP_PRICE_CENTS_TO_RECURRENCE.get(int(cents))
     return sku_for_recurrence(rec) if rec else None
+
+
+def is_vip_intro_plan_name(name: str | None) -> bool:
+    return (name or "").strip() == VIP_INTRO_PLAN_NAME
+
+
+def protected_main_vip_plan_names() -> frozenset[str]:
+    """Rows that must survive legacy-main deactivation during seed."""
+    return frozenset(sku.name for sku in VIP_MEMBERSHIP_SKUS) | frozenset({VIP_INTRO_PLAN_NAME})

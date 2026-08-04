@@ -3410,17 +3410,35 @@ async def post_init(application: Application) -> None:
         ]
     )
     try:
+        from app.services.storage_hub_bot_wiring import album_composer_storage_hub_enabled
         from bots.storage_hub_deposit_bot import album_composer_storage_deposit_enabled
         from app.services.storage_topic_deposit import storage_hub_chat_id_int
 
-        if album_composer_storage_deposit_enabled():
+        if album_composer_storage_deposit_enabled() or album_composer_storage_hub_enabled():
+            hub_cmds = [
+                BotCommand("deposit", "Queue N deduped items into this topic's pool"),
+                BotCommand("depositstaged", "Deposit staged items to pool + SENT VAULT"),
+                BotCommand("depositpanel", "Lane control panel (deposit + auto-pipe)"),
+                BotCommand("hubpanel", "Refresh lane / vault / inbox panels"),
+                BotCommand("qapanel", "Q&A master control panel"),
+                BotCommand("review", "Bulk approve quarantine queue"),
+                BotCommand("intake", "Inbox intake scheduler panel"),
+                BotCommand("menu", "Workshop menu"),
+            ]
             await application.bot.set_my_commands(
-                [
-                    BotCommand("deposit", "Queue N deduped items into this topic's pool"),
-                    BotCommand("depositstaged", "Deposit staged items to pool + SENT CACHE"),
-                    BotCommand("menu", "Workshop menu"),
-                ],
+                hub_cmds,
                 scope=BotCommandScopeChat(chat_id=storage_hub_chat_id_int()),
+            )
+        if album_composer_storage_hub_enabled():
+            from bots.storage_hub_handlers import bootstrap_storage_hub_panels
+
+            report = await bootstrap_storage_hub_panels(application.bot)
+            lane = (report.get("lanes") or {}) if isinstance(report, dict) else {}
+            logger.info(
+                "Storage hub panels (remixer): posted=%s edited=%s errors=%s",
+                lane.get("posted"),
+                lane.get("edited"),
+                lane.get("errors"),
             )
     except Exception as e:
         logger.debug("album composer storage hub command scope: %s", e)
@@ -3472,10 +3490,17 @@ def main() -> None:
     app.add_handler(CommandHandler("savecaption", cmd_savecaption))
     app.add_handler(CommandHandler("savepromo", cmd_savepromo))
     app.add_handler(CommandHandler("emoji_pack", cmd_emoji_pack))
-    app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
-    app.add_handler(CommandHandler("depositpanel", cmd_depositpanel_composer))
+    from app.services.storage_hub_bot_wiring import album_composer_storage_hub_enabled
+
+    if album_composer_storage_hub_enabled():
+        from bots.storage_hub_handlers import register_storage_hub_handlers
+
+        register_storage_hub_handlers(app, bot_label="album-composer")
+    else:
+        app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
+        app.add_handler(CommandHandler("depositpanel", cmd_depositpanel_composer))
+        app.add_handler(CommandHandler("review", cmd_review_composer))
     app.add_handler(CommandHandler("depositstaged", cmd_deposit_staged_composer))
-    app.add_handler(CommandHandler("review", cmd_review_composer))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ac:"))
     app.add_error_handler(make_error_handler("album-composer-bot"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

@@ -13,6 +13,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+from app.services.storage_hub_bot_wiring import gatekeeper_review_bot_default
 from app.services.gatekeeper_source_demote import record_operator_approve, record_operator_reject
 from app.services.media_gatekeeper import (
     gatekeeper_verdict_from_media,
@@ -120,9 +121,9 @@ def review_thread_id() -> int | None:
 def _bot_token() -> str:
     """
     Bot that posts review cards must also handle gk:a/gk:r callbacks.
-    Default: payment bot (live on island). Set TBCC_GATEKEEPER_REVIEW_BOT=album_composer for AC.
+    Default follows storage hub owner (album composer / remixer when payment hub is off).
     """
-    which = (os.getenv("TBCC_GATEKEEPER_REVIEW_BOT") or "payment").strip().lower()
+    which = gatekeeper_review_bot_default()
     if which in ("album", "album_composer", "composer", "ac"):
         return (
             os.getenv("TBCC_ALBUM_COMPOSER_BOT_TOKEN")

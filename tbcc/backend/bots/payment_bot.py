@@ -52,7 +52,7 @@ if _env.exists():
 
 import httpx
 from bots.growth_config_client import referral_cfg
-from bots.payment_pipeline import validate_pre_checkout
+from bots.payment_pipeline import parse_invoice_payload, validate_pre_checkout
 from app.services.bundle_storage import bundle_zip2_path, bundle_zip_nth_path, bundle_zip_path
 from app.services.llm_shop_suggest import hashtag_line_from_slugs
 from app.utils.promo_url_normalize import normalize_promo_image_url
@@ -553,15 +553,49 @@ def _plan_in_bot_section(p: dict, section: str) -> bool:
     return sec == want
 
 
-async def fetch_plans(section: str = "main", min_stars: int | None = None) -> list[dict]:
+async def fetch_plans(
+    section: str = "main",
+    min_stars: int | None = None,
+    telegram_user_id: int | None = None,
+) -> list[dict]:
     """Subscription products (group/channel access), grouped by bot section."""
     out = [
         p
         for p in await _fetch_plans_raw()
         if _plan_ok_for_stars_checkout(p, min_stars=min_stars) and _plan_in_bot_section(p, section)
     ]
-    out.sort(key=lambda p: (int(p.get("duration_days") or 0), int(p.get("id") or 0)))
+    if section.strip().lower() == "main" and telegram_user_id:
+        from app.data.aof_vip_membership import is_vip_intro_plan_name
+
+        eligible = await asyncio.to_thread(_user_eligible_for_vip_intro_db, int(telegram_user_id))
+        if not eligible:
+            out = [p for p in out if not is_vip_intro_plan_name(str(p.get("name") or ""))]
+    out.sort(
+        key=lambda p: (
+            0 if _is_intro_plan_row(p) else 1,
+            int(p.get("price_stars") or 0),
+            int(p.get("duration_days") or 0),
+            int(p.get("id") or 0),
+        )
+    )
     return out
+
+
+def _is_intro_plan_row(p: dict) -> bool:
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+
+    return is_vip_intro_plan_name(str(p.get("name") or ""))
+
+
+def _user_eligible_for_vip_intro_db(telegram_user_id: int) -> bool:
+    from app.database.session import SessionLocal
+    from app.services.vip_intro_eligibility import user_eligible_for_vip_intro
+
+    db = SessionLocal()
+    try:
+        return user_eligible_for_vip_intro(db, int(telegram_user_id))
+    finally:
+        db.close()
 
 
 async def fetch_bundles() -> list[dict]:
@@ -1366,6 +1400,18 @@ async def cmd_depositpanel_payment(update: Update, context: ContextTypes.DEFAULT
     await cmd_deposit_panel(update, context)
 
 
+async def cmd_qapanel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.qa_master_panel_handlers import cmd_qa_master_panel
+
+    await cmd_qa_master_panel(update, context)
+
+
+async def handle_qa_master_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.qa_master_panel_handlers import on_qa_master_panel_callback
+
+    await on_qa_master_panel_callback(update, context)
+
+
 async def cmd_hubpanel_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from bots.storage_hub_control_handlers import cmd_hubpanel
 
@@ -1846,7 +1892,8 @@ async def send_simple_plan_checkout(
     elif multi_term:
         from app.services.fiat_checkout_labels import fiat_vip_ladder_intro_html
 
-        text = fiat_vip_ladder_intro_html()
+        has_intro = any(_is_intro_plan_row(p) for p in plans)
+        text = fiat_vip_ladder_intro_html(include_intro=has_intro)
     else:
         text = "·"
     await msg.reply_text(text, parse_mode="HTML" if multi_term else None, reply_markup=kb)
@@ -1906,7 +1953,14 @@ async def send_subscription_catalog_message(
         return
 
     st = await _get_runtime_settings()
-    plans = await fetch_plans(section=section, min_stars=int(st.get("min_subscription_stars") or 0))
+    user_id = getattr(getattr(msg, "from_user", None), "id", None) or getattr(
+        getattr(msg, "chat", None), "id", None
+    )
+    plans = await fetch_plans(
+        section=section,
+        min_stars=int(st.get("min_subscription_stars") or 0),
+        telegram_user_id=int(user_id) if user_id else None,
+    )
     if not plans:
         section_hint = " (/loot section)" if section == "loot" else ""
         await msg.reply_text(
@@ -2543,9 +2597,34 @@ async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     ok, err = await validate_pre_checkout(query, fetch_plan_by_id)
     if ok:
+        buyer = getattr(query, "from_user", None)
+        parsed = parse_invoice_payload(getattr(query, "invoice_payload", None) or "")
+        if buyer and parsed:
+            kind, plan_id, _uid = parsed
+            if kind == "sub":
+                block = await asyncio.to_thread(_intro_precheck_block_db, int(buyer.id), int(plan_id))
+                if block:
+                    await query.answer(ok=False, error_message=block)
+                    return
         await query.answer(ok=True)
     else:
         await query.answer(ok=False, error_message=err or "Payment not available")
+
+
+def _intro_precheck_block_db(telegram_user_id: int, plan_id: int) -> str | None:
+    from app.database.session import SessionLocal
+    from app.models.subscription_plan import SubscriptionPlan
+    from app.services.vip_intro_eligibility import assert_vip_intro_allowed
+
+    db = SessionLocal()
+    try:
+        plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == int(plan_id)).first()
+        err = assert_vip_intro_allowed(db, telegram_user_id=telegram_user_id, plan=plan)
+        if not err:
+            return None
+        return err[:64]
+    finally:
+        db.close()
 
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2786,18 +2865,21 @@ async def _post_init(app: Application) -> None:
     except Exception as e:
         logger.warning("set_my_description failed: %s", e)
     try:
-        from app.services.storage_hub_control_panels import ensure_all_hub_control_panels
+        from app.services.storage_hub_bot_wiring import payment_storage_hub_enabled
 
-        report = await ensure_all_hub_control_panels(app.bot)
-        lane = report.get("lanes") or {}
-        logger.info(
-            "Storage hub panels: lane_posted=%s lane_edited=%s lane_errors=%s lanes=%s special=%s",
-            lane.get("posted"),
-            lane.get("edited"),
-            lane.get("errors"),
-            lane.get("lanes"),
-            report.get("special_panels"),
-        )
+        if payment_storage_hub_enabled():
+            from app.services.storage_hub_control_panels import ensure_all_hub_control_panels
+
+            report = await ensure_all_hub_control_panels(app.bot)
+            lane = report.get("lanes") or {}
+            logger.info(
+                "Storage hub panels: lane_posted=%s lane_edited=%s lane_errors=%s lanes=%s special=%s",
+                lane.get("posted"),
+                lane.get("edited"),
+                lane.get("errors"),
+                lane.get("lanes"),
+                report.get("special_panels"),
+            )
     except Exception as e:
         logger.warning("Storage hub panel bootstrap failed: %s", e)
 
@@ -2856,11 +2938,12 @@ def main() -> None:
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
     app.add_handler(CommandHandler("videofind", cmd_videofind))
-    app.add_handler(CommandHandler("deposit", cmd_deposit_payment))
-    app.add_handler(CommandHandler("depositpanel", cmd_depositpanel_payment))
-    app.add_handler(CommandHandler("hubpanel", cmd_hubpanel_payment))
-    app.add_handler(CommandHandler("intake", cmd_intake_payment))
-    app.add_handler(CommandHandler("review", cmd_review_payment))
+    from app.services.storage_hub_bot_wiring import payment_storage_hub_enabled
+
+    if payment_storage_hub_enabled():
+        from bots.storage_hub_handlers import register_storage_hub_handlers
+
+        register_storage_hub_handlers(app, bot_label="payment")
     for h in build_macro_search_handlers(
         _get_runtime_settings,
         _patch_macro_custom_sources,
@@ -2897,68 +2980,6 @@ def main() -> None:
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/packs(@\w+)?\s*$"),
             cmd_packs,
         )
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/deposit(@\w+)?(?:\s|$)"),
-            cmd_deposit_payment,
-        )
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/depositpanel(@\w+)?(?:\s|$)"),
-            cmd_depositpanel_payment,
-        )
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/review(@\w+)?(?:\s|$)"),
-            cmd_review_payment,
-        )
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/intake(@\w+)?(?:\s|$)"),
-            cmd_intake_payment,
-        )
-    )
-    from app.services.storage_topic_deposit import storage_hub_chat_id_int
-    from bots.storage_hub_auto_pipe_handlers import on_storage_hub_lane_media_post
-
-    hub_id = storage_hub_chat_id_int()
-    app.add_handler(
-        MessageHandler(
-            filters.UpdateType.CHANNEL_POST
-            & filters.Chat(chat_id=hub_id)
-            & (
-                filters.PHOTO
-                | filters.VIDEO
-                | filters.Document.VIDEO
-                | filters.ATTACHMENT
-            ),
-            on_storage_hub_lane_media_post,
-        )
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:[atr]:")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b[ar]:")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:p:")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_hub_lane_control_callback, pattern=r"^hubctl:")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_sent_cache_control_callback, pattern=r"^sctl:")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handle_deposit_control_callback, pattern=r"^depctl:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")

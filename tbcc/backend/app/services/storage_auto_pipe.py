@@ -84,6 +84,28 @@ def set_lane_auto_pipe_enabled(lane_key: str, enabled: bool) -> bool:
     return enabled
 
 
+def set_all_lanes_auto_pipe(enabled: bool) -> bool:
+    """Global master toggle — sets global flag + every content lane."""
+    set_storage_auto_pipe_enabled(enabled)
+    for lane in CONTENT_LANE_NETWORK_KEYS:
+        if lane in ("inbox", "packs"):
+            continue
+        set_lane_auto_pipe_enabled(lane, enabled)
+    return enabled
+
+
+def all_lanes_auto_pipe_on() -> bool:
+    """True when every content lane has auto-pipe enabled (and global is on)."""
+    if not storage_auto_pipe_enabled():
+        return False
+    for lane in CONTENT_LANE_NETWORK_KEYS:
+        if lane in ("inbox", "packs"):
+            continue
+        if not lane_auto_pipe_enabled(lane):
+            return False
+    return True
+
+
 def auto_pipe_batch_size(lane_key: str | None = None) -> int:
     from app.services.intake_scheduler import get_batch_size
     from app.services.quarantine_batch_review import review_batch_size
@@ -167,9 +189,11 @@ def run_lane_auto_pipe(lane_key: str) -> dict[str, Any]:
         thread_id = int(row.message_thread_id)
 
     from app.database.session import SessionLocal
+    from app.services.hub_intake_policy import hub_master_auto_approve_enabled
     from app.services.storage_topic_deposit import default_deposit_media_types, queue_storage_topic_deposit
 
     batch = auto_pipe_batch_size(key)
+    qa_review_only = not hub_master_auto_approve_enabled()
     with SessionLocal() as db:
         report = queue_storage_topic_deposit(
             db,
@@ -179,9 +203,10 @@ def run_lane_auto_pipe(lane_key: str) -> dict[str, Any]:
             include_topic_mirror=False,
             sent_cache=False,
             auto_pipe=True,
+            qa_review_only=qa_review_only,
             commit=True,
         )
-    return {"ok": bool(report.get("ok")), "lane_key": key, "report": report}
+    return {"ok": bool(report.get("ok")), "lane_key": key, "report": report, "qa_review_only": qa_review_only}
 
 
 def format_auto_pipe_status() -> str:

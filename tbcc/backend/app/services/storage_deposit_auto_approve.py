@@ -36,17 +36,23 @@ _TRUSTED_POOL_NAMES: frozenset[str] = frozenset(ch.pool_name for ch in AOF_NETWO
 
 def storage_deposit_auto_approve_enabled() -> bool:
 
-    return (os.getenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE") or "1").strip().lower() in (
+    if (os.getenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE") or "1").strip().lower() in (
 
-        "1",
+        "0",
 
-        "true",
+        "false",
 
-        "yes",
+        "no",
 
-        "on",
+        "off",
 
-    )
+    ):
+
+        return False
+
+    from app.services.hub_intake_policy import hub_master_auto_approve_enabled
+
+    return hub_master_auto_approve_enabled()
 
 
 
