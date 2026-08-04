@@ -225,5 +225,23 @@ services:
       - redis
       - postgres
 
+  # @aof remixer — Storage Hub panels, /deposit, Q&A master (keep home album_composer Off).
+  album_composer_bot:
+    <<: *island-image
+    profiles: ["bots"]
+    command: python -m bots.album_composer_bot
+    environment:
+      PYTHONPATH: /app
+      TBCC_PAYMENT_STORAGE_HUB: "0"
+      TBCC_ALBUM_COMPOSER_STORAGE_HUB: "1"
+      TBCC_ALBUM_COMPOSER_STORAGE_DEPOSIT: "1"
+      TBCC_GATEKEEPER_REVIEW_BOT: album_composer
+    volumes:
+      - /opt/tbcc/uploads:/uploads:rw
+    depends_on:
+      - api
+      - redis
+      - postgres
+
 volumes:
   island_pgdata:

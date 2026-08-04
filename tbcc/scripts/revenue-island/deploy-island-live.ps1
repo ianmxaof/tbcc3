@@ -120,7 +120,7 @@ grep -q '^TBCC_WORKER_IMAGE=' $RemoteDir/infra/$envFile && sed -i 's|^TBCC_WORKE
 # 5) Recreate stack
 Write-Host "`n[5/7] Recreate api + workers + bots" -ForegroundColor Yellow
 Invoke-Compose "up -d --pull never --force-recreate api worker worker_post beat"
-Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot companion_bot secretary_bot"
+Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot companion_bot secretary_bot album_composer_bot"
 
 # 6) Migrations + seeds
 if (-not $SkipSeeds) {
@@ -132,6 +132,8 @@ if (-not $SkipSeeds) {
   Invoke-Compose "exec -T api python scripts/apply_network_album_checkout.py --execute --sync-schedulers"
   Invoke-Compose "exec -T api python scripts/stock_buffer_armory.py --relay --scheduled"
   Invoke-Remote "mkdir -p /opt/tbcc/uploads/bundles /opt/tbcc/uploads/promo"
+  Write-Host "Bootstrap Storage Hub panels (remixer on island)" -ForegroundColor Yellow
+  Invoke-Compose "exec -T api python scripts/bootstrap_storage_hub_panels.py"
 } else {
   Write-Host "`n[6/7] Skip seeds (-SkipSeeds)" -ForegroundColor DarkGray
 }

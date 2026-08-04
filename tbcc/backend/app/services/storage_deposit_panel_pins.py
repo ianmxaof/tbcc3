@@ -179,11 +179,16 @@ async def refresh_storage_deposit_panel_http(
 
 async def ensure_all_storage_deposit_panels(bot, *, force_new: bool = False) -> dict[str, Any]:
     """Bootstrap pinned deposit panels across every mapped Storage Hub lane."""
+    import asyncio
+
     if not storage_deposit_panels_enabled():
         return {"ok": True, "skipped": True, "reason": "disabled"}
     results: list[dict[str, Any]] = []
     errors = 0
-    for target in storage_deposit_panel_targets():
+    pause_s = float(os.getenv("TBCC_STORAGE_HUB_PANEL_BOOTSTRAP_PAUSE_S") or "1.2")
+    for i, target in enumerate(storage_deposit_panel_targets()):
+        if i > 0 and pause_s > 0:
+            await asyncio.sleep(pause_s)
         try:
             out = await ensure_storage_deposit_panel(
                 bot,
