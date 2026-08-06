@@ -16,6 +16,25 @@ def test_parse_go():
     assert rb._parse_go(["preview"]) is False
 
 
+def test_anonymous_group_operator_detects_group_anonymous_bot():
+    update = MagicMock()
+    update.effective_chat = SimpleNamespace(type="supergroup", id=-100999)
+    update.effective_user = SimpleNamespace(id=1087968824)
+    update.effective_message = SimpleNamespace(from_user=None, sender_chat=None)
+    assert rb._anonymous_group_operator(update) is True
+
+
+def test_anonymous_group_operator_detects_sender_chat():
+    update = MagicMock()
+    update.effective_chat = SimpleNamespace(type="supergroup", id=-100999)
+    update.effective_user = SimpleNamespace(id=1)
+    update.effective_message = SimpleNamespace(
+        from_user=None,
+        sender_chat=SimpleNamespace(id=-100999),
+    )
+    assert rb._anonymous_group_operator(update) is True
+
+
 def test_cmd_rebundle_rejects_private():
     update = MagicMock()
     update.effective_chat = SimpleNamespace(type="private", id=1)

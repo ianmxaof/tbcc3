@@ -3480,9 +3480,9 @@ def main() -> None:
         await cmd_compose(update, context, deny=_deny_unauthorized)
 
     async def _cmd_rebundle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        from bots.remixer_rebundle import cmd_rebundle
+        from bots.remixer_rebundle import cmd_rebundle, deny_rebundle_unauthorized
 
-        await cmd_rebundle(update, context, deny=_deny_unauthorized)
+        await cmd_rebundle(update, context, deny=deny_rebundle_unauthorized)
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))

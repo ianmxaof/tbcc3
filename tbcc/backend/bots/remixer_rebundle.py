@@ -9,6 +9,8 @@ from telegram import ChatMember, Update
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.ext import ContextTypes
 
+from app.services.tbcc_telegram_admin import GROUP_ANONYMOUS_BOT_ID
+
 logger = logging.getLogger(__name__)
 
 DenyFn = Callable[[Update], Awaitable[bool]]
@@ -19,6 +21,56 @@ def rebundle_help_blurb() -> str:
         "<b>/rebundle</b> — preview loose media → albums in this chat/topic\n"
         "<b>/rebundle go</b> — post full + partial albums, then delete source singles"
     )
+
+
+def _actor_user_id(update: Update) -> int | None:
+    user = update.effective_user
+    if user and user.id:
+        return int(user.id)
+    msg = update.effective_message
+    if msg and msg.from_user and msg.from_user.id:
+        return int(msg.from_user.id)
+    return None
+
+
+def _anonymous_group_operator(update: Update) -> bool:
+    """True when posting as group / anonymous admin (Telegram Group Anonymous Bot)."""
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        return False
+    uid = _actor_user_id(update)
+    if uid is not None and int(uid) == GROUP_ANONYMOUS_BOT_ID:
+        return True
+    msg = update.effective_message
+    sender = getattr(msg, "sender_chat", None) if msg else None
+    if sender and int(getattr(sender, "id", 0) or 0) == int(chat.id):
+        return True
+    return False
+
+
+async def deny_rebundle_unauthorized(update: Update) -> bool:
+    """
+    Allow TBCC operator ids, or anonymous/group-as-sender in groups.
+    Silent deny in groups for everyone else (no spam).
+    """
+    from bots.album_composer_bot import _admin_ids, _authorized
+
+    if _authorized(_actor_user_id(update)):
+        return False
+    if _anonymous_group_operator(update) and _admin_ids():
+        # Group admins can only post anonymously when they are admins; bot still
+        # requires configured operator ids so empty .env never opens the gate.
+        return False
+    chat = update.effective_chat
+    if chat and chat.type in ("group", "supergroup", "channel"):
+        return True
+    msg = update.effective_message
+    if msg:
+        await msg.reply_text(
+            "Admin only — set ADMIN_TELEGRAM_ID in tbcc/.env, or post as yourself "
+            "(not anonymously) in a group where you are operator."
+        )
+    return True
 
 
 async def _bot_is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -51,9 +103,10 @@ async def cmd_rebundle(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     *,
-    deny: DenyFn,
+    deny: DenyFn | None = None,
 ) -> None:
-    if await deny(update):
+    deny_fn = deny or deny_rebundle_unauthorized
+    if await deny_fn(update):
         return
     msg = update.effective_message
     chat = update.effective_chat
