@@ -226,6 +226,7 @@ services:
       - postgres
 
   # @aof remixer — Storage Hub panels, /deposit, Q&A master (keep home album_composer Off).
+  # /rebundle scans via Telethon import session — must share /sessions with api/worker.
   album_composer_bot:
     <<: *island-image
     profiles: ["bots"]
@@ -236,7 +237,13 @@ services:
       TBCC_ALBUM_COMPOSER_STORAGE_HUB: "1"
       TBCC_ALBUM_COMPOSER_STORAGE_DEPOSIT: "1"
       TBCC_GATEKEEPER_REVIEW_BOT: album_composer
+      TELEGRAM_SESSION_PATH: /sessions/admin
+      TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
+      TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
+      TBCC_ALBUM_COMPOSER_TELEGRAM_SESSION: /sessions/admin_album
+      TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION: "1"
     volumes:
+      - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
       - api
