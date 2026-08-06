@@ -27,6 +27,7 @@ py -3.13 -m pytest <path> -x -q
 | **Zeus HTTP (3a)** | `tests/test_zeus_v1.py` | Read-only `/zeus/v1/stack/status` alias of `/ops/stack-status` |
 | **Zeus multi-app host** | `tests/test_zeus_multi_app.py` | Co-host lifecycle (mocked PTB); spike gated by `TBCC_ZEUS_COHOST_SPIKE` (secretary+macro_search) |
 | **Remixer Cover** | `tests/test_remixer_cover.py` | `/cover` toggle + `copy_message` echo + send-to-channel |
+| **Remixer rebundle** | `tests/test_topic_rebundle_service.py`, `tests/test_remixer_rebundle.py` | Loose media → albums (+ partial leftovers); `/rebundle` in any admin group |
 | **Human gate pacing** | `tests/test_human_gate_pacing.py` | Robot ack opt-in, funnel RAG seed, DM outreach pool |
 | **Lifecycle DM** | `tests/test_lifecycle_dm_outreach.py`, `tests/test_companion_activity_touch.py` | Subscription renewal + loot + companion re-engage segments |
 | **Scrape transport** | `tests/test_scrape_transport.py` | Cancel/skip/overview phases for Ingest transport |

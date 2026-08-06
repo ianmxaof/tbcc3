@@ -159,7 +159,12 @@ async def on_hub_lane_control_callback(update: Update, context: ContextTypes.DEF
         await query.answer("Queuing deposit…")
         from bots.storage_deposit_control_handlers import _run_deposit_from_panel
 
-        await _run_deposit_from_panel(update, context, thread_id=thread_id)
+        await _run_deposit_from_panel(
+            update,
+            context,
+            thread_id=thread_id,
+            repost_panels=True,
+        )
         return True
     elif data.startswith("autopipe:"):
         parts = data.split(":")
@@ -181,20 +186,57 @@ async def on_hub_lane_control_callback(update: Update, context: ContextTypes.DEF
         set_lane_loot_preview_enabled(lane, enabled)
         note = f"Loot preview {'ON' if enabled else 'OFF'} ({lane})"
         await query.answer(note)
+    elif data == "master":
+        from app.services.qa_master_panel import ensure_qa_master_panel_at_thread
+
+        await query.answer("Master panel → bottom")
+        await ensure_qa_master_panel_at_thread(
+            context.bot,
+            chat_id=int(query.message.chat_id),
+            message_thread_id=int(thread_id),
+            force_new=True,
+        )
+        return True
+    elif data == "rebundle:preview":
+        from app.services.topic_rebundle_service import (
+            format_topic_rebundle_summary,
+            rebundle_storage_topic_loose_media_sync,
+        )
+
+        report = rebundle_storage_topic_loose_media_sync(
+            message_thread_id=int(thread_id),
+            dry_run=True,
+            allow_partial=True,
+            delete_sources=True,
+        )
+        summary = format_topic_rebundle_summary(report, html=False)
+        await query.answer(summary[:200], show_alert=True)
+        return True
+    elif data == "rebundle:run":
+        from app.workers.topic_rebundle_worker import rebundle_storage_topic_task
+
+        rebundle_storage_topic_task.delay(
+            message_thread_id=int(thread_id),
+            dry_run=False,
+            allow_partial=True,
+            delete_sources=True,
+        )
+        await query.answer("Queued rebundle (partial OK; delete sources)")
+        return True
     else:
         await query.answer()
         return True
 
     if query.message:
         try:
-            from app.services.storage_deposit_panel_pins import ensure_storage_deposit_panel
+            from app.services.hub_panel_activity import repost_panels_after_deposit
 
-            await ensure_storage_deposit_panel(
+            await repost_panels_after_deposit(
                 context.bot,
                 chat_id=int(query.message.chat_id),
                 message_thread_id=thread_id,
                 topic_title=title or "",
-                force_new=False,
+                network_key=network_key,
             )
         except Exception:
             logger.debug("hub lane panel refresh failed", exc_info=True)

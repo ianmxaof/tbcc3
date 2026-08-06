@@ -124,9 +124,20 @@ def lane_hub_control_keyboard(network_key: str | None) -> Any:
             rows.append([InlineKeyboardButton("▶ Loot preview ON", callback_data=f"hubctl:preview:on:{nk}")])
     rows.append(
         [
+            InlineKeyboardButton("🔗 Preview rebundle", callback_data="hubctl:rebundle:preview"),
+            InlineKeyboardButton("✅ Rebundle (+partial)", callback_data="hubctl:rebundle:run"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton("🟡 Master panel", callback_data="hubctl:master"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="hubctl:refresh"),
+        ]
+    )
+    rows.append(
+        [
             InlineKeyboardButton("50", callback_data="hubctl:preset:50"),
             InlineKeyboardButton("100", callback_data="hubctl:preset:100"),
-            InlineKeyboardButton("🔄 Refresh", callback_data="hubctl:refresh"),
         ]
     )
     return InlineKeyboardMarkup(rows)

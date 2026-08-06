@@ -17,8 +17,10 @@ all topic media. ADMIN_TELEGRAM_ID plus any TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS 
 served; other senders are ignored silently (no denial replies). Sessions are chat-scoped:
 all admin accounts in a group share one draft. Post as yourself — anonymous /
 channel-as-sender posts are not recognized as admin, and media posted by OTHER BOTS is
-invisible to this bot (Telegram platform rule). Do not add this bot to @aofmainhub or
-other public channels — it is for DM + Storage Hub groups only.
+invisible to this bot (Telegram platform rule). /rebundle groups loose media into albums
+in any group where this bot is admin (admin Telethon session must also be a member).
+Do not add this bot to @aofmainhub or other public channels — it is for DM + Storage Hub
+groups only.
 """
 from __future__ import annotations
 
@@ -1456,6 +1458,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     sess = _session(context)
     from bots.remixer_cover import cover_help_blurb
+    from bots.remixer_rebundle import rebundle_help_blurb
 
     await update.message.reply_text(
         "<b>TBCC Album Composer</b>\n\n"
@@ -1465,8 +1468,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "2. Use the <b>workshop menu</b> below — caption, buttons, crop, post\n"
         "3. <b>Split to emojis</b> on the menu for emoji-pack grids\n"
         "4. <b>Preview post</b> before you send · <b>Make album(s)</b> to split large batches\n\n"
-        f"{cover_help_blurb()}\n\n"
-        "<b>Commands</b> /menu · /cover · /compose · /preview · /caption · /crop · /clear · /emoji_pack\n"
+        f"{cover_help_blurb()}\n"
+        f"{rebundle_help_blurb()}\n\n"
+        "<b>Commands</b> /menu · /cover · /compose · /rebundle · /preview · /caption · /crop · /clear · /emoji_pack\n"
         "The menu stays pinned at the bottom while you work.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
@@ -3404,6 +3408,7 @@ async def post_init(application: Application) -> None:
             BotCommand("drafts", "List saved drafts"),
             BotCommand("clear", "Clear staged media only"),
             BotCommand("emoji_pack", "Split media into Telegram emoji pack"),
+            BotCommand("rebundle", "Group loose media into albums (preview)"),
             BotCommand("deposit", "Queue N items into this topic's pool"),
             BotCommand("depositpanel", "Bulk deposit presets (50/100/150)"),
             BotCommand("depositstaged", "Deposit staged workshop media"),
@@ -3423,6 +3428,7 @@ async def post_init(application: Application) -> None:
                 BotCommand("qapanel", "Q&A master control panel"),
                 BotCommand("review", "Bulk approve quarantine queue"),
                 BotCommand("intake", "Inbox intake scheduler panel"),
+                BotCommand("rebundle", "Group loose media into albums here"),
                 BotCommand("menu", "Workshop menu"),
             ]
             await application.bot.set_my_commands(
@@ -3473,10 +3479,16 @@ def main() -> None:
 
         await cmd_compose(update, context, deny=_deny_unauthorized)
 
+    async def _cmd_rebundle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from bots.remixer_rebundle import cmd_rebundle
+
+        await cmd_rebundle(update, context, deny=_deny_unauthorized)
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("cover", _cmd_cover))
     app.add_handler(CommandHandler("compose", _cmd_compose))
+    app.add_handler(CommandHandler("rebundle", _cmd_rebundle))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("status", cmd_status))
