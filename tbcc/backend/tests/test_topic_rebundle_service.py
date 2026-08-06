@@ -114,5 +114,45 @@ def test_topic_rebundle_delete_sources_default_on(monkeypatch):
     assert topic_rebundle_delete_sources() is False
 
 
+def test_delete_rebundle_source_messages_bot_api(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.topic_rebundle_service import delete_rebundle_source_messages
+
+    monkeypatch.setenv("TBCC_ALBUM_COMPOSER_BOT_TOKEN", "123:ABC")
+
+    class FakeResp:
+        status_code = 200
+        content = b'{"ok":true}'
+
+        def json(self):
+            return {"ok": True}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None):
+            assert "deleteMessages" in url
+            assert json["chat_id"] == -1001
+            assert json["message_ids"] == [1, 2, 3]
+            return FakeResp()
+
+    with patch("httpx.AsyncClient", FakeClient):
+        out = asyncio.run(
+            delete_rebundle_source_messages(chat_id=-1001, message_ids=[1, 2, 3])
+        )
+    assert out["ok"] is True
+    assert out["deleted"] == 3
+    assert out["via"] == "bot_api"
+
+
 def test_topic_rebundle_album_size_default():
     assert topic_rebundle_album_size() == 10

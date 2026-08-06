@@ -44,6 +44,111 @@ def topic_rebundle_delete_sources() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _rebundle_bot_token() -> str:
+    return (os.getenv("TBCC_ALBUM_COMPOSER_BOT_TOKEN") or "").strip()
+
+
+async def delete_rebundle_source_messages(
+    *,
+    chat_id: int | str,
+    message_ids: list[int],
+    storage_client=None,
+    entity=None,
+) -> dict[str, Any]:
+    """
+    Remove source singles after rebundle.
+
+    Prefer Bot API (remixer is group admin with delete rights). Telethon
+    admin_import often lacks can_delete_messages — delete_messages then
+    returns ok with pts_count=0 and leaves duplicates.
+    """
+    ids = [int(i) for i in message_ids if int(i) > 0]
+    if not ids:
+        return {"ok": True, "deleted": 0, "via": "none"}
+
+    token = _rebundle_bot_token()
+    cid = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+    deleted = 0
+    errors: list[str] = []
+
+    if token:
+        import httpx
+
+        url = f"https://api.telegram.org/bot{token}/deleteMessages"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            for start in range(0, len(ids), 100):
+                chunk = ids[start : start + 100]
+                try:
+                    r = await client.post(
+                        url,
+                        json={"chat_id": cid, "message_ids": chunk},
+                    )
+                    data = r.json() if r.content else {}
+                    if r.status_code == 200 and data.get("ok"):
+                        deleted += len(chunk)
+                    else:
+                        # Fallback: one-by-one (partial permission / old Bot API)
+                        single_url = f"https://api.telegram.org/bot{token}/deleteMessage"
+                        for mid in chunk:
+                            try:
+                                sr = await client.post(
+                                    single_url,
+                                    json={"chat_id": cid, "message_id": mid},
+                                )
+                                sdata = sr.json() if sr.content else {}
+                                if sr.status_code == 200 and sdata.get("ok"):
+                                    deleted += 1
+                                else:
+                                    err = (sdata.get("description") if isinstance(sdata, dict) else None) or sr.text
+                                    errors.append(f"{mid}:{err}"[:160])
+                            except Exception as e:
+                                errors.append(f"{mid}:{e}"[:160])
+                except Exception as e:
+                    errors.append(str(e)[:160])
+        if deleted:
+            return {
+                "ok": deleted == len(ids),
+                "deleted": deleted,
+                "requested": len(ids),
+                "via": "bot_api",
+                "errors": errors[:5],
+            }
+
+    if storage_client is not None and entity is not None:
+        try:
+            result = await storage_client.delete_messages(entity, ids, revoke=True)
+            # Telethon may return AffectedMessages with pts_count=0 when rights missing
+            pts = int(getattr(result, "pts_count", 0) or 0) if result is not None else 0
+            if pts <= 0 and hasattr(result, "__iter__"):
+                # list of AffectedMessages for chunked deletes
+                pts = sum(int(getattr(x, "pts_count", 0) or 0) for x in result)
+            assumed = len(ids) if pts > 0 else 0
+            return {
+                "ok": assumed == len(ids),
+                "deleted": assumed,
+                "requested": len(ids),
+                "via": "telethon",
+                "pts_count": pts,
+                "errors": [] if assumed else ["telethon pts_count=0 — promote session with delete messages"],
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "deleted": 0,
+                "requested": len(ids),
+                "via": "telethon",
+                "errors": [str(e)[:200]],
+            }
+
+    return {
+        "ok": False,
+        "deleted": 0,
+        "requested": len(ids),
+        "via": "none",
+        "errors": errors[:5] or ["no bot token and no telethon client"],
+    }
+
+
 def classify_loose_media_messages(messages: list) -> tuple[list, list]:
     """
     Split topic media into loose singles vs existing multi-message albums.
@@ -240,18 +345,24 @@ async def rebundle_storage_topic_loose_media_async(
                 ids = [int(getattr(m, "id", 0) or 0) for m in batch]
                 ids = [i for i in ids if i > 0]
                 if ids:
-                    try:
-                        await storage.client.delete_messages(entity, ids)
-                        sources_deleted += len(ids)
-                    except Exception as de:
+                    del_report = await delete_rebundle_source_messages(
+                        chat_id=channel_ident,
+                        message_ids=ids,
+                        storage_client=storage.client,
+                        entity=entity,
+                    )
+                    n = int(del_report.get("deleted") or 0)
+                    sources_deleted += n
+                    if n < len(ids):
                         delete_errors += 1
                         logger.warning(
-                            "topic rebundle delete sources failed peer=%s thread=%s n=%s: %s",
+                            "topic rebundle delete incomplete peer=%s thread=%s want=%s got=%s via=%s err=%s",
                             channel_ident,
                             tid,
                             len(ids),
-                            de,
-                            exc_info=True,
+                            n,
+                            del_report.get("via"),
+                            del_report.get("errors"),
                         )
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -337,7 +448,10 @@ def format_topic_rebundle_summary(report: dict[str, Any], *, html: bool = True) 
     if posted:
         extra = f" ({partial_posted} partial)" if partial_posted else ""
         if do_delete:
-            src = f"deleted {deleted} source msg(s)" if deleted else "source delete attempted"
+            if deleted:
+                src = f"deleted {deleted} source msg(s)"
+            else:
+                src = "source delete failed — check remixer delete rights"
         else:
             src = "sources kept"
         body = f"Posted {posted} album(s){extra} (full size {size}; {src})."
