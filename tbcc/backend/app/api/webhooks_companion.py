@@ -24,9 +24,12 @@ from app.services.companion_generation import cleanup_temp_image_from_url, compa
 from app.services.companion_image_utils import compress_image_for_api_upload
 from app.services.companion_jobs import CompanionJob, get_job, new_job_id, parse_telegram_job_id, pop_job, put_job
 from app.services.companion_telegram_dispatch import (
+    send_companion_menu_after_delivery,
     send_result_message,
     send_result_photo,
     send_result_photo_bytes,
+    send_result_video,
+    send_result_video_bytes,
 )
 from app.services.undress_tool_client import submit_photo_undress, submit_photo_undress_with_pose
 
@@ -216,23 +219,58 @@ async def _chain_body_refine_pass(job: CompanionJob, image_bytes: bytes, filenam
     return {"ok": True, "chained_refine": new_id}
 
 
+def _is_video_bytes(data: bytes | None) -> bool:
+    if not data or len(data) < 12:
+        return False
+    if data[:4] == b"ftyp":
+        return True
+    if len(data) > 8 and data[4:8] == b"ftyp":
+        return True
+    return False
+
+
+def _is_video_filename(name: str) -> bool:
+    return (name or "").lower().endswith((".mp4", ".webm", ".mov"))
+
+
 async def _deliver_final_photo(job: CompanionJob, image_bytes: bytes, filename: str) -> dict[str, Any]:
+    from app.services.companion_telegram_dispatch import _delivery_nav_markup
+
+    is_video = job.media_type == "video" or _is_video_bytes(image_bytes) or _is_video_filename(filename)
+    nav = _delivery_nav_markup()
     char = save_character(
         user_id=job.user_id,
         look_summary=job.character_look or "glamorous, curvy",
-        pose=job.character_pose,
+        pose=job.character_pose or job.video_pose_name,
     )
-    caption = (
-        f"<b>{char.name}</b> is ready — she's yours now.\n"
-        "Chat anytime (she remembers you). /name to rename her."
-    )
-    ok = await send_result_photo_bytes(
-        chat_id=job.chat_id,
-        image_bytes=image_bytes,
-        caption=caption,
-        filename=filename,
-        parse_mode="HTML",
-    )
+    if is_video:
+        caption = (
+            f"<b>{char.name}</b> — your video reveal is ready.\n"
+            "Chat anytime (she remembers you). /name to rename her."
+        )
+        ok = await send_result_video_bytes(
+            chat_id=job.chat_id,
+            video_bytes=image_bytes,
+            caption=caption,
+            filename=filename if _is_video_filename(filename) else "result.mp4",
+            parse_mode="HTML",
+            reply_markup=nav,
+        )
+        delivered = "video_bytes" if ok else "video_bytes_failed"
+    else:
+        caption = (
+            f"<b>{char.name}</b> is ready — she's yours now.\n"
+            "Chat anytime (she remembers you). /name to rename her."
+        )
+        ok = await send_result_photo_bytes(
+            chat_id=job.chat_id,
+            image_bytes=image_bytes,
+            caption=caption,
+            filename=filename,
+            parse_mode="HTML",
+            reply_markup=nav,
+        )
+        delivered = "photo_bytes" if ok else "photo_bytes_failed"
     if ok:
         try:
             from app.services.companion_stars import maybe_offer_stars_after_delivery
@@ -240,7 +278,11 @@ async def _deliver_final_photo(job: CompanionJob, image_bytes: bytes, filename: 
             await maybe_offer_stars_after_delivery(chat_id=job.chat_id, user_id=job.user_id)
         except Exception as e:
             logger.debug("stars upsell after delivery skipped: %s", e)
-    return {"ok": True, "delivered": "photo_bytes" if ok else "photo_bytes_failed"}
+        try:
+            await send_companion_menu_after_delivery(chat_id=job.chat_id, user_id=job.user_id)
+        except Exception as e:
+            logger.debug("companion menu after delivery skipped: %s", e)
+    return {"ok": True, "delivered": delivered}
 
 
 async def _handle_payload(
@@ -314,29 +356,57 @@ async def _handle_payload(
         )
         return {"ok": True, "delivered": "no_image"}
 
-    ok = await send_result_photo(chat_id=job.chat_id, image_url=urls[0], caption="Here is your result.")
+    video_url = urls[0]
+    is_video = job.media_type == "video" or video_url.lower().endswith((".mp4", ".webm", ".mov"))
+    from app.services.companion_telegram_dispatch import _delivery_nav_markup
+
+    nav = _delivery_nav_markup()
+    char = save_character(
+        user_id=job.user_id,
+        look_summary=job.character_look or "glamorous, curvy",
+        pose=job.character_pose,
+    )
+    if is_video:
+        caption = (
+            f"<b>{char.name}</b> — your video reveal is ready.\n"
+            "Chat anytime (she remembers you). /name to rename her."
+        )
+        ok = await send_result_video(
+            chat_id=job.chat_id,
+            video_url=video_url,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=nav,
+        )
+    else:
+        caption = (
+            f"<b>{char.name}</b> is ready — she's yours now.\n"
+            "Chat anytime (she remembers you). /name to rename her."
+        )
+        ok = await send_result_photo(
+            chat_id=job.chat_id,
+            image_url=video_url,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=nav,
+        )
     for u in urls:
         cleanup_temp_image_from_url(u)
     inp = payload.get("input")
     if isinstance(inp, dict):
         cleanup_temp_image_from_url(str(inp.get("imageUrl") or ""))
     if ok:
-        save_character(
-            user_id=job.user_id,
-            look_summary=job.character_look or "glamorous, curvy",
-            pose=job.character_pose,
-        )
-        await send_result_message(
-            chat_id=job.chat_id,
-            text="She's ready — chat with her anytime. /name to rename.",
-        )
         try:
             from app.services.companion_stars import maybe_offer_stars_after_delivery
 
             await maybe_offer_stars_after_delivery(chat_id=job.chat_id, user_id=job.user_id)
         except Exception as e:
             logger.debug("stars upsell after url delivery skipped: %s", e)
-    return {"ok": True, "delivered": "photo" if ok else "photo_failed"}
+        try:
+            await send_companion_menu_after_delivery(chat_id=job.chat_id, user_id=job.user_id)
+        except Exception as e:
+            logger.debug("companion menu after url delivery skipped: %s", e)
+    return {"ok": True, "delivered": ("video" if is_video else "photo") if ok else "delivery_failed"}
 
 
 async def _companion_webhook(request: Request, provider: str) -> dict:

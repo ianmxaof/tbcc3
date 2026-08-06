@@ -18,7 +18,13 @@ import httpx
 from app.services.companion_jobs import CompanionJob, new_job_id, put_job
 from app.services.nowpayments_client import public_api_base_url
 from app.services.nudify_client import configured as nudify_configured, submit_nudify_job
-from app.services.undress_tool_client import configured as undress_configured, submit_photo_undress, submit_photo_undress_with_pose
+from app.services.undress_tool_client import (
+    configured as undress_configured,
+    submit_photo_undress,
+    submit_photo_undress_with_pose,
+    submit_video_undress,
+    submit_video_undress_with_pose,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +42,21 @@ def image_provider() -> str:
 
 def generation_configured() -> bool:
     return undress_configured() or nudify_configured()
+
+
+def video_enabled() -> bool:
+    raw = (os.getenv("TBCC_COMPANION_VIDEO_ENABLED") or "1").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return undress_configured()
+
+
+def video_credit_units() -> int:
+    raw = (os.getenv("TBCC_COMPANION_VIDEO_CREDIT_UNITS") or "2").strip()
+    try:
+        return max(1, min(10, int(raw)))
+    except ValueError:
+        return 2
 
 
 def companion_webhook_base() -> str:
@@ -134,6 +155,9 @@ async def queue_photo_generation(
         raise RuntimeError(reach_msg)
 
     prov = (provider or image_provider()).lower()
+    if prov != "undress":
+        raise RuntimeError("Video reveals require undress API — set TBCC_UNDRESS_TOOL_API_KEY")
+
     job_id = new_job_id(chat_id=chat_id, user_id=user_id)
     pose_val = (pose or "").strip() or None
     body_params = {
@@ -147,9 +171,16 @@ async def queue_photo_generation(
         body_params["body_type"] = "curvy"
     has_body = any(body_params.values())
     chain_pose = bool(pose_val and has_body)
-    look_summary = ", ".join(
-        f"{k}={v}" for k, v in body_params.items() if v
-    ) or "default"
+    look_summary = ", ".join(f"{k}={v}" for k, v in body_params.items() if v) or "default"
+
+    logger.info(
+        "companion queue photo uid=%s job=%s pose=%s api_params=%s chain_pose=%s",
+        user_id,
+        job_id,
+        pose_val,
+        {k: v for k, v in body_params.items() if v},
+        chain_pose,
+    )
 
     put_job(
         CompanionJob(
@@ -223,6 +254,68 @@ async def queue_photo_generation(
     return GenerationQueued(job_id=job_id, provider="undress", message=user_msg)
 
 
+async def queue_video_generation(
+    *,
+    chat_id: int,
+    user_id: int,
+    photo_bytes: bytes,
+    filename: str = "photo.jpg",
+    video_pose_id: str | None = None,
+    video_pose_name: str | None = None,
+) -> GenerationQueued:
+    ok, reach_msg = await check_public_webhook_reachable()
+    if not ok:
+        raise RuntimeError(reach_msg)
+    if not undress_configured():
+        raise RuntimeError("Undress API not configured — set TBCC_UNDRESS_TOOL_API_KEY")
+
+    job_id = new_job_id(chat_id=chat_id, user_id=user_id)
+    pose_id = (video_pose_id or "").strip() or None
+    pose_name = (video_pose_name or "").strip() or ""
+    logger.info(
+        "companion queue video uid=%s job=%s pose_id=%s pose_name=%s",
+        user_id,
+        job_id,
+        pose_id,
+        pose_name,
+    )
+
+    put_job(
+        CompanionJob(
+            job_id=job_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            provider="undress",
+            created_at=time.time(),
+            media_type="video",
+            video_pose_id=pose_id or "",
+            video_pose_name=pose_name,
+            character_pose=pose_name,
+        )
+    )
+    webhook = f"{companion_webhook_base()}/undress"
+    if pose_id:
+        result = await submit_video_undress_with_pose(
+            id_gen=job_id,
+            photo_bytes=photo_bytes,
+            webhook_url=webhook,
+            filename=filename,
+            pose_id=pose_id,
+        )
+        user_msg = result.message or f"Video queued — pose: {pose_name or pose_id}…"
+    else:
+        result = await submit_video_undress(
+            id_gen=job_id,
+            photo_bytes=photo_bytes,
+            webhook_url=webhook,
+            filename=filename,
+        )
+        user_msg = result.message or "Video queued — I'll DM her when she's ready."
+    if not result.ok:
+        raise RuntimeError(result.message or "Undress video API rejected the photo")
+    return GenerationQueued(job_id=job_id, provider="undress", message=user_msg)
+
+
 def extract_result_urls(payload: dict[str, Any]) -> list[str]:
     """Best-effort parse of undress / nudify webhook bodies."""
     urls: list[str] = []
@@ -244,7 +337,7 @@ def extract_result_urls(payload: dict[str, Any]) -> list[str]:
 
     def walk(obj: Any) -> None:
         if isinstance(obj, dict):
-            for key in ("result_url", "image_url", "imageUrl", "url", "photo_url", "output_url", "output"):
+            for key in ("result_url", "image_url", "imageUrl", "url", "photo_url", "output_url", "output", "video_url", "videoUrl"):
                 if key in obj:
                     add(obj[key])
             raw = obj.get("raw_data")

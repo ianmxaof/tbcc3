@@ -65,15 +65,10 @@ from app.services.companion_access import (
     verify_aof_membership,
 )
 from app.services.companion_body_prefs import (
-    CLOTH_OPTIONS,
-    GROUP_LABELS,
-    OPTION_GROUPS,
-    apply_bimbo_preset,
+    BODY_PRESET_IDS,
+    apply_body_preset,
     clear_body_prefs,
-    display_value,
     load_body_prefs,
-    option_button_label,
-    save_body_pref,
     styles_help_text,
 )
 from app.services.companion_character import (
@@ -102,7 +97,21 @@ from app.services.companion_generation import (
     generation_configured,
     image_provider,
     queue_photo_generation,
+    queue_video_generation,
+    video_credit_units,
+    video_enabled,
 )
+from app.services.companion_menu import (
+    body_preset_keyboard,
+    hero_image_path,
+    main_menu_keyboard,
+    pose_keyboard,
+    repeat_menu_hint_text,
+    start_menu_text,
+    video_pose_keyboard,
+    welcome_caption,
+)
+from app.services.companion_assets import ensure_preset_card, list_pose_tile_paths
 from app.services.nudify_client import configured as nudify_configured
 from app.services.llm_chat import complete_llm_chat, default_system_prompt, provider_configured
 from app.services.undress_tool_client import (
@@ -110,6 +119,7 @@ from app.services.undress_tool_client import (
     configured as undress_configured,
     get_me,
     list_photo_poses,
+    list_video_poses,
 )
 
 logging.basicConfig(
@@ -123,6 +133,9 @@ AGE_KEY = "age_confirmed"
 NAME_AWAIT_KEY = "awaiting_character_name"
 POSE_KEY = "selected_pose"
 POSE_OPTIONS_KEY = "pose_options"
+MEDIA_MODE_KEY = "media_mode"
+VIDEO_POSE_KEY = "video_pose"
+VIDEO_POSE_OPTIONS_KEY = "video_pose_options"
 BOT_USERNAME_KEY = "companion_bot_username"
 
 _rate_log: dict[int, deque[float]] = {}
@@ -240,6 +253,25 @@ def _companion_system_prompt(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
     return "\n".join(lines)
 
 
+def _media_mode(context: ContextTypes.DEFAULT_TYPE) -> str:
+    raw = (context.user_data.get(MEDIA_MODE_KEY) or "photo").strip().lower()
+    return "video" if raw == "video" else "photo"
+
+
+def _selected_video_pose(context: ContextTypes.DEFAULT_TYPE) -> dict[str, str] | None:
+    raw = context.user_data.get(VIDEO_POSE_KEY)
+    if isinstance(raw, dict) and raw.get("id"):
+        return {"id": str(raw["id"]), "name": str(raw.get("name") or raw["id"])}
+    return None
+
+
+def _main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    return main_menu_keyboard(
+        age_confirmed=_age_confirmed(context),
+        video_enabled=video_enabled(),
+    )
+
+
 def _start_menu_text(user_id: int, acc) -> str:
     from app.services.operator_sandbox import companion_allowance_label, operator_status_line
 
@@ -248,52 +280,18 @@ def _start_menu_text(user_id: int, acc) -> str:
         from app.services.aof_vip_perks import vip_companion_bonus_credits
 
         vip_line = (
-            f"\n⭐ <b>VIP active</b> — Hall Pass lane. "
-            f"Bonus credits on join: {vip_companion_bonus_credits()}. "
-            f"Allowance now: {acc.generations_remaining()}."
+            f"\n⭐ <b>VIP active</b> — bonus credits on join: {vip_companion_bonus_credits()}."
         )
     allowance = companion_allowance_label(user_id)
     op_line = operator_status_line(user_id)
-    op_suffix = f"\n\n<i>{op_line}</i>" if op_line else ""
-    text = (
-        "<b>Create your character</b>\n\n"
-        "1. Confirm you're <b>18+</b>\n"
-        "2. <b>Body styles</b> → Bimbo preset (optional tuning)\n"
-        "3. <b>Poses</b> — pick her vibe (e.g. Wet girl)\n"
-        "4. <b>Send a photo</b> — she comes to life from your pic\n"
-        "5. <b>Chat</b> — talk to her in first person; she remembers you\n\n"
-        f"<b>Photo allowance</b>: {allowance}"
-        f"{vip_line}"
-        f"{op_suffix}"
-    )
     char = get_character(user_id)
-    if char:
-        text += f"\n\n✨ <b>{char.name}</b> is live — just message her."
-    else:
-        text += "\n\n<i>No character yet — send a photo to create her.</i>"
+    text = start_menu_text(
+        allowance=allowance,
+        character_name=char.name if char else None,
+        vip_line=vip_line,
+        op_line=op_line or "",
+    )
     return text
-
-
-def _main_menu_keyboard(context: ContextTypes.DEFAULT_TYPE, *, user_id: int | None = None) -> InlineKeyboardMarkup:
-    row1: list[InlineKeyboardButton] = []
-    if not _age_confirmed(context):
-        row1.append(InlineKeyboardButton("18+", callback_data="comp_menu:age"))
-    row1.append(InlineKeyboardButton("Body styles", callback_data="comp_menu:styles"))
-    row1.append(InlineKeyboardButton("Poses", callback_data="comp_menu:poses"))
-    rows: list[list[InlineKeyboardButton]] = [row1]
-
-    row2 = [
-        InlineKeyboardButton("Reveal", callback_data="comp_menu:reveal"),
-        InlineKeyboardButton("Rename", callback_data="comp_menu:name"),
-        InlineKeyboardButton("Balance", callback_data="comp_menu:balance"),
-    ]
-    rows.append(row2)
-    rows.append([InlineKeyboardButton("Clear chat memory", callback_data="comp_menu:reset")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _age_confirm_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("I'm 18+", callback_data="comp_menu:age")]])
 
 
 async def _send_start_menu(
@@ -307,78 +305,68 @@ async def _send_start_menu(
     acc = get_access(user_id)
     touch_companion_activity(user_id)
     text = _start_menu_text(user_id, acc)
-    kb = _main_menu_keyboard(context, user_id=user_id)
+    kb = _main_menu_keyboard(context)
     if edit_message_id is not None:
-        await bot.edit_message_text(
-            text=text,
-            chat_id=chat_id,
-            message_id=edit_message_id,
-            parse_mode="HTML",
-            reply_markup=kb,
-        )
-    else:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
-
-
-def _body_styles_keyboard(user_data: dict | None = None) -> InlineKeyboardMarkup:
-    prefs = load_body_prefs(user_data or {})
-    active = prefs.to_api_kwargs()
-    rows: list[list[InlineKeyboardButton]] = []
-
-    for group, options in OPTION_GROUPS.items():
-        row: list[InlineKeyboardButton] = []
-        for opt in options:
-            row.append(
-                InlineKeyboardButton(
-                    option_button_label(group, opt, selected=active.get(group) == opt),
-                    callback_data=f"comp_body:{group}:{opt}",
-                )
+        try:
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=edit_message_id,
+                parse_mode="HTML",
+                reply_markup=kb,
             )
-        rows.append(row)
+            return
+        except Exception:
+            pass
+    hero = hero_image_path()
+    if hero and hero.is_file():
+        from app.services.operator_sandbox import companion_allowance_label
 
-    cloth_row: list[InlineKeyboardButton] = []
-    for opt in CLOTH_OPTIONS:
-        cloth_row.append(
-            InlineKeyboardButton(
-                option_button_label("cloth", opt, selected=active.get("cloth") == opt),
-                callback_data=f"comp_body:cloth:{opt}",
+        char = get_character(user_id)
+        with hero.open("rb") as photo_file:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo_file,
+                caption=welcome_caption(
+                    allowance=companion_allowance_label(user_id),
+                    character_name=char.name if char else None,
+                ),
+                parse_mode="HTML",
+                reply_markup=kb,
             )
-        )
-        if len(cloth_row) >= 3:
-            rows.append(cloth_row)
-            cloth_row = []
-    if cloth_row:
-        rows.append(cloth_row)
+        return
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
 
-    rows.append(
-        [
-            InlineKeyboardButton("Bimbo preset", callback_data="comp_body:preset:bimbo"),
-        ]
+
+def _age_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ I'm 18+", callback_data="comp_menu:age")]])
+
+
+async def _send_body_preset_picker(*, bot, chat_id: int, user_data: dict) -> None:
+    prefs = load_body_prefs(user_data)
+    from telegram import InputMediaPhoto
+
+    media: list[InputMediaPhoto] = []
+    for preset_id in BODY_PRESET_IDS:
+        path = ensure_preset_card(preset_id)
+        with path.open("rb") as f:
+            media.append(InputMediaPhoto(media=f.read(), caption=preset_label_card(preset_id)))
+    if media:
+        try:
+            await bot.send_media_group(chat_id=chat_id, media=media[:3])
+        except Exception as e:
+            logger.debug("preset media group skipped: %s", e)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"{styles_help_text()}\n\n<b>Current</b>\n{prefs.summary()}",
+        parse_mode="HTML",
+        reply_markup=body_preset_keyboard(user_data),
     )
-    rows.append(
-        [
-            InlineKeyboardButton("Clear all", callback_data="comp_body:clear"),
-            InlineKeyboardButton("Done", callback_data="comp_body:done"),
-        ]
-    )
-    return InlineKeyboardMarkup(rows)
 
 
-def _pose_keyboard(poses: list[str]) -> InlineKeyboardMarkup | None:
-    if not poses:
-        return None
-    rows: list[list[InlineKeyboardButton]] = []
-    row: list[InlineKeyboardButton] = []
-    for i, pose in enumerate(poses[:16]):
-        label = pose if len(pose) <= 22 else pose[:19] + "…"
-        row.append(InlineKeyboardButton(label, callback_data=f"comp_pose:{i}"))
-        if len(row) >= 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    rows.append([InlineKeyboardButton("Default (no pose)", callback_data="comp_pose:clear")])
-    return InlineKeyboardMarkup(rows)
+def preset_label_card(preset_id: str) -> str:
+    labels = {"natural": "Natural", "curvy": "Curvy", "bimbo": "Bimbo max"}
+    return labels.get(preset_id, preset_id)
 
 
 async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -467,7 +455,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Hey you 🥰 I'm glad you're back.\n\n"
             "Talk to me here — or send a photo if you want to pick up where we left off.",
             parse_mode="HTML",
-            reply_markup=_main_menu_keyboard(context, user_id=user.id),
+            reply_markup=_main_menu_keyboard(context),
         )
         return
     if arg:
@@ -627,7 +615,7 @@ async def cmd_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data[AGE_KEY] = True
     await msg.reply_text(
         "18+ confirmed — send a photo when you're ready.",
-        reply_markup=_main_menu_keyboard(context, user_id=user.id),
+        reply_markup=_main_menu_keyboard(context),
     )
 
 async def _send_pose_picker(
@@ -636,7 +624,10 @@ async def _send_pose_picker(
     chat_id: int,
     user_data: dict,
     note: str = "",
+    selected: str | None = None,
 ) -> None:
+    from telegram import InputMediaPhoto
+
     poses: list[str] = []
     used_fallback = False
     try:
@@ -649,16 +640,63 @@ async def _send_pose_picker(
         await bot.send_message(chat_id=chat_id, text="No poses available right now — try again later.")
         return
     user_data[POSE_OPTIONS_KEY] = poses[:24]
-    kb = _pose_keyboard(poses)
-    preview = ", ".join(poses[:8])
-    extra = f" … +{len(poses) - 8} more" if len(poses) > 8 else ""
+    sel = selected or user_data.get(POSE_KEY)
+    kb = pose_keyboard(poses, selected=str(sel) if sel else None)
     fallback_note = "\n<i>(Pose list from cache — provider was briefly unavailable.)</i>\n" if used_fallback else ""
+    preview_paths = list_pose_tile_paths(poses[:10])
+    if preview_paths:
+        media: list[InputMediaPhoto] = []
+        for i, path in enumerate(preview_paths):
+            caption = f"{i + 1}. {poses[i]}" if i < len(poses) else None
+            with path.open("rb") as f:
+                media.append(InputMediaPhoto(media=f.read(), caption=caption))
+        try:
+            await bot.send_media_group(chat_id=chat_id, media=media)
+        except Exception as e:
+            logger.debug("pose gallery skipped: %s", e)
     await bot.send_message(
         chat_id=chat_id,
-        text=f"{note}<b>Pick a pose</b>{fallback_note}\n{preview}{extra}",
+        text=f"{note}<b>Pick a photo pose</b>{fallback_note}",
         parse_mode="HTML",
         reply_markup=kb,
     )
+
+
+async def _send_video_pose_picker(
+    *,
+    bot,
+    chat_id: int,
+    user_data: dict,
+    note: str = "",
+) -> None:
+    if not video_enabled():
+        await bot.send_message(chat_id=chat_id, text="Video reveals aren't available right now.")
+        return
+    poses: list[dict[str, str]] = []
+    try:
+        poses = await list_video_poses()
+    except Exception as e:
+        logger.warning("list_video_poses failed: %s", e)
+        poses = []
+    if not poses:
+        await bot.send_message(chat_id=chat_id, text="No video poses available right now — try again later.")
+        return
+    user_data[VIDEO_POSE_OPTIONS_KEY] = poses[:12]
+    selected = _selected_video_pose_from_data(user_data)
+    kb = video_pose_keyboard(poses, selected_id=selected.get("id") if selected else None)
+    await bot.send_message(
+        chat_id=chat_id,
+        text=f"{note}<b>Pick a video pose</b>\n<i>Video uses {video_credit_units()} reveal credits.</i>",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+def _selected_video_pose_from_data(user_data: dict) -> dict[str, str] | None:
+    raw = user_data.get(VIDEO_POSE_KEY)
+    if isinstance(raw, dict) and raw.get("id"):
+        return {"id": str(raw["id"]), "name": str(raw.get("name") or raw["id"])}
+    return None
 
 
 async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -668,6 +706,16 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     action = query.data.split(":", 1)[1]
     chat_id = query.message.chat_id if query.message else user.id
+
+    if action == "home":
+        await query.answer()
+        await _send_start_menu(
+            chat_id=chat_id,
+            user_id=user.id,
+            context=context,
+            bot=context.bot,
+        )
+        return
 
     if action == "age":
         context.user_data[AGE_KEY] = True
@@ -684,18 +732,36 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if action == "styles":
         await query.answer()
-        prefs = load_body_prefs(context.user_data)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"{styles_help_text()}\n\n<b>Current</b>\n{prefs.summary()}",
-            parse_mode="HTML",
-            reply_markup=_body_styles_keyboard(context.user_data),
-        )
+        await _send_body_preset_picker(bot=context.bot, chat_id=chat_id, user_data=context.user_data)
         return
 
     if action == "poses":
         await query.answer()
-        await _send_pose_picker(bot=context.bot, chat_id=chat_id, user_data=context.user_data)
+        context.user_data[MEDIA_MODE_KEY] = "photo"
+        await _send_pose_picker(
+            bot=context.bot,
+            chat_id=chat_id,
+            user_data=context.user_data,
+            selected=_selected_pose(context),
+        )
+        return
+
+    if action == "video":
+        await query.answer()
+        if not video_enabled():
+            await query.answer("Video is off — check API balance.", show_alert=True)
+            return
+        context.user_data[MEDIA_MODE_KEY] = "video"
+        await _send_video_pose_picker(bot=context.bot, chat_id=chat_id, user_data=context.user_data)
+        return
+
+    if action == "chat_hint":
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Just type here — she replies in first person and remembers you.\nSend a photo anytime for a new reveal.",
+            reply_markup=_main_menu_keyboard(context),
+        )
         return
 
     if action == "name":
@@ -726,12 +792,16 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if action in ("buy", "reveal"):
         await query.answer()
+        context.user_data[MEDIA_MODE_KEY] = "photo"
         acc = get_access(user.id)
-        if acc.generations_remaining() > 0:
+        units = video_credit_units() if _media_mode(context) == "video" else 1
+        if acc.generations_remaining() >= units:
+            mode = "video" if _media_mode(context) == "video" else "photo"
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Send a photo when you're ready — I'll reveal her from your pic.",
+                text=f"Send a photo — I'll create her {mode} reveal.",
                 parse_mode="HTML",
+                reply_markup=_main_menu_keyboard(context),
             )
             return
         uname = await _bot_username(context)
@@ -763,6 +833,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await context.bot.send_message(
             chat_id=chat_id,
             text="Chat memory cleared — your character stays the same.\nSend a new photo to recreate her look.",
+            reply_markup=_main_menu_keyboard(context),
         )
         return
 
@@ -787,7 +858,7 @@ async def cmd_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     char = get_character(user.id)
     if not char:
-        await msg.reply_text("Create her first — send a photo.", reply_markup=_main_menu_keyboard(context, user_id=user.id))
+        await msg.reply_text("Create her first — send a photo.", reply_markup=_main_menu_keyboard(context))
         return
     args = context.args or []
     if not args:
@@ -838,7 +909,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await msg.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
-        reply_markup=_main_menu_keyboard(context, user_id=user.id),
+        reply_markup=_main_menu_keyboard(context),
     )
 
 
@@ -877,69 +948,91 @@ async def on_pose_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     pose = str(poses[idx])
     context.user_data[POSE_KEY] = pose
-    await query.edit_message_text(f"Style locked: <b>{pose}</b>. Send a photo when ready.", parse_mode="HTML")
+    context.user_data[MEDIA_MODE_KEY] = "photo"
+    await query.edit_message_text(
+        f"Style locked: <b>{pose}</b>. Send a photo when ready.",
+        parse_mode="HTML",
+        reply_markup=_main_menu_keyboard(context),
+    )
 
 
 async def cmd_styles(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg:
         return
-    prefs = load_body_prefs(context.user_data)
-    await msg.reply_text(
-        f"{styles_help_text()}\n\n<b>Current</b>\n{prefs.summary()}",
-        parse_mode="HTML",
-        reply_markup=_body_styles_keyboard(context.user_data),
-    )
+    await _send_body_preset_picker(bot=context.bot, chat_id=msg.chat_id, user_data=context.user_data)
 
 
-async def on_body_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def on_preset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data:
         return
-    if query.data == "comp_body:clear":
+    if query.data == "comp_preset:clear":
         await query.answer("Cleared")
         clear_body_prefs(context.user_data)
-        await query.edit_message_text(
-            "Body prefs cleared.",
-            reply_markup=_body_styles_keyboard(context.user_data),
-        )
-        return
-    if query.data == "comp_body:preset:bimbo":
-        await query.answer("Bimbo preset locked")
-        prefs = apply_bimbo_preset(context.user_data)
+        prefs = load_body_prefs(context.user_data)
         await query.edit_message_text(
             f"{styles_help_text()}\n\n<b>Current</b>\n{prefs.summary()}",
             parse_mode="HTML",
-            reply_markup=_body_styles_keyboard(context.user_data),
+            reply_markup=body_preset_keyboard(context.user_data),
         )
         return
-    if query.data == "comp_body:done":
+    if query.data == "comp_preset:done":
         await query.answer()
         prefs = load_body_prefs(context.user_data)
         await query.edit_message_text(
-            f"Locked in:\n<b>{prefs.summary()}</b>\n\n/poses for style · send photo when ready.",
+            f"Locked in:\n<b>{prefs.summary()}</b>\n\nPick a pose or send a photo when ready.",
             parse_mode="HTML",
+            reply_markup=_main_menu_keyboard(context),
         )
         return
-    if not query.data.startswith("comp_body:"):
+    if not query.data.startswith("comp_preset:"):
         await query.answer()
         return
-    parts = query.data.split(":", 2)
-    if len(parts) != 3:
+    preset_id = query.data.split(":", 1)[1]
+    if preset_id not in BODY_PRESET_IDS:
         await query.answer()
         return
-    _, group, value = parts
-    prefs = save_body_pref(context.user_data, group, value)
-    label = GROUP_LABELS.get(group, group)
-    await query.answer(f"{label} → {display_value(group, getattr(prefs, group, None) or value)}")
+    await query.answer(f"Preset: {preset_label_card(preset_id)}")
+    prefs = apply_body_preset(context.user_data, preset_id)
     try:
         await query.edit_message_text(
             f"{styles_help_text()}\n\n<b>Current</b>\n{prefs.summary()}",
             parse_mode="HTML",
-            reply_markup=_body_styles_keyboard(context.user_data),
+            reply_markup=body_preset_keyboard(context.user_data),
         )
     except Exception:
         pass
+
+
+async def on_vpose_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    await query.answer()
+    if query.data == "comp_vpose:clear":
+        context.user_data.pop(VIDEO_POSE_KEY, None)
+        context.user_data[MEDIA_MODE_KEY] = "video"
+        await query.edit_message_text("Video pose cleared — default motion reveal.")
+        return
+    if not query.data.startswith("comp_vpose:"):
+        return
+    try:
+        idx = int(query.data.split(":", 1)[1])
+    except ValueError:
+        return
+    poses = context.user_data.get(VIDEO_POSE_OPTIONS_KEY) or []
+    if idx < 0 or idx >= len(poses):
+        await query.answer("Pose list expired — open Video reveal again.", show_alert=True)
+        return
+    pose = poses[idx]
+    context.user_data[VIDEO_POSE_KEY] = {"id": str(pose.get("id")), "name": str(pose.get("name") or pose.get("id"))}
+    context.user_data[MEDIA_MODE_KEY] = "video"
+    await query.edit_message_text(
+        f"Video pose locked: <b>{pose.get('name')}</b>. Send a photo when ready.",
+        parse_mode="HTML",
+        reply_markup=_main_menu_keyboard(context),
+    )
 
 
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -968,8 +1061,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if character_mode_enabled() and not get_character(user.id):
         await msg.reply_text(
             "I don't exist yet — send a photo to create me first.\n"
-            "Tip: open the menu → Body styles → Bimbo preset, then Poses.",
-            reply_markup=_main_menu_keyboard(context, user_id=user.id),
+            "Tip: open the menu → Body preset → Pick pose, then send a photo.",
+            reply_markup=_main_menu_keyboard(context),
         )
         return
 
@@ -986,7 +1079,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await msg.reply_text(
                 f"Done — you're chatting with <b>{updated.name}</b> now.",
                 parse_mode="HTML",
-                reply_markup=_main_menu_keyboard(context, user_id=user.id),
+                reply_markup=_main_menu_keyboard(context),
             )
         return
 
@@ -1070,43 +1163,73 @@ async def _queue_user_photo(
     except Exception:
         pass
 
-    ok, referral_credit = consume_generation_allowance(user.id)
+    media_mode = _media_mode(context)
+    credit_units = video_credit_units() if media_mode == "video" else 1
+    ok, referral_credit = consume_generation_allowance(user.id, units=credit_units)
     if not ok:
-        await status_msg.edit_text("Allowance exhausted.")
+        await status_msg.edit_text(
+            f"Allowance exhausted — video needs {credit_units} reveal credit(s)."
+            if media_mode == "video"
+            else "Allowance exhausted."
+        )
         return False
     if referral_credit and int(referral_credit.get("bonus_granted") or 0) > 0:
         await _notify_referrer_credit(context, referral_credit)
 
     body = load_body_prefs(context.user_data)
     api = body.to_api_kwargs()
+    logger.info(
+        "companion bot queue uid=%s mode=%s pose=%s api_params=%s",
+        user.id,
+        media_mode,
+        _selected_pose(context) if media_mode == "photo" else _selected_video_pose(context),
+        api,
+    )
     try:
-        queued = await queue_photo_generation(
-            chat_id=msg.chat_id,
-            user_id=user.id,
-            photo_bytes=photo_bytes,
-            filename=filename,
-            pose=_selected_pose(context),
-            age=api.get("age"),
-            breast_size=api.get("breast_size"),
-            body_type=api.get("body_type"),
-            butt_size=api.get("butt_size"),
-            cloth=api.get("cloth"),
-        )
+        if media_mode == "video":
+            vpose = _selected_video_pose(context)
+            queued = await queue_video_generation(
+                chat_id=msg.chat_id,
+                user_id=user.id,
+                photo_bytes=photo_bytes,
+                filename=filename,
+                video_pose_id=vpose.get("id") if vpose else None,
+                video_pose_name=vpose.get("name") if vpose else None,
+            )
+        else:
+            queued = await queue_photo_generation(
+                chat_id=msg.chat_id,
+                user_id=user.id,
+                photo_bytes=photo_bytes,
+                filename=filename,
+                pose=_selected_pose(context),
+                age=api.get("age"),
+                breast_size=api.get("breast_size"),
+                body_type=api.get("body_type"),
+                butt_size=api.get("butt_size"),
+                cloth=api.get("cloth"),
+            )
     except Exception as e:
-        refund_generation_allowance(user.id)
+        refund_generation_allowance(user.id, units=credit_units)
         logger.warning("companion queue failed: %s", e)
         await status_msg.edit_text(f"Could not queue generation: {e!s}"[:4000])
         return False
 
     acc = get_access(user.id)
-    pose_note = f"\nStyle: <code>{_selected_pose(context)}</code>" if _selected_pose(context) else ""
-    body = load_body_prefs(context.user_data)
+    pose_note = ""
+    if media_mode == "video":
+        vpose = _selected_video_pose(context)
+        if vpose:
+            pose_note = f"\nVideo pose: <code>{vpose.get('name')}</code>"
+    elif _selected_pose(context):
+        pose_note = f"\nStyle: <code>{_selected_pose(context)}</code>"
     body_note = f"\nBody: <code>{body.summary()}</code>" if body.to_api_kwargs() else ""
     await status_msg.edit_text(
         f"{queued.message}{pose_note}{body_note}\n\n"
         f"Reveals left: <b>{acc.generations_remaining()}</b>\n"
         "I'll DM her when she's ready.",
         parse_mode="HTML",
+        reply_markup=_main_menu_keyboard(context),
     )
     return True
 
@@ -1131,7 +1254,13 @@ async def _offer_paid_photo_path(
         )
         return
     if stars_enabled():
-        save_pending_photo(user_id=user.id, chat_id=msg.chat_id, file_id=file_id, filename=filename)
+        save_pending_photo(
+            user_id=user.id,
+            chat_id=msg.chat_id,
+            file_id=file_id,
+            filename=filename,
+            media_type=_media_mode(context),
+        )
     uname = await _bot_username(context)
     await send_reveal_paywall(
         context.bot,
@@ -1203,6 +1332,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not pending:
         await msg.reply_text("Credit added. Send a photo when you're ready.")
         return
+
+    if pending.get("media_type") == "video":
+        context.user_data[MEDIA_MODE_KEY] = "video"
 
     acc = await _gate_access(context, user.id)
     if gate_enabled() and not acc.gate_complete:
@@ -1343,7 +1475,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_gate_callback, pattern=r"^comp_gate_"))
     app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^comp_menu:"))
     app.add_handler(CallbackQueryHandler(on_pose_callback, pattern=r"^comp_pose:"))
-    app.add_handler(CallbackQueryHandler(on_body_callback, pattern=r"^comp_body:"))
+    app.add_handler(CallbackQueryHandler(on_preset_callback, pattern=r"^comp_preset:"))
+    app.add_handler(CallbackQueryHandler(on_vpose_callback, pattern=r"^comp_vpose:"))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(CommandHandler("age", cmd_age))

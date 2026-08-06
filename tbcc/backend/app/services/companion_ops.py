@@ -11,7 +11,12 @@ from app.services.companion_access import (
     gate_enabled,
     gate_lv_url,
 )
-from app.services.companion_generation import generation_configured, image_provider
+from app.services.companion_generation import (
+    generation_configured,
+    image_provider,
+    video_credit_units,
+    video_enabled,
+)
 from app.services.companion_jobs import count_pending_jobs
 from app.services.companion_stars import stars_enabled, stars_per_photo
 from app.services.companion_referral import referral_bonus_photos, referrals_enabled
@@ -71,5 +76,6 @@ async def companion_ops_status() -> dict[str, Any]:
         "llm_provider": (os.getenv("TBCC_LLM_CHAT_PROVIDER") or "ollama").strip().lower(),
         "llm_model": _llm_model_label(),
         "llm_configured": provider_configured(),
-        "system_prompt_chars": len(default_system_prompt()),
+        "video_enabled": video_enabled(),
+        "video_credit_units": video_credit_units(),
     }

@@ -384,34 +384,41 @@ def can_spend_operator_api(user_id: int) -> tuple[bool, str]:
     return False, "no_credits"
 
 
-def consume_generation_allowance(user_id: int) -> tuple[bool, dict | None]:
+def consume_generation_allowance(user_id: int, *, units: int = 1) -> tuple[bool, dict | None]:
+    units = max(1, int(units))
     acc = get_access(user_id)
     if user_id in admin_telegram_ids():
         return True, None
     trial_cap = free_trial_photos()
     consumed = False
-    if acc.trial_used < trial_cap:
-        acc.trial_used += 1
+    for _ in range(units):
+        if acc.trial_used < trial_cap:
+            acc.trial_used += 1
+            consumed = True
+        elif acc.credits > 0:
+            acc.credits -= 1
+            consumed = True
+        else:
+            if consumed:
+                save_access(acc)
+            return False, None
+    if consumed:
         save_access(acc)
-        consumed = True
-    elif acc.credits > 0:
-        acc.credits -= 1
-        save_access(acc)
-        consumed = True
     referral_credit = _maybe_credit_referrer_on_first_reveal(user_id) if consumed else None
     return consumed, referral_credit
 
 
-def refund_generation_allowance(user_id: int) -> None:
-    """Return one photo slot after a failed queue (non-admin)."""
+def refund_generation_allowance(user_id: int, *, units: int = 1) -> None:
+    """Return photo slots after a failed queue (non-admin)."""
+    units = max(1, int(units))
     if user_id in admin_telegram_ids():
         return
     acc = get_access(user_id)
-    if acc.trial_used > 0:
-        acc.trial_used -= 1
-        save_access(acc)
-        return
-    acc.credits += 1
+    for _ in range(units):
+        if acc.trial_used > 0:
+            acc.trial_used -= 1
+        else:
+            acc.credits += 1
     save_access(acc)
 
 

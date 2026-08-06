@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-03 (VIP intro month $10 / first-time gate)
+**Last updated:** 2026-08-05 (spicy bot consumer UX + video reveals)
 
 ## Sprint goal
 
@@ -12,7 +12,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 | Item | Owner | Notes |
 |------|-------|-------|
-| Module A revenue stack | agent + operator | **2026-07-31 — spicy + operator sandbox live.** **Metrics cadence (#2 ready):** `scripts/revenue_watch_snapshot.py` on island — Mon/Thu through **2026-08-07**; watch `spicy_beacon.hit_count`, `spicy_funnel_14d.touches`, `companion_margin_30d.photos_sold`, `loot_approved_gap_total`. Kill Aug 7: spicy clicks 0 → `TBCC_BUFFER_X_SPICY_BIAS_EVERY=2`. Operator sandbox: 3 owner ids — no Stars/gate friction. |
+| Module A revenue stack | agent + operator | **2026-08-05 — spicy consumer UX:** hero `/start` photo, 3 body presets, pose gallery tiles, menu after reveal, video reveals (`/api/v1/video/*`). Island deploy in flight. Prior: **2026-07-31 — spicy + operator sandbox live.** Metrics cadence through **2026-08-07**; watch `spicy_beacon.hit_count`, `spicy_funnel_14d.touches`, `companion_margin_30d.photos_sold`, `loot_approved_gap_total`. |
 | Secretary sales-rep Phase 1 | agent | **2026-08-01 island:** per-customer Pilot/Auto (`reply_mode`), draft-card toggles, `secretary_new_lead` inbox, sales_strategy playbook (12 rows) + coach hint. Smoke: `/as_customer price objection` on @aof_secretary_bot. Phase 2 fleet table `secretary_bot_instances` + registry helpers; multi-app host deferred — `docs/handoffs/2026-08-01_secretary-fleet-phase2.md`. |
 | Loot album delivery + import starvation | agent | **2026-07-28 — deployed.** Survivor refill restored **605** approved (recycled). **2026-07-31 — route #1 ready:** `scripts/loot_durability_check.py` (dry-run/apply refill + paid-roll smoke steps); operator sandbox unlimited pulls for smoke. **Open:** fresh local imports + storage deposits; loop re-entrancy retry-only. Run on island: `python scripts/loot_durability_check.py` then `--apply-refill --unpause` if thin. |
 | Pool album duplicate tiles | agent | **2026-08-01 shipped:** sent-cache composer dedupe + per-item cache msg ids + hub fetch (`media_message_resolve`). Island `local-20260801-1911-fix`; `TBCC_SENT_CACHE_ALBUM_SIZE=3`; audit demoted **323** dup rows (voyeur 304, ASS 19). Watch next Loot Room albums for unique tiles. |

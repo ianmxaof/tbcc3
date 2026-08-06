@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
 import httpx
-
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +26,7 @@ async def send_result_photo_bytes(
     caption: str = "",
     filename: str = "result.jpg",
     parse_mode: str | None = None,
+    reply_markup: dict | None = None,
 ) -> bool:
     token = _bot_token()
     if not token or not image_bytes:
@@ -37,6 +38,8 @@ async def send_result_photo_bytes(
         form["caption"] = caption[:1024]
     if parse_mode:
         form["parse_mode"] = parse_mode
+    if reply_markup:
+        form["reply_markup"] = json.dumps(reply_markup)
     async with httpx.AsyncClient(timeout=90.0) as client:
         r = await client.post(f"{api}/sendPhoto", data=form, files=files)
         if r.is_success:
@@ -45,7 +48,14 @@ async def send_result_photo_bytes(
     return False
 
 
-async def send_result_photo(*, chat_id: int, image_url: str, caption: str = "") -> bool:
+async def send_result_photo(
+    *,
+    chat_id: int,
+    image_url: str,
+    caption: str = "",
+    parse_mode: str | None = None,
+    reply_markup: dict | None = None,
+) -> bool:
     token = _bot_token()
     if not token:
         logger.error("companion dispatch: no bot token configured")
@@ -54,6 +64,10 @@ async def send_result_photo(*, chat_id: int, image_url: str, caption: str = "") 
     payload: dict[str, object] = {"chat_id": chat_id, "photo": image_url}
     if caption:
         payload["caption"] = caption[:1024]
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     async with httpx.AsyncClient(timeout=90.0) as client:
         r = await client.post(f"{api}/sendPhoto", json=payload)
         if r.is_success:
@@ -66,9 +80,13 @@ async def send_result_photo(*, chat_id: int, image_url: str, caption: str = "") 
             img.raise_for_status()
             data = img.content
             files = {"photo": ("result.jpg", data, "image/jpeg")}
-            form = {"chat_id": str(chat_id)}
+            form: dict[str, str] = {"chat_id": str(chat_id)}
             if caption:
                 form["caption"] = caption[:1024]
+            if parse_mode:
+                form["parse_mode"] = parse_mode
+            if reply_markup:
+                form["reply_markup"] = json.dumps(reply_markup)
             r2 = await client.post(f"{api}/sendPhoto", data=form, files=files)
             if r2.is_success:
                 return True
@@ -97,3 +115,69 @@ async def send_result_message(
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.post(f"{api}/sendMessage", json=payload)
         return r.is_success
+
+
+async def send_result_video_bytes(
+    *,
+    chat_id: int,
+    video_bytes: bytes,
+    caption: str = "",
+    filename: str = "result.mp4",
+    parse_mode: str | None = None,
+    reply_markup: dict | None = None,
+) -> bool:
+    token = _bot_token()
+    if not token or not video_bytes:
+        return False
+    api = f"https://api.telegram.org/bot{token}"
+    files = {"video": (filename, video_bytes, "video/mp4")}
+    form: dict[str, str] = {"chat_id": str(chat_id)}
+    if caption:
+        form["caption"] = caption[:1024]
+    if parse_mode:
+        form["parse_mode"] = parse_mode
+    if reply_markup:
+        form["reply_markup"] = json.dumps(reply_markup)
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        r = await client.post(f"{api}/sendVideo", data=form, files=files)
+        if r.is_success:
+            return True
+        logger.warning("sendVideo bytes failed %s: %s", r.status_code, (r.text or "")[:300])
+    return False
+
+
+async def send_result_video(
+    *,
+    chat_id: int,
+    video_url: str,
+    caption: str = "",
+    parse_mode: str | None = None,
+    reply_markup: dict | None = None,
+) -> bool:
+    token = _bot_token()
+    if not token:
+        return False
+    api = f"https://api.telegram.org/bot{token}"
+    payload: dict[str, object] = {"chat_id": chat_id, "video": video_url}
+    if caption:
+        payload["caption"] = caption[:1024]
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        r = await client.post(f"{api}/sendVideo", json=payload)
+        return r.is_success
+
+
+def _delivery_nav_markup() -> dict:
+    from app.services.companion_generation import video_enabled
+    from app.services.companion_menu import delivery_navigation_markup_dict
+
+    return delivery_navigation_markup_dict(video_enabled=video_enabled())
+
+
+async def send_companion_menu_after_delivery(*, chat_id: int, user_id: int) -> bool:
+    """Optional follow-up — nav is on the reveal caption; skip duplicate menu."""
+    logger.debug("companion delivery nav on caption uid=%s chat=%s", user_id, chat_id)
+    return True

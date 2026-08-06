@@ -38,6 +38,7 @@ def test_handle_json_undress_webhook_delivers(monkeypatch):
         return True
 
     monkeypatch.setattr(wh, "send_result_photo_bytes", fake_send)
+    monkeypatch.setattr(wh, "send_companion_menu_after_delivery", fake_send)
 
     upsell_calls: list[dict] = []
 
