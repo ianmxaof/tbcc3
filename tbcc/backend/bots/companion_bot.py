@@ -1415,9 +1415,22 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     grant_credits(user.id, 1)
     touch_companion_activity(user.id)
+
+    from app.services.companion_monetize_cta import (
+        companion_exhaustion_cta_html,
+        companion_exhaustion_inline_keyboard,
+    )
+
+    async def _post_stars_cross_sell() -> None:
+        cta = companion_exhaustion_cta_html()
+        kb = companion_exhaustion_inline_keyboard()
+        if cta and kb:
+            await msg.reply_text(cta, parse_mode="HTML", reply_markup=kb)
+
     pending = pop_pending_photo(user.id)
     if not pending:
         await msg.reply_text("Credit added. Send a photo when you're ready.")
+        await _post_stars_cross_sell()
         return
 
     if pending.get("media_type") == "video":
@@ -1444,6 +1457,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         status_msg=status_msg,
         source_file_id=str(pending.get("file_id") or ""),
     )
+    await _post_stars_cross_sell()
 
 
 async def _download_photo_bytes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[bytes, str] | None:

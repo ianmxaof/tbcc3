@@ -92,6 +92,37 @@ def test_merge_checkout_buttons_use_invoice(mock_use, mock_link):
     assert buttons[0]["text"] == "Pay ⭐ 500"
 
 
+@patch("app.services.aof_vip_checkout.create_stars_invoice_link")
+@patch("app.services.aof_vip_checkout.use_invoice_link_checkout", return_value=True)
+def test_merge_checkout_buttons_include_loot_free(mock_use, mock_link):
+    mock_link.return_value = "https://t.me/$invoice/abc"
+    plan = MagicMock()
+    plan.is_active = True
+    plan.price_stars = 500
+    plan.name = "AOF Main"
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = plan
+
+    with patch.dict(
+        "os.environ",
+        {
+            "TBCC_PAYMENT_BOT_USERNAME": "aofsubscriptions_bot",
+            "TBCC_LOOT_BOT_USERNAME": "aof_lootgod_bot",
+        },
+        clear=False,
+    ):
+        buttons = merge_checkout_buttons(
+            [],
+            db,
+            checkout_stars_enabled=True,
+            checkout_stars_plan_id=6,
+            checkout_button_label="Pay ⭐ 500",
+            allow_inline_checkout=True,
+        )
+    urls = [b["url"] for b in buttons]
+    assert any("loot_free" in u for u in urls)
+
+
 def test_checkout_followup_uses_deal_stack():
     db = MagicMock()
     plan = MagicMock()

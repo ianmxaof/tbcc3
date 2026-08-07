@@ -536,6 +536,16 @@ def merge_checkout_buttons(
     except Exception:
         logger.debug("checkout: gumroad button skipped", exc_info=True)
 
+    try:
+        from app.services.aof_social_links import loot_free_start_url
+
+        loot_url = (loot_free_start_url() or "").strip()
+        loot_key = loot_url.lower().rstrip("/")
+        if loot_url and loot_key not in existing_urls:
+            out.append({"text": "🎲 Loot God — free roll", "url": loot_url[:512]})
+    except Exception:
+        logger.debug("checkout: loot_free button skipped", exc_info=True)
+
     return out
 
 

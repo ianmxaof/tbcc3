@@ -107,6 +107,7 @@ def _loot_inline_keyboard(
     free_pull_number: int = 0,
     free_pulls_remaining: int | None = None,
     free_pull_limit: int = 5,
+    rarity_tier: int = 0,
 ) -> InlineKeyboardMarkup:
     invite = (cfg.get("primary_loot_room_invite_url") or os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "").strip()
     pay = _payment_bot_username()
@@ -150,6 +151,10 @@ def _loot_inline_keyboard(
     )
     if invite:
         rows.append([InlineKeyboardButton("🚪 Loot Room (paid key required)", url=invite)])
+    if int(rarity_tier or 0) >= 7 and pay:
+        rows.append(
+            [InlineKeyboardButton("⭐ VIP — bigger daily drops", url=f"https://t.me/{pay}?start=subscribe")]
+        )
     return InlineKeyboardMarkup(rows)
 
 
@@ -176,6 +181,18 @@ async def _drop_transient_msg(msg) -> None:
 
 async def _send_welcome(msg, context: ContextTypes.DEFAULT_TYPE, cfg: dict | None = None) -> None:
     cfg = cfg or context.application.bot_data.get("effective") or {}
+    if msg.chat and msg.chat.type != ChatType.PRIVATE:
+        from app.services.loot_dm_guard import loot_dm_redirect_html, loot_dm_redirect_markup, should_redirect_loot_to_dm
+
+        if should_redirect_loot_to_dm(chat_type=str(msg.chat.type)):
+            bot_un = _loot_bot_username(cfg)
+            await _safe_reply_html(
+                msg,
+                loot_dm_redirect_html(bot_username=bot_un),
+                disable_web_page_preview=True,
+                reply_markup=loot_dm_redirect_markup(bot_username=bot_un),
+            )
+            return
     pay = _payment_bot_username()
     lines = [
         "<b>Loot Overseer</b>",
@@ -646,6 +663,8 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if not user:
         return
+    if await _redirect_loot_to_dm(update, context):
+        return
     msg = update.effective_message
     if not msg and update.callback_query:
         msg = update.callback_query.message
@@ -753,16 +772,19 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         prev = result.get("preview") or {}
         delivery = result.get("delivery") or {}
         media_sent = int(delivery.get("media_sent") or 0)
-        finale_markup = _loot_inline_keyboard(cfg)
         tier = int(prev.get("rarity_tier") or 0)
         mods = int(prev.get("modifier_slot_count") or 0)
+        finale_markup = _loot_inline_keyboard(cfg, rarity_tier=tier)
         if media_sent <= 0:
             notes = ", ".join(str(x) for x in (delivery.get("notes") or []) if "skip" in str(x).lower())
+            from app.services.loot_user_errors import loot_delivery_failed_user_html
+
             await _safe_reply_html(
                 msg,
-                "<b>Key roll failed — no loot delivered.</b>\n"
-                f"<code>{html.escape(notes[:350] or 'media load failed')}</code>\n\n"
-                "Retry in a few seconds. If this repeats, restart TBCC-Backend.",
+                loot_delivery_failed_user_html(
+                    headline="Key roll failed — no loot delivered.",
+                    technical_note=notes[:350] or "media load failed",
+                ),
                 disable_web_page_preview=True,
                 reply_markup=finale_markup,
             )
@@ -805,11 +827,14 @@ async def cmd_roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         if media_sent <= 0:
             notes = ", ".join(str(x) for x in (delivery.get("notes") or []) if "skip" in str(x).lower())
+            from app.services.loot_user_errors import loot_delivery_failed_user_html
+
             await _safe_reply_html(
                 msg,
-                "<b>Pull failed — no card delivered.</b>\n"
-                f"<code>{html.escape(notes[:350] or 'media load failed')}</code>\n\n"
-                "Retry in a few seconds. If this repeats, restart TBCC-Backend.",
+                loot_delivery_failed_user_html(
+                    headline="Pull failed — no card delivered.",
+                    technical_note=notes[:350] or "media load failed",
+                ),
                 disable_web_page_preview=True,
                 reply_markup=finale_markup,
             )
@@ -975,6 +1000,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             pass
 
     if arg == "loot_free":
+        if await _redirect_loot_to_dm(update, context, start="loot_free"):
+            return
         await cmd_roll(update, context)
         return
 
@@ -982,6 +1009,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Token is case-sensitive (secrets.token_urlsafe); do not lower() the payload.
         token = raw_arg[len("goblin_") :].strip()
         if token:
+            if await _redirect_loot_to_dm(update, context, start=raw_arg):
+                return
             await _handle_goblin_claim(msg, context, int(user.id), token)
             return
 
@@ -1087,8 +1116,10 @@ async def on_loot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     if not query or not query.data or not query.data.startswith("loot:"):
         return
-    await query.answer()
     action = query.data.split(":", 1)[1]
+    if action in ("roll", "referral", "loot_keys", "guide", "help") and await _redirect_loot_to_dm(update, context):
+        return
+    await query.answer()
     msg = query.message
     if not msg:
         return
@@ -1126,6 +1157,61 @@ def _loot_bot_username(cfg: dict | None = None) -> str:
 def _is_private_chat(update: Update) -> bool:
     chat = update.effective_chat
     return bool(chat and chat.type == ChatType.PRIVATE)
+
+
+async def _redirect_loot_to_dm(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    start: str = "loot_free",
+) -> bool:
+    from app.services.loot_dm_guard import (
+        loot_dm_redirect_html,
+        loot_dm_redirect_markup,
+        should_redirect_loot_to_dm,
+    )
+
+    chat = update.effective_chat
+    if not should_redirect_loot_to_dm(chat_type=str(chat.type) if chat else None):
+        return False
+    user = update.effective_user
+    msg = update.effective_message
+    if update.callback_query and not msg:
+        msg = update.callback_query.message
+    if not user or not msg:
+        return True
+    cfg = context.application.bot_data.get("effective") or {}
+    bot_un = _loot_bot_username(cfg)
+    if update.callback_query:
+        try:
+            await update.callback_query.answer("Open Loot God in DM")
+        except TelegramError:
+            pass
+    await _safe_reply_html(
+        msg,
+        loot_dm_redirect_html(bot_username=bot_un),
+        disable_web_page_preview=True,
+        reply_markup=loot_dm_redirect_markup(bot_username=bot_un, start=start),
+    )
+    try:
+        await context.bot.send_message(
+            chat_id=int(user.id),
+            text=(
+                "<b>Loot Overseer</b>\n\n"
+                "Rolls and albums deliver here in DM — not in group topics.\n"
+                "Tap <b>Roll now</b> or send /roll."
+            ),
+            parse_mode="HTML",
+            reply_markup=_loot_inline_keyboard(cfg),
+        )
+        await context.bot.send_message(
+            chat_id=int(user.id),
+            text="Quick actions:",
+            reply_markup=_loot_reply_keyboard(),
+        )
+    except Forbidden:
+        pass
+    return True
 
 
 def _clear_creator_promo_state(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1394,6 +1480,8 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     shortcut = _LOOT_KEYBOARD.get(text)
     if shortcut == "roll":
+        if await _redirect_loot_to_dm(update, context):
+            return
         await cmd_roll(update, context)
         return
     if shortcut == "referral":

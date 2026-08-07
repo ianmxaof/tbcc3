@@ -56,6 +56,7 @@ def build_loot_roll_inline_markup(
     free_pull_number: int = 0,
     free_pulls_remaining: int | None = None,
     free_pull_limit: int = _DEFAULT_FREE_PULL_LIMIT,
+    rarity_tier: int = 0,
 ) -> InlineKeyboardMarkup:
     invite = (os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "").strip()
     pay = (
@@ -93,6 +94,10 @@ def build_loot_roll_inline_markup(
         )
     if invite:
         rows.append([InlineKeyboardButton("🚪 Loot Room invite", url=invite)])
+    if int(rarity_tier or 0) >= 7 and pay:
+        rows.append(
+            [InlineKeyboardButton("⭐ VIP — bigger daily drops", url=f"https://t.me/{pay}?start=subscribe")]
+        )
     rows.append(
         [
             InlineKeyboardButton("📖 Guide", callback_data="loot:guide"),

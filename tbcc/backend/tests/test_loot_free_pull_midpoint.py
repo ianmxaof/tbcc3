@@ -35,3 +35,13 @@ def test_build_markup_skips_midpoint_on_pull_two(monkeypatch):
     kb_early = build_loot_roll_inline_markup(free_pull_number=2, free_pulls_remaining=3, free_pull_limit=5)
     texts_early = [btn.text for row in kb_early.inline_keyboard for btn in row]
     assert not any("Halfway" in t or "daily roll" in t for t in texts_early)
+
+
+def test_high_tier_key_roll_adds_vip_row(monkeypatch):
+    monkeypatch.setenv("TBCC_PAYMENT_BOT_USERNAME", "aofsubscriptions_bot")
+
+    from bots.loot_bot import _loot_inline_keyboard
+
+    kb = _loot_inline_keyboard({}, rarity_tier=8)
+    urls = [btn.url for row in kb.inline_keyboard for btn in row if btn.url]
+    assert any("subscribe" in u for u in urls)
