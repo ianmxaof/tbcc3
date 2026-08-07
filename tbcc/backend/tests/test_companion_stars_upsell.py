@@ -42,6 +42,9 @@ def test_maybe_offer_skips_for_operator():
 
 
 def test_maybe_offer_sends_invoice_when_empty(monkeypatch):
+    monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "aof_lootgod_bot")
+    monkeypatch.setenv("TBCC_PAYMENT_BOT_USERNAME", "aofsubscriptions_bot")
+
     class Acc:
         user_id = 8
 
@@ -50,10 +53,12 @@ def test_maybe_offer_sends_invoice_when_empty(monkeypatch):
 
     monkeypatch.setattr("app.services.companion_access.get_access", lambda _uid: Acc())
     msgs: list[str] = []
+    markups: list[dict | None] = []
     invoices: list[dict] = []
 
     async def fake_msg(*, chat_id, text, parse_mode=None, reply_markup=None):
         msgs.append(text)
+        markups.append(reply_markup)
         return True
 
     async def fake_inv(*, chat_id, user_id):
@@ -69,3 +74,11 @@ def test_maybe_offer_sends_invoice_when_empty(monkeypatch):
     assert ok is True
     assert invoices == [{"chat_id": 9, "user_id": 8}]
     assert any("25" in m for m in msgs)
+    assert markups[0] is not None
+    kb_urls = [
+        btn["url"]
+        for row in markups[0]["inline_keyboard"]
+        for btn in row
+    ]
+    assert any("loot_free" in u for u in kb_urls)
+    assert any("subscribe" in u for u in kb_urls)

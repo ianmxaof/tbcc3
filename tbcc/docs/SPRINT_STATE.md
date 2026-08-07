@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-05 (spicy bot consumer UX + video reveals)
+**Last updated:** 2026-08-07 (companion post-reveal CTA + conversion sprint wk32)
 
 ## Sprint goal
 
@@ -12,10 +12,11 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 
 | Item | Owner | Notes |
 |------|-------|-------|
-| Module A revenue stack | agent + operator | **2026-08-05 — spicy consumer UX:** hero `/start` photo, 3 body presets, pose gallery tiles, menu after reveal, video reveals (`/api/v1/video/*`). Island deploy in flight. Prior: **2026-07-31 — spicy + operator sandbox live.** Metrics cadence through **2026-08-07**; watch `spicy_beacon.hit_count`, `spicy_funnel_14d.touches`, `companion_margin_30d.photos_sold`, `loot_approved_gap_total`. |
+| Module A revenue stack | agent + operator | **2026-08-07 — conversion sprint wk32:** companion reveal caption now shows Loot + VIP buttons (`companion_menu` + `companion_stars`); island `local-20260807-0920`; `POST /growth-hub/conversion-sprint` OK — 14 channel bulletin blast queued. **Firehose C ✅** `TBCC_STARS_BAIT_DM_ENABLED=1`. **Firehose A (operator):** one LV loot gate push — `https://link-center.net/1367336/dl1P4gLUfX0L` tag `src_lv_loot_wk32`. **Firehose B (operator):** Buffer X hub/`loot_free` teaser tag `src_x_hub_wk32` (Buffer API 429 during agent run — queue manually). **48h scoreboard:** income entries + `companion_margin_30d.photos_sold` + loot starts. Prior: **2026-08-05 — spicy consumer UX** hero/presets/poses/video. Metrics cadence through **2026-08-07**; watch `spicy_beacon.hit_count`, `spicy_funnel_14d.touches`, `companion_margin_30d.photos_sold`, `loot_approved_gap_total`. |
 | Secretary sales-rep Phase 1 | agent | **2026-08-01 island:** per-customer Pilot/Auto (`reply_mode`), draft-card toggles, `secretary_new_lead` inbox, sales_strategy playbook (12 rows) + coach hint. Smoke: `/as_customer price objection` on @aof_secretary_bot. Phase 2 fleet table `secretary_bot_instances` + registry helpers; multi-app host deferred — `docs/handoffs/2026-08-01_secretary-fleet-phase2.md`. |
 | Loot album delivery + import starvation | agent | **2026-07-28 — deployed.** Survivor refill restored **605** approved (recycled). **2026-07-31 — route #1 ready:** `scripts/loot_durability_check.py` (dry-run/apply refill + paid-roll smoke steps); operator sandbox unlimited pulls for smoke. **Open:** fresh local imports + storage deposits; loop re-entrancy retry-only. Run on island: `python scripts/loot_durability_check.py` then `--apply-refill --unpause` if thin. |
 | Pool album duplicate tiles | agent | **2026-08-01 shipped:** sent-cache composer dedupe + per-item cache msg ids + hub fetch (`media_message_resolve`). Island `local-20260801-1911-fix`; `TBCC_SENT_CACHE_ALBUM_SIZE=3`; audit demoted **323** dup rows (voyeur 304, ASS 19). Watch next Loot Room albums for unique tiles. |
+| Remixer `/rebundle` any-admin | agent | **2026-08-05:** `/rebundle` + `/rebundle go` (partial + delete sources). Commit `ce5b684`. Island `local-20260805-2117` deployed (album_composer + workers). Operator smoke: `/rebundle` in any admin group or hub **✅ Rebundle (+partial)**. |
 | Listening relay + loot goblin | agent | **2026-07-26:** Phases 1–4 on island; alembic **102**; natural goblin spawn verified (drop 4, relay_log_id=2); production tuning restored (chance 0.20, cooldown 120). Key-roll album delivery fixed via `admin_import.session` (`local-20260725-2030`). Phase 5 Bot API relay = plan in `docs/handoffs/2026-07-26_relay-bot-api-phase5-plan.md`. |
 | True lean home cold-start | agent | **2026-07-15:** Lean = API + celery + beat + payment + loot; album_composer no longer mandatory; dashboard/secretary/post lanes default Off. Post-cutover: `TBCC_REVENUE_ISLAND_ACTIVE=1` + `mark-home-bots-off.ps1` keeps home payment/loot Off. |
 | Tray trust (Phase B honesty) | operator | Meltdown/`THROTTLE`/`STALE` already in panel — **smoke**, not greenfield. Doc sync done. Lane C only if smoke proves foundation bugs. |

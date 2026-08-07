@@ -13,6 +13,7 @@ from app.services.companion_body_prefs import (
     load_body_prefs,
     preset_label,
 )
+from app.services.companion_monetize_cta import companion_exhaustion_inline_keyboard_rows
 
 _UI_ROOT = Path(__file__).resolve().parent.parent / "data" / "companion_ui"
 HERO_IMAGE = _UI_ROOT / "main_menu_hero_v1.png"
@@ -76,6 +77,28 @@ def main_menu_markup_dict(*, age_confirmed: bool = True, video_enabled: bool = T
     return main_menu_keyboard(age_confirmed=age_confirmed, video_enabled=video_enabled).to_dict()
 
 
+def submenu_nav_row(*, include_reveal: bool = True, video_enabled: bool = True) -> list[InlineKeyboardButton]:
+    """Bottom nav row for sub-menus — keeps users from getting stuck."""
+    row: list[InlineKeyboardButton] = [
+        InlineKeyboardButton("🏠 Main menu", callback_data="comp_menu:home"),
+    ]
+    if include_reveal:
+        row.append(InlineKeyboardButton("📸 Photo reveal", callback_data="comp_menu:reveal"))
+    if video_enabled:
+        row.append(InlineKeyboardButton("🎬 Video", callback_data="comp_menu:video"))
+    return row
+
+
+def append_submenu_nav(
+    rows: list[list[InlineKeyboardButton]],
+    *,
+    include_reveal: bool = True,
+    video_enabled: bool = True,
+) -> None:
+    nav = submenu_nav_row(include_reveal=include_reveal, video_enabled=video_enabled)
+    if nav:
+        rows.append(nav)
+
 def body_preset_keyboard(user_data: dict | None = None) -> InlineKeyboardMarkup:
     prefs = load_body_prefs(user_data or {})
     active = active_preset_id(prefs)
@@ -91,25 +114,38 @@ def body_preset_keyboard(user_data: dict | None = None) -> InlineKeyboardMarkup:
             InlineKeyboardButton("Done ✓", callback_data="comp_preset:done"),
         ]
     )
+    append_submenu_nav(rows)
     return InlineKeyboardMarkup(rows)
 
 
-def pose_keyboard(poses: list[str], *, selected: str | None = None) -> InlineKeyboardMarkup | None:
+def pose_keyboard(
+    poses: list[str],
+    *,
+    selected: str | None = None,
+    buttons_per_row: int = 3,
+) -> InlineKeyboardMarkup | None:
     if not poses:
         return None
+    per_row = max(1, min(3, int(buttons_per_row)))
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
-    for i, pose in enumerate(poses[:16]):
+    for i, pose in enumerate(poses[:24]):
         prefix = "✓ " if selected and pose == selected else ""
-        label = f"{prefix}{pose}" if len(pose) <= 20 else f"{prefix}{pose[:17]}…"
+        label = f"{prefix}{pose}" if len(pose) <= 18 else f"{prefix}{pose[:15]}…"
         row.append(InlineKeyboardButton(label, callback_data=f"comp_pose:{i}"))
-        if len(row) >= 2:
+        if len(row) >= per_row:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    clear_label = "✓ Default (no pose)" if not selected else "Default (no pose)"
-    rows.append([InlineKeyboardButton(clear_label, callback_data="comp_pose:clear")])
+    clear_label = "✓ Default" if not selected else "Default"
+    rows.append(
+        [
+            InlineKeyboardButton(clear_label, callback_data="comp_pose:clear"),
+            InlineKeyboardButton("🏠 Main menu", callback_data="comp_menu:home"),
+            InlineKeyboardButton("📸 Reveal", callback_data="comp_menu:reveal"),
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -124,12 +160,18 @@ def video_pose_keyboard(poses: list[dict[str, str]], *, selected_id: str | None 
         prefix = "✓ " if selected_id and pid == selected_id else ""
         label = f"{prefix}{name}" if len(name) <= 20 else f"{prefix}{name[:17]}…"
         row.append(InlineKeyboardButton(label, callback_data=f"comp_vpose:{i}"))
-        if len(row) >= 2:
+        if len(row) >= 3:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("Default video (no pose)", callback_data="comp_vpose:clear")])
+    rows.append(
+        [
+            InlineKeyboardButton("Default video", callback_data="comp_vpose:clear"),
+            InlineKeyboardButton("🏠 Main menu", callback_data="comp_menu:home"),
+            InlineKeyboardButton("📸 Reveal", callback_data="comp_menu:reveal"),
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -140,7 +182,10 @@ def repeat_menu_hint_text() -> str:
 def delivery_navigation_keyboard(*, video_enabled: bool = True) -> InlineKeyboardMarkup:
     """Compact QoL nav attached to reveal photo/video captions."""
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton("🏠 Main menu", callback_data="comp_menu:home")],
+        [
+            InlineKeyboardButton("🏠 Main menu", callback_data="comp_menu:home"),
+            InlineKeyboardButton("🔁 Try again", callback_data="comp_menu:redo"),
+        ],
         [
             InlineKeyboardButton("📸 Another photo", callback_data="comp_menu:reveal"),
             InlineKeyboardButton("🔥 Change pose", callback_data="comp_menu:poses"),
@@ -159,6 +204,10 @@ def delivery_navigation_keyboard(*, video_enabled: bool = True) -> InlineKeyboar
             InlineKeyboardButton("💬 Chat tips", callback_data="comp_menu:chat_hint"),
         ]
     )
+    for monetize_row in companion_exhaustion_inline_keyboard_rows():
+        rows.append(
+            [InlineKeyboardButton(text=btn["text"], url=btn["url"]) for btn in monetize_row]
+        )
     return InlineKeyboardMarkup(rows)
 
 

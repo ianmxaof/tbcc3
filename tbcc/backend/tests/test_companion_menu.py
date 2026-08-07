@@ -18,6 +18,18 @@ def test_pose_keyboard_marks_selected():
     assert kb is not None
     labels = [btn.text for row in kb.inline_keyboard for btn in row]
     assert any(t.startswith("✓") and "Wet girl" in t for t in labels)
+    flat = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "comp_menu:home" in flat
+
+
+def test_pose_keyboard_three_columns():
+    poses = [f"Pose{i}" for i in range(7)]
+    kb = pose_keyboard(poses)
+    assert kb is not None
+    # First two rows should be full 3-wide.
+    assert len(kb.inline_keyboard[0]) == 3
+    assert len(kb.inline_keyboard[1]) == 3
+    assert kb.inline_keyboard[-1][1].callback_data == "comp_menu:home"
 
 
 def test_body_preset_keyboard():
@@ -26,16 +38,24 @@ def test_body_preset_keyboard():
     kb = body_preset_keyboard(ud)
     labels = [btn.text for row in kb.inline_keyboard for btn in row]
     assert any("Curvy" in t and t.startswith("✓") for t in labels)
+    flat = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "comp_menu:home" in flat
 
 
-def test_delivery_navigation_has_main_menu():
+def test_delivery_navigation_has_main_menu(monkeypatch):
+    monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "aof_lootgod_bot")
+    monkeypatch.setenv("TBCC_PAYMENT_BOT_USERNAME", "aofsubscriptions_bot")
     from app.services.companion_menu import delivery_navigation_keyboard
 
     kb = delivery_navigation_keyboard(video_enabled=True)
-    flat = [btn.callback_data for row in kb.inline_keyboard for btn in row]
-    assert "comp_menu:home" in flat
-    assert "comp_menu:reveal" in flat
-    assert "comp_menu:poses" in flat
+    flat_cb = [btn.callback_data for row in kb.inline_keyboard for btn in row if btn.callback_data]
+    flat_url = [btn.url for row in kb.inline_keyboard for btn in row if btn.url]
+    assert "comp_menu:home" in flat_cb
+    assert "comp_menu:redo" in flat_cb
+    assert "comp_menu:reveal" in flat_cb
+    assert "comp_menu:poses" in flat_cb
+    assert any("loot_free" in u for u in flat_url)
+    assert any("subscribe" in u for u in flat_url)
 
 
 def test_apply_natural_preset_api_kwargs():
