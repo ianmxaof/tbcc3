@@ -23,3 +23,14 @@ def test_reveal_paywall_lines_mention_first_reveal_when_strict(monkeypatch):
     monkeypatch.setenv("TBCC_COMPANION_REFERRAL_REQUIRE_INVITEE_REVEAL", "1")
     lines = paywall.reveal_paywall_lines()
     assert any("first reveal" in line for line in lines)
+
+
+def test_reveal_paywall_keyboard_has_loot_and_vip(monkeypatch):
+    monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "aof_lootgod_bot")
+    monkeypatch.setenv("TBCC_PAYMENT_BOT_USERNAME", "aofsubscriptions_bot")
+    monkeypatch.setenv("TBCC_COMPANION_REFERRAL_ENABLED", "0")
+    kb = paywall.reveal_paywall_keyboard(bot_username="aof_spicybot_bot", user_id=42)
+    assert kb is not None
+    urls = [btn.url for row in kb.inline_keyboard for btn in row if btn.url]
+    assert any("loot_free" in u for u in urls)
+    assert any("subscribe" in u for u in urls)

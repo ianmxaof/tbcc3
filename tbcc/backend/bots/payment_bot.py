@@ -2627,6 +2627,34 @@ def _intro_precheck_block_db(telegram_user_id: int, plan_id: int) -> str | None:
         db.close()
 
 
+async def _send_post_purchase_cross_sell(
+    bot,
+    chat_id: int,
+    *,
+    sub: dict,
+    is_bundle: bool,
+    replay: bool,
+) -> None:
+    """One-tap ladder after Stars fulfillment — loot, companion, or VIP intro."""
+    if replay:
+        return
+    from app.services.payment_post_purchase_cta import (
+        classify_post_purchase_kind,
+        post_purchase_cross_sell_html,
+        post_purchase_inline_keyboard,
+    )
+
+    kind = classify_post_purchase_kind(is_bundle=is_bundle, sub=sub)
+    kb = post_purchase_inline_keyboard(kind)
+    text = post_purchase_cross_sell_html(kind)
+    if not kb:
+        return
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        logger.debug("post-purchase cross-sell skipped: %s", e)
+
+
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle successful payment - create subscription and grant access."""
     payment = update.message.successful_payment
@@ -2735,6 +2763,13 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                             )
                         except Exception as e:
                             logger.warning("Could not send bundle zip part 2: %s", e)
+            await _send_post_purchase_cross_sell(
+                context.bot,
+                update.message.chat_id,
+                sub=sub,
+                is_bundle=True,
+                replay=replay,
+            )
             return
 
         link = sub.get("invite_link")
@@ -2745,6 +2780,13 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if progress_line:
                 text = f"{text}\n\n{sub.get('milestone_progress', '').strip()}"
             await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=False)
+            await _send_post_purchase_cross_sell(
+                context.bot,
+                update.message.chat_id,
+                sub=sub,
+                is_bundle=False,
+                replay=replay,
+            )
             return
         else:
             text = (
@@ -2754,6 +2796,13 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"{progress_line}"
             )
         await update.message.reply_text(text, parse_mode="Markdown")
+        await _send_post_purchase_cross_sell(
+            context.bot,
+            update.message.chat_id,
+            sub=sub,
+            is_bundle=False,
+            replay=replay,
+        )
     else:
         await update.message.reply_text(
             "Payment received, but there was an issue granting access. "

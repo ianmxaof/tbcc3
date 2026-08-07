@@ -130,6 +130,18 @@ def _loot_inline_keyboard(
             InlineKeyboardButton("🔗 Referral", callback_data="loot:referral"),
         ],
     )
+    from app.services.loot_inline_keyboards import (
+        free_pull_midpoint_upsell_row,
+        should_show_free_pull_midpoint,
+    )
+
+    if should_show_free_pull_midpoint(
+        free_pull_number=free_pull_number,
+        free_pulls_remaining=free_pulls_remaining,
+    ):
+        midpoint = free_pull_midpoint_upsell_row(payment_bot_username=pay)
+        if midpoint:
+            rows.append(midpoint)
     rows.append(
         [
             InlineKeyboardButton("📖 Guide", callback_data="loot:guide"),

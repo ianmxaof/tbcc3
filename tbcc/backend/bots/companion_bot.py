@@ -83,7 +83,11 @@ from app.services.companion_referral import (
     referral_reward_description,
     referrals_enabled,
 )
-from app.services.companion_reveal_paywall import reveal_paywall_lines, send_reveal_paywall
+from app.services.companion_reveal_paywall import (
+    reveal_paywall_keyboard,
+    reveal_paywall_lines,
+    send_reveal_paywall,
+)
 from app.services.companion_stars import (
     parse_invoice_payload,
     send_photo_invoice,
@@ -111,7 +115,16 @@ from app.services.companion_menu import (
     video_pose_keyboard,
     welcome_caption,
 )
-from app.services.companion_assets import ensure_preset_card, list_pose_tile_paths
+from app.services.companion_assets import (
+    POSE_KEYBOARD_COLUMNS,
+    labeled_pose_tile_bytes,
+    split_pose_album_batches,
+    ensure_preset_card,
+    import_operator_pose_tile,
+    pose_tile_path,
+)
+from app.services.companion_last_reveal import get_last_reveal, save_last_reveal
+from app.services.companion_poses import filter_photo_poses
 from app.services.nudify_client import configured as nudify_configured
 from app.services.llm_chat import complete_llm_chat, default_system_prompt, provider_configured
 from app.services.undress_tool_client import (
@@ -631,29 +644,34 @@ async def _send_pose_picker(
     poses: list[str] = []
     used_fallback = False
     try:
-        poses = await list_photo_poses()
+        raw = await list_photo_poses()
+        poses = filter_photo_poses(raw, require_tile=True)
+        if not poses:
+            poses = filter_photo_poses(raw)
     except Exception as e:
         logger.warning("list_photo_poses failed: %s", e)
-        poses = list(DEFAULT_PHOTO_POSES)
+        from app.services.companion_poses import filter_default_photo_poses
+
+        poses = filter_default_photo_poses(DEFAULT_PHOTO_POSES)
         used_fallback = True
     if not poses:
         await bot.send_message(chat_id=chat_id, text="No poses available right now — try again later.")
         return
     user_data[POSE_OPTIONS_KEY] = poses[:24]
     sel = selected or user_data.get(POSE_KEY)
-    kb = pose_keyboard(poses, selected=str(sel) if sel else None)
+    kb = pose_keyboard(poses, selected=str(sel) if sel else None, buttons_per_row=POSE_KEYBOARD_COLUMNS)
     fallback_note = "\n<i>(Pose list from cache — provider was briefly unavailable.)</i>\n" if used_fallback else ""
-    preview_paths = list_pose_tile_paths(poses[:10])
-    if preview_paths:
+    for batch in split_pose_album_batches(poses):
         media: list[InputMediaPhoto] = []
-        for i, path in enumerate(preview_paths):
-            caption = f"{i + 1}. {poses[i]}" if i < len(poses) else None
-            with path.open("rb") as f:
-                media.append(InputMediaPhoto(media=f.read(), caption=caption))
-        try:
-            await bot.send_media_group(chat_id=chat_id, media=media)
-        except Exception as e:
-            logger.debug("pose gallery skipped: %s", e)
+        for pose in batch:
+            tile = labeled_pose_tile_bytes(pose)
+            if tile:
+                media.append(InputMediaPhoto(media=tile))
+        if media:
+            try:
+                await bot.send_media_group(chat_id=chat_id, media=media)
+            except Exception as e:
+                logger.warning("pose picker album failed: %s", e)
     await bot.send_message(
         chat_id=chat_id,
         text=f"{note}<b>Pick a photo pose</b>{fallback_note}",
@@ -706,6 +724,30 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     action = query.data.split(":", 1)[1]
     chat_id = query.message.chat_id if query.message else user.id
+
+    if action == "redo":
+        last = get_last_reveal(user.id) or context.user_data.get("last_reveal")
+        if not last or not last.get("file_id"):
+            await query.answer("No previous photo saved — send a new pic first.", show_alert=True)
+            return
+        await query.answer()
+        context.user_data[MEDIA_MODE_KEY] = str(last.get("media_mode") or "photo")
+        status_msg = await context.bot.send_message(chat_id=chat_id, text="Redoing your last reveal…")
+        photo_bytes, filename = await _download_file_id(
+            context,
+            str(last["file_id"]),
+            str(last.get("filename") or "photo.jpg"),
+        )
+        await _queue_photo_for_user(
+            chat_id=chat_id,
+            user_id=user.id,
+            context=context,
+            photo_bytes=photo_bytes,
+            filename=filename,
+            status_msg=status_msg,
+            source_file_id=str(last["file_id"]),
+        )
+        return
 
     if action == "home":
         await query.answer()
@@ -787,6 +829,17 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ]
         if acc.generations_remaining() <= 0:
             lines.extend(reveal_paywall_lines())
+            uname = await _bot_username(context)
+            kb = reveal_paywall_keyboard(bot_username=uname, user_id=user.id)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            if stars_enabled():
+                await send_photo_invoice(context.bot, chat_id=chat_id, user_id=user.id)
+            return
         await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
         return
 
@@ -1134,18 +1187,16 @@ async def _download_file_id(context: ContextTypes.DEFAULT_TYPE, file_id: str, fi
     return buf.getvalue(), filename
 
 
-async def _queue_user_photo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+async def _queue_photo_for_user(
     *,
+    chat_id: int,
+    user_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
     photo_bytes: bytes,
     filename: str,
     status_msg,
+    source_file_id: str | None = None,
 ) -> bool:
-    msg = update.effective_message
-    user = update.effective_user
-    if not msg or not user:
-        return False
 
     reachable, reach_detail = await check_public_webhook_reachable()
     if not reachable:
@@ -1159,13 +1210,13 @@ async def _queue_user_photo(
         return False
 
     try:
-        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_PHOTO)
+        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
     except Exception:
         pass
 
     media_mode = _media_mode(context)
     credit_units = video_credit_units() if media_mode == "video" else 1
-    ok, referral_credit = consume_generation_allowance(user.id, units=credit_units)
+    ok, referral_credit = consume_generation_allowance(user_id, units=credit_units)
     if not ok:
         await status_msg.edit_text(
             f"Allowance exhausted — video needs {credit_units} reveal credit(s)."
@@ -1180,7 +1231,7 @@ async def _queue_user_photo(
     api = body.to_api_kwargs()
     logger.info(
         "companion bot queue uid=%s mode=%s pose=%s api_params=%s",
-        user.id,
+        user_id,
         media_mode,
         _selected_pose(context) if media_mode == "photo" else _selected_video_pose(context),
         api,
@@ -1189,8 +1240,8 @@ async def _queue_user_photo(
         if media_mode == "video":
             vpose = _selected_video_pose(context)
             queued = await queue_video_generation(
-                chat_id=msg.chat_id,
-                user_id=user.id,
+                chat_id=chat_id,
+                user_id=user_id,
                 photo_bytes=photo_bytes,
                 filename=filename,
                 video_pose_id=vpose.get("id") if vpose else None,
@@ -1198,8 +1249,8 @@ async def _queue_user_photo(
             )
         else:
             queued = await queue_photo_generation(
-                chat_id=msg.chat_id,
-                user_id=user.id,
+                chat_id=chat_id,
+                user_id=user_id,
                 photo_bytes=photo_bytes,
                 filename=filename,
                 pose=_selected_pose(context),
@@ -1210,12 +1261,12 @@ async def _queue_user_photo(
                 cloth=api.get("cloth"),
             )
     except Exception as e:
-        refund_generation_allowance(user.id, units=credit_units)
+        refund_generation_allowance(user_id, units=credit_units)
         logger.warning("companion queue failed: %s", e)
         await status_msg.edit_text(f"Could not queue generation: {e!s}"[:4000])
         return False
 
-    acc = get_access(user.id)
+    acc = get_access(user_id)
     pose_note = ""
     if media_mode == "video":
         vpose = _selected_video_pose(context)
@@ -1231,7 +1282,43 @@ async def _queue_user_photo(
         parse_mode="HTML",
         reply_markup=_main_menu_keyboard(context),
     )
+    if source_file_id:
+        save_last_reveal(
+            user_id,
+            file_id=source_file_id,
+            filename=filename,
+            media_mode=media_mode,
+        )
+        context.user_data["last_reveal"] = {
+            "file_id": source_file_id,
+            "filename": filename,
+            "media_mode": media_mode,
+        }
     return True
+
+
+async def _queue_user_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    photo_bytes: bytes,
+    filename: str,
+    status_msg,
+    source_file_id: str | None = None,
+) -> bool:
+    msg = update.effective_message
+    user = update.effective_user
+    if not msg or not user:
+        return False
+    return await _queue_photo_for_user(
+        chat_id=msg.chat_id,
+        user_id=user.id,
+        context=context,
+        photo_bytes=photo_bytes,
+        filename=filename,
+        status_msg=status_msg,
+        source_file_id=source_file_id,
+    )
 
 
 async def _offer_paid_photo_path(
@@ -1355,6 +1442,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
         photo_bytes=photo_bytes,
         filename=filename,
         status_msg=status_msg,
+        source_file_id=str(pending.get("file_id") or ""),
     )
 
 
@@ -1428,6 +1516,7 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await status_msg.edit_text("Send a photo or image document.")
         return
     photo_bytes, filename = downloaded
+    fid = await _photo_file_id(update)
 
     await _queue_user_photo(
         update,
@@ -1435,6 +1524,7 @@ async def on_private_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         photo_bytes=photo_bytes,
         filename=filename,
         status_msg=status_msg,
+        source_file_id=fid[0] if fid else None,
     )
 
 
