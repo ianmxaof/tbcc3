@@ -181,6 +181,12 @@ export function Analytics() {
         ) : null}
       </section>
 
+      <WebHubScoreboard
+        rows={gateFunnelQ.data?.gate_funnel ?? []}
+        isPending={gateFunnelQ.isPending}
+        rangeDays={rangeDays}
+      />
+
       <section>
         <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide mb-3">
           Outbound posts (last {rangeDays} days)
@@ -361,5 +367,112 @@ function StatCard({ label, value }: { label: string; value: number }) {
       <div className="text-slate-500 text-xs uppercase tracking-wide">{label}</div>
       <div className="text-lg font-semibold text-slate-100 tabular-nums">{value}</div>
     </div>
+  );
+}
+
+/**
+ * P10 — client-filters the same gate-funnel payload already fetched above
+ * (no new backend endpoint). See docs/handoffs/2026-08-10_aof-hub-p9-p10_report.md
+ * "P10 design" for why expects_touch exists and must be respected here:
+ * without it, web-vpapi-/web-live- rows (affiliate links) AND web-vip/web-spicy
+ * (bare bot links with no ?start= payload) all read as a broken 0% funnel when
+ * zero touches is the correct, expected outcome for both shapes.
+ */
+function WebHubScoreboard({
+  rows,
+  isPending,
+  rangeDays,
+}: {
+  rows: Array<{
+    source_ref: string;
+    slugs: string[];
+    clicks: number;
+    touches: number;
+    revenue_usd: number;
+    click_to_touch_pct: number | null;
+    expects_touch: boolean;
+  }>;
+  isPending: boolean;
+  rangeDays: number;
+}) {
+  const webRows = rows
+    .filter((r) => r.source_ref.startsWith("src_web_"))
+    .sort((a, b) => b.revenue_usd - a.revenue_usd || b.clicks - a.clicks);
+
+  const totals = webRows.reduce(
+    (acc, r) => ({
+      clicks: acc.clicks + r.clicks,
+      touches: acc.touches + r.touches,
+      revenue: acc.revenue + r.revenue_usd,
+    }),
+    { clicks: 0, touches: 0, revenue: 0 }
+  );
+
+  return (
+    <section>
+      <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide mb-3">
+        Web hub scoreboard (aof-forum, last {rangeDays} days)
+      </h2>
+      <p className="text-slate-500 text-sm mb-3">
+        <code className="text-slate-400">src_web_*</code> rows from the gate funnel above — hub CTAs, VPAPI labels,
+        and live-embed outbound clicks. Rows marked <span className="text-amber-400/90">no touch expected</span>{" "}
+        either point off Telegram (affiliate links) or are a bare bot link with no <code>?start=</code> payload;
+        zero touches there is expected, not broken.
+      </p>
+      {isPending ? (
+        <p className="text-slate-500 text-sm">Loading…</p>
+      ) : webRows.length === 0 ? (
+        <p className="text-slate-500 text-sm">No web hub beacon traffic yet.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+            <StatCard label="Web clicks" value={totals.clicks} />
+            <StatCard label="Web touches" value={totals.touches} />
+            <StatCard label="Web revenue ($)" value={Math.round(totals.revenue)} />
+          </div>
+          <div className="overflow-x-auto border border-slate-700 rounded-lg">
+            <table className="min-w-full text-sm text-left">
+              <thead className="bg-slate-900/60 text-slate-400 uppercase text-xs">
+                <tr>
+                  <th className="px-3 py-2">source_ref</th>
+                  <th className="px-3 py-2">clicks</th>
+                  <th className="px-3 py-2">touches</th>
+                  <th className="px-3 py-2">$</th>
+                  <th className="px-3 py-2">click→touch</th>
+                </tr>
+              </thead>
+              <tbody className="text-slate-300 divide-y divide-slate-800">
+                {webRows.map((row) => (
+                  <tr key={row.source_ref} className="hover:bg-slate-900/40">
+                    <td className="px-3 py-2 font-mono text-xs">{row.source_ref}</td>
+                    <td className="px-3 py-2">{row.clicks}</td>
+                    <td className="px-3 py-2">
+                      {!row.expects_touch ? (
+                        <span
+                          className="text-amber-400/90"
+                          title="No ?start= payload reaches Telegram here (affiliate link, or a bare bot link) — touches aren't possible by design"
+                        >
+                          no touch expected
+                        </span>
+                      ) : (
+                        row.touches
+                      )}
+                    </td>
+                    <td className="px-3 py-2">${row.revenue_usd.toFixed(2)}</td>
+                    <td className="px-3 py-2">
+                      {!row.expects_touch
+                        ? "—"
+                        : row.click_to_touch_pct != null
+                          ? `${row.click_to_touch_pct}%`
+                          : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
   );
 }

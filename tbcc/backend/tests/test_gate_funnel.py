@@ -38,7 +38,12 @@ def _wire(db, *, links, hits, touches, revenue_rows, monkeypatch):
 
 def test_gate_funnel_joins_clicks_touches_revenue(monkeypatch):
     db = MagicMock()
-    link = ClickLink(id=1, slug="wk31-lv-loot", source_ref="src_lv_loot_wk31", destination_url="x")
+    link = ClickLink(
+        id=1,
+        slug="wk31-lv-loot",
+        source_ref="src_lv_loot_wk31",
+        destination_url="https://telegram.me/aof_lootgod_bot?start=src_lv_loot_wk31",
+    )
     hits = [
         ClickLinkHit(link_id=1, user_agent="Mozilla/5.0", country="US", created_at=datetime.utcnow()),
         ClickLinkHit(link_id=1, user_agent="Mozilla/5.0", country="US", created_at=datetime.utcnow()),
@@ -70,19 +75,71 @@ def test_gate_funnel_joins_clicks_touches_revenue(monkeypatch):
     assert row["usd_per_1k_clicks"] == 6000.0
     assert row["usd_per_touch"] == 18.0
     assert row["top_countries"][0] == {"country": "US", "clicks": 2}
+    assert row["expects_touch"] is True
     assert out["totals"]["clicks"] == 3
     assert out["totals"]["bot_clicks"] == 1
 
 
 def test_gate_funnel_flags_clicks_without_touches(monkeypatch):
     db = MagicMock()
-    link = ClickLink(id=2, slug="wk31-lv-ass", source_ref="src_lv_ass_wk31", destination_url="x")
+    link = ClickLink(
+        id=2,
+        slug="wk31-lv-ass",
+        source_ref="src_lv_ass_wk31",
+        destination_url="https://telegram.me/aof_lootgod_bot?start=src_lv_ass_wk31",
+    )
     hits = [ClickLinkHit(link_id=2, user_agent="Mozilla/5.0", created_at=datetime.utcnow())]
     _wire(db, links=[link], hits=hits, touches=[], revenue_rows=[], monkeypatch=monkeypatch)
 
     out = gate_funnel_report(db, days=30)
     assert out["clicks_without_touches"] == ["src_lv_ass_wk31"]
     assert out["gate_funnel"][0]["click_to_touch_pct"] == 0.0
+    assert out["gate_funnel"][0]["expects_touch"] is True
+
+
+def test_gate_funnel_affiliate_outbound_excluded_from_broken_list(monkeypatch):
+    """P9/P10: web-vpapi-*/web-live-* beacons point off-Telegram and can never
+    produce a touch by design — they must not be flagged as broken."""
+    db = MagicMock()
+    link = ClickLink(
+        id=3,
+        slug="web-vpapi-big-tits",
+        source_ref="src_web_vpapi_big_tits",
+        destination_url="https://www.awempire.com/",
+    )
+    hits = [ClickLinkHit(link_id=3, user_agent="Mozilla/5.0", created_at=datetime.utcnow())]
+    _wire(db, links=[link], hits=hits, touches=[], revenue_rows=[], monkeypatch=monkeypatch)
+
+    out = gate_funnel_report(db, days=30)
+    row = out["gate_funnel"][0]
+    assert row["source_ref"] == "src_web_vpapi_big_tits"
+    assert row["clicks"] == 1
+    assert row["touches"] == 0
+    assert row["expects_touch"] is False
+    # The whole point: present in the row data (so a dashboard can label it),
+    # absent from the "broken" list.
+    assert out["clicks_without_touches"] == []
+
+
+def test_gate_funnel_bare_bot_link_excluded_from_broken_list(monkeypatch):
+    """Boundary case: a Telegram destination with no ?start= payload (e.g.
+    web-vip -> https://t.me/aofsubscriptions_bot) is on-Telegram but still
+    structurally cannot produce a touch — same treatment as an affiliate
+    link, for a different reason. Must not be flagged as broken either."""
+    db = MagicMock()
+    link = ClickLink(
+        id=4,
+        slug="web-vip",
+        source_ref="src_web_hub_vip",
+        destination_url="https://t.me/aofsubscriptions_bot",
+    )
+    hits = [ClickLinkHit(link_id=4, user_agent="Mozilla/5.0", created_at=datetime.utcnow())]
+    _wire(db, links=[link], hits=hits, touches=[], revenue_rows=[], monkeypatch=monkeypatch)
+
+    out = gate_funnel_report(db, days=30)
+    row = out["gate_funnel"][0]
+    assert row["expects_touch"] is False
+    assert out["clicks_without_touches"] == []
 
 
 def test_gate_funnel_flags_unbeaconed_earning_refs(monkeypatch):

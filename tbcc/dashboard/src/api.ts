@@ -1658,6 +1658,11 @@ export const api = {
           usd_per_1k_clicks: number | null;
           usd_per_touch: number | null;
           top_countries: Array<{ country: string; clicks: number }>;
+          /** False when this ref structurally cannot produce a touch (an
+           * affiliate link, or a bare Telegram link with no ?start=
+           * payload) — zero touches there is expected, not broken. See
+           * backend/app/services/gate_funnel.py. */
+          expects_touch: boolean;
         }>;
         totals: {
           clicks: number;

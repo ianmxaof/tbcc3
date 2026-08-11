@@ -15,12 +15,39 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
 from app.models.click_link import ClickLink, ClickLinkHit
 from app.models.user_funnel_touch import UserFunnelTouch
-from app.services.click_beacon import is_noise_beacon_user_agent
+from app.services.click_beacon import derive_source_ref, is_noise_beacon_user_agent
+
+_TELEGRAM_HOSTS = frozenset({"t.me", "telegram.me"})
+
+
+def _is_telegram_destination(url: str | None) -> bool:
+    if not url:
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host in _TELEGRAM_HOSTS
+
+
+def _expects_touch(url: str | None) -> bool:
+    """Whether a beacon's destination is even capable of producing a
+    user_funnel_touch. Two ways it can't: pointing off-Telegram entirely
+    (an affiliate link), or pointing at Telegram but with no ?start=
+    payload (a bare bot link — e.g. web-vip/web-spicy's public CTAs).
+    record_traffic_touch() only fires from a Telegram /start= payload, so
+    either shape produces a real, permanent, *expected* zero — not a
+    broken destination.
+    """
+    if not _is_telegram_destination(url):
+        return False
+    return derive_source_ref(url or "") is not None
 
 
 def _pct(numerator: int, denominator: int) -> float | None:
@@ -38,6 +65,19 @@ def gate_funnel_report(db: Session, *, days: int = 30) -> dict[str, Any]:
         ref = (link.source_ref or "").strip()
         if ref:
             links_by_ref.setdefault(ref, []).append(link)
+
+    # A ref cannot expect a touch when every beacon registered under it is
+    # incapable of carrying a ?start= payload to Telegram — either it points
+    # off-Telegram entirely (an affiliate link) or it's a bare Telegram link
+    # with no payload (web-vip/web-spicy's public CTAs). Derived from
+    # destination_url rather than a hardcoded slug/ref list so new beacons
+    # of either shape don't need this function updated to be classified
+    # correctly.
+    no_touch_expected_refs = {
+        ref
+        for ref, ref_links in links_by_ref.items()
+        if ref_links and all(not _expects_touch(l.destination_url) for l in ref_links)
+    }
 
     link_ids = [int(link.id) for link in links]
     hits: list[ClickLinkHit] = []
@@ -102,6 +142,10 @@ def gate_funnel_report(db: Session, *, days: int = 30) -> dict[str, Any]:
                 ),
                 "usd_per_touch": (round(usd_cents / 100.0 / touch_count, 2) if touch_count else None),
                 "top_countries": [{"country": c, "clicks": n} for c, n in top_countries],
+                # False when this ref structurally cannot produce a touch
+                # (affiliate link, or a bare Telegram link with no ?start=
+                # payload) — zero touches there is expected, not broken.
+                "expects_touch": ref not in no_touch_expected_refs,
             }
         )
 
@@ -122,8 +166,14 @@ def gate_funnel_report(db: Session, *, days: int = 30) -> dict[str, Any]:
         # Refs earning money with no beacon in front of them — unmeasurable spend.
         "unbeaconed_earning_refs": sorted(set(revenue_by_ref) - set(links_by_ref)),
         # Beacons taking clicks that never became a touch — broken destination or
-        # a click_only lane gate that cannot carry a start payload.
+        # a click_only lane gate that cannot carry a start payload. Refs that
+        # structurally can't expect a touch (affiliate links, bare Telegram
+        # links with no payload) are excluded: zero touches there is correct,
+        # not broken (see expects_touch on each row for the same signal,
+        # unfiltered).
         "clicks_without_touches": sorted(
-            ref for ref in clicks if clicks[ref] > 0 and touches.get(ref, 0) == 0
+            ref
+            for ref in clicks
+            if clicks[ref] > 0 and touches.get(ref, 0) == 0 and ref not in no_touch_expected_refs
         ),
     }
