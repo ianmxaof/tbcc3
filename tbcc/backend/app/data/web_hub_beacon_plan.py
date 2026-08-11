@@ -69,4 +69,26 @@ def build_web_hub_beacon_plan() -> list[WebHubBeacon]:
             destination_url="https://www.awempire.com/",
             source_ref="src_web_live_couples",
         ),
+    ] + _vpapi_beacon_plan()
+
+
+# Slugs must match aof-forum/data/vpapi-labels.json — no shared source of
+# truth between TS and Python here, same as the LOOT_BOT/VIP_BOT/SPICY_BOT
+# duplication above. P9 phase 2 (option c): no per-video outbound URL exists
+# in the verified VPAPI contract, so every label routes through one beacon
+# per label to the same operator-supplied destination (all default to the
+# same placeholder until real category links exist — see
+# docs/handoffs/2026-08-10_aof-hub-p9-p10_report.md).
+_VPAPI_LABEL_SLUGS = ("big-tits", "amateur", "milf", "blowjob")
+
+
+def _vpapi_beacon_plan() -> list[WebHubBeacon]:
+    return [
+        WebHubBeacon(
+            slug=f"web-vpapi-{slug}",
+            label=f"AOF Hub tube/awempire/{slug} (Awempire VPAPI placeholder)",
+            destination_url="https://www.awempire.com/",
+            source_ref=f"src_web_vpapi_{slug.replace('-', '_')}",
+        )
+        for slug in _VPAPI_LABEL_SLUGS
     ]

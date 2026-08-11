@@ -7,6 +7,8 @@ Seed click beacons for AOF Hub web CTAs (idempotent by slug).
 
 Operator: after Awempire approval, update web-live-* destination_url rows
 (or re-run with AWEMPIRE_OUTBOUND_URL_GIRLS / AWEMPIRE_OUTBOUND_URL_COUPLES env).
+Same for web-vpapi-* rows via AWEMPIRE_VPAPI_OUTBOUND_URL (applies to all
+labels uniformly — no per-category links available yet, see P9 phase 2 report).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from app.services.click_beacon import create_click_link, public_beacon_base  # n
 def _apply_awempire_overrides(plan: list[WebHubBeacon]) -> list[WebHubBeacon]:
     girls = (os.getenv("AWEMPIRE_OUTBOUND_URL_GIRLS") or "").strip()
     couples = (os.getenv("AWEMPIRE_OUTBOUND_URL_COUPLES") or "").strip()
+    vpapi = (os.getenv("AWEMPIRE_VPAPI_OUTBOUND_URL") or "").strip()
     out: list[WebHubBeacon] = []
     for b in plan:
         if b.slug == "web-live-girls" and girls:
@@ -36,6 +39,10 @@ def _apply_awempire_overrides(plan: list[WebHubBeacon]) -> list[WebHubBeacon]:
         elif b.slug == "web-live-couples" and couples:
             out.append(
                 WebHubBeacon(b.slug, b.label, couples, b.source_ref)
+            )
+        elif b.slug.startswith("web-vpapi-") and vpapi:
+            out.append(
+                WebHubBeacon(b.slug, b.label, vpapi, b.source_ref)
             )
         else:
             out.append(b)

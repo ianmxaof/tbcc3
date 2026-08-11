@@ -1,4 +1,4 @@
-export type CtaSurface = "hub" | "live" | "media" | "gallery" | "tag";
+export type CtaSurface = "hub" | "live" | "media" | "gallery" | "tag" | "vpapi";
 
 export type CtaContext = {
   surface: CtaSurface;

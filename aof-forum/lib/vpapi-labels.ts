@@ -30,3 +30,18 @@ export function getVpapiLabel(slug: string): VpapiLabel | null {
   const needle = slug.trim().toLowerCase();
   return getVpapiLabels().find((l) => l.slug.toLowerCase() === needle) ?? null;
 }
+
+// Phase 2 / option (c): no per-video outbound URL exists in the verified
+// VPAPI contract (see docs/handoffs/2026-08-10_aof-hub-p9-p10_report.md
+// "Blockers" §1) — every card on a label page routes to the same
+// beacon-wrapped destination, seeded server-side in
+// tbcc/backend/app/data/web_hub_beacon_plan.py as `web-vpapi-<slug>`. The
+// real destination lives there (single source of truth), not duplicated
+// here, so this always resolves through the beacon when one is configured.
+const VPAPI_FALLBACK_OUTBOUND_URL = "https://www.awempire.com/";
+
+export function vpapiLabelOutboundHref(label: VpapiLabel): string {
+  const base = process.env.NEXT_PUBLIC_TBCC_BEACON_BASE?.trim().replace(/\/$/, "");
+  if (!base) return VPAPI_FALLBACK_OUTBOUND_URL;
+  return `${base}/r/web-vpapi-${label.slug}`;
+}

@@ -142,11 +142,13 @@ export async function fetchVpapiList(params: VpapiListParams = {}): Promise<Vpap
 
   let res: Response;
   try {
+    // No per-fetch revalidate here on purpose: the calling route
+    // (app/(site)/tube/awempire/[label]/page.tsx) sets `export const
+    // revalidate = 900` at the segment level, which is authoritative for
+    // this whole page including this fetch. A second, independent
+    // revalidate value here would just invite the two to drift.
     res = await fetch(url, {
       headers: { "X-Requested-With": "XMLHttpRequest" },
-      // Third-party, rate-limited API backing an SEO surface — cache, don't
-      // hit it on every request the way force-dynamic pages do elsewhere.
-      next: { revalidate: 900 },
     });
   } catch {
     // Network failure against a partner API must not break the page —

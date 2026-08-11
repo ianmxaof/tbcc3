@@ -1,6 +1,8 @@
 import type { MetadataRoute } from "next";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { liveEmbedsConfigured } from "@/lib/live-embeds";
+import { vpapiConfigured } from "@/lib/awempire-vpapi";
+import { getVpapiLabels } from "@/lib/vpapi-labels";
 
 /**
  * Minimal indexability baseline (P1.5) — static routes + the highest-value
@@ -34,6 +36,15 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     { url: `${base}/f`, changeFrequency: "daily", priority: 0.6 },
     ...(liveEmbedsConfigured()
       ? [{ url: `${base}/live`, changeFrequency: "hourly" as const, priority: 0.75 }]
+      : []),
+    // Fixture-mode label pages are thin content until AWEMPIRE_PSID/AWEMPIRE_ACCESS_KEY
+    // are set — same reasoning as gating /live above, and the /live stub removal in P1.5.
+    ...(vpapiConfigured()
+      ? getVpapiLabels().map((l) => ({
+          url: `${base}/tube/awempire/${l.slug}`,
+          changeFrequency: "daily" as const,
+          priority: 0.55,
+        }))
       : []),
   ];
 

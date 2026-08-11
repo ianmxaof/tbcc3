@@ -1,26 +1,49 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getVpapiLabel, getVpapiLabels } from "@/lib/vpapi-labels";
+import type { Metadata } from "next";
+import { getVpapiLabel, getVpapiLabels, vpapiLabelOutboundHref } from "@/lib/vpapi-labels";
 import { fetchVpapiList, vpapiConfigured } from "@/lib/awempire-vpapi";
+import { VpapiDisclaimer, VpapiVideoGrid } from "@/components/VpapiVideoGrid";
+import { TelegramConversionFooter } from "@/components/TelegramConversionFooter";
+import { JsonLd } from "@/components/JsonLd";
 
 // Third-party, rate-limited API backing this page — cache instead of
 // force-dynamic (see lib/awempire-vpapi.ts fetch revalidate note).
 export const revalidate = 900;
 
-// Without this, a dynamic segment with `revalidate` set (no `dynamic` export)
-// leaves Next 14 to infer static-vs-on-demand generation implicitly. Listing
-// the known labels makes all four genuinely static/ISR — right for an SEO
-// surface — and keeps notFound() meaningful for anything outside the set.
+// Makes the 4 known labels genuinely static/ISR (right for an SEO surface)
+// and keeps notFound() meaningful for anything outside the set. Note: the
+// fixture-vs-live choice is baked in at generation time — see "Operator
+// steps" in the P9 report for the post-credentials staleness window.
 export async function generateStaticParams() {
   return getVpapiLabels().map((l) => ({ label: l.slug }));
 }
 
-/**
- * Phase 1 skeleton: proves the label -> VPAPI plumbing end-to-end (fixture or
- * live). No grid polish, no beacon-wrapped outbound links, no metadata yet —
- * those are Phase 2 per docs/handoffs/2026-08-10_aof-hub-p9-p10_report.md,
- * once the watch-page embed-script sandboxing question is settled.
- */
+function siteUrl(): string {
+  return (process.env.NEXT_PUBLIC_SITE_URL || "http://127.0.0.1:3001").replace(/\/$/, "");
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ label: string }>;
+}): Promise<Metadata> {
+  const { label: labelSlug } = await params;
+  const label = getVpapiLabel(labelSlug);
+  if (!label) return { title: "Not found — AOF Hub" };
+
+  const title = `${label.title} videos — AOF Hub`;
+  const description =
+    label.description?.trim() || `${label.title} video listing, powered by our promotion partner.`;
+  return {
+    title,
+    description,
+    alternates: { canonical: `/tube/awempire/${label.slug}` },
+    openGraph: { title, description, type: "website" },
+    twitter: { card: "summary", title, description },
+  };
+}
+
 export default async function AwempireLabelPage({
   params,
 }: {
@@ -31,15 +54,26 @@ export default async function AwempireLabelPage({
   if (!label) notFound();
 
   const result = await fetchVpapiList({ tags: label.vpapiTags, limit: 24 });
+  const outboundHref = vpapiLabelOutboundHref(label);
+
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    name: `${label.title} — AOF Hub`,
+    url: `${siteUrl()}/tube/awempire/${label.slug}`,
+    itemListElement: result.videos.map((v, i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name: v.title,
+    })),
+  };
 
   return (
     <article>
+      <JsonLd data={jsonLd} />
       <h1>{label.title}</h1>
       {label.description && <p className="muted">{label.description}</p>}
-      <p className="live-disclaimer muted">
-        Supplemental listing from our promotion partner — not hosted on AOF. Clicking through
-        takes you to their site.
-      </p>
+      <VpapiDisclaimer />
 
       {!vpapiConfigured() && (
         <div className="card live-setup-hint" style={{ marginBottom: "1rem" }}>
@@ -51,20 +85,16 @@ export default async function AwempireLabelPage({
         </div>
       )}
 
-      {result.videos.length === 0 ? (
-        <p className="empty muted">No videos returned for this label right now.</p>
-      ) : (
-        <ul style={{ listStyle: "none", padding: 0 }}>
-          {result.videos.map((v) => (
-            <li key={v.id} className="card" style={{ marginBottom: "0.5rem", padding: "0.75rem 1rem" }}>
-              <div style={{ fontWeight: 600 }}>{v.title}</div>
-              <div className="muted" style={{ fontSize: "0.8rem" }}>
-                id: {v.id} · source: {result.source}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      <VpapiVideoGrid
+        videos={result.videos}
+        outboundHref={outboundHref}
+        ctaLabel={`Browse more ${label.title} on our partner site`}
+      />
+
+      <TelegramConversionFooter
+        context={{ surface: "vpapi", slug: label.slug }}
+        title="Or skip the browse — go Telegram"
+      />
 
       <p className="muted" style={{ fontSize: "0.85rem", marginTop: "1.5rem" }}>
         Other labels:{" "}
