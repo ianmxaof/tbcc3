@@ -1,0 +1,29 @@
+{
+  "_comment": "AOF Hub label -> Awempire VPAPI tag mapping. vpapiTags are UNVERIFIED placeholders (no live account/credentials at write time) — confirm against GET /tags once AWEMPIRE_PSID/AWEMPIRE_ACCESS_KEY are live, per docs/handoffs/2026-08-10_aof-hub-p9-p10_report.md Phase 1.",
+  "labels": [
+    {
+      "slug": "big-tits",
+      "title": "Big Tits",
+      "description": "Supplemental VPAPI tube lane matching the existing AOF Big Tits pool.",
+      "vpapiTags": ["big tits"]
+    },
+    {
+      "slug": "amateur",
+      "title": "Amateur",
+      "description": "Supplemental VPAPI tube lane — broad amateur category.",
+      "vpapiTags": ["amateur"]
+    },
+    {
+      "slug": "milf",
+      "title": "MILF",
+      "description": "Supplemental VPAPI tube lane matching the existing AOF MILF pool.",
+      "vpapiTags": ["milf"]
+    },
+    {
+      "slug": "blowjob",
+      "title": "Blowjob",
+      "description": "Supplemental VPAPI tube lane matching the existing AOF Blowjob pool.",
+      "vpapiTags": ["blowjob"]
+    }
+  ]
+}
