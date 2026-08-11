@@ -154,3 +154,16 @@ def test_build_gatekeeper_input_storage_hub_trusted():
     inp = build_gatekeeper_input(db, media, caption="#ass drop")
     assert inp.source_trusted is True
     assert inp.expected_lane == "ass"
+
+
+def test_build_gatekeeper_input_reads_tbcc_lane_tag_from_caption():
+    db = MagicMock()
+    media = MagicMock()
+    media.media_type = "photo"
+    media.source_channel = "telegram:-100111"
+    media.pool_id = None
+    media.file_unique_id = "x2"
+    media.nsfw_tier = None
+
+    inp = build_gatekeeper_input(db, media, caption="saved clip #tbcc:milf")
+    assert inp.expected_lane == "milf"

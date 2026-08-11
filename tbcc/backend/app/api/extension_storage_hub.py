@@ -114,8 +114,10 @@ async def send_media_to_storage_hub_topic(
     if mt not in ("photo", "video"):
         mt = "photo"
     skip_wm = _truthy(skip_watermark)
-    cap = (caption or "").strip()
     key = (network_key or "").strip() or (network_key_for_storage_topic(tid) or "")
+    from app.services.tbcc_caption_stamp import hub_intake_caption
+
+    cap = hub_intake_caption(key, (caption or "").strip())
 
     async def _job(storage: TelegramStorage):
         from app.services.storage_hub_album_intake import (

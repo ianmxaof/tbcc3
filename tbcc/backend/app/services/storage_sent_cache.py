@@ -65,7 +65,11 @@ def sent_cache_album_size() -> int:
 
 
 def sent_cache_caption(network_key: str | None) -> str:
-    return f"{SENT_CACHE_STAMP}{category_emoji_for_network_key(network_key)}"
+    from app.services.tbcc_caption_stamp import append_tbcc_tags, tbcc_lane_tag
+
+    stamp = f"{SENT_CACHE_STAMP}{category_emoji_for_network_key(network_key)}"
+    tag = tbcc_lane_tag(network_key)
+    return append_tbcc_tags(stamp, tag) if tag else stamp
 
 
 def _buf_key(network_key: str) -> str:

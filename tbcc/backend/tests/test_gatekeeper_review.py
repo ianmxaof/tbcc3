@@ -36,6 +36,8 @@ def test_format_quarantine_includes_quality_score_hint():
     assert "quality <b>55</b>/100" in html
     assert "not ML confidence" in html
     assert "VOYEUR" in html
+    assert "#tbcc:quarantine" in html
+    assert "#tbcc:voyeur" in html
 
 
 def test_resolve_preview_copy_target_topic_source():

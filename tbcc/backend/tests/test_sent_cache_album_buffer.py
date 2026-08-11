@@ -24,8 +24,8 @@ class _FakeMedia:
 
 
 def test_sent_cache_caption_uses_emoji_only():
-    assert sent_cache_caption("big_tits") == "✅🍒"
-    assert sent_cache_caption("ass") == "✅🍑"
+    assert sent_cache_caption("big_tits") == "✅🍒 #tbcc:big_tits"
+    assert sent_cache_caption("ass") == "✅🍑 #tbcc:ass"
 
 
 def test_partition_by_bucket():

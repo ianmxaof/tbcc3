@@ -189,13 +189,19 @@ def format_quarantine_review_html(db: Session, media: Any) -> str:
     flag_line = ", ".join(flags[:4]) if flags else "review"
     src = (media.source_channel or "?")[:80]
     mt = (media.media_type or "media").upper()
-    return (
+    from app.services.tbcc_caption_stamp import merge_quarantine_review_html
+
+    body = (
         f"🟡 <b>QUARANTINE</b> #{media.id} · {lane} · quality <b>{score}</b>/100\n"
         f"<code>{mt}</code> · <code>{html_escape(src)}</code>\n"
         f"<i>{html_escape(flag_line)}</i>\n"
         f"<i>Quality score (not ML confidence): ≥70 may auto-approve on trusted hub ingest; "
         f"40–69 = your call.</i>"
     )
+    lane_key = str(expected or lane or "").strip().lower() or None
+    if lane_key == "?":
+        lane_key = None
+    return merge_quarantine_review_html(body, lane_key=lane_key)
 
 
 def html_escape(text: str) -> str:

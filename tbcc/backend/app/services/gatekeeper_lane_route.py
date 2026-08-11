@@ -36,12 +36,30 @@ async def route_media_to_lane_topics(storage, media: Any, lane_keys: list[str]) 
             continue
         dest_thread = int(row.message_thread_id)
         try:
-            await storage.client.forward_messages(
+            fwd = await storage.client.forward_messages(
                 hub_entity,
                 msg_id,
                 from_peer=hub_entity,
                 reply_to=dest_thread,
             )
+            fwd_msgs = fwd if isinstance(fwd, list) else [fwd]
+            from app.services.tbcc_caption_stamp import hub_intake_caption
+
+            for fm in fwd_msgs:
+                if not fm:
+                    continue
+                stamped = hub_intake_caption(lane, getattr(fm, "message", None) or "")
+                if stamped and stamped != (getattr(fm, "message", None) or "").strip():
+                    try:
+                        await storage.client.edit_message(hub_entity, fm.id, text=stamped)
+                    except Exception:
+                        logger.debug(
+                            "gatekeeper lane caption stamp skipped media_id=%s lane=%s msg=%s",
+                            getattr(media, "id", "?"),
+                            lane,
+                            getattr(fm, "id", "?"),
+                            exc_info=True,
+                        )
             routed.append(
                 {
                     "lane": lane,

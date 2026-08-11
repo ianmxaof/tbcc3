@@ -252,12 +252,21 @@ def _post_album_items(
     from app.services.telegram_admin import run_telegram_import_io
     from app.services.telegram_storage import TelegramStorage
 
+    lane_key: str | None = None
+    if message_thread_id:
+        from app.data.aof_storage_hub_map import network_key_for_storage_topic
+
+        lane_key = network_key_for_storage_topic(int(message_thread_id))
+    from app.services.tbcc_caption_stamp import hub_intake_caption
+
+    intake_cap = hub_intake_caption(lane_key) or None
+
     async def _job(storage: TelegramStorage):
         return await storage.post_bytes_to_channel(
             channel_ident,
             items,
             message_thread_id,
-            caption=None,
+            caption=intake_cap,
             send_silent=False,
             skip_watermark=False,
         )

@@ -131,7 +131,9 @@ def format_batch_caption(
     if len(numbered) > 15:
         lines.append(f"<i>… +{len(numbered) - 15} more in batch</i>")
     lines.append("<i>Tap lane emoji(s), then Approve — or Reject entire batch.</i>")
-    return "\n".join(lines)
+    from app.services.tbcc_caption_stamp import merge_quarantine_review_html
+
+    return merge_quarantine_review_html("\n".join(lines), lane_key=lane_key)
 
 
 def qa_review_dest() -> dict[str, Any]:
