@@ -1,18 +1,18 @@
 # Sprint State
 
-**Last updated:** 2026-08-07 (companion post-reveal CTA + conversion sprint wk32)
+**Last updated:** 2026-08-13 (flavor resupply Phases 1–3 committed `024b594`; island seed 500 + resync execute `local-20260813-0415` — lanes 93–148 unique hooks, PACKS 101)
 
 ## Sprint goal
 
 Fully automated agent workflow — zero slash commands; ship-log and session rituals run on situational triggers + scheduled tasks.
 
-**Control-plane / revenue addendum:** Home = light optional workstation (true lean); money = dedicated ~$5–15/mo Linux island; scrape stays on GCP micro. See `docs/REVENUE_ISLAND.md`.
+**Control-plane / revenue addendum:** Home = light optional workstation (true lean); money = dedicated ~$5–15/mo Linux island; scrape stays on GCP micro. Always-on UI: compose `--profile ui` (dashboard + AOF Forum) — see `docs/ISLAND_UI_SURFACES.md`.
 
 ## In flight
 
 | Item | Owner | Notes |
 |------|-------|-------|
-| Module A revenue stack | agent + operator | **2026-08-07 — conversion ladder batch 2:** companion post-Stars cross-sell; loot pull 3/5 midpoint; payment post-purchase ladder; channel checkout + `loot_free` button; **loot DM-only guard** (rolls redirect from group topics); user-safe delivery errors (no TBCC-Backend ops text in public). Prior: reveal/balance keyboards, sprint wk32 island `local-20260807-0938`. **Operator:** firehose A/B still open; 48h scoreboard. |
+| Module A revenue stack | agent + operator | **2026-08-08 — companion credit packs:** 5/15/50 reveal SKUs on payment bot (`bot_section=companion`, Stars + crypto); fulfillment → `grant_credits()`; companion balance/paywall deep links; single-reveal Stars stays native. Island `local-20260808-0200`. Prior: conversion ladder batch 2, DM guard, sprint wk32. **Operator:** firehose A/B; 48h scoreboard. |
 | Secretary sales-rep Phase 1 | agent | **2026-08-01 island:** per-customer Pilot/Auto (`reply_mode`), draft-card toggles, `secretary_new_lead` inbox, sales_strategy playbook (12 rows) + coach hint. Smoke: `/as_customer price objection` on @aof_secretary_bot. Phase 2 fleet table `secretary_bot_instances` + registry helpers; multi-app host deferred — `docs/handoffs/2026-08-01_secretary-fleet-phase2.md`. |
 | Loot album delivery + import starvation | agent | **2026-07-28 — deployed.** Survivor refill restored **605** approved (recycled). **2026-07-31 — route #1 ready:** `scripts/loot_durability_check.py` (dry-run/apply refill + paid-roll smoke steps); operator sandbox unlimited pulls for smoke. **Open:** fresh local imports + storage deposits; loop re-entrancy retry-only. Run on island: `python scripts/loot_durability_check.py` then `--apply-refill --unpause` if thin. |
 | Pool album duplicate tiles | agent | **2026-08-01 shipped:** sent-cache composer dedupe + per-item cache msg ids + hub fetch (`media_message_resolve`). Island `local-20260801-1911-fix`; `TBCC_SENT_CACHE_ALBUM_SIZE=3`; audit demoted **323** dup rows (voyeur 304, ASS 19). Watch next Loot Room albums for unique tiles. |

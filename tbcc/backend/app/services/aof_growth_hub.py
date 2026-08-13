@@ -1058,12 +1058,15 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
         merged = _append_lane_flavor_variations(merged, net_ch.key, footer_variants)
         from app.services.aof_loot_goblin_promo import (
             append_prompt_drop_variations,
-            build_goblin_teaser_with_footer,
+            build_goblin_teaser_variations,
+            goblin_teaser_every_nth,
             inject_goblin_teaser_variations,
         )
 
-        goblin_teaser = build_goblin_teaser_with_footer(base_footer)
-        merged = inject_goblin_teaser_variations(merged, [goblin_teaser], every_nth=6)
+        goblin_teasers = build_goblin_teaser_variations(base_footer)
+        merged = inject_goblin_teaser_variations(
+            merged, goblin_teasers, every_nth=goblin_teaser_every_nth()
+        )
         if net_ch.key == "ai":
             merged = append_prompt_drop_variations(db, merged)
         merged = _sanitize_variations(merged, clean_footer=base_footer, skip_bulletin=True)
