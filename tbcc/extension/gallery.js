@@ -1,9 +1,9 @@
-/** Local first, then revenue-island public API (home tray backend is often Off). */
+/** Island first — home tray backend optional (lean / asleep). */
 const TBCC_API_BASE_CANDIDATES = [
-  "http://127.0.0.1:8000",
-  "http://localhost:8000",
   "https://api.powercore.app",
   "http://5.161.53.91:8000",
+  "http://127.0.0.1:8000",
+  "http://localhost:8000",
 ];
 let API_BASE = TBCC_API_BASE_CANDIDATES[0];
 const TBCC_API_HEALTH_URL = () => API_BASE + "/health";
@@ -111,7 +111,7 @@ function notifyTbccApiReachabilityTransition(ok) {
       if (sessionStorage.getItem("tbccDismissApiOfflineToast") === "1") return;
     } catch (_) {}
     showToast(
-      "TBCC API offline — capture still works. Start backend (:8000) from the extension menu.",
+      "TBCC API offline — capture still works. Check https://api.powercore.app/health or Options → Local stack.",
       "error",
       null,
       { urgent: true, key: "api-offline" }
@@ -1684,24 +1684,44 @@ function catalogRowsForPicker(rows) {
 
 async function loadTagCatalog() {
   if (!(await probeTbccApiReachable(false))) return;
-  const urls = [`${API_BASE}/tags/`, `${API_BASE}/tags`];
+  const fetchCatalog = async () => {
+    if (typeof tbccFetchApiJson === "function") {
+      return await tbccFetchApiJson("/tags/");
+    }
+    const headers = await tbccApiAuthHeaders();
+    const r = await fetch(`${API_BASE}/tags/`, { cache: "no-store", headers });
+    const text = await r.text();
+    if (!r.ok) {
+      const brief =
+        text && text.length < 160 && !/^<\s*!?/i.test(String(text).trim())
+          ? text
+          : `HTTP ${r.status}`;
+      throw new Error(brief);
+    }
+    return text ? JSON.parse(text) : [];
+  };
   let lastErr = null;
-  for (const url of urls) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await fetch(url, { cache: "no-store" });
-      if (!r.ok) throw new Error(await r.text());
-      tagCatalog = await r.json();
+      tagCatalog = await fetchCatalog();
       const { kept, filteredCount } = catalogRowsForPicker(tagCatalog);
       if (tagCatalogFilterNote) {
         tagCatalogFilterNote.hidden = filteredCount === 0;
         tagCatalogFilterNote.textContent =
-          filteredCount > 0 ? filteredCount + " ID-like catalog entr" + (filteredCount === 1 ? "y" : "ies") + " hidden." : "";
+          filteredCount > 0
+            ? filteredCount + " ID-like catalog entr" + (filteredCount === 1 ? "y" : "ies") + " hidden."
+            : "";
       }
       if (tagCatalogCombobox) tagCatalogCombobox.setItems(kept);
       return;
     } catch (e) {
       lastErr = e;
-      if (!isTbccConnectionError(e)) break;
+      if (attempt === 0 && !isTbccConnectionError(e)) {
+        invalidateTbccApiReachableCache();
+        await syncTbccApiReachability(true);
+        continue;
+      }
+      if (isTbccConnectionError(e)) break;
     }
   }
   if (lastErr && isTbccConnectionError(lastErr)) {
@@ -11894,6 +11914,8 @@ cropInsetMode && cropInsetMode.addEventListener("change", () => persistCropSetti
     : [];
   renderTagChipRow();
   await loadAlwaysIncludeCaptionState();
+  await tbccRefreshApiBaseCandidates();
+  invalidateTbccApiReachableCache();
   const apiOk = await syncTbccApiReachability();
   if (typeof TbccSendPromo !== "undefined" && TbccSendPromo.refresh) {
     void TbccSendPromo.refresh(apiOk);

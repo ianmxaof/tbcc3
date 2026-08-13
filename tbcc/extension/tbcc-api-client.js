@@ -1,12 +1,13 @@
 /**
  * Shared TBCC API base resolution for extension SW, gallery, and import pipeline.
- * Prefers chrome.storage tbccApiBase (set via Options or island-home-workstation.ps1).
+ * Prefers chrome.storage tbccApiBase (Options or set-extension-island-api.ps1).
+ * Default probe order: island (api.powercore.app) → island IP → home localhost.
  */
 const TBCC_DEFAULT_API_BASES = [
-  "http://127.0.0.1:8000",
-  "http://localhost:8000",
   "https://api.powercore.app",
   "http://5.161.53.91:8000",
+  "http://127.0.0.1:8000",
+  "http://localhost:8000",
 ];
 const TBCC_STORAGE_API_BASE = "tbccApiBase";
 
