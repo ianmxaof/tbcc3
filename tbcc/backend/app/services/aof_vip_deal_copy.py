@@ -95,6 +95,28 @@ def pick_urgency_line(db: Session | None = None, *, seed: int | None = None) -> 
     return pool[slot]
 
 
+def _build_vip_intro_deal_caption_html(bullets: list[str]) -> str:
+    """First-month intro SKU — same perk stack, discounted headline."""
+    from app.data.telegram_stars_howto import stars_howto_html, vip_intro_stars
+
+    stars = vip_intro_stars()
+    body_lines = [
+        f"✨ <b>AOF VIP — FIRST MONTH, $10</b> · ~{stars}⭐ · one-time intro for new members only",
+        "",
+        "Every regular VIP perk, first month discounted. After that: standard ladder, cancel anytime.",
+        "",
+        "<b>What you get:</b>",
+        *bullets,
+        "",
+        "⏳ Intro pricing is one-time, first purchase only — locks in nothing beyond month one.",
+        "",
+        stars_howto_html(compact=True),
+        "",
+        "<i>Tap Pay ⭐ or Crypto below — access starts instantly.</i>",
+    ]
+    return "\n".join(body_lines)
+
+
 def build_vip_deal_caption_html(
     db: Session,
     plan_id: int | None = None,
@@ -108,7 +130,7 @@ def build_vip_deal_caption_html(
     from app.services.aof_main_group_copy import minimal_checkout_caption_html
 
     if minimal is None:
-        raw = (os.getenv("TBCC_VIP_CHECKOUT_CAPTION_MINIMAL") or "1").strip().lower()
+        raw = (os.getenv("TBCC_VIP_CHECKOUT_CAPTION_MINIMAL") or "0").strip().lower()
         minimal = raw not in ("0", "false", "no", "off")
 
     pid = int(plan_id or resolve_group_access_plan_id(db))
@@ -116,11 +138,17 @@ def build_vip_deal_caption_html(
         return minimal_checkout_caption_html(db, pid)
 
     plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == pid).first()
+    bullets = deal_stack_bullets_html()
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+    from app.data.telegram_stars_howto import stars_howto_html
+
+    if plan and is_vip_intro_plan_name(str(plan.name or "")):
+        return _build_vip_intro_deal_caption_html(bullets)
+
     stars = int(plan.price_stars or 0) if plan else 0
     days = int(plan.duration_days or 30) if plan else 30
     price_bit = f" · <b>{stars}⭐</b> / {days}d" if stars > 0 else ""
 
-    bullets = deal_stack_bullets_html()
     body_lines = [
         f"🎫 <b>AOF VIP — THE HALL PASS</b>{price_bit}",
         "",
@@ -137,6 +165,7 @@ def build_vip_deal_caption_html(
         urg = pick_urgency_line(db, seed=urgency_seed)
         if urg:
             body_lines.extend(["", urg])
+    body_lines.extend(["", stars_howto_html(compact=True)])
     body_lines.extend(["", "<i>Tap Pay ⭐ or Crypto below — access starts instantly.</i>"])
     return "\n".join(body_lines)
 

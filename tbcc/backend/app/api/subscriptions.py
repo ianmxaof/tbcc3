@@ -24,11 +24,13 @@ def _build_subscription_api_result(
 ) -> dict:
     """JSON shape returned to the payment bot after create or idempotent replay."""
     is_bundle = (plan.product_type or "").lower() == "bundle"
+    is_companion_credits = (plan.product_type or "").lower() == "companion_credits"
+    is_non_subscription_product = is_bundle or is_companion_credits
     result = orm_to_dict(sub)
     result["referrer_rewarded"] = referrer_rewarded
     result["plan_product_type"] = plan.product_type
     result["plan_description"] = plan.description
-    if referrer_id_for_response and not is_bundle:
+    if referrer_id_for_response and not is_non_subscription_product:
         result["referrer_id"] = referrer_id_for_response
     if plan.channel_id:
         from app.models.channel import Channel
@@ -116,7 +118,8 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
                 plan,
                 referrer_rewarded=False,
                 referrer_id_for_response=existing.referrer_id
-                if (plan.product_type or "").lower() != "bundle"
+                if (plan.product_type or "").lower()
+                not in ("bundle", "companion_credits")
                 else None,
             )
             result["fulfillment_replay"] = True
@@ -137,9 +140,11 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         return {"error": intro_err}
 
     is_bundle = (plan.product_type or "").lower() == "bundle"
+    is_companion_credits = (plan.product_type or "").lower() == "companion_credits"
+    is_non_subscription_product = is_bundle or is_companion_credits
 
-    # Bundle purchases: no referral rewards; keep referral tracking for a future subscription
-    if is_bundle:
+    # Bundle / companion credit purchases: no referral rewards
+    if is_non_subscription_product:
         referrer_id = None
     elif referrer_id is None:
         from app.models.referral_tracking import ReferralTracking
@@ -154,6 +159,8 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
             db.delete(rt)
 
     if is_bundle and (plan.duration_days or 0) <= 0:
+        expires_at = None
+    elif is_companion_credits:
         expires_at = None
     else:
         expires_at = datetime.utcnow() + timedelta(days=max(plan.duration_days or 1, 1))
@@ -219,19 +226,32 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         pass
 
     # Enqueue task to add user to channel (premium group or pack delivery channel)
-    if plan.channel_id:
+    if plan.channel_id and not is_companion_credits:
         from app.workers.grant_access_worker import grant_channel_access
 
         grant_channel_access.delay(int(telegram_user_id), plan_id)
 
     # Grant referrer reward only for subscription products
     reward_days = int(data.get("referral_reward_days", 7))
-    if not is_bundle and referrer_id and reward_days > 0:
+    if not is_non_subscription_product and referrer_id and reward_days > 0:
         _grant_referrer_reward(db, int(referrer_id), reward_days, plan_id)
         db.commit()
 
     perk_result = None
-    if not is_bundle:
+    companion_credit_result = None
+    if is_companion_credits:
+        try:
+            from app.services.companion_credit_fulfill import grant_companion_credit_pack
+
+            companion_credit_result = grant_companion_credit_pack(
+                db,
+                int(telegram_user_id),
+                int(plan.id),
+                charge_id=charge_id,
+            )
+        except Exception:
+            companion_credit_result = None
+    elif not is_bundle:
         _check_milestones(db)
         from app.workers.milestone_worker import broadcast_progress
 
@@ -267,7 +287,7 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         reference_code=(str(data.get("reference_code") or "").strip() or None),
     )
 
-    if not is_bundle:
+    if not is_non_subscription_product:
         try:
             from app.workers.vip_welcome_worker import send_subscription_welcome_dm
 
@@ -284,11 +304,13 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
         db,
         sub,
         plan,
-        referrer_rewarded=bool(referrer_id) and not is_bundle,
-        referrer_id_for_response=int(referrer_id) if referrer_id and not is_bundle else None,
+        referrer_rewarded=bool(referrer_id) and not is_non_subscription_product,
+        referrer_id_for_response=int(referrer_id) if referrer_id and not is_non_subscription_product else None,
     )
-    if not is_bundle and perk_result:
+    if not is_bundle and not is_companion_credits and perk_result:
         result["vip_perks"] = perk_result
+    if is_companion_credits and companion_credit_result:
+        result["companion_credits"] = companion_credit_result
 
     try:
         from app.services.fulfillment_entitlement import record_fulfillment_entitlement

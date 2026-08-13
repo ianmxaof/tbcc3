@@ -488,6 +488,9 @@ def seed(execute: bool) -> dict:
             db.commit()
             report["eligibility"] = seed_loot_room_pool_eligibility(db)
             report["content_pool_eligibility"] = seed_content_pool_loot_eligibility(db)
+            from app.data.telegram_stars_howto import ensure_stars_howto_caption_snippet
+
+            report["stars_howto_snippet"] = ensure_stars_howto_caption_snippet(db)
         else:
             tiers = db.query(LootIntervalTier).count()
             report["loot_interval_tiers"] = tiers

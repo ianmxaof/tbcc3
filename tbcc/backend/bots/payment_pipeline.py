@@ -23,8 +23,8 @@ def _truncate(msg: str) -> str:
 
 def parse_invoice_payload(payload: str | None) -> tuple[str, int, int] | None:
     """
-    Returns (kind, plan_id, user_id) where kind is 'sub' or 'bundle'.
-    Expected: sub_{plan_id}_{user_id} or bundle_{plan_id}_{user_id}
+    Returns (kind, plan_id, user_id) where kind is 'sub', 'bundle', or 'credits'.
+    Expected: sub_{plan_id}_{user_id}, bundle_{plan_id}_{user_id}, credits_{plan_id}_{user_id}
     """
     if not payload:
         return None
@@ -32,7 +32,7 @@ def parse_invoice_payload(payload: str | None) -> tuple[str, int, int] | None:
     if len(parts) != 3:
         return None
     kind_raw, plan_s, user_s = parts
-    if kind_raw not in ("sub", "bundle"):
+    if kind_raw not in ("sub", "bundle", "credits"):
         return None
     try:
         return kind_raw, int(plan_s), int(user_s)
@@ -46,6 +46,8 @@ def product_matches_kind(kind: str, product_type: str | None) -> bool:
         return pt == "subscription"
     if kind == "bundle":
         return pt == "bundle"
+    if kind == "credits":
+        return pt == "companion_credits"
     return False
 
 

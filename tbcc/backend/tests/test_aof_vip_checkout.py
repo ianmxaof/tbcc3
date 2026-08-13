@@ -14,5 +14,16 @@ def test_checkout_deep_link_invoice_vs_menu():
 def test_stars_pay_button_label():
     class _Plan:
         price_stars = 500
+        name = "AOF VIP — 1 Month"
 
     assert stars_pay_button_label(_Plan()) == "Pay ⭐ 500"
+
+
+def test_stars_pay_button_label_intro():
+    from app.data.aof_vip_membership import VIP_INTRO_PLAN_NAME
+
+    class _Plan:
+        price_stars = 834
+        name = VIP_INTRO_PLAN_NAME
+
+    assert stars_pay_button_label(_Plan()) == "VIP $10 · 834⭐"

@@ -32,7 +32,12 @@ def stars_invoice_payload(
     user_id: int,
 ) -> str:
     ptype = (product_type or "subscription").lower()
-    kind = "bundle" if ptype == "bundle" else "sub"
+    if ptype == "bundle":
+        kind = "bundle"
+    elif ptype == "companion_credits":
+        kind = "credits"
+    else:
+        kind = "sub"
     return f"{kind}_{int(plan_id)}_{int(user_id)}"
 
 
@@ -43,6 +48,8 @@ def plan_invoice_description(plan: dict) -> str:
     ptype = (plan.get("product_type") or "subscription").lower()
     if ptype == "bundle":
         return "Digital pack — images & videos"
+    if ptype == "companion_credits":
+        return "Companion photo reveal credits — @aof_spicybot_bot"
     days = int(plan.get("duration_days") or 30)
     return f"Subscription — {days} days access"
 

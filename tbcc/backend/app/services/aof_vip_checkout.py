@@ -190,10 +190,12 @@ def bot_checkout_url(
 
 
 def stars_pay_button_label(plan: SubscriptionPlan) -> str:
-    stars = int(plan.price_stars or 0)
-    if stars > 0:
-        return f"Pay ⭐ {stars}"
-    return "Pay with Stars"
+    from app.data.telegram_stars_howto import stars_pay_entry_button_label
+
+    return stars_pay_entry_button_label(
+        price_stars=int(plan.price_stars or 0),
+        plan_name=str(plan.name or ""),
+    )
 
 
 def caption_has_checkout(text: str) -> bool:
@@ -273,13 +275,18 @@ def resolve_vip_promo_url(db: Session, plan_id: int) -> str:
 
 
 def _default_stars_button_label(plan: SubscriptionPlan) -> str:
+    from app.data.telegram_stars_howto import stars_pay_entry_button_label
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+
     stars = int(plan.price_stars or 0)
-    name = (plan.name or "Subscribe").strip()[:36]
+    name = (plan.name or "Subscribe").strip()
+    if is_vip_intro_plan_name(name):
+        return stars_pay_entry_button_label(price_stars=stars, plan_name=name)
     if use_vip_star_subscription() and vip_subscription_invite_url():
-        return f"⭐ Subscribe — {stars}⭐"
+        return f"⭐ Subscribe — {stars}⭐"[:64]
     if stars > 0:
-        return f"⭐ {name} — {stars}⭐"
-    return "⭐ Subscribe"
+        return f"⭐ {name[:28]} — {stars}⭐"[:64]
+    return "Subscribe"
 
 
 def resolve_primary_checkout_url(

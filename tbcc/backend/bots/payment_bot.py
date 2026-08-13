@@ -425,6 +425,22 @@ def _subscription_catalog_columns() -> int:
     return max(1, min(4, n))
 
 
+def _companion_credits_ok_for_stars_checkout(p: dict) -> bool:
+    """Active companion credit packs with Stars price."""
+    if not isinstance(p, dict):
+        return False
+    if p.get("price_stars", 0) <= 0:
+        return False
+    if p.get("is_active") is False:
+        return False
+    ptype = (p.get("product_type") or "subscription").lower()
+    if ptype != "companion_credits":
+        return False
+    from app.data.companion_credit_packs import pack_for_plan_name
+
+    return pack_for_plan_name(str(p.get("name") or "")) is not None
+
+
 def _plan_ok_for_stars_checkout(p: dict, min_stars: int | None = None) -> bool:
     """Active subscription products with Stars price — matches dashboard shop filters."""
     if not isinstance(p, dict):
@@ -553,6 +569,17 @@ def _plan_in_bot_section(p: dict, section: str) -> bool:
     return sec == want
 
 
+async def fetch_companion_credit_plans() -> list[dict]:
+    """Companion reveal credit packs (bot_section=companion)."""
+    out = [
+        p
+        for p in await _fetch_plans_raw()
+        if _companion_credits_ok_for_stars_checkout(p) and _plan_in_bot_section(p, "companion")
+    ]
+    out.sort(key=lambda p: (int(p.get("price_stars") or 0), int(p.get("id") or 0)))
+    return out
+
+
 async def fetch_plans(
     section: str = "main",
     min_stars: int | None = None,
@@ -594,6 +621,17 @@ def _user_eligible_for_vip_intro_db(telegram_user_id: int) -> bool:
     db = SessionLocal()
     try:
         return user_eligible_for_vip_intro(db, int(telegram_user_id))
+    finally:
+        db.close()
+
+
+def _vip_member_status_lines_db(telegram_user_id: int, active_subs: list[dict]) -> list[str] | None:
+    from app.database.session import SessionLocal
+    from app.services.vip_member_status import vip_member_status_for_user
+
+    db = SessionLocal()
+    try:
+        return vip_member_status_for_user(db, int(telegram_user_id), active_subs)
     finally:
         db.close()
 
@@ -1487,6 +1525,12 @@ async def cmd_loot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send_loot_room_message(msg, context)
 
 
+async def cmd_companion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Companion reveal credit packs — tiered top-ups (Stars + crypto)."""
+    msg = update.effective_message
+    await send_companion_credits_catalog_message(msg, context)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     st = await _get_runtime_settings()
     """Handle /start - including ref_XXX deep link for referrals."""
@@ -1536,6 +1580,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     gate_target = parse_gate_start_payload(payload)
     if gate_target is not None and human_gate_enabled():
         await send_human_gate_prompt(msg, context, target=gate_target, source=payload)
+        return
+
+    if payload == "companion" or payload.startswith("companion_"):
+        sku = payload[len("companion_") :] if payload != "companion" else None
+        await send_companion_credits_catalog_message(msg, context, sku_filter=sku)
         return
 
     if payload.startswith("ref_"):
@@ -1590,7 +1639,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await cmd_subscribe(update, context)
             return
         ptype = (plan.get("product_type") or "subscription").lower()
-        if ptype not in ("subscription", "bundle"):
+        if ptype not in ("subscription", "bundle", "companion_credits"):
             await msg.reply_text("That product is not available for quick checkout.")
             return
         if menu_mode:
@@ -1599,6 +1648,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 context,
                 [plan],
                 pack=(ptype == "bundle"),
+                credits=(ptype == "companion_credits"),
             )
         else:
             await _send_stars_invoice(
@@ -1769,8 +1819,13 @@ def _inline_buttons_in_rows(buttons: list[InlineKeyboardButton], columns: int) -
 
 
 def _subscription_stars_row_label(p: dict) -> str:
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+    from app.data.telegram_stars_howto import stars_pay_entry_button_label
+
     name = str(p.get("name") or "Plan").strip()
     stars = int(p.get("price_stars") or 0)
+    if is_vip_intro_plan_name(name):
+        return stars_pay_entry_button_label(price_stars=stars, plan_name=name)
     bad = f"{name} · {_subscription_duration_badge(p.get('duration_days', 30))} · {stars}⭐"
     if len(bad) <= 64:
         return bad
@@ -1778,7 +1833,14 @@ def _subscription_stars_row_label(p: dict) -> str:
 
 
 def _simple_stars_btn_label(p: dict) -> str:
-    return f"{int(p.get('price_stars') or 0)} ⭐"
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+    from app.data.telegram_stars_howto import stars_pay_entry_button_label
+
+    name = str(p.get("name") or "")
+    stars = int(p.get("price_stars") or 0)
+    if is_vip_intro_plan_name(name):
+        return stars_pay_entry_button_label(price_stars=stars, plan_name=name)
+    return f"{stars} ⭐"
 
 
 def _simple_crypto_btn_label(p: dict) -> str:
@@ -1802,12 +1864,19 @@ def _plan_checkout_keyboard_rows(
     plans: list[dict],
     *,
     pack: bool = False,
+    credits: bool = False,
     multi_term: bool = False,
 ) -> list[list[InlineKeyboardButton]]:
     """One row per payment option — price on the button, no catalog prose."""
     rows: list[list[InlineKeyboardButton]] = []
-    star_cb = "pack_" if pack else "plan_"
-    ext_cb = "ext_pack_" if pack else "ext_plan_"
+    if credits:
+        star_cb = "credit_"
+        ext_cb = "ext_credit_"
+        gr_prefix = "gr_credit_"
+    else:
+        star_cb = "pack_" if pack else "plan_"
+        ext_cb = "ext_pack_" if pack else "ext_plan_"
+        gr_prefix = "gr_pack_" if pack else "gr_plan_"
     for p in plans:
         pid = int(p["id"])
         if int(p.get("price_stars") or 0) > 0:
@@ -1847,7 +1916,7 @@ def _plan_checkout_keyboard_rows(
                 [
                     InlineKeyboardButton(
                         _truncate_btn(gr_label, 64),
-                        callback_data=f"{'gr_pack_' if pack else 'gr_plan_'}{pid}",
+                        callback_data=f"{gr_prefix}{pid}",
                     )
                 ]
             )
@@ -1874,6 +1943,7 @@ async def send_simple_plan_checkout(
     plans: list[dict],
     *,
     pack: bool = False,
+    credits: bool = False,
 ) -> None:
     """Dead-simple checkout: product name (if any) + Stars row + crypto row per plan."""
     if not msg:
@@ -1881,8 +1951,8 @@ async def send_simple_plan_checkout(
     if not plans:
         await msg.reply_text("No products listed right now.")
         return
-    multi_term = (not pack) and len(plans) > 1
-    rows = _plan_checkout_keyboard_rows(plans, pack=pack, multi_term=multi_term)
+    multi_term = (not pack and not credits) and len(plans) > 1
+    rows = _plan_checkout_keyboard_rows(plans, pack=pack, credits=credits, multi_term=multi_term)
     if not rows:
         await msg.reply_text("No checkout options for these products.")
         return
@@ -1939,6 +2009,41 @@ def _plan_show_crypto_checkout(p: dict) -> bool:
         nowpayments_price_usd=override_f if override_f and override_f > 0 else None,
         bot_section=str(p.get("bot_section") or "main"),
     )
+
+
+async def send_companion_credits_catalog_message(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    sku_filter: str | None = None,
+) -> None:
+    """Companion reveal credit packs — Stars + crypto checkout."""
+    if not msg:
+        return
+    plans = await fetch_companion_credit_plans()
+    if sku_filter:
+        from app.data.companion_credit_packs import pack_for_sku
+
+        pack = pack_for_sku(sku_filter)
+        if pack:
+            plans = [p for p in plans if str(p.get("name") or "") == pack.plan_name]
+    if not plans:
+        await msg.reply_text(
+            "Companion credit packs are not listed yet. "
+            f"(Catalog source: {API_BASE.rstrip('/')}; run seed_companion_credit_packs.py.)"
+        )
+        return
+    intro = (
+        "<b>Spicy Reveal credit packs</b>\n\n"
+        "Credits unlock photo reveals on <b>@aof_spicybot_bot</b>.\n"
+        "Pay with <b>Stars</b> or <b>crypto</b> — balance updates instantly.\n\n"
+        "<i>Single-reveal impulse buys stay in the companion bot.</i>"
+    )
+    rows = _plan_checkout_keyboard_rows(plans, credits=True)
+    if not rows:
+        await msg.reply_text(intro, parse_mode="HTML")
+        return
+    await msg.reply_text(intro, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def send_subscription_catalog_message(
@@ -2168,6 +2273,8 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     elif query.data == "menu_packs":
         await send_bundle_catalog_message(msg, context)
+    elif query.data == "menu_companion":
+        await send_companion_credits_catalog_message(msg, context)
     elif query.data == "menu_referral":
         await reply_referral(msg, user, context)
     elif query.data == "menu_status":
@@ -2192,6 +2299,9 @@ async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.
     elif data.startswith("gr_pack_"):
         pid = int(data.replace("gr_pack_", ""))
         want = "bundle"
+    elif data.startswith("gr_credit_"):
+        pid = int(data.replace("gr_credit_", ""))
+        want = "companion_credits"
     else:
         return
 
@@ -2224,6 +2334,9 @@ async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.
         await msg.reply_text("Invalid product.")
         return
     if want == "bundle" and ptype != "bundle":
+        await msg.reply_text("Invalid product.")
+        return
+    if want == "companion_credits" and ptype != "companion_credits":
         await msg.reply_text("Invalid product.")
         return
 
@@ -2290,6 +2403,9 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
     elif data.startswith("ext_pack_"):
         pid = int(data.replace("ext_pack_", ""))
         want = "bundle"
+    elif data.startswith("ext_credit_"):
+        pid = int(data.replace("ext_credit_", ""))
+        want = "companion_credits"
     else:
         return
 
@@ -2305,6 +2421,9 @@ async def handle_external_payment_callback(update: Update, context: ContextTypes
         await msg.reply_text("Invalid product.")
         return
     if want == "bundle" and ptype != "bundle":
+        await msg.reply_text("Invalid product.")
+        return
+    if want == "companion_credits" and ptype != "companion_credits":
         await msg.reply_text("Invalid product.")
         return
 
@@ -2493,7 +2612,7 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         await query.answer()
         return
     kind, rest = parts[0], parts[1]
-    if kind not in ("plan", "pack") or not rest.isdigit():
+    if kind not in ("plan", "pack", "credit") or not rest.isdigit():
         await query.answer()
         return
 
@@ -2513,6 +2632,9 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         return
     if kind == "pack" and ptype != "bundle":
         await query.answer("That product is no longer a pack.", show_alert=True)
+        return
+    if kind == "credit" and ptype != "companion_credits":
+        await query.answer("That product is no longer a credit pack.", show_alert=True)
         return
 
     price_stars = plan.get("price_stars", 0)
@@ -2552,6 +2674,8 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     active = [s for s in subs if s.get("status") == "active"]
     expired = [s for s in subs if s.get("status") == "expired"]
 
+    vip_lines = await asyncio.to_thread(_vip_member_status_lines_db, int(user.id), active)
+
     if not subs:
         await msg.reply_text(
             "📋 **Your status**\n\n"
@@ -2562,6 +2686,9 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     lines = ["📋 **Your subscription status**\n"]
+    if vip_lines:
+        lines.extend(vip_lines)
+        lines.append("")
     if active:
         lines.append("✅ **Active:**")
         for s in active:
@@ -2661,7 +2788,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     charge_id = (getattr(payment, "telegram_payment_charge_id", None) or "").strip() or None
     payload = payment.invoice_payload or ""
 
-    if not (payload.startswith("sub_") or payload.startswith("bundle_")):
+    if not (payload.startswith("sub_") or payload.startswith("bundle_") or payload.startswith("credits_")):
         await update.message.reply_text("Payment received. Thank you!")
         return
 
@@ -2673,6 +2800,7 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     plan_id = int(parts[1])
     user_id = update.effective_user.id if update.effective_user else 0
     is_bundle = payload.startswith("bundle_")
+    is_companion_credits = payload.startswith("credits_")
 
     sub = await create_subscription(
         user_id,
@@ -2683,9 +2811,9 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if sub:
         replay = bool(sub.get("fulfillment_replay"))
         progress_line = f"\n\n{sub.get('milestone_progress', '')}" if sub.get("milestone_progress") else ""
-        # Notify referrer of reward (subscription only; backend skips for bundles)
+        # Notify referrer of reward (subscription only; backend skips for bundles / credits)
         referrer_id = sub.get("referrer_id")
-        if referrer_id and not is_bundle and not replay:
+        if referrer_id and not is_bundle and not is_companion_credits and not replay:
             reward_days = str(referral_cfg()["reward_days"])
             try:
                 await context.bot.send_message(
@@ -2695,6 +2823,24 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 )
             except Exception as e:
                 logger.warning("Could not notify referrer %s: %s", referrer_id, e)
+
+        if is_companion_credits or (sub.get("plan_product_type") or "").lower() == "companion_credits":
+            cc = sub.get("companion_credits") or {}
+            granted = int(cc.get("credits_granted") or 0)
+            balance = cc.get("credits_balance")
+            from app.services.companion_credit_checkout import companion_return_to_companion_url
+
+            back = companion_return_to_companion_url()
+            lines = [
+                "✅ <b>Spicy Reveal credits added!</b>",
+                "",
+                f"+<b>{granted}</b> reveal(s) credited to your companion wallet."
+                + (f" Balance: <b>{balance}</b>." if balance is not None else ""),
+            ]
+            if back:
+                lines.append(f'\n👉 <a href="{back}">Open @aof_spicybot_bot</a> and send a photo.')
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML", disable_web_page_preview=False)
+            return
 
         if is_bundle or (sub.get("plan_product_type") or "").lower() == "bundle":
             desc = (sub.get("plan_description") or "").strip()
@@ -2980,6 +3126,7 @@ def main() -> None:
     app.add_handler(MessageHandler(shop_cmd, cmd_shop))
     app.add_handler(MessageHandler(shop_channel, cmd_shop))
     app.add_handler(CommandHandler("loot", cmd_loot))
+    app.add_handler(CommandHandler("companion", cmd_companion))
     app.add_handler(CommandHandler("gate", cmd_gate))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("packs", cmd_packs))
@@ -3034,12 +3181,12 @@ def main() -> None:
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")
     )
     app.add_handler(
-        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|referral|status)$")
+        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|companion|referral|status)$")
     )
     app.add_handler(CallbackQueryHandler(handle_pick_pack_callback, pattern=r"^pick_pack_\d+$"))
-    app.add_handler(CallbackQueryHandler(handle_external_payment_callback, pattern=r"^ext_(plan|pack)_\d+$"))
-    app.add_handler(CallbackQueryHandler(handle_gumroad_payment_callback, pattern=r"^gr_(plan|pack)_\d+$"))
-    app.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(plan|pack)_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_external_payment_callback, pattern=r"^ext_(plan|pack|credit)_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_gumroad_payment_callback, pattern=r"^gr_(plan|pack|credit)_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_product_callback, pattern=r"^(plan|pack|credit)_\d+$"))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(
         MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment),
