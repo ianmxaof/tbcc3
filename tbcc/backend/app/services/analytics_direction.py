@@ -526,19 +526,9 @@ def format_direction_markdown(bundle: dict[str, Any], directions: list[dict[str,
 
 
 def format_direction_html(directions: list[dict[str, Any]], *, narrative: str | None = None) -> str:
-    import html
+    from app.services.secretary_report_copy import format_direction_report_html
 
-    lines = ["<b>Analytics direction</b> (Top 5)", ""]
-    for d in directions:
-        lines.append(
-            f"{d['rank']}. <b>[{html.escape(str(d['horizon']))}]</b> "
-            f"{html.escape(str(d['title'])[:160])}"
-        )
-        if d.get("mcp_followup"):
-            lines.append(f"   → <code>{html.escape(str(d['mcp_followup'])[:80])}</code>")
-    if narrative:
-        lines.extend(["", f"<i>{html.escape(narrative[:500])}</i>"])
-    return "\n".join(lines)
+    return format_direction_report_html(directions, narrative=narrative)
 
 
 def draft_direction_narrative(

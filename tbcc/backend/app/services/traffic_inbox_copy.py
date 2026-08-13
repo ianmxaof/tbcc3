@@ -226,7 +226,10 @@ def format_traffic_rollup(events: list[dict[str, Any]], *, ago_fn) -> str | None
     if times:
         span = f"{ago_fn(max(times))}–{ago_fn(min(times))}"
 
-    lines = [f"📡 <b>Traffic pulse</b> · <b>{len(events)}</b> events" + (f" · <code>{html.escape(span)}</code>" if span else "")]
+    header = f"📡 <b>Traffic pulse</b> · <u>{len(events)} events</u>"
+    if span:
+        header += f" · <code>{html.escape(span)}</code>"
+    lines = [header]
 
     def _top_labels(kind_events: list[dict[str, Any]], key: str, limit: int = 4) -> str:
         counts: dict[str, int] = defaultdict(int)
@@ -241,27 +244,44 @@ def format_traffic_rollup(events: list[dict[str, Any]], *, ago_fn) -> str | None
     if by_kind.get("post_ok"):
         n = len(by_kind["post_ok"])
         jobs = _top_labels(by_kind["post_ok"], "scheduled_post_name")
-        lines.append(f"• <b>Scheduler posts</b> {n}× — {jobs}")
+        lines.append(f"• <b>Scheduler posts</b> {n}× — <i>{jobs}</i>")
     if by_kind.get("affiliate_served"):
         n = len(by_kind["affiliate_served"])
         sponsors = _top_labels(by_kind["affiliate_served"], "label")
-        lines.append(f"• <b>Affiliate rotations</b> {n}× — {sponsors}")
+        lines.append(f"• <b>Sponsor slots</b> {n}× — <i>{sponsors}</i>")
     if by_kind.get("beacon"):
         n = len(by_kind["beacon"])
         beacons = _top_labels(by_kind["beacon"], "link_label")
-        lines.append(f"• <b>Click beacons</b> {n}× — {beacons}")
+        lines.append(f"• <b>Tracked clicks</b> {n}× — <i>{beacons}</i>")
     for kind in ("post_fail", "start", "loot_roll", "other"):
         if by_kind.get(kind):
             lines.append(f"• <b>{html.escape(pulse_kind_human(kind))}</b> {len(by_kind[kind])}×")
 
-    lines.append("<i>Details: /inbox traffic · instant: TBCC_TRAFFIC_PULSE_INSTANT</i>")
+    from app.services.secretary_report_copy import pulse_playbook, pulse_read, quote
+
+    counts = {k: len(v) for k, v in by_kind.items()}
+    lines.append("")
+    lines.append(quote(pulse_read(counts)))
+    play = pulse_playbook(counts)
+    if play:
+        numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(play[:2], start=1))
+        lines.append(quote(f"<b>Do this now</b>\n{numbered}"))
+    lines.append(f"<i>Raw feed: {html.escape('/inbox traffic')}</i>")
     return "\n".join(lines)
 
 
 def format_system_compact_line(event: dict[str, Any], *, ago: str) -> str:
     title = str(event.get("title") or "").strip()
+    meta = event.get("meta") or {}
+    code = str(meta.get("code") or "")
     if title.lower() == "secretary bot online":
         return f"⚙️ <b>Secretary restarted</b> · inbox ready · <code>{html.escape(ago)}</code>"
+    if code in ("revenue_brief", "secretary_draft_fail", "secretary_draft", "secretary_new_lead"):
+        body = str(event.get("body") or "").strip()
+        stamp = f"<code>{html.escape(ago)}</code>"
+        if body:
+            return f"{body}\n<i>{stamp}</i>"
+        return f"⚙️ <b>{html.escape(title)}</b> · {stamp}"
     icon = "⚙️"
     body = html.escape(str(event.get("body") or "")[:100])
     line = f"{icon} <b>{html.escape(title)}</b> · <code>{html.escape(ago)}</code>"

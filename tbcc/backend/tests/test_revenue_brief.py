@@ -25,8 +25,10 @@ def test_heuristic_brief_includes_spike():
         "growth_proposals": [],
     }
     html = revenue_brief._heuristic_brief(bundle)
-    assert "Undress spike" in html
-    assert "[now]" in html
+    assert "Undress" in html
+    assert "now" in html
+    assert "<blockquote>" in html
+    assert "&lt;b&gt;" not in html
 
 
 def test_build_revenue_brief_bundle_shape(monkeypatch):

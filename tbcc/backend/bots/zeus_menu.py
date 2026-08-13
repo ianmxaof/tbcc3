@@ -7,7 +7,6 @@ Callback contract:
 """
 from __future__ import annotations
 
-import html
 import os
 from typing import Any
 
@@ -93,46 +92,9 @@ def normalize_menu_callback(data: str | None) -> str | None:
 
 def format_stack_status_html(data: dict[str, Any] | None) -> str:
     """Render GET /ops/stack-status (or tray CLI Status) for Telegram HTML."""
-    if not data:
-        return "🖥 <b>Stack status</b>\n\n<code>unavailable</code> — empty response."
-    if data.get("available") is False or (data.get("ok") is False and data.get("error")):
-        err = html.escape(str(data.get("error") or "stack control unavailable"))
-        return (
-            "🖥 <b>Stack status</b>\n\n"
-            f"<code>{err}</code>\n"
-            "<i>Tray supervisor / tbcc-stack-cli.ps1 required on Windows.</i>"
-        )
-    enabled_up = data.get("enabled_up")
-    enabled = data.get("enabled")
-    up = data.get("up")
-    total = data.get("total")
-    profile = html.escape(str(data.get("profile") or "—"))
-    summary = f"{enabled_up}/{enabled}" if enabled_up is not None and enabled is not None else "—"
-    lines = [
-        "🖥 <b>Stack status</b>",
-        "",
-        f"Enabled up: <b>{html.escape(str(summary))}</b>",
-        f"All up/total: <code>{html.escape(str(up))}/{html.escape(str(total))}</code>",
-        f"Profile: <code>{profile}</code>",
-        "",
-    ]
-    services = data.get("services")
-    if isinstance(services, list) and services:
-        lines.append("<b>Services</b>")
-        for row in services:
-            if not isinstance(row, dict):
-                continue
-            sid = html.escape(str(row.get("id") or "?"))
-            st = str(row.get("status") or ("up" if row.get("running") else "down"))
-            mark = "●" if st == "up" or row.get("running") else "○"
-            user_on = row.get("user_enabled")
-            flag = "" if user_on is None else (" · on" if user_on else " · off")
-            lines.append(f"{mark} <code>{sid}</code> {html.escape(st)}{flag}")
-    else:
-        lines.append("<i>No per-service rows (CLI may be unavailable).</i>")
-    lines.append("")
-    lines.append("<i>Restarts: tray Services menu or tbcc-stack-cli.ps1 — not this bot.</i>")
-    return "\n".join(lines)
+    from app.services.secretary_report_copy import format_stack_card_html
+
+    return format_stack_card_html(data)
 
 
 def admin_main_menu_keyboard() -> InlineKeyboardMarkup:

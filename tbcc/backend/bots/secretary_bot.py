@@ -1052,7 +1052,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 def _public_commands_reference() -> str:
     return (
-        "<b>Public commands</b> (@aof_secretary_bot)\n\n"
+        "<b>Public commands</b> · <u>@aof_secretary_bot</u>\n\n"
         "<b>FAQ</b>\n"
         "/start · /help — intro & menu\n"
         "/menu — inline shortcuts\n"
@@ -1065,7 +1065,7 @@ def _public_commands_reference() -> str:
 
 def _admin_commands_reference() -> str:
     return (
-        "<b>Admin commands</b>\n"
+        "<b>Admin commands</b> · <u>operator</u>\n"
         "<i>Your Telegram user id must match </i><code>ADMIN_TELEGRAM_ID</code><i>.</i>\n\n"
         "<b>Navigation</b>\n"
         "/menu — main inline menu\n"
@@ -1549,17 +1549,21 @@ async def cmd_inbox_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     total = list_inbox_events(limit=100)
     focus = get_focus_state()
     usage = triage_usage_today()
+    from app.services.secretary_report_copy import format_inbox_status_html
+
     await _reply(
         msg,
-        "📊 <b>Inbox status</b>\n\n"
-        f"Capture: <code>{'on' if inbox_enabled() else 'off'}</code>\n"
-        f"Stored (recent): <code>{len(total)}</code>\n"
-        f"Unread: <code>{len(unread)}</code>\n"
-        f"Last /read: <code>{'never' if last_read <= 0 else 'set'}</code>\n"
-        f"Focus: <code>{html.escape(str(focus.get('profile') or 'off'))}</code>\n"
-        f"Lock events: <code>{lock_events_recent_count()}</code>\n"
-        f"Cursor triage: <code>{'on' if triage_enabled() else 'off'}</code> "
-        f"({usage.get('used', 0)}/{usage.get('cap', 0)} today)",
+        format_inbox_status_html(
+            capture_on=inbox_enabled(),
+            stored=len(total),
+            unread=len(unread),
+            last_read_set=last_read > 0,
+            focus=str(focus.get("profile") or "off"),
+            lock_events=lock_events_recent_count(),
+            triage_on=triage_enabled(),
+            triage_used=int(usage.get("used") or 0),
+            triage_cap=int(usage.get("cap") or 0),
+        ),
         context,
         parse_mode="HTML",
     )
@@ -1943,21 +1947,14 @@ async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     data = await asyncio.to_thread(_load)
     st = data["status"]
     pending = data["pending"]
-    lines = [
-        "🔄 <b>Ops flywheel</b>",
-        f"Enabled: <code>{st.get('enabled')}</code> · Approval: <code>{st.get('approval')}</code>",
-        f"Pending: <code>{len(pending)}</code> · Registry: <code>{len(st.get('registry_codes') or [])}</code> codes",
-        "",
-        "Flywheel tick: <code>tbcc/scripts/run-tbcc-flywheel-tick.ps1</code>\n"
-        "OpenClaw (external): <code>tbcc/docs/OPENCLAW_TBCC_INTEGRATION.md</code>",
-        "API: <code>POST /ops/flywheel/tick</code>",
-    ]
-    for p in pending[:5]:
-        lines.append(
-            f"· <code>{html.escape(str(p.get('id')))}</code> "
-            f"{html.escape(str(p.get('code')))} — {html.escape(str(p.get('label') or '')[:60])}"
-        )
-    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
+    from app.services.secretary_report_copy import format_flywheel_card_html
+
+    await _reply(
+        msg,
+        format_flywheel_card_html(status=st, pending=pending),
+        context,
+        parse_mode="HTML",
+    )
 
 
 async def cmd_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1989,18 +1986,14 @@ async def cmd_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     report = await asyncio.to_thread(_run)
     directions = report.get("directions") or []
     narrative = report.get("narrative")
-    from app.services.analytics_direction import format_direction_html
+    from app.services.secretary_report_copy import format_direction_report_html
 
-    body = format_direction_html(directions, narrative=narrative)
-    summary = report.get("evidence_summary") or {}
-    if summary:
-        body += (
-            "\n\n<i>income_usd="
-            + html.escape(str(summary.get("income_usd")))
-            + " · pool_approved="
-            + html.escape(str(summary.get("pool_approved")))
-            + f" · {days}d</i>"
-        )
+    body = format_direction_report_html(
+        directions,
+        narrative=narrative,
+        evidence_summary=report.get("evidence_summary") or {},
+        days=days,
+    )
     await _reply(msg, body, context, parse_mode="HTML")
 
 
@@ -2027,19 +2020,9 @@ async def cmd_surge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = await asyncio.to_thread(_run)
     st = data.get("state") or {}
     result = data.get("result") or {}
-    lines = [
-        "🔥 <b>Undress surge</b>",
-        f"Hits: <code>{st.get('hits_in_window')}</code> / threshold <code>{st.get('threshold')}</code>",
-        f"Spike active: <code>{st.get('spike_active')}</code>",
-        f"Blast: <code>{result.get('ok')}</code>",
-    ]
-    if result.get("skipped"):
-        lines.append(f"Skipped: <code>{html.escape(str(result.get('reason')))}</code>")
-    if result.get("queued"):
-        lines.append(f"Queued: <code>{len(result.get('queued') or [])}</code> scheduler(s)")
-    if result.get("error"):
-        lines.append(f"Error: <code>{html.escape(str(result.get('error')))}</code>")
-    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
+    from app.services.secretary_report_copy import format_surge_card_html
+
+    await _reply(msg, format_surge_card_html(state=st, result=result), context, parse_mode="HTML")
 
 
 async def cmd_stack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2751,6 +2734,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if is_new_lead:
         try:
+            from app.services.secretary_report_copy import format_new_lead_html
+
             who_lead = (user.username or "").strip() or str(user.id)
             surface = "business" if is_business else "direct"
             phase = "introduction"
@@ -2765,10 +2750,12 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 category="system",
                 severity="important",
                 title=f"New lead · {who_lead}",
-                body=(
-                    f"Surface: <b>{html.escape(surface)}</b> · Mode: <b>{html.escape(mode_label(customer_mode))}</b>\n"
-                    f"Phase: <code>{html.escape(phase)}</code> · uid <code>{user.id}</code>\n\n"
-                    f"📩 {html.escape(user_text[:400])}"
+                body=format_new_lead_html(
+                    surface=surface,
+                    mode_label=mode_label(customer_mode),
+                    phase=phase,
+                    user_id=user.id,
+                    customer_text=user_text,
                 ),
                 meta={
                     "code": "secretary_new_lead",
@@ -2824,6 +2811,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if suggest_mode:
             try:
                 from app.services.admin_inbox import push_admin_inbox_event
+                from app.services.secretary_report_copy import format_draft_fail_html
 
                 who = (user.username or "").strip() or str(user.id)
                 await asyncio.to_thread(
@@ -2831,11 +2819,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     category="system",
                     severity="important",
                     title=f"Secretary draft failed · {who}",
-                    body=(
-                        f"Customer said: {html.escape(user_text[:300])}\n\n"
-                        "LLM error — <b>no reply was sent</b> to the customer. "
-                        "Fix LLM config or reply manually."
-                    ),
+                    body=format_draft_fail_html(who=who, customer_text=user_text),
                     meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
                     instant=True,
                 )
