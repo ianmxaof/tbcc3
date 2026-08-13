@@ -10,12 +10,10 @@ from telegram.ext import ContextTypes
 
 from app.data.aof_storage_hub_map import GATEKEEPER_REVIEW_TOPIC_ID
 from app.database.session import SessionLocal
-from app.services.gatekeeper_review import review_chat_id
 from app.services.hub_intake_policy import set_hub_master_auto_approve
 from app.services.qa_master_panel import (
     CALLBACK_PREFIX,
     format_qa_master_panel_html,
-    qa_master_panel_keyboard,
     queue_lane_deposit_from_master,
 )
 from app.services.storage_auto_pipe import set_all_lanes_auto_pipe
@@ -30,18 +28,31 @@ from app.services.tbcc_telegram_admin import can_operate_storage_hub_bot_api
 logger = logging.getLogger(__name__)
 
 
-def _in_qa_master_topic(update: Update) -> bool:
-    chat = update.effective_chat
+def _forum_context_from_message(msg) -> tuple[bool, int | None]:
+    if not msg or not getattr(msg, "chat", None):
+        return False, None
+    if int(msg.chat.id) != storage_hub_chat_id_int():
+        return False, None
+    tid = getattr(msg, "message_thread_id", None)
+    if tid is None:
+        return False, None
+    return True, int(tid)
+
+
+def _storage_hub_forum_context(update: Update) -> tuple[bool, int | None]:
+    """Allow master panel callbacks in any Storage Hub forum subtopic."""
     msg = update.effective_message
     query = update.callback_query
     if query and query.message:
         msg = query.message
-    if not chat or not msg:
+    return _forum_context_from_message(msg)
+
+
+def _in_qa_master_topic(update: Update) -> bool:
+    ok, tid = _storage_hub_forum_context(update)
+    if not ok or tid is None:
         return False
-    if int(chat.id) != int(review_chat_id()) and int(chat.id) != storage_hub_chat_id_int():
-        return False
-    tid = getattr(msg, "message_thread_id", None)
-    return tid is not None and int(tid) == int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
+    return int(tid) == int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
 
 
 def _parse_page(data: str) -> int:
@@ -58,22 +69,24 @@ def _parse_page(data: str) -> int:
     return 0
 
 
-async def _refresh_panel(query, *, page: int = 0, note: str = "") -> None:
+async def _refresh_panel(query, bot, *, page: int = 0, note: str = "") -> None:
     if not query.message:
         return
-    with SessionLocal() as db:
-        text = format_qa_master_panel_html(db, page=page)
+    ok, thread_id = _forum_context_from_message(query.message)
+    if not ok or thread_id is None:
+        return
+    from app.services.qa_master_panel import ensure_qa_master_panel_at_thread
+
     if note:
-        text = f"{text}\n\n<b>{note}</b>"
-    try:
-        await query.message.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=qa_master_panel_keyboard(page=page),
-            disable_web_page_preview=True,
-        )
-    except Exception:
-        logger.debug("qa master panel refresh failed", exc_info=True)
+        with SessionLocal() as db:
+            _ = format_qa_master_panel_html(db, page=page)
+    await ensure_qa_master_panel_at_thread(
+        bot,
+        chat_id=int(query.message.chat_id),
+        message_thread_id=int(thread_id),
+        page=page,
+        force_new=True,
+    )
 
 
 async def cmd_qa_master_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -102,8 +115,9 @@ async def on_qa_master_panel_callback(update: Update, context: ContextTypes.DEFA
     if not can_operate_storage_hub_bot_api(update):
         await query.answer("Admin only", show_alert=True)
         return True
-    if not _in_qa_master_topic(update):
-        await query.answer("Open Q&A | APPROVE / DENY | INTAKE first", show_alert=True)
+    ok, _thread_id = _storage_hub_forum_context(update)
+    if not ok:
+        await query.answer("Open a Storage Hub forum subtopic first", show_alert=True)
         return True
 
     data = str(query.data)
@@ -116,7 +130,7 @@ async def on_qa_master_panel_callback(update: Update, context: ContextTypes.DEFA
     if data.startswith(f"{CALLBACK_PREFIX}refresh:") or data.startswith(f"{CALLBACK_PREFIX}page:"):
         note = "Refreshed"
         await query.answer(note)
-        await _refresh_panel(query, page=page, note=note)
+        await _refresh_panel(query, context.bot, page=page, note=note)
         return True
     if data == f"{CALLBACK_PREFIX}review":
         from bots.review_control_handlers import cmd_review
@@ -173,9 +187,31 @@ async def on_qa_master_panel_callback(update: Update, context: ContextTypes.DEFA
                     + (" · Q&A review path" if report.get("qa_review_only") else ""),
                     parse_mode=ParseMode.HTML,
                 )
+                try:
+                    from app.data.aof_storage_hub_map import storage_map_by_key
+                    from app.services.hub_panel_activity import repost_panels_after_deposit
+
+                    row = storage_map_by_key().get(lane)
+                    if row:
+                        await repost_panels_after_deposit(
+                            context.bot,
+                            chat_id=int(query.message.chat_id),
+                            message_thread_id=int(row.message_thread_id),
+                            topic_title=row.topic_title,
+                            network_key=lane,
+                        )
+                    await repost_panels_after_deposit(
+                        context.bot,
+                        chat_id=int(query.message.chat_id),
+                        message_thread_id=int(query.message.message_thread_id or 0),
+                        topic_title="Q&A master",
+                        network_key=None,
+                    )
+                except Exception:
+                    logger.debug("master deposit panel repost skipped", exc_info=True)
             else:
                 await query.message.reply_text(format_deposit_error_text(report))
-        await _refresh_panel(query, page=page)
+        await _refresh_panel(query, context.bot, page=page)
         return True
     elif data == f"{CALLBACK_PREFIX}flush:qa":
         from app.data.aof_storage_hub_map import CONTENT_LANE_NETWORK_KEYS
@@ -213,5 +249,5 @@ async def on_qa_master_panel_callback(update: Update, context: ContextTypes.DEFA
         await query.answer("Unknown action", show_alert=True)
         return True
 
-    await _refresh_panel(query, page=page, note=note)
+    await _refresh_panel(query, context.bot, page=page, note=note)
     return True

@@ -51,13 +51,15 @@ async def post_album(
     cap = caption.strip() if caption else None
     silent_kw = {"silent": True} if send_silent else {}
     from app.services.scheduled_post_service import _apply_telethon_html_to_kwargs
+    from app.services.telegram_content_protection import telethon_protect_context
 
     file_kw: dict = {"reply_to": reply_to, **silent_kw}
     if reply_markup is not None:
         file_kw["buttons"] = reply_markup
     _apply_telethon_html_to_kwargs(file_kw, cap or "", field="caption")
     try:
-        result = await client.send_file(channel, medias, **file_kw)
+        async with telethon_protect_context(client):
+            result = await client.send_file(channel, medias, **file_kw)
         return message_ids_from_send(result)
     except Exception as e:
         # Telegram sometimes rejects SendMultiMediaRequest (invalid mix, API quirks, forum edge cases).
@@ -68,14 +70,15 @@ async def post_album(
             e,
         )
         msg_ids: list[int] = []
-        for idx, single in enumerate(medias):
-            kw: dict = {"reply_to": reply_to, **silent_kw}
-            if idx == 0:
-                if reply_markup is not None:
-                    kw["buttons"] = reply_markup
-                _apply_telethon_html_to_kwargs(kw, cap or "", field="caption")
-            single_result = await client.send_file(channel, single, **kw)
-            msg_ids.extend(message_ids_from_send(single_result))
+        async with telethon_protect_context(client):
+            for idx, single in enumerate(medias):
+                kw: dict = {"reply_to": reply_to, **silent_kw}
+                if idx == 0:
+                    if reply_markup is not None:
+                        kw["buttons"] = reply_markup
+                    _apply_telethon_html_to_kwargs(kw, cap or "", field="caption")
+                single_result = await client.send_file(channel, single, **kw)
+                msg_ids.extend(message_ids_from_send(single_result))
         return msg_ids
 
 
@@ -88,9 +91,13 @@ async def post_pool_albums(
     randomize: bool = False,
     *,
     mark_posted: bool = True,
+    public_vip_exclusive_filter: bool = False,
 ) -> dict:
     from app.services.media_album_dedupe import dedupe_media_for_album
 
+    from app.models.content_pool import ContentPool
+
+    pool_row = db.query(ContentPool).filter(ContentPool.id == pool_id).first()
     approved = (
         db.query(Media)
         .filter(Media.pool_id == pool_id, Media.status == "approved")
@@ -98,6 +105,10 @@ async def post_pool_albums(
         .limit(500)
         .all()
     )
+    if public_vip_exclusive_filter:
+        from app.services.aof_vip_exclusive import filter_media_for_public_vip_exclusive
+
+        approved = filter_media_for_public_vip_exclusive(approved, pool=pool_row)
     try:
         from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
 

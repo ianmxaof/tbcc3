@@ -31,3 +31,13 @@ def test_enforce_strict_blocks_unwrapped():
     # May wrap via manual gate; if wrap fails, errors present
     if errors:
         assert "bare Telegram" in errors[0]
+
+
+def test_enforce_allows_spicy_companion_deep_link():
+    text = (
+        "try https://telegram.me/aof_spicybot_bot?start=src_spicy_x "
+        "and hub https://t.me/aofmainhub"
+    )
+    new_text, errors = enforce_buffer_x_caption_urls(text, network_key="mainhub", strict=True)
+    assert "aof_spicybot_bot" in new_text
+    assert not any("spicybot" in e for e in errors)

@@ -573,6 +573,16 @@ export const api = {
       hub_toast?: boolean;
       restart_grace?: { active?: boolean };
     }>("/ops/alerts/poll"),
+  adminBridgeMint: (body: { destination: "forum" | "dashboard"; next_path?: string; ttl_seconds?: number }) =>
+    fetchApi<{ ok: boolean; url: string; audience?: string }>("/ops/admin-bridge/mint", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  adminBridgeConsume: (body: { token: string; expected_audience: "forum_admin" | "dashboard" }) =>
+    fetchApi<{ ok: boolean; next?: string }>("/ops/admin-bridge/consume", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   watchFolder: {
     status: () => fetchApi<WatchFolderStatus>("/watch-folder/status"),
   },
@@ -589,7 +599,7 @@ export const api = {
       if (opts?.sort) params.set("sort", opts.sort);
       if (opts?.target_pool_id != null) params.set("target_pool_id", String(opts.target_pool_id));
       const q = params.toString();
-      return fetchApi<Array<Record<string, unknown>>>(q ? `/media?${q}` : "/media", {
+      return fetchApi<Array<Record<string, unknown>>>(q ? `/media/?${q}` : "/media/", {
         timeoutMs: MEDIA_LIST_TIMEOUT_MS,
       });
     },
@@ -607,7 +617,7 @@ export const api = {
       if (opts.limit != null) params.set("limit", String(opts.limit));
       if (opts.before_id != null && opts.before_id > 0) params.set("before_id", String(opts.before_id));
       return fetchApi<Array<{ id: number; media_type?: string; status?: string; pool_id?: number; nsfw_tier?: string }>>(
-        `/media?${params.toString()}`,
+        `/media/?${params.toString()}`,
         { timeoutMs: 45_000 }
       );
     },

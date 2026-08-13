@@ -175,6 +175,7 @@ async def _run_deposit_from_panel(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     thread_id: int | None,
+    repost_panels: bool = False,
 ) -> None:
     from bots.storage_hub_deposit_bot import _run_deposit_job
 
@@ -213,4 +214,5 @@ async def _run_deposit_from_panel(
         limit=limit,
         media_types=media_types,
         reply_msg=query.message,
+        repost_panels=repost_panels,
     )

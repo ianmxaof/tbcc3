@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import { useDashboardGilded } from "../context/DashboardGildedContext";
 import { ApiTargetSwitcher } from "./ApiTargetSwitcher";
 import { WatermarkGlobalToggle } from "./WatermarkGlobalToggle";
+import { OpenForumAdminButton } from "./OpenForumAdminButton";
 
 function GearIcon({ className }: { className?: string }) {
   return (
@@ -49,6 +50,8 @@ export function DashboardHeaderToolbar() {
   return (
     <div className="ml-auto flex items-center gap-2 pl-3 border-l border-slate-700/80">
       <WatermarkGlobalToggle />
+
+      <OpenForumAdminButton />
 
       <ApiTargetSwitcher />
 

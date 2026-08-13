@@ -178,3 +178,22 @@ Bible: `docs/LOOT_LANE_ECONOMY.md` · Ops: `docs/LISTENING_RELAY.md`
 • VIP: `@aofsubscriptions_bot` subscribe flow  
 
 Do **not** share the old Main group invite — banned.
+
+---
+
+## AOF VIP vs free lanes (pin or drop in commons)
+
+*Same pipeline — five upgrades behind one paid door. Conservative link copy: VIP gets direct hosts **where mapped**; gates may remain as fallback.*
+
+🎫 **AOF VIP — same network, five upgrades**
+
+Free lanes and VIP pull from the same pipeline. The difference is what you get at the door:
+
+📍 **Where** — Free: scattered addlist scroll · VIP: one feed, one door  
+🎲 **Album size** — Free: 1 (tease) · VIP: 3–10 rolled per drop  
+🔗 **Links** — Free: gated/wrapped · VIP: direct where mapped  
+⏱ **Timing** — Free: public schedule · VIP: ~60 min early  
+🎰 **Daily pull** — Free: loot keys/tease · VIP: `/viproll` god roll every day  
+📦 **Weekly** — Free: gated/delayed · VIP: direct mega folder Fridays  
+
+**Start:** `@aofsubscriptions_bot` → `/subscribe` · intro month for first-time VIP when eligible.

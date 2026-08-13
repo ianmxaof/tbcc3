@@ -15,3 +15,11 @@ def bot_api_forum_thread_id(thread_id: int | None) -> int | None:
     if tid <= 1:
         return None
     return tid
+
+
+def bot_api_forum_thread_api_kwargs(message_thread_id: int | None) -> dict[str, int]:
+    """Bot API forum thread id for pin/unpin — pass as api_kwargs to PTB methods."""
+    api_thread = bot_api_forum_thread_id(message_thread_id)
+    if api_thread:
+        return {"message_thread_id": api_thread}
+    return {}

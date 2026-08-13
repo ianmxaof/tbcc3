@@ -23,10 +23,10 @@ class WatermarkTier(str, Enum):
 class GlimpseSpec:
     """Visible promo in Loot Room subtopic (not vanish-then-delete)."""
 
-    shown_of_full: tuple[int, int] = (3, 7)  # "3 of 7 shown"
+    shown_of_full: tuple[int, int] = (1, 7)  # "1 of 7 shown"
     watermark: WatermarkTier = WatermarkTier.PROMO_HEAVY
     leave_visible: bool = True
-    forwards_enabled: bool = True  # intentional: leak becomes promo
+    forwards_enabled: bool = False  # protect_content on preview posts
 
 
 @dataclass(frozen=True)

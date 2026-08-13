@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def bootstrap_storage_hub_panels(bot) -> dict:
     from app.services.storage_hub_control_panels import ensure_all_hub_control_panels
 
-    return await ensure_all_hub_control_panels(bot, force_new=False)
+    return await ensure_all_hub_control_panels(bot, force_new=True)
 
 
 def register_storage_hub_handlers(app: Application, *, bot_label: str) -> None:

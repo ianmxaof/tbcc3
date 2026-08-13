@@ -41,9 +41,15 @@ _SFW_HOST_RE = re.compile(
     re.I,
 )
 
+# SFW Telegram mini-apps / wallets — must beat the generic t.me/*bot NSFW path.
+_SFW_TG_BOT_RE = re.compile(
+    r"(?:t\.me|telegram\.me)/(?:CloudFarmWalletBot)(?:/|$|\?)",
+    re.I,
+)
+
 _SFW_LABEL_RE = re.compile(
     r"rakuten|chime|revolut|cursor|claude|proton|seedbox|pulsed|bing rewards|microsoft rewards|"
-    r"comet api|vpn|hosting|cloudflare|digitalocean",
+    r"comet api|vpn|hosting|cloudflare|digitalocean|cloud farm|cloudfarm",
     re.I,
 )
 
@@ -68,10 +74,10 @@ def classify_affiliate_lane(url: str, label: str = "") -> AffiliateLane:
     blob = f"{label} {u}".strip()
     host = _hostname(u)
 
+    if _SFW_TG_BOT_RE.search(u) or _SFW_HOST_RE.search(host) or _SFW_LABEL_RE.search(blob):
+        return "sfw"
     if _NSFW_HOST_RE.search(host) or _NSFW_PATH_RE.search(u) or _NSFW_LABEL_RE.search(blob):
         return "nsfw"
-    if _SFW_HOST_RE.search(host) or _SFW_LABEL_RE.search(blob):
-        return "sfw"
     return "grey"
 
 

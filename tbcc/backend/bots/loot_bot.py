@@ -153,7 +153,7 @@ def _loot_inline_keyboard(
         rows.append([InlineKeyboardButton("🚪 Loot Room (paid key required)", url=invite)])
     if int(rarity_tier or 0) >= 7 and pay:
         rows.append(
-            [InlineKeyboardButton("⭐ VIP — bigger daily drops", url=f"https://t.me/{pay}?start=subscribe")]
+            [InlineKeyboardButton("⭐ VIP from $10", url=f"https://t.me/{pay}?start=subscribe")]
         )
     return InlineKeyboardMarkup(rows)
 

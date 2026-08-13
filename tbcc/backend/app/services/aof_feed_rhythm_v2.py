@@ -30,11 +30,11 @@ _POOL_NAME_TO_KEY = {nc.pool_name: nc.key for nc in AOF_NETWORK_CHANNELS}
 
 
 def network_album_size() -> int:
-    raw = (os.getenv("TBCC_NETWORK_ALBUM_SIZE") or "3").strip()
+    raw = (os.getenv("TBCC_NETWORK_ALBUM_SIZE") or "1").strip()
     try:
         return max(1, min(10, int(raw)))
     except ValueError:
-        return 3
+        return 1
 
 
 def main_group_album_size() -> int:
@@ -165,7 +165,7 @@ def network_key_for_pool_name(pool_name: str | None) -> str | None:
 
 
 def apply_main_group_tease_media(sched: ScheduledTextPost) -> None:
-    """Attach rotating 3-item network lane albums to main-group conversion schedulers."""
+    """Attach rotating single-item network lane previews to main-group conversion schedulers."""
     sched.pool_collective_random = True
     sched.pool_id = None
     sched.album_size = main_group_album_size()

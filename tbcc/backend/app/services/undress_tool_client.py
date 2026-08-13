@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -34,18 +35,37 @@ DEFAULT_PHOTO_POSES: tuple[str, ...] = (
     "Cumshot POV",
     "Estival solstice",
     "Shibari",
-    "Lingerie",
     "Wet girl",
 )
 
-# Last-known-good video poses from GET /api/v1/video/poses (id + name).
-DEFAULT_VIDEO_POSES: tuple[dict[str, str], ...] = (
+# Full catalog snapshot — refreshed from GET /api/v1/video/poses (see undress_video_poses.json).
+_LEGACY_VIDEO_POSES: tuple[dict[str, str], ...] = (
     {"id": "doggy", "name": "Doggy Style"},
     {"id": "missionary", "name": "Missionary POV"},
     {"id": "cowgirl", "name": "Cowgirl POV"},
     {"id": "blowjob", "name": "Blowjob"},
     {"id": "titfuck", "name": "Tit Fuck"},
 )
+
+
+def _load_default_video_poses() -> tuple[dict[str, str], ...]:
+    path = Path(__file__).resolve().parent.parent / "data" / "undress_video_poses.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        poses = data.get("poses") if isinstance(data, dict) else None
+        if not isinstance(poses, list):
+            return _LEGACY_VIDEO_POSES
+        out: list[dict[str, str]] = []
+        for item in poses:
+            if isinstance(item, dict) and item.get("id") and item.get("name"):
+                out.append({"id": str(item["id"]), "name": str(item["name"]).strip()})
+        return tuple(out) if out else _LEGACY_VIDEO_POSES
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        logger.warning("default video poses load failed (%s) — using legacy fallback", e)
+        return _LEGACY_VIDEO_POSES
+
+
+DEFAULT_VIDEO_POSES: tuple[dict[str, str], ...] = _load_default_video_poses()
 
 _pose_cache: tuple[float, list[str]] | None = None
 _video_pose_cache: tuple[float, list[dict[str, str]]] | None = None
@@ -129,6 +149,34 @@ async def get_me(*, timeout: float = 30.0) -> UndressUserInfo:
     )
 
 
+async def check_video_submit_allowed(*, timeout: float = 15.0) -> tuple[bool, str]:
+    """
+    Pre-flight before queueing video jobs.
+
+    Operator sandbox skips *user* allowance — this checks the upstream undress API,
+    which can block video even when balance > 0 (vendor 3-day purchase rule).
+    """
+    if not configured():
+        return False, "Undress API not configured — set TBCC_UNDRESS_TOOL_API_KEY."
+    try:
+        info = await get_me(timeout=timeout)
+    except Exception as e:
+        return False, f"Could not read undress account: {e!s}"[:300]
+    if info.can_create_videos:
+        return True, ""
+    if info.balance <= 0:
+        return (
+            False,
+            "Undress API balance is 0 — top up credits to enable photo and video reveals.",
+        )
+    return (
+        False,
+        f"Undress video is locked (balance {info.balance}, can_create_videos=false). "
+        "undresstool.fun requires a credit purchase within the last 3 days before video "
+        "API unlocks. Photo reveals still work — this is a vendor gate, not fake UI.",
+    )
+
+
 async def list_photo_poses(*, timeout: float = 30.0, allow_fallback: bool = True) -> list[str]:
     global _pose_cache
     now = time.time()
@@ -158,6 +206,9 @@ async def list_photo_poses(*, timeout: float = 30.0, allow_fallback: bool = True
                 break
             out = [str(p) for p in poses if p]
             if out:
+                from app.services.companion_poses import filter_photo_poses
+
+                out = filter_photo_poses(out)
                 _pose_cache = (now, out)
                 return out
         except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
@@ -166,7 +217,9 @@ async def list_photo_poses(*, timeout: float = 30.0, allow_fallback: bool = True
 
     if allow_fallback and DEFAULT_PHOTO_POSES:
         logger.warning("list_photo_poses: vendor unavailable (%s) — using cached defaults", last_err)
-        return list(DEFAULT_PHOTO_POSES)
+        from app.services.companion_poses import filter_default_photo_poses
+
+        return filter_default_photo_poses(DEFAULT_PHOTO_POSES)
     if last_err:
         raise last_err
     return []

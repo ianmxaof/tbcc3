@@ -40,6 +40,8 @@ def test_subscription_copy_pre_expiry_3d():
     )
     assert "3 days left" in msg.html
     assert "AOF VIP" in msg.html
+    assert "god roll" in msg.html.lower()
+    assert "Friday mega" in msg.html
     assert "cm10" in msg.button_url
 
 

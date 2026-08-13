@@ -22,7 +22,7 @@ from app.services.aof_feed_rhythm_v2 import (
 def test_network_album_size_default():
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("TBCC_NETWORK_ALBUM_SIZE", None)
-        assert network_album_size() == 3
+        assert network_album_size() == 1
 
 
 def test_network_album_size_env():

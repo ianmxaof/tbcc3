@@ -1,0 +1,65 @@
+# envsubst — TBCC_INTERNAL_API_KEY (+ optional TBCC_API_UPSTREAM_HOST / PORT)
+# Behind Cloudflare Tunnel / Tailscale Serve, nginx speaks plain HTTP on :80 but browsers are HTTPS.
+# Always advertise https to FastAPI so trailing-slash redirects stay https://dash.../api/...
+#
+# Variable host + rewrite: after `api` container recreate the Docker IP changes.
+# Literal `proxy_pass http://api:8000` is resolved once at nginx start → 502 until restart.
+# Variable `proxy_pass $url/` also skips URI rewrite — so rewrite the path explicitly.
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Docker embedded DNS
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        set $tbcc_api_host "${TBCC_API_UPSTREAM_HOST}";
+        set $tbcc_api_port "${TBCC_API_UPSTREAM_PORT}";
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$tbcc_api_host:$tbcc_api_port;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /api;
+        proxy_set_header X-TBCC-Internal-Key "${TBCC_INTERNAL_API_KEY}";
+        # Keep redirects under /api and on https (mixed-content safe)
+        proxy_redirect http://$host/ https://$host/api/;
+        proxy_redirect https://$host/ https://$host/api/;
+        proxy_redirect http://$host:80/ https://$host/api/;
+        proxy_redirect / /api/;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        client_max_body_size 512m;
+    }
+
+    location /island-api/ {
+        set $tbcc_api_host "${TBCC_API_UPSTREAM_HOST}";
+        set $tbcc_api_port "${TBCC_API_UPSTREAM_PORT}";
+        rewrite ^/island-api/(.*)$ /$1 break;
+        proxy_pass http://$tbcc_api_host:$tbcc_api_port;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Prefix /island-api;
+        proxy_set_header X-TBCC-Internal-Key "${TBCC_INTERNAL_API_KEY}";
+        proxy_redirect http://$host/ https://$host/island-api/;
+        proxy_redirect https://$host/ https://$host/island-api/;
+        proxy_redirect http://$host:80/ https://$host/island-api/;
+        proxy_redirect / /island-api/;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        client_max_body_size 512m;
+    }
+}

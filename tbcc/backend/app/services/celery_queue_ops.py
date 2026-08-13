@@ -306,6 +306,15 @@ def dedupe_run_schedule_queue(*, keep: int = 1) -> dict[str, Any]:
     )
 
 
+def dedupe_scrape_tick_queue(*, keep: int = 1) -> dict[str, Any]:
+    """Collapse Beat tick_scheduled_scrapes pile-ups when no scrape consumer is attached."""
+    return dedupe_task_keep_newest(
+        "scrape",
+        task_substrings=["scrape_scheduler_worker.tick_scheduled_scrapes"],
+        keep=keep,
+    )
+
+
 def purge_thumbnail_warm_from_telegram_queue() -> dict[str, Any]:
     """Drop pending thumbnail warms so storage-hub imports can drain first."""
     return purge_queue_tasks_matching(

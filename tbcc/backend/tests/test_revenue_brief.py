@@ -30,23 +30,44 @@ def test_heuristic_brief_includes_spike():
 
 
 def test_build_revenue_brief_bundle_shape(monkeypatch):
+    monkeypatch.setattr("app.services.revenue_brief.spike_state", lambda: {"hits_in_window": 0})
+    monkeypatch.setattr("app.services.revenue_brief.traffic_pulse_snapshot", lambda: {"counts": {}, "top_refs": []})
     monkeypatch.setattr(
-        revenue_brief,
-        "build_ops_picture_report",
+        "app.services.analytics_direction.build_direction_evidence_bundle",
         lambda _db, days=7: {
-            "income": {"total_usd": 10, "total_stars": 5},
-            "companion": {"photos_sold": 0},
-            "bot_funnel": {"attributed_revenue_pct": 12},
-            "blockers": [],
-            "gate_funnel": {"totals": {"pass": 1}},
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "ops": {
+                "income": {"total_usd": 10, "total_stars": 5},
+                "companion": {"photos_sold": 0},
+                "bot_funnel": {"attributed_revenue_pct": 12},
+                "blockers": [],
+                "gate_funnel": {"totals": {"pass": 1}},
+                "pools": {"approved_total": 1000},
+                "posts": {},
+            },
+            "growth_proposals": [{"recommendation": "test", "action_kind": "review"}],
+            "funnel_signals": [
+                {
+                    "signal_type": "boost_companion_cta",
+                    "confidence": "medium",
+                    "strength": 1.0,
+                    "photos_sold": 0,
+                    "recommendation": "Companion CTA",
+                }
+            ],
+            "traffic_pulse": {"counts": {}, "top_refs": []},
+            "sprint_labels": [],
+            "contradictions": [],
+            "category_demand": {"gaps": []},
+            "export_proposals": [],
+            "trends": {},
+            "evidence_summary": {},
         },
     )
     monkeypatch.setattr(
-        "app.services.revenue_brief.list_proposals",
-        lambda _db, days=7: {"proposals": [{"recommendation": "test", "action_kind": "review"}]},
+        "app.services.analytics_direction.rank_directions",
+        lambda _b: [{"rank": 1, "horizon": "ST", "title": "Companion CTA", "category": "grow", "confidence": "medium"}],
     )
-    monkeypatch.setattr("app.services.revenue_brief.spike_state", lambda: {"hits_in_window": 0})
-    monkeypatch.setattr(revenue_brief, "_traffic_pulse_snapshot", lambda: {"counts": {}, "top_refs": []})
     bundle = revenue_brief.build_revenue_brief_bundle(MagicMock(), days=7)
     assert bundle["income_usd"] == 10
     assert "growth_flywheel_note" in bundle

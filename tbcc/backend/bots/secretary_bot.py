@@ -123,7 +123,11 @@ from app.services.secretary_llm import (
     persist_system_prompt,
     resolve_system_prompt,
 )
-from app.services.secretary_affiliate_intake import intake_affiliate_sponsor, parse_affiliate_intake_text
+from app.services.secretary_affiliate_intake import (
+    intake_affiliate_sponsor,
+    parse_affiliate_intake_args,
+    parse_affiliate_intake_text,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -1100,7 +1104,9 @@ def _admin_commands_reference() -> str:
         "/deposit <code>N</code> — Storage Hub subtopic → pool (admin, in-topic)\n\n"
         "<b>Revenue</b>\n"
         "/menu → More → <b>Add sponsor link</b> — paste affiliate URL; auto-circulates\n"
-        "/addsponsor — same flow from command\n\n"
+        "/addsponsor — same flow from command\n"
+        "/sponsors — DM list of all affiliates (URL, clicks, attributed $)\n"
+        "/affiliates — alias for /sponsors\n\n"
         "<b>Configuration</b>\n"
         "/config — LLM API key + endpoint URL (button tree, live test)\n"
         "TBCC API URL: <code>TBCC_API_URL</code> in tbcc/.env\n"
@@ -1954,6 +1960,50 @@ async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
 
 
+async def cmd_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: on-demand analytics direction — Top 5 ranked bets."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+
+    use_llm = bool(context.args and str(context.args[0]).lower() == "llm")
+    days = 30
+    if context.args:
+        for arg in context.args:
+            if arg.isdigit():
+                days = max(1, min(366, int(arg)))
+                break
+
+    def _run() -> dict:
+        from app.database.session import SessionLocal
+        from app.services.analytics_direction import build_analytics_direction_report
+
+        db = SessionLocal()
+        try:
+            return build_analytics_direction_report(db, days=days, use_llm=use_llm)
+        finally:
+            db.close()
+
+    report = await asyncio.to_thread(_run)
+    directions = report.get("directions") or []
+    narrative = report.get("narrative")
+    from app.services.analytics_direction import format_direction_html
+
+    body = format_direction_html(directions, narrative=narrative)
+    summary = report.get("evidence_summary") or {}
+    if summary:
+        body += (
+            "\n\n<i>income_usd="
+            + html.escape(str(summary.get("income_usd")))
+            + " · pool_approved="
+            + html.escape(str(summary.get("pool_approved")))
+            + f" · {days}d</i>"
+        )
+    await _reply(msg, body, context, parse_mode="HTML")
+
+
 async def cmd_surge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin: force undress surge blast to @aofmainhub + Loot Room."""
     msg = update.effective_message
@@ -2088,11 +2138,12 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await query.message.reply_text(
                     "🔗 <b>Add sponsor link</b>\n\n"
                     "Paste your affiliate URL in the next message.\n"
-                    "Optional: <code>Label|https://…</code>\n\n"
+                    "Optional: <code>Label|https://…</code>\n"
+                    "Prefix <code>sfw</code> for @thecheckoutlist only.\n\n"
                     "Example:\n"
                     "<code>https://www.cometapi.com/console/login?aff=ogsT</code>\n\n"
-                    "I'll save it, apply FOMO copy, and push into "
-                    "Buffer X · Telegram footers · link hub · loot rolls.\n"
+                    "Auto-routes SFW (Rakuten, Cursor, Chime…) → Checkout List; "
+                    "NSFW → Buffer X · TG footers · link hub · loot rolls.\n"
                     "Cancel: <code>/cancel</code>",
                     parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(
@@ -2339,13 +2390,14 @@ async def cmd_addsponsor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if msg:
             await _reply_inbox_denied(msg, context)
         return
-    raw = " ".join(context.args or []).strip()
-    if raw:
-        parsed = parse_affiliate_intake_text(raw)
+    force_lane, body = parse_affiliate_intake_args(context.args or [])
+    if body:
+        parsed = parse_affiliate_intake_text(body)
         if not parsed:
             await _reply(
                 msg,
-                "Usage: <code>/addsponsor https://…</code> or <code>/addsponsor Label|https://…</code>",
+                "Usage: <code>/addsponsor [sfw] https://…</code> or "
+                "<code>/addsponsor Label|https://…</code>",
                 context,
                 parse_mode="HTML",
             )
@@ -2354,7 +2406,12 @@ async def cmd_addsponsor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         db = SessionLocal()
         try:
             result = await asyncio.to_thread(
-                intake_affiliate_sponsor, db, label=label, url=url, sync=True
+                intake_affiliate_sponsor,
+                db,
+                label=label,
+                url=url,
+                sync=True,
+                force_lane=force_lane,
             )
         finally:
             db.close()
@@ -2364,10 +2421,50 @@ async def cmd_addsponsor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _reply(
         msg,
         "🔗 Paste your affiliate URL in the next message "
-        "(optional <code>Label|https://…</code>). Cancel: <code>/cancel</code>",
+        "(optional <code>Label|https://…</code> or prefix <code>sfw</code>). Cancel: <code>/cancel</code>",
         context,
         parse_mode="HTML",
     )
+
+
+async def cmd_sponsors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin DM: list every affiliate sponsor with URL, clicks, attributed ledger $."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    if msg.chat.type != "private":
+        await _reply(msg, "Open a private chat with me and send <code>/sponsors</code>.", context, parse_mode="HTML")
+        return
+
+    days = 30
+    include_inactive = False
+    for arg in context.args or []:
+        a = (arg or "").strip().lower()
+        if a in ("all", "inactive", "+inactive"):
+            include_inactive = True
+        elif a.isdigit():
+            days = max(1, min(366, int(a)))
+
+    def _load() -> dict:
+        from app.services.affiliate_sponsor_report import build_affiliate_sponsor_report
+
+        db = SessionLocal()
+        try:
+            return build_affiliate_sponsor_report(
+                db, include_inactive=include_inactive, revenue_days=days
+            )
+        finally:
+            db.close()
+
+    report = await asyncio.to_thread(_load)
+    messages = report.get("messages") or ["No affiliate sponsors found."]
+    for i, chunk in enumerate(messages):
+        await _reply(msg, chunk, context, parse_mode="HTML")
+        if i + 1 < len(messages):
+            await asyncio.sleep(0.35)
+
 
 
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2496,6 +2593,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 return
             context.user_data.pop(PENDING_AFFILIATE_LINK, None)
+            force_lane = context.user_data.pop("pending_affiliate_force_lane", "auto")
             parsed = parse_affiliate_intake_text(user_text)
             if not parsed:
                 await _reply(
@@ -2510,7 +2608,12 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             db = SessionLocal()
             try:
                 result = await asyncio.to_thread(
-                    intake_affiliate_sponsor, db, label=label, url=url, sync=True
+                    intake_affiliate_sponsor,
+                    db,
+                    label=label,
+                    url=url,
+                    sync=True,
+                    force_lane=force_lane,
                 )
             finally:
                 db.close()
@@ -3007,6 +3110,8 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("clear_sysprompt", cmd_clear_sysprompt))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("addsponsor", cmd_addsponsor))
+    app.add_handler(CommandHandler("sponsors", cmd_sponsors))
+    app.add_handler(CommandHandler("affiliates", cmd_sponsors))
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("drafts", cmd_drafts))
@@ -3025,6 +3130,7 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("focus", cmd_focus))
     app.add_handler(CommandHandler("triage", cmd_triage))
     app.add_handler(CommandHandler("flywheel", cmd_flywheel))
+    app.add_handler(CommandHandler("direction", cmd_direction))
     app.add_handler(CommandHandler("surge", cmd_surge))
     app.add_handler(CommandHandler("toasts", cmd_toasts))
     app.add_handler(CommandHandler("skipbacklog", cmd_skip_backlog))

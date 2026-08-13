@@ -78,7 +78,7 @@ def main() -> int:
             if args.execute:
                 from app.services.reddit_post_service import submit_post
 
-                print(json.dumps(submit_post(db, plan), indent=2), file=sys.stderr)
+                print(json.dumps(submit_post(db, plan, utm_campaign="manual_dry_run"), indent=2), file=sys.stderr)
             return 0
 
     return 0

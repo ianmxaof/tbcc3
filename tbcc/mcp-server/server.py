@@ -408,6 +408,24 @@ def analytics_weekly_summary(days: int = 7) -> str:
 
 
 @mcp.tool()
+def analytics_direction(days: int = 30, use_llm: bool = False, format: str = "markdown") -> str:
+    """
+    On-demand analytics direction — deterministic Top 5 investment ranking from TBCC evidence.
+    Composes income, pools, growth signals, blockers, and funnel data. Observe-only (no auto-post).
+    format: markdown (default) or json.
+    """
+    days = max(1, min(366, int(days)))
+    report = _request(
+        "GET",
+        "/analytics/direction",
+        params={"days": days, "use_llm": use_llm},
+    )
+    if format == "markdown":
+        return str(report.get("markdown") or _pretty(report))
+    return _pretty(report)
+
+
+@mcp.tool()
 def analytics_content_performance(days: int = 14, run_tick: bool = True) -> str:
     """
     Strongest content/growth signals for OpenClaw — ranked peak hours, caption winners, lane leaders.

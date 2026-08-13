@@ -19,7 +19,13 @@ from app.data.aof_network import (
 from app.models.channel import Channel
 from app.models.content_pool import ContentPool
 from app.models.scheduled_text_post import ScheduledTextPost
-from app.services.aof_growth_hub import build_addlist_footer, lv_urls, queue_post_scheduler
+from app.services.aof_growth_hub import (
+    build_addlist_footer,
+    build_vip_post_contrast_line_html,
+    lv_urls,
+    post_footer_vip_contrast_enabled,
+    queue_post_scheduler,
+)
 from app.services.lane_of_the_day import (
     SPOTLIGHT_HOOKS,
     eligible_lane_keys,
@@ -57,7 +63,7 @@ def spotlight_hour_utc() -> int:
 
 
 def spotlight_album_size() -> int:
-    raw = (os.getenv("TBCC_MAINHUB_SPOTLIGHT_ALBUM_SIZE") or "3").strip()
+    raw = (os.getenv("TBCC_MAINHUB_SPOTLIGHT_ALBUM_SIZE") or "1").strip()
     try:
         return max(1, min(10, int(raw)))
     except ValueError:
@@ -96,8 +102,11 @@ def build_spotlight_caption_html(db: Session, *, network_key: str, day_ordinal: 
         )
 
     body = (net_ch.promo_html or "").strip()
+    vip_line = ""
+    if post_footer_vip_contrast_enabled():
+        vip_line = f"\n\n{build_vip_post_contrast_line_html()}"
     footer = build_addlist_footer(lv)
-    return f"{header}\n\n<i>{html_mod.escape(hook)}</i>\n\n{body}{join_line}{footer}"
+    return f"{header}\n\n<i>{html_mod.escape(hook)}</i>\n\n{body}{join_line}{vip_line}{footer}"
 
 
 def build_spotlight_inline_keyboard(db: Session, *, network_key: str) -> list[list[dict[str, str]]]:

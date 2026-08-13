@@ -185,7 +185,7 @@ async def ensure_all_storage_deposit_panels(bot, *, force_new: bool = False) -> 
         return {"ok": True, "skipped": True, "reason": "disabled"}
     results: list[dict[str, Any]] = []
     errors = 0
-    pause_s = float(os.getenv("TBCC_STORAGE_HUB_PANEL_BOOTSTRAP_PAUSE_S") or "1.2")
+    pause_s = float(os.getenv("TBCC_STORAGE_HUB_PANEL_BOOTSTRAP_PAUSE_S") or "2.5")
     for i, target in enumerate(storage_deposit_panel_targets()):
         if i > 0 and pause_s > 0:
             await asyncio.sleep(pause_s)

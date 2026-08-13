@@ -1150,6 +1150,7 @@ def post_pool(pool_id: int, channel_identifier: str, *, phase: str | None = None
                             album_size=album_size,
                             randomize=randomize,
                             mark_posted=mark_posted,
+                            public_vip_exclusive_filter=(phase in (None, "public")),
                         )
                         break
                     except Exception as send_err:

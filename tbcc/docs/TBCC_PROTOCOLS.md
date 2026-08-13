@@ -37,12 +37,14 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env`
 | **TBCC Daily Brief** | `/daily-brief`, `daily brief`, `bring me up to speed`, `loose ends` | `~/.cursor/skills/tbcc-daily-brief/SKILL.md` |
 | **TBCC Sitrep** | `/sitrep`, `sitrep`, `situation report`, `mid-op status`, `what just shipped` | `~/.cursor/skills/tbcc-sitrep/SKILL.md` |
 | **TBCC Ops Picture** | `/ops-picture`, `ops picture`, `health and analytics`, `financial ops report`, `what's broken in tbcc` | `~/.cursor/skills/tbcc-ops-picture/SKILL.md` |
+| **TBCC Analytics Direction** | `/analytics-direction`, `analytics direction`, `where to invest`, `growth direction` | `~/.cursor/skills/tbcc-analytics-direction/SKILL.md` |
 
 ### Protocol chains
 
 - **Warm start:** `/daily-brief` → pick Top 5 → implement (or `/preflight` if ≥3 files)
 - **Mid-op multitask:** `/sitrep` → pick Vector (or Wire/close fuse) → implement / tray ops
 - **Money health check:** `/ops-picture` → pick blocker → fix / deploy / tray ops
+- **Data-driven bet:** `/analytics-direction` → pick direction → `/preflight` if ≥3 files → implement
 - **New arc:** `/sprint-start` → `/preflight` (if ≥3 files) → implement → `/session-close`
 - **Grind:** `/preflight` → `/handoff-cc` → Claude writes `tbcc/docs/handoffs/*_report.md` → `/cc-report` in Cursor → ACK → next phase or ship
 - **Release:** `/milestone-ship` → optional `/ship-log`
@@ -53,6 +55,8 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env`
 | Script | Purpose |
 |--------|---------|
 | `backend/scripts/ops_picture_snapshot.py` | Consolidated analytics + error-hub JSON for `/ops-picture` |
+| `backend/scripts/analytics_direction_snapshot.py` | On-demand Top 5 direction JSON/markdown for `/analytics-direction` |
+| `GET /analytics/direction` | HTTP API for direction report (island canonical) |
 | `backend/scripts/ship_log_sources.py` | Git + improvement-notes context |
 | `backend/scripts/ship_log_buffer.py` | Buffer Idea or X queue |
 | `backend/scripts/milestone_ship.py` | Status, push, full milestone pipeline |

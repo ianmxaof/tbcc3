@@ -19,6 +19,7 @@ import { ScrapeRunBanner } from "./components/ScrapeRunBanner";
 import { TbccClipboardInit } from "./components/TbccClipboardInit";
 import { ApprovalQueueCounter } from "./components/ApprovalQueueCounter";
 import { SchedulerOnTrackCounter } from "./components/SchedulerOnTrackCounter";
+import { AdminBridgeConsumer } from "./components/AdminBridgeConsumer";
 
 const nav = [
   { to: "/", label: "Media", badge: "queue" as const },
@@ -36,6 +37,7 @@ function AppShell() {
   return (
     <BrowserRouter>
       <TbccClipboardInit />
+      <AdminBridgeConsumer />
       <div className="min-h-screen flex flex-col">
         <ApiTargetBanner />
         <SystemHealthBanner />

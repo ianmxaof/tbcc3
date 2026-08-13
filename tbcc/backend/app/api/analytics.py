@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Body, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -408,6 +408,22 @@ def ops_picture(
     )
 
 
+@router.get("/direction")
+def analytics_direction(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+    format: str = Query("json", pattern="^(json|markdown)$"),
+    use_llm: bool = Query(False),
+):
+    """On-demand analytics direction — deterministic Top 5 ranked by $ impact."""
+    from app.services.analytics_direction import build_analytics_direction_report
+
+    report = build_analytics_direction_report(db, days=days, use_llm=use_llm)
+    if format == "markdown":
+        return Response(content=report.get("markdown") or "", media_type="text/markdown; charset=utf-8")
+    return report
+
+
 @router.get("/bots/funnel")
 def bots_funnel_summary_route(
     db: Session = Depends(get_db),
@@ -679,6 +695,26 @@ def market_intel_probe_route(limit_per_sub: int = Query(25, ge=1, le=100)):
     return run_market_probes(limit_per_sub=limit_per_sub)
 
 
+@router.post("/market-intel/probe/scrolller")
+def market_intel_scrolller_probe_route(limit_per_sub: int = Query(20, ge=1, le=50)):
+    """Run Scrolller agent-route probe (metadata + watermarked embed refs only)."""
+    from app.services.market_intel_scrolller_probe import run_scrolller_probes
+
+    return run_scrolller_probes(limit_per_sub=limit_per_sub)
+
+
+@router.get("/market-intel/scrolller/registry-suggestions")
+def scrolller_registry_suggestions_route(
+    db: Session = Depends(get_db),
+    apply: bool = Query(False, description="Insert suggestions when TBCC_SCROLLLER_REGISTRY_AUTO_APPLY=1"),
+    max_new: int = Query(None, ge=1, le=25),
+):
+    """Rank Scrolller seed subs and suggest probation registry rows for unknown names."""
+    from app.services.scrolller_reddit_registry import suggest_reddit_registry_from_scrolller
+
+    return suggest_reddit_registry_from_scrolller(db, apply=apply, max_new=max_new)
+
+
 @router.post("/market-intel")
 def market_intel_ingest_route(body: EromeBrowseIntelIngestBody = Body(...)):
     """Ingest multi-platform market-intel rows (platform field per row)."""
@@ -777,9 +813,11 @@ def market_intel_cycle_run_route(
     from app.services.market_intel_cycle import evaluate_weekly_cycle
     from app.services.market_intel_cycle_executor import execute_cycle_actions
     from app.services.market_intel_probe import run_market_probes
+    from app.services.market_intel_scrolller_probe import run_scrolller_probes
 
     drop = sync_from_drop_file()
     probe = run_market_probes()
+    scrolller = run_scrolller_probes()
     cycle = evaluate_weekly_cycle(force=force)
     actions = execute_cycle_actions(db, cycle) if cycle.get("complete") else {"skipped": True}
-    return {"ok": True, "drop_sync": drop, "probe": probe, "cycle": cycle, "actions": actions}
+    return {"ok": True, "drop_sync": drop, "probe": probe, "scrolller_probe": scrolller, "cycle": cycle, "actions": actions}

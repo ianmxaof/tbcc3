@@ -692,11 +692,15 @@ def _revenue_island_active() -> bool:
 
 def _celery_inspect_scheduling_counts() -> dict[str, int] | None:
     """Classify live Celery workers via inspect.ping (Docker / revenue island)."""
+    pong = None
     try:
         from app.workers.celery_app import celery
 
-        insp = celery.control.inspect(timeout=3.0)
-        pong = insp.ping() if insp else None
+        for timeout in (5.0, 8.0):
+            insp = celery.control.inspect(timeout=timeout)
+            pong = insp.ping() if insp else None
+            if pong:
+                break
     except Exception:
         return None
     if not pong:
@@ -787,8 +791,29 @@ def collect_scheduling_health() -> dict[str, Any]:
         "scheduling_paused_by_focus": pause,
         "focus_profile": focus_profile,
     }
-    # Atomically publish for the fast health endpoint (new dict, single-assignment).
+    # Solo island workers often miss inspect.ping() while holding Telethon locks — do not
+    # overwrite a recent good snapshot with an all-zero transient failure.
     global _SCHEDULING_HEALTH_CACHE
+    if (
+        _revenue_island_active()
+        and sum(counts.values()) == 0
+        and not any(
+            result[k]
+            for k in (
+                "beat_running",
+                "celery_worker_running",
+                "celery_post_scheduler_worker_running",
+                "celery_post_worker_running",
+            )
+        )
+    ):
+        prev = cached_scheduling_health(max_age_s=600.0)
+        if prev and (
+            prev.get("beat_running")
+            or prev.get("celery_worker_running")
+            or prev.get("celery_post_worker_running")
+        ):
+            return prev
     _SCHEDULING_HEALTH_CACHE = {"data": result, "ts": time.time()}
     return result
 
@@ -1259,6 +1284,7 @@ _AUTO_REMEDIATE_COOLDOWN_S: dict[str, int] = {
     "restart_post_scheduler_worker": 120,
     "start_scheduling_stack": 300,
     "dedupe_run_schedule": 60,
+    "dedupe_scrape_ticks": 60,
     "purge_thumbnail_warm_for_imports": 90,
 }
 
@@ -1459,6 +1485,15 @@ def _watchdog_celery_home_backlog_threshold() -> int:
         return 200
 
 
+def _watchdog_scrape_tick_backlog_threshold() -> int:
+    """Stacked scrape-scheduler ticks (Beat every 5m with no scrape consumer)."""
+    raw = (os.getenv("TBCC_WATCHDOG_SCRAPE_TICK_BACKLOG") or "24").strip()
+    try:
+        return max(3, min(2000, int(raw)))
+    except ValueError:
+        return 24
+
+
 def _watchdog_import_queue_priority_threshold() -> int:
     """Queued+processing import jobs that trigger thumbnail_warm deferral."""
     raw = (os.getenv("TBCC_WATCHDOG_IMPORT_PRIORITY_THRESHOLD") or "3").strip()
@@ -1580,10 +1615,12 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
             from app.services.celery_queue_ops import (
                 celery_queue_snapshot,
                 dedupe_run_schedule_queue,
+                dedupe_scrape_tick_queue,
             )
 
             qsnap = celery_queue_snapshot(sample_size=40)
-            celery_len = int((qsnap.get("queues") or {}).get("celery", {}).get("length") or 0)
+            queues = qsnap.get("queues") or {}
+            celery_len = int((queues.get("celery") or {}).get("length") or 0)
             home_threshold = _watchdog_celery_home_backlog_threshold()
             if celery_len >= home_threshold and _auto_remediate_cooldown_ok("dedupe_run_schedule"):
                 dedupe = dedupe_run_schedule_queue(keep=1)
@@ -1593,6 +1630,17 @@ def scheduler_watchdog_tick() -> dict[str, Any]:
                     f"celery_len={celery_len} removed={dedupe.get('removed')} keep=1",
                     actions,
                     dedupe,
+                )
+            scrape_len = int((queues.get("scrape") or {}).get("length") or 0)
+            scrape_threshold = _watchdog_scrape_tick_backlog_threshold()
+            if scrape_len >= scrape_threshold and _auto_remediate_cooldown_ok("dedupe_scrape_ticks"):
+                scrape_dedupe = dedupe_scrape_tick_queue(keep=1)
+                _mark_auto_remediate_cooldown(["dedupe_scrape_ticks"])
+                _record_watchdog_action(
+                    "dedupe_scrape_ticks",
+                    f"scrape_len={scrape_len} removed={scrape_dedupe.get('removed')} keep=1",
+                    actions,
+                    scrape_dedupe,
                 )
         except Exception as e:
             logger.debug("watchdog celery dedupe skipped: %s", e)

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Edit",
+      "Write",
+      "Bash(py -3.13 -m pytest *)",
+      "Bash(py -3.13 -m py_compile *)",
+      "Bash(py -3.13 *)",
+      "Bash(python *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git fetch*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git merge *)",
+      "Bash(git stash *)",
+      "Bash(gh *)",
+      "Bash(curl -sS https://api.powercore.app/*)",
+      "Bash(curl -fsS https://api.powercore.app/*)",
+      "Bash(ssh -o BatchMode=yes -o ConnectTimeout=* root@5.161.53.91 *)",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File tbcc/scripts/revenue-island/deploy-island-live.ps1*)",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File tbcc/scripts/tbcc-stack-cli.ps1 -Action Status*)",
+      "Bash(npx --no-install tsc *)",
+      "Bash(npx --no-install next lint *)",
+      "Bash(npm run build*)",
+      "Bash(npm run lint*)",
+      "Bash(ffmpeg *)",
+      "Bash(node --test tbcc/extension/tests/*)"
+    ],
+    "deny": [
+      "Read(./tbcc/.env)",
+      "Read(./tbcc/.env.*)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)",
+      "Read(./**/*.session)",
+      "Read(./**/*.session-journal)",
+      "Read(./tbcc/.tbcc-run/**)",
+      "Bash(*tbcc-stack-cli* Start*)",
+      "Bash(*tbcc-stack-cli* Restart*)",
+      "Bash(*python -m bots.payment_bot*)",
+      "Bash(*python -m bots.loot_bot*)",
+      "Bash(*python -m bots.secretary_bot*)",
+      "Bash(*python -m bots.companion_bot*)",
+      "Bash(*POST /bots/runtime/*)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf /*)"
+    ],
+    "additionalDirectories": [
+      "tbcc",
+      "tbcc/backend",
+      "tbcc/extension",
+      "tbcc/dashboard",
+      "aof-forum",
+      "aof-forum/app",
+      "aof-forum/lib",
+      "aof-forum/components"
+    ]
+  },
+  "env": {
+    "PYTHONIOENCODING": "utf-8",
+    "TBCC_BOT_RUNTIME_ADAPTER": "command"
+  }
+}

@@ -2,6 +2,9 @@
 .cursor/
 .mcp
 
+# Claude Code — personal overrides (bypass mode, machine-specific allows)
+**/.claude/settings.local.json
+
 # remove.bg API key (never commit)
 tbcc/backend/.removebg.key
 **/.removebg.key

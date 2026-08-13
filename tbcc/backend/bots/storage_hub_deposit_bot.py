@@ -152,6 +152,7 @@ async def cmd_deposit(
         message_thread_id=int(thread_id),
         limit=limit,
         media_types=media_types,
+        repost_panels=True,
     )
 
 
@@ -205,6 +206,7 @@ async def _run_deposit_job(
     media_types: str,
     staged_message_ids: list[int] | None = None,
     reply_msg=None,
+    repost_panels: bool = False,
 ) -> None:
     msg = reply_msg or update.effective_message
     chat = update.effective_chat
@@ -233,6 +235,20 @@ async def _run_deposit_job(
     if not report.get("ok"):
         await msg.reply_text(format_deposit_error_text(report))
         return
+
+    if repost_panels:
+        try:
+            from app.services.hub_panel_activity import repost_panels_after_deposit
+
+            await repost_panels_after_deposit(
+                context.bot,
+                chat_id=int(chat.id),
+                message_thread_id=int(message_thread_id),
+                topic_title=str(report.get("topic_title") or ""),
+                network_key=str(report.get("network_key") or "") or None,
+            )
+        except Exception:
+            logger.debug("deposit panel repost skipped", exc_info=True)
 
     job_id = str(report.get("job_id") or report.get("id") or "")
     progress = await msg.reply_text(format_deposit_progress_text(report, html=False, markdown=False))

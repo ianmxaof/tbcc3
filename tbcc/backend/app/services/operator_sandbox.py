@@ -17,7 +17,8 @@ from app.services.tbcc_operator_ids import is_tbcc_operator, tbcc_operator_ids
 OPERATOR_SANDBOX_BADGE = "🔧 Operator QA"
 OPERATOR_SANDBOX_HINT = (
     f"{OPERATOR_SANDBOX_BADGE} — unlimited sandbox (no Stars, no gate). "
-    "Undress API credits still apply."
+    "Undress API credits still apply; video also needs a recent undress purchase "
+    "(vendor 3-day rule — check /balance)."
 )
 
 

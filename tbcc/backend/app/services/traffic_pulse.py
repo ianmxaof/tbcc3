@@ -12,6 +12,23 @@ logger = logging.getLogger(__name__)
 
 REDIS_DIGEST_COUNTS = "tbcc:traffic_pulse:digest:counts"
 REDIS_DIGEST_REFS = "tbcc:traffic_pulse:digest:refs"
+
+
+def traffic_pulse_snapshot() -> dict[str, Any]:
+    """Redis digest counts + top source_refs for briefs and direction reports."""
+    out: dict[str, Any] = {"counts": {}, "top_refs": []}
+    try:
+        from app.services.admin_inbox import _redis_client
+
+        r = _redis_client()
+        counts = r.hgetall(REDIS_DIGEST_COUNTS) or {}
+        refs = r.hgetall(REDIS_DIGEST_REFS) or {}
+        out["counts"] = {str(k): int(v) for k, v in counts.items()}
+        ranked = sorted(((str(k), int(v)) for k, v in refs.items()), key=lambda x: x[1], reverse=True)
+        out["top_refs"] = [{"source_ref": k, "count": v} for k, v in ranked[:8]]
+    except Exception:
+        pass
+    return out
 REDIS_INSTANT_HOUR_KEY = "tbcc:traffic_pulse:instant:hour"
 REDIS_INSTANT_HOUR_BUCKET = "tbcc:traffic_pulse:instant:bucket"
 

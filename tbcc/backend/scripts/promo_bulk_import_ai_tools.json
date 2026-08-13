@@ -53,7 +53,7 @@
     },
     {
       "label": "Lucid Dreams Bot",
-      "url": "https://t.me/luciddreams?start=_tgr_vYQc3UQzM2Qx",
+      "url": "https://t.me/luciddreams?start=_tgr_LISc0X42MTBh",
       "payout_kind": "revshare",
       "priority_tier": 12,
       "placements": [
@@ -179,10 +179,27 @@
       "copy_template": "\ud83e\udd16 {link} \u2014 TG bot"
     },
     {
-      "label": "Sweet Sdx (Veners)",
+      "label": "AI ULTRA (Veners)",
+      "url": "https://venersbot.com/7i85gp",
+      "payout_kind": "revshare",
+      "priority_tier": 20,
+      "placements": [
+        "x_buffer",
+        "telegram_footer",
+        "links_hub_ai",
+        "loot_roll"
+      ],
+      "network_keys": [
+        "ai",
+        "main"
+      ],
+      "copy_template": "\ud83e\udd16 {link} \u2014 AI ULTRA TG bot"
+    },
+    {
+      "label": "Sweet Sdx (Veners legacy)",
       "url": "https://venersbot.com/7787282561",
       "payout_kind": "revshare",
-      "priority_tier": 21,
+      "priority_tier": 22,
       "placements": [
         "telegram_footer",
         "loot_roll"
