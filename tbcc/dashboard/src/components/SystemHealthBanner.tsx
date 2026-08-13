@@ -45,6 +45,7 @@ function bannerSeverityKind(criticalCount: number, total: number): ToastSeverity
 export function SystemHealthBanner() {
   const { target } = useApiTarget();
   const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(() =>
     readDismissedFingerprint()
   );
@@ -53,6 +54,7 @@ export function SystemHealthBanner() {
   const load = useCallback(async () => {
     try {
       const data = await api.healthSystem();
+      setLoadError(null);
       setHealth(data);
       const fp = conflictFingerprint(data.conflicts || []);
       if (data.ok && (data.conflicts || []).length === 0) {
@@ -61,7 +63,14 @@ export function SystemHealthBanner() {
       } else if (fp && fp === readDismissedFingerprint()) {
         setDismissedFingerprint(fp);
       }
-    } catch {
+    } catch (e) {
+      const detail =
+        e instanceof Error ? e.message : "Cannot reach backend.";
+      setLoadError(detail);
+      const islandHint =
+        target === "island"
+          ? "api.powercore.app may be down (Cloudflare tunnel stopped) or the island API hung — on VPS: systemctl start cloudflared-tbcc-api && docker compose restart api. TBCC_INTERNAL_API_KEY in tbcc/.env must match island."
+          : "Restart TBCC from the tray or run start.ps1.";
       setHealth({
         ok: false,
         conflicts: [
@@ -70,8 +79,8 @@ export function SystemHealthBanner() {
             severity: "critical",
             message:
               target === "island"
-                ? "Island API not reachable — check api.powercore.app and TBCC_INTERNAL_API_KEY in tbcc/.env"
-                : "TBCC API not reachable — restart from the TBCC tray or run start.ps1",
+                ? `Island API not reachable — ${islandHint}`
+                : `TBCC API not reachable — ${islandHint}`,
           },
         ],
       });
@@ -175,6 +184,9 @@ export function SystemHealthBanner() {
               {(health.recommendations || []).join(" · ")}
             </p>
           )}
+          {apiDown && loadError ? (
+            <p className="mt-2 text-xs opacity-75 font-mono">{loadError}</p>
+          ) : null}
           <p className="mt-1 text-[10px] opacity-60">
             TBCC auto-remediate runs every ~25s when the API is up (queue backlog, down workers, focus when imports
             are not processing). Import burst stays on while imports actively run.
@@ -233,6 +245,16 @@ export function SystemHealthBanner() {
               onClick={() => void runRemediate()}
             >
               {fixing === "all" ? "Fixing…" : `Fix all (${fixable.length})`}
+            </button>
+          ) : null}
+          {apiDown ? (
+            <button
+              type="button"
+              className="text-xs px-2 py-1 rounded border disabled:opacity-50"
+              style={{ borderColor: calm.accentBorder }}
+              onClick={() => void load()}
+            >
+              Retry
             </button>
           ) : null}
           <button
