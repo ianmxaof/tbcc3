@@ -20,7 +20,7 @@ from app.models.promo_affiliate_link import PromoAffiliateLink
 
 # Retired affiliates — deactivated on every seed run (fake / dead programs).
 PURGE_LABELS = frozenset({"Carrot Wallet"})
-PURGE_URL_SUBSTRINGS = ("carrotwallettgbot", "carrotwallet")
+PURGE_URL_SUBSTRINGS = ("carrotwallettgbot", "carrotwallet", "temu.com")
 
 SEED_ITEMS: list[dict] = [
     {
@@ -42,6 +42,16 @@ SEED_ITEMS: list[dict] = [
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "🎨 {link} — AI creative playground",
+    },
+    {
+        "label": "Lucid Dreams video bot",
+        "url": "https://ndfy.store/tg/bot?username=Luciddreamstobot&ref_id=7787282561",
+        "payout_kind": "revshare",
+        "payout_detail": "platform_credits",
+        "priority_tier": 4,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll", "companion_dm"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "🎬 {link} — best video poses + free removals",
     },
     {
         "label": "Undress AI bot",
@@ -219,7 +229,7 @@ SEED_ITEMS: list[dict] = [
         "url": "https://pulsedmedia.com/clients/aff.php?aff=10812",
         "payout_kind": "other",
         "priority_tier": 45,
-        "placements": ["manual_only", "links_hub"],
+        "placements": ["manual_only", "links_hub", "links_hub_sfw"],
         "network_keys": [],
         "copy_template": "📦 {link} — remote storage & fast cloud transfers",
     },
@@ -229,7 +239,7 @@ SEED_ITEMS: list[dict] = [
         "payout_kind": "referral",
         "payout_detail": "referral_points",
         "priority_tier": 46,
-        "placements": ["manual_only", "links_hub", "x_buffer"],
+        "placements": ["manual_only", "links_hub", "x_buffer", "links_hub_sfw"],
         "network_keys": ["main"],
         "copy_template": "🔎 {link} — earn gift cards searching with Bing",
     },
@@ -239,9 +249,9 @@ SEED_ITEMS: list[dict] = [
         "payout_kind": "other",
         "payout_detail": "referral_credits",
         "priority_tier": 50,
-        "placements": ["manual_only"],
+        "placements": ["manual_only", "links_hub_sfw"],
         "network_keys": [],
-        "copy_template": "🛠 {link}",
+        "copy_template": "🛠 {link} — Cursor AI editor",
     },
     {
         "label": "Claude referral",
@@ -249,9 +259,40 @@ SEED_ITEMS: list[dict] = [
         "payout_kind": "other",
         "payout_detail": "referral_credits",
         "priority_tier": 51,
-        "placements": ["manual_only"],
+        "placements": ["manual_only", "links_hub_sfw"],
         "network_keys": [],
-        "copy_template": "🛠 {link}",
+        "copy_template": "🛠 {link} — Claude AI assistant",
+    },
+    # --- The Checkout List (@thecheckoutlist) — SFW silo only ---
+    {
+        "label": "Proton — $20 credits",
+        "url": "https://pr.tn/ref/95GM632C",
+        "payout_kind": "referral",
+        "payout_detail": "referral_credits",
+        "priority_tier": 11,
+        "placements": ["links_hub_sfw"],
+        "network_keys": [],
+        "copy_template": "🔐 {link} — $20 Proton credits · mail & VPN",
+    },
+    {
+        "label": "Chime",
+        "url": "https://www.chime.com/r/ianmurphy47/",
+        "payout_kind": "referral",
+        "payout_detail": "referral_bonus",
+        "priority_tier": 14,
+        "placements": ["links_hub_sfw"],
+        "network_keys": [],
+        "copy_template": "💳 {link} — fee-free mobile banking",
+    },
+    {
+        "label": "Rakuten",
+        "url": "https://www.rakuten.com/r/IANMPO3?eeid=28187",
+        "payout_kind": "referral",
+        "payout_detail": "cashback",
+        "priority_tier": 15,
+        "placements": ["links_hub_sfw"],
+        "network_keys": [],
+        "copy_template": "🛍 {link} — cashback when you shop",
     },
     # --- AI tools lane (retention / bot directory) ---
     {
@@ -305,12 +346,30 @@ SEED_ITEMS: list[dict] = [
     },
     {
         "label": "Lucid Dreams Bot",
-        "url": "https://t.me/luciddreams?start=_tgr_vYQc3UQzM2Qx",
+        "url": "https://t.me/luciddreams?start=_tgr_LISc0X42MTBh",
         "payout_kind": "revshare",
         "priority_tier": 12,
         "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
-        "network_keys": [],
+        "network_keys": ["ai", "main"],
         "copy_template": "💭 {link} — your AI girlfriend",
+    },
+    {
+        "label": "Eetrrfgh Bot",
+        "url": "https://t.me/eetrrfghbot?start=_tgr_wSlUZdFjNTgx",
+        "payout_kind": "revshare",
+        "priority_tier": 12,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "✨ {link} — TG sponsor bot",
+    },
+    {
+        "label": "Vvv11r Bot",
+        "url": "https://t.me/vvv11rbot?start=_tgr_fyTwFwI5NDdh",
+        "payout_kind": "revshare",
+        "priority_tier": 12,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "✨ {link} — TG sponsor bot",
     },
     {
         "label": "Perfecto 69 Bot",
@@ -377,10 +436,19 @@ SEED_ITEMS: list[dict] = [
         "copy_template": "🤖 {link} — TG bot",
     },
     {
-        "label": "Sweet Sdx (Veners)",
+        "label": "AI ULTRA (Veners)",
+        "url": "https://venersbot.com/7i85gp",
+        "payout_kind": "revshare",
+        "priority_tier": 20,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "🤖 {link} — AI ULTRA TG bot",
+    },
+    {
+        "label": "Sweet Sdx (Veners legacy)",
         "url": "https://venersbot.com/7787282561",
         "payout_kind": "revshare",
-        "priority_tier": 21,
+        "priority_tier": 22,
         "placements": ["telegram_footer", "loot_roll"],
         "network_keys": ["ai", "main"],
         "copy_template": "💋 {link} — TG bot",

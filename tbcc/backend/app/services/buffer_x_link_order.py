@@ -23,6 +23,11 @@ _AFFILIATE_RE = re.compile(
     r"seancody|spicevids|landing\.rk\.com|/ref/|bot\?|/myapp\?|t\.me/\w+bot",
     re.I,
 )
+# Owned Spicy Companion — beacon or direct deep link (pin before external affiliates).
+_SPICY_RE = re.compile(
+    r"aof_spicybot|aff-aof-spicy|src_aff_aof_spicy|src_spicy_|/r/aff-aof-spicy",
+    re.I,
+)
 _TELEGRAM_RE = re.compile(r"t\.me/", re.I)
 _ALLMYLINKS_RE = re.compile(r"allmylinks\.com", re.I)
 _EROME_RE = re.compile(r"erome\.com", re.I)
@@ -30,6 +35,7 @@ _GRAVATAR_RE = re.compile(r"gravatar\.com", re.I)
 _PROMO_VIEWER_RE = re.compile(r"ibb\.co/(?!.+\.(jpg|jpeg|png|gif|webp)$)|imgbb\.com/album", re.I)
 
 CATEGORY_ORDER: tuple[str, ...] = (
+    "spicy",
     "affiliate",
     "gumroad_vip",
     "allmylinks",
@@ -56,8 +62,24 @@ def affiliate_first_enabled() -> bool:
     Default ON — cycling telegram/allmylinks into first position made X show
     the Telegram globe card instead of Undress/SFW affiliate creatives.
     Set TBCC_BUFFER_X_AFFILIATE_FIRST=0 to restore category cycling.
+    Owned Spicy URLs still win when present (see spicy_first_enabled).
     """
     return (os.getenv("TBCC_BUFFER_X_AFFILIATE_FIRST") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
+def spicy_first_enabled() -> bool:
+    """
+    When a caption includes Spicy Companion (beacon or t.me), pin it first.
+
+    Default ON — gate funnel showed high spicy beacon clicks but near-zero
+    touches when external affiliates stole the X link-preview card.
+    Set TBCC_BUFFER_X_SPICY_FIRST=0 to disable.
+    """
+    return (os.getenv("TBCC_BUFFER_X_SPICY_FIRST") or "1").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -68,6 +90,8 @@ def classify_url(url: str) -> str:
     u = (url or "").strip()
     if not u:
         return "other"
+    if _SPICY_RE.search(u):
+        return "spicy"
     if _GUMROAD_RE.search(u):
         return "gumroad_vip"
     if _AFFILIATE_RE.search(u):
@@ -170,9 +194,10 @@ def apply_buffer_x_link_cycle(
     """
     Order URLs for X link previews.
 
-    Default: affiliate first when present (never bare t.me as the card).
+    Priority: spicy (owned companion) → affiliate → optional category cycle.
+    Default affiliate-first when no spicy URL (never bare t.me as the card).
     Optional cycle (TBCC_BUFFER_X_AFFILIATE_FIRST=0 + LINK_CYCLE=1) rotates
-    among affiliate / hub / erome / telegram.
+    among present categories.
     """
     raw = (text or "").strip()
     if not raw:
@@ -183,6 +208,10 @@ def apply_buffer_x_link_cycle(
 
     urls = [_strip_url_trail(m.group(0)) for m in matches]
     categories = _ordered_categories(urls)
+
+    # Owned Spicy beats external affiliate preview (click→touch funnel).
+    if spicy_first_enabled() and "spicy" in categories:
+        return reorder_caption_urls(raw, "spicy")
 
     if affiliate_first_enabled() and "affiliate" in categories:
         return reorder_caption_urls(raw, "affiliate")

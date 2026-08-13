@@ -104,7 +104,8 @@ def enforce_buffer_x_caption_urls(
         if is_gate_host(url):
             continue
         cat = classify_url(url)
-        if cat in ("affiliate", "gumroad_vip", "promo_viewer"):
+        # Affiliates + owned Spicy Companion may stay as deep links / beacons.
+        if cat in ("affiliate", "spicy", "gumroad_vip", "promo_viewer"):
             continue
         if is_bare_telegram_url(url) or (buffer_x_require_gate_wrap() and cat == "telegram"):
             wrapped = wrap_url_for_x_outbound(url, gate_key=network_key or "mainhub")

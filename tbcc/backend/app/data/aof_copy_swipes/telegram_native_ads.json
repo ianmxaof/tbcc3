@@ -125,6 +125,28 @@
       ],
       "raw_body": "The MUST-HAVE TOOLS:\n✅ Tool one — bot or affiliate link\n✅ Tool two — bot or affiliate link\n✅ Tool three — voyeur / AI / stars vendor\n[...]\n\n📂 All at one tap 👉 FOLDER (addlist link)\n🔗 Channels hub 👉 LINKS (hub invite)\n\n🌐 Promo 👉 @promo_handle\n\n🔥 Subscribe now — the next fantasy drops soon.",
       "notes": "Footer block: tools checklist + dual folder/hub CTAs + promo handle + subscribe closer. Map tools to @aofsubscriptions_bot, LOOT, companion — not competitor affiliates."
+    },
+    {
+      "id": "telegram-stars-howto-vip-pricing-v1",
+      "source": "competitor_hagavip_style_manual_paste",
+      "captured_at": "2026-08-12",
+      "format": "telegram_promo",
+      "tags": [
+        "telegram_stars",
+        "howto_buy_stars",
+        "vip_pricing",
+        "payment_education",
+        "card_to_stars"
+      ],
+      "tactics": [
+        "stars_purchase_education",
+        "credit_card_via_telegram",
+        "tiered_vip_table",
+        "anti_linkvertise_value",
+        "bot_cta"
+      ],
+      "raw_body": "🔥 Join our VIP Groups 🔥\n\nAll premium content, all channels in one place, delivered daily and instantly.\nOver 50K+ videos, fully organized by theme — and growing every day.\n\n🚀 Why join VIP?\n✔️ All daily posts delivered at once\n✔️ Huge organized library\n✔️ Daily updates\n✔️ No more Linkvertise / Ad-Maven walls\n\n🟢 VIP LEAKS\nGet access to our exclusive Leaks VIP group, combining all leak groups in one place with early access content.\n\n💎 VIP Plans\n\n🔹 Single VIP Group\n• 400 Telegram Stars / 5 USDT — Monthly\n• 20 USDT — Lifetime\n\n🔹 VIP Combo (Both Groups)\n• 620 Telegram Stars / 8 USDT — Monthly\n• 30 USDT — Lifetime\n\n⚠️ Important:\n✅ Payments via USDT or Telegram Stars\n✅ Telegram Stars can be purchased directly with a credit card through Telegram\n\n👉 How to join:\nSend /VIP to @Hagavip_bot and choose your preferred payment method.\n\nFor questions, PM @alic32025",
+      "notes": "Competitor pricing/bots are NOT for paste. Steal the Stars education beat only: Stars buyable with a card inside Telegram. AOF adapt lives in app/data/telegram_stars_howto.py — entry price $10 / ~834⭐ intro, ladder from $18, CTA @aofsubscriptions_bot /subscribe."
     }
   ]
 }

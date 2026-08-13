@@ -12,6 +12,7 @@ from app.services.buffer_x_link_order import (
     first_url,
     link_cycle_enabled,
     reorder_caption_urls,
+    spicy_first_enabled,
 )
 from app.services.buffer_flywheel_copy import build_flywheel_x_caption
 from app.services.buffer_native_queue_refill import build_native_queue_caption
@@ -21,6 +22,8 @@ AFFILIATE = "https://nodress.site/tg/bot?username=Aifasteditbot&ref_id=1"
 TELEGRAM = "https://t.me/+hub123"
 ALLMYLINKS = "https://allmylinks.com/aof69?utm_source=buffer"
 EROME = "https://www.erome.com/a/abc123"
+SPICY_BEACON = "https://api.powercore.app/r/aff-aof-spicy-comp-x-buffer"
+SPICY_DIRECT = "https://t.me/aof_spicybot?start=src_spicy_x"
 
 
 def test_classify_url_categories():
@@ -28,6 +31,8 @@ def test_classify_url_categories():
     assert classify_url(TELEGRAM) == "telegram"
     assert classify_url(ALLMYLINKS) == "allmylinks"
     assert classify_url(EROME) == "erome"
+    assert classify_url(SPICY_BEACON) == "spicy"
+    assert classify_url(SPICY_DIRECT) == "spicy"
 
 
 def test_reorder_puts_affiliate_first():
@@ -154,3 +159,25 @@ def test_link_cycle_enabled_default_on(monkeypatch):
 def test_affiliate_first_enabled_default_on(monkeypatch):
     monkeypatch.delenv("TBCC_BUFFER_X_AFFILIATE_FIRST", raising=False)
     assert affiliate_first_enabled() is True
+
+
+def test_spicy_first_beats_affiliate(db, monkeypatch):
+    monkeypatch.delenv("TBCC_BUFFER_X_SPICY_FIRST", raising=False)
+    monkeypatch.setenv("TBCC_BUFFER_X_AFFILIATE_FIRST", "1")
+    raw = f"try undress {AFFILIATE} · spicy {SPICY_BEACON} · hub {TELEGRAM}"
+    out = apply_buffer_x_link_cycle(raw, db=db, advance=True)
+    assert first_url(out) == SPICY_BEACON
+    assert classify_url(first_url(out) or "") == "spicy"
+
+
+def test_spicy_first_can_disable(db, monkeypatch):
+    monkeypatch.setenv("TBCC_BUFFER_X_SPICY_FIRST", "0")
+    monkeypatch.setenv("TBCC_BUFFER_X_AFFILIATE_FIRST", "1")
+    raw = f"try undress {AFFILIATE} · spicy {SPICY_DIRECT}"
+    out = apply_buffer_x_link_cycle(raw, db=db, advance=True)
+    assert first_url(out) == AFFILIATE
+
+
+def test_spicy_first_enabled_default_on(monkeypatch):
+    monkeypatch.delenv("TBCC_BUFFER_X_SPICY_FIRST", raising=False)
+    assert spicy_first_enabled() is True
