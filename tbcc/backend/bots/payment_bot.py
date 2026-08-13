@@ -3140,6 +3140,8 @@ def main() -> None:
         from bots.storage_hub_handlers import register_storage_hub_handlers
 
         register_storage_hub_handlers(app, bot_label="payment")
+    app.add_handler(CommandHandler("deposit", cmd_deposit_payment))
+    app.add_handler(CommandHandler("intake", cmd_intake_payment))
     for h in build_macro_search_handlers(
         _get_runtime_settings,
         _patch_macro_custom_sources,
@@ -3176,6 +3178,21 @@ def main() -> None:
             filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/packs(@\w+)?\s*$"),
             cmd_packs,
         )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.CHANNEL_POST & filters.Regex(r"^/deposit(@\w+)?(?:\s|$)"),
+            cmd_deposit_payment,
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:[atr]:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b[ar]:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:")
     )
     app.add_handler(
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")

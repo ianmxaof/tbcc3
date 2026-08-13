@@ -19,7 +19,20 @@ Buffer X DB: **500** templates (`seed_social_copy_templates --execute --replace-
 
 ~1,272 outbound events / 7d (`scheduled_post_sent` + `pool_album_posted`). Top lanes: Loot Room 226, ABG 132, Goon 127, AI 113.
 
-## 48h watch checklist
+## 48h watch snapshot (2026-08-13 ~06:30 PT)
+
+| Metric | Value |
+|--------|-------|
+| Outbound (2d) | **355** sends (349 ok, 6 failed) |
+| Aug 11 | 77 |
+| Aug 12 | 185 |
+| Aug 13 (partial) | 93 |
+| Top lanes | Loot Room 65, ABG 38, Goon 36, AI 30 |
+| PACKS (14) | 9 sends in window — watch Planet Express motif |
+| Checkout List (21) | 1 send — bulletin refreshed island deploy |
+
+Status: **watch active** — no resync needed unless hook padding regresses.
+
 
 1. **Network lane** — 2–3 posts: opening hook text changes; footer block (`Join the full AOF stack` …) identical.
 2. **PACKS** — confirm Planet Express / NEW DELIVERY motif appears sometimes, not every send.

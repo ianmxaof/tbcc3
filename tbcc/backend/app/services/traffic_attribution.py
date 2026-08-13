@@ -330,3 +330,4 @@ def revenue_by_source(db: Session, *, days: int = 30) -> dict[str, Any]:
         # North-star attribution quality metric — target >80%.
         "attributed_revenue_pct": attributed_pct,
     }
+

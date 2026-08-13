@@ -106,6 +106,7 @@ def goblin_teaser_every_nth() -> int:
     return max(4, min(24, n))
 
 
+
 def build_loot_room_goblin_bulletin_html() -> str:
     """Pinned Loot Room commons explainer — once per apply."""
     return (
