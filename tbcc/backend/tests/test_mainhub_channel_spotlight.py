@@ -33,7 +33,10 @@ def test_spotlight_hooks_cover_all_eligible_lanes():
 
 @patch("app.services.mainhub_channel_spotlight.lv_urls")
 @patch("app.services.mainhub_channel_spotlight.build_addlist_footer")
-def test_spotlight_caption_includes_hook_and_promo(mock_footer, mock_lv):
+@patch("app.services.mainhub_channel_spotlight.post_footer_vip_contrast_enabled", return_value=True)
+@patch("app.services.mainhub_channel_spotlight.build_vip_post_contrast_line_html")
+def test_spotlight_caption_includes_hook_and_promo(mock_vip_line, mock_enabled, mock_footer, mock_lv):
+    mock_vip_line.return_value = "VIP CONTRAST LINE"
     mock_lv.return_value = {"milf": "https://gate.example/milf", "addlist": "https://gate.example/add"}
     mock_footer.return_value = "\n\nFOOTER"
     db = MagicMock()
@@ -42,6 +45,7 @@ def test_spotlight_caption_includes_hook_and_promo(mock_footer, mock_lv):
     assert "mature curves" in html.lower() or "MILF" in html
     assert "AOF MILF" in html
     assert "gate.example/milf" in html
+    assert "VIP CONTRAST LINE" in html
     assert "FOOTER" in html
 
 

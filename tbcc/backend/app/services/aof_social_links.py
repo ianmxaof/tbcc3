@@ -138,7 +138,7 @@ def affiliate_primary_fallback_url() -> str:
 def affiliate_undress_primary_url() -> str:
     return (
         (os.getenv("TBCC_AFFILIATE_UNDRESS_URL") or "").strip()
-        or "https://nodress.site/tg/bot?username=Aifasteditbot&ref_id=7787282561"
+        or "https://ndfy.store/tg/bot?username=Luciddreamstobot&ref_id=7787282561"
     )
 
 

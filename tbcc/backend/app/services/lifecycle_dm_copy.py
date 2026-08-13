@@ -129,7 +129,8 @@ def build_subscription_lifecycle_message(
     elif segment == SubscriptionLifecycleSegment.PRE_EXPIRY_3D:
         body = (
             f"⏳ <b>3 days left</b> on {plan} (expires {exp}).\n\n"
-            "Room access drops when the timer hits — same Stars checkout as before."
+            "When it lapses: no more daily god roll, no Friday mega, links go back to gated. "
+            "Same Stars checkout — one tap keeps the streak alive."
         )
         btn = "⭐ Renew before lapse"
     elif segment == SubscriptionLifecycleSegment.PRE_EXPIRY_1D:

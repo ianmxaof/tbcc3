@@ -32,7 +32,8 @@ def test_lane_pass_is_three_dollars_protected() -> None:
 def test_glimpse_left_visible_heavy_watermark() -> None:
     assert GLIMPSE.leave_visible is True
     assert GLIMPSE.watermark == WatermarkTier.PROMO_HEAVY
-    assert GLIMPSE.shown_of_full == (3, 7)
+    assert GLIMPSE.shown_of_full == (1, 7)
+    assert GLIMPSE.forwards_enabled is False
 
 
 def test_pack_and_mega_specs() -> None:

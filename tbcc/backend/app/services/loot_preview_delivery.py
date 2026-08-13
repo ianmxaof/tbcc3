@@ -20,6 +20,7 @@ from telegram.error import TelegramError
 from app.models.loot import LootModifier
 from app.models.media import Media
 from app.services.loot_inline_keyboards import build_loot_roll_inline_markup
+from app.services.telegram_content_protection import bot_protect_content_kw
 from app.services.loot_media_layout import plan_loot_roll_albums
 from app.services.loot_free_tease import build_free_pull_tease_html
 from app.services.loot_free_tutorial import build_step_intro_html
@@ -593,6 +594,7 @@ async def _send_media_plan(
                 )
         if not media_group:
             continue
+        protect = bot_protect_content_kw()
         plan_markup = markup if is_last_plan else None
         if len(media_group) == 1:
             m0 = media_group[0]
@@ -605,6 +607,7 @@ async def _send_media_plan(
                     parse_mode="HTML",
                     has_spoiler=bool(spoiler_default),
                     reply_markup=plan_markup,
+                    **protect,
                 )
             else:
                 await bot.send_photo(
@@ -614,17 +617,20 @@ async def _send_media_plan(
                     parse_mode="HTML",
                     has_spoiler=bool(spoiler_default),
                     reply_markup=plan_markup,
+                    **protect,
                 )
         else:
             await bot.send_media_group(
                 chat_id=chat_id,
                 media=media_group,
+                **protect,
             )
             if plan_markup:
                 await bot.send_message(
                     chat_id=chat_id,
                     text="🎲 Roll controls",
                     reply_markup=plan_markup,
+                    **protect,
                 )
         delivery["albums_sent"] = int(delivery.get("albums_sent") or 0) + 1
         delivery["media_sent"] = int(delivery.get("media_sent") or 0) + len(items)

@@ -26,9 +26,29 @@ LIVENESS_CAPTIONS = [
 ]
 
 CTA_CAPTION = (
-    "💳 <b>AOF VIP — 1500 ⭐/30d</b> · skip the gates, daily god roll, weekly mega dump, "
-    "@aofsubscriptions_bot credits. Unwrapped lanes, bigger drops, VIP-only perks — "
-    "public stays on the wrapped feed. <i>Tap Pay ⭐ — instant access.</i>"
+    "🎫 <b>AOF VIP — same network, five upgrades</b>\n\n"
+    "Free lanes and VIP pull from the same pipeline. The difference is what you get at the door:\n\n"
+    "📍 <b>Where</b>\n"
+    "Free → scattered lanes, addlist scroll\n"
+    "VIP → one feed, one door\n\n"
+    "🎲 <b>Album size</b>\n"
+    "Free → 1 (tease)\n"
+    "VIP → 3–10 rolled per drop\n\n"
+    "🔗 <b>Links</b>\n"
+    "Free → gated / wrapped\n"
+    "VIP → direct where mapped, ad-free — gate stays as fallback until every lane has a direct host\n\n"
+    "⏱ <b>Timing</b>\n"
+    "Free → public schedule\n"
+    "VIP → ~60 min early\n\n"
+    "🎰 <b>Daily pull</b>\n"
+    "Free → loot keys / tease\n"
+    "VIP → <code>/viproll</code> — guaranteed high-tier god roll, every day\n\n"
+    "📦 <b>Weekly</b>\n"
+    "Free → gated / delayed\n"
+    "VIP → direct mega folder, Fridays, VIP only\n\n"
+    "🤖 <b>Bonus</b> — @aof_spicybot_bot early access + bonus credits on join.\n\n"
+    "<i>Same content pipeline. VIP is the skip button.</i>\n"
+    "Tap Pay ⭐ or Crypto below — access starts instantly."
 )
 
 
