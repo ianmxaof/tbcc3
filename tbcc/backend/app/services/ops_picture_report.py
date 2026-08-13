@@ -78,6 +78,23 @@ def stars_cashflow_summary(db: Session, *, hold_days: int | None = None) -> dict
     subscription_stars_total = int(sub_stars or 0) + int(legacy or 0)
 
     rate = stars_usd_rate()
+    telegram_live: dict[str, Any] = {}
+    try:
+        from app.services.telegram_stars_balance import telegram_stars_reconcile_snapshot
+
+        telegram_live = telegram_stars_reconcile_snapshot()
+    except Exception as e:
+        telegram_live = {"error": str(e)[:240]}
+
+    tg_amount = None
+    bal = telegram_live.get("balance") if isinstance(telegram_live, dict) else None
+    if isinstance(bal, dict) and bal.get("ok"):
+        tg_amount = bal.get("amount_stars")
+
+    delta = None
+    if tg_amount is not None:
+        delta = int(tg_amount) - int(ledger_stars)
+
     return {
         "hold_days": hold,
         "as_of": _iso(now),
@@ -87,14 +104,22 @@ def stars_cashflow_summary(db: Session, *, hold_days: int | None = None) -> dict
         "ledger_stars_usd_estimate": round(ledger_stars * rate, 2),
         "available_stars_usd_estimate": round(available_stars * rate, 2),
         "subscription_table_stars_total": subscription_stars_total,
+        "telegram_bot_stars": tg_amount,
+        "ledger_vs_telegram_delta": delta,
+        "telegram_live": telegram_live,
         "reconcile_note": (
             "Fragment 'total balance' can exceed TBCC ledger (Fragment refunds, companion Stars, "
             "or subs not backfilled). 'Available to withdraw' uses Telegram's 21-day hold — "
-            "TBCC estimate uses earned_at on income_entries when present."
+            "TBCC estimate uses earned_at on income_entries when present. "
+            "telegram_bot_stars comes from Bot API getMyStarBalance when the payment token is set."
         ),
         "fragment_hints": {
             "compare_to": "Telegram → Bot Settings → Stars / Fragment dashboard",
             "typical_gap": "6770 Fragment total vs ~4270–5920 in TBCC = missing backfill or non-sub Stars",
+            "kyc": (
+                "US driver's license is a government-issued ID for Sumsub/Fragment — use it. "
+                "Also need selfie + TON wallet + 2FA. Passport only if Sumsub rejects the DL."
+            ),
         },
     }
 

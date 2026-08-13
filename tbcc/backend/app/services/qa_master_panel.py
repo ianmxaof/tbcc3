@@ -308,29 +308,49 @@ def queue_lane_deposit_from_master(
     )
 
 
-async def ensure_qa_master_panel(bot, *, force_new: bool = False) -> dict[str, Any]:
+async def ensure_qa_master_panel_at_thread(
+    bot,
+    *,
+    chat_id: int,
+    message_thread_id: int,
+    page: int = 0,
+    force_new: bool = False,
+) -> dict[str, Any]:
+    """Singleton Q&A master panel in any Storage Hub forum subtopic (bottom of thread)."""
     from telegram.constants import ParseMode
 
     from app.database.session import SessionLocal
-    from app.data.aof_storage_hub_map import GATEKEEPER_REVIEW_TOPIC_ID
-    from app.services.gatekeeper_review import review_chat_id
     from app.services.hub_panel_message import ensure_singleton_panel_message
 
-    chat_id = int(review_chat_id())
-    thread_id = int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
+    cid = int(chat_id)
+    tid = int(message_thread_id)
     with SessionLocal() as db:
-        text = format_qa_master_panel_html(db, page=0)
-    markup = qa_master_panel_keyboard(page=0)
+        text = format_qa_master_panel_html(db, page=page)
+    markup = qa_master_panel_keyboard(page=page)
 
     return await ensure_singleton_panel_message(
         bot,
-        chat_id=chat_id,
-        message_thread_id=thread_id,
+        chat_id=cid,
+        message_thread_id=tid,
         text=text,
         parse_mode=ParseMode.HTML,
         reply_markup=markup,
         force_new=force_new,
-        get_stored_message_id=lambda: get_stored_panel_message_id(chat_id, thread_id),
-        set_stored_message_id=lambda mid: set_stored_panel_message_id(chat_id, thread_id, mid),
+        get_stored_message_id=lambda: get_stored_panel_message_id(cid, tid),
+        set_stored_message_id=lambda mid: set_stored_panel_message_id(cid, tid, mid),
         panel_label="qa_master",
+    )
+
+
+async def ensure_qa_master_panel(bot, *, force_new: bool = False) -> dict[str, Any]:
+    from app.data.aof_storage_hub_map import GATEKEEPER_REVIEW_TOPIC_ID
+    from app.services.gatekeeper_review import review_chat_id
+
+    chat_id = int(review_chat_id())
+    thread_id = int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
+    return await ensure_qa_master_panel_at_thread(
+        bot,
+        chat_id=chat_id,
+        message_thread_id=thread_id,
+        force_new=force_new,
     )
