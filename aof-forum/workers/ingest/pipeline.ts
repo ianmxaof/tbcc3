@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
 import { readFile, copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import { execa } from "execa";
 import mime from "mime-types";
 import sharp from "sharp";
 import { buildMediaKey, putStream } from "../../lib/b2";
@@ -75,12 +74,13 @@ async function dhash(buf: Buffer): Promise<Buffer> {
 async function extractVideoFrame(localPath: string, durationSec: number | null): Promise<Buffer | null> {
   const at = Math.max(1, Math.floor((durationSec ?? 5) * 0.3));
   try {
+    const { execa } = await import("execa");
     const { stdout } = await execa(
       "ffmpeg",
       ["-hide_banner", "-loglevel", "error", "-ss", String(at), "-i", localPath, "-frames:v", "1", "-f", "image2", "-vcodec", "mjpeg", "pipe:1"],
-      { encoding: null as unknown as undefined, timeout: 30_000 }
+      { buffer: true, timeout: 30_000 }
     );
-    return Buffer.isBuffer(stdout) ? (stdout as unknown as Buffer) : Buffer.from(stdout as unknown as string);
+    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout as unknown as string);
   } catch (e) {
     logger.warn({ err: (e as Error).message, localPath }, "ffmpeg frame extract failed - install ffmpeg for video phash");
     return null;
@@ -96,6 +96,7 @@ interface ProbeResult {
 
 async function ffprobeFile(localPath: string): Promise<ProbeResult> {
   try {
+    const { execa } = await import("execa");
     const { stdout } = await execa(
       "ffprobe",
       [

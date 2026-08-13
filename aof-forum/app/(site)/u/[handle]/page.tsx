@@ -34,8 +34,10 @@ export default async function ProfilePage({
     .maybeSingle();
   if (!profile) notFound();
 
-  const [{ data: me }, { data: followRow }, { data: uploadsRaw }, { data: galleries }] = await Promise.all([
-    db.auth.getUser(),
+  const { data: me } = await db.auth.getUser();
+  const isOwn = me.user?.id === profile.id;
+
+  const [{ data: followRow }, { data: uploadsRaw }, { data: galleries }] = await Promise.all([
     db
       .from("follows")
       .select("follower_id")
@@ -43,23 +45,25 @@ export default async function ProfilePage({
       .eq("target_user_id", profile.id)
       .maybeSingle(),
     tab === "uploads"
-      ? db
-          .from("media_items")
-          .select("id, kind, title, b2_key, b2_thumb_key, width, height, duration_seconds, views_count")
-          .eq("uploader_id", profile.id)
-          .eq("is_public", true)
-          .eq("is_deleted", false)
-          .order("created_at", { ascending: false })
-          .limit(60)
+      ? (() => {
+          let q = db
+            .from("media_items")
+            .select("id, kind, title, b2_key, b2_thumb_key, width, height, duration_seconds, views_count, is_public")
+            .eq("uploader_id", profile.id)
+            .eq("is_deleted", false);
+          if (!isOwn) q = q.eq("is_public", true);
+          return q.order("created_at", { ascending: false }).limit(60);
+        })()
       : Promise.resolve({ data: [] }),
     tab === "galleries"
-      ? db
-          .from("galleries")
-          .select("id, slug, title, item_count")
-          .eq("owner_id", profile.id)
-          .eq("is_public", true)
-          .order("created_at", { ascending: false })
-          .limit(60)
+      ? (() => {
+          let q = db
+            .from("galleries")
+            .select("id, slug, title, item_count, is_public")
+            .eq("owner_id", profile.id);
+          if (!isOwn) q = q.eq("is_public", true);
+          return q.order("created_at", { ascending: false }).limit(60);
+        })()
       : Promise.resolve({ data: [] }),
   ]);
 
@@ -75,8 +79,6 @@ export default async function ProfilePage({
     views_count: number;
   };
   const uploads = await resolveManyMediaUrls((uploadsRaw ?? []) as UploadRow[]);
-
-  const isOwn = me.user?.id === profile.id;
 
   return (
     <article>
@@ -113,18 +115,38 @@ export default async function ProfilePage({
       )}
 
       {tab === "galleries" && (
-        (galleries ?? []).length === 0 ? (
-          <div className="empty muted">No galleries yet.</div>
-        ) : (
-          <ul style={{ padding: 0, listStyle: "none" }}>
-            {(galleries ?? []).map((g) => (
-              <li key={g.id} style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
-                <Link href={`/g/${g.slug}`}>{g.title}</Link>{" "}
-                <span className="muted">· {g.item_count} items</span>
-              </li>
-            ))}
-          </ul>
-        )
+        <>
+          {isOwn && (
+            <p style={{ margin: "0 0 1rem" }}>
+              <Link href="/g/new" className="primary" style={{ padding: "0.35rem 0.85rem", textDecoration: "none" }}>
+                New gallery
+              </Link>
+            </p>
+          )}
+          {(galleries ?? []).length === 0 ? (
+            <div className="empty muted">
+              No galleries yet.
+              {isOwn && (
+                <>
+                  {" "}
+                  <Link href="/g/new">Create one</Link>.
+                </>
+              )}
+            </div>
+          ) : (
+            <ul style={{ padding: 0, listStyle: "none" }}>
+              {(galleries ?? []).map((g) => (
+                <li key={g.id} style={{ padding: "0.5rem 0", borderBottom: "1px solid var(--border)" }}>
+                  <Link href={`/g/${g.slug}`}>{g.title}</Link>{" "}
+                  <span className="muted">
+                    · {g.item_count} items
+                    {isOwn && g.is_public === false ? " · private" : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </article>
   );

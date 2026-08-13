@@ -1,0 +1,26 @@
+{
+  "embeds": [
+    {
+      "id": "girls",
+      "label": "Girls live",
+      "iframeSrc": "",
+      "outboundUrl": "",
+      "beaconSlug": "web-live-girls"
+    },
+    {
+      "id": "couples",
+      "label": "Couples live",
+      "iframeSrc": "",
+      "outboundUrl": "",
+      "beaconSlug": "web-live-couples"
+    }
+  ],
+  "performerMappings": [
+    {
+      "tagSlug": "example-performer",
+      "embedId": "girls",
+      "outboundUrl": "",
+      "beaconSlug": "web-live-example"
+    }
+  ]
+}

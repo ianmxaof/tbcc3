@@ -15,6 +15,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ slug
   const { data: g } = await db.from("groups").select("id").eq("slug", slug).maybeSingle();
   if (!g) return NextResponse.json({ error: "not found" }, { status: 404 });
   const limit = Math.min(parseInt(req.nextUrl.searchParams.get("limit") ?? "12", 10) || 12, 30);
-  const items = await relatedGroups(g.id, limit);
-  return NextResponse.json({ items });
+  try {
+    const items = await relatedGroups(g.id, limit);
+    return NextResponse.json({ items });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/group_coview|has not been populated|materialized view/i.test(message)) {
+      return NextResponse.json({ items: [] });
+    }
+    console.warn(`[related] ${slug}: ${message}`);
+    return NextResponse.json({ items: [], error: message }, { status: 200 });
+  }
 }

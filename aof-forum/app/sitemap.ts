@@ -24,9 +24,19 @@ const GROUP_CAP = 300;
 // galleries/media/tags never enter the sitemap until a redeploy, which
 // defeats the compounding-indexable-pages point of shipping this at all.
 export const revalidate = 3600;
+export const dynamic = "force-dynamic";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const base = siteUrl();
+  try {
+    return await buildSitemap(base);
+  } catch (e) {
+    console.error("sitemap build failed (build-time or missing Supabase):", e);
+    return [{ url: `${base}/`, changeFrequency: "hourly", priority: 1 }];
+  }
+}
+
+async function buildSitemap(base: string): Promise<MetadataRoute.Sitemap> {
   const db = createAdminClient();
 
   const staticRoutes: MetadataRoute.Sitemap = [

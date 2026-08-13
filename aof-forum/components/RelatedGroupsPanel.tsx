@@ -18,7 +18,7 @@ export function RelatedGroupsPanel({ slug }: { slug: string }) {
     queryKey: ["related-groups", slug],
     queryFn: async () => {
       const r = await fetch(`/api/groups/${encodeURIComponent(slug)}/related`);
-      if (!r.ok) throw new Error("related groups failed");
+      if (!r.ok) return { items: [] as RelatedGroup[] };
       return r.json();
     },
   });

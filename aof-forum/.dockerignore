@@ -1,0 +1,10 @@
+# .dockerignore for lean island builds
+node_modules
+.next
+.git
+.tmp
+*.md
+.env*
+!.env.example
+coverage
+.turbo

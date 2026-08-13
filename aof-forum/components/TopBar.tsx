@@ -12,13 +12,16 @@ export async function TopBar() {
       </form>
       <div className="spacer" />
       <nav className="actions">
+        <Link href="/live" style={{ color: "var(--live-accent-2)" }}>Live</Link>
         <Link href="/foryou">For You</Link>
         <Link href="/groups">Groups</Link>
+        <Link href="/connect">Connect</Link>
         <Link href="/f">Forum</Link>
         {u.user ? (
           <>
             <Link href="/upload">Upload</Link>
             <Link href={`/u/me`}>Profile</Link>
+            <Link href="/admin">Admin</Link>
           </>
         ) : (
           <Link href="/auth/sign-in">Sign in</Link>
