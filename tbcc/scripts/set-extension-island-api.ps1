@@ -11,6 +11,7 @@ param(
   [string]$ApiBase = "",
   [string]$IslandPublic = "https://api.powercore.app",
   [string]$IslandIpFallback = "http://5.161.53.91:8000",
+  [switch]$AllowLocalFallback,
   [switch]$StartTunnel
 )
 
@@ -38,12 +39,12 @@ function Test-Health([string]$base) {
 if (-not $ApiBase) {
   if (Test-Health $IslandPublic) {
     $ApiBase = $IslandPublic.TrimEnd('/')
-  } elseif (Test-Health "http://127.0.0.1:8000") {
-    $ApiBase = "http://127.0.0.1:8000"
   } elseif (Test-Health $IslandIpFallback) {
     $ApiBase = $IslandIpFallback.TrimEnd('/')
+  } elseif ($AllowLocalFallback -and (Test-Health "http://127.0.0.1:8000")) {
+    $ApiBase = "http://127.0.0.1:8000"
   } else {
-    Write-Host "No live API on $IslandPublic, 127.0.0.1:8000, or $IslandIpFallback" -ForegroundColor Red
+    Write-Host "No live island API on $IslandPublic or $IslandIpFallback" -ForegroundColor Red
     Write-Host "Check island: curl -fsS https://api.powercore.app/health" -ForegroundColor Yellow
     exit 1
   }
@@ -125,7 +126,7 @@ Write-Host "  3. Status should say API OK @ $ApiBase (with internal key)"
 Write-Host "  4. On Erome: Push to TBCC / refresh at 5000 rows"
 Write-Host ""
 Write-Host "Home tray Postgres error: local :5432 is down - expected on lean home." -ForegroundColor DarkYellow
-Write-Host "Do NOT need local uvicorn for intel push; island API is enough." -ForegroundColor DarkYellow
+Write-Host "Extension defaults to island API; home uvicorn is optional." -ForegroundColor DarkYellow
 Write-Host "Unblocks: intel push, promo upload, Send to TBCC, ZIP flywheel against island." -ForegroundColor Green
 
 if ($StartTunnel) {
