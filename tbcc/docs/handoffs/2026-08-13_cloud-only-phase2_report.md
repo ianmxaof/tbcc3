@@ -329,15 +329,89 @@ documented under K1 — confirmed via `git stash`, not caused by this branch.
 
 ## Remaining dirty tree after all named work
 
+Cursor's `secretary_bot.py` + `affiliate_sponsor_report.py` in-flight work (seen dirty
+mid-session) landed as their own commit (`d731ea4` — "feat(secretary): /sponsors DM
+report with clicks and attributed revenue") before Phase 7 started — pushed along with
+this session's own commits since it was a linear ancestor. Not authored or reviewed by
+this session; left as Cursor shipped it.
+
+After all named phases plus that commit, only the explicitly out-of-scope exclusions
+remain dirty:
 ```
-git status --short | grep -v "companion_ui/poses|_staging/gemini|\.tmp/|assets/promo-generated"
- M tbcc/backend/bots/secretary_bot.py
-?? tbcc/backend/app/services/affiliate_sponsor_report.py
-?? tbcc/backend/tests/test_affiliate_sponsor_report.py
+?? aof-forum/.tmp/
+?? tbcc/.tmp/
 ?? tbcc/docs/samples/knights_damned_edge/
 ?? tbcc/static/powercore-verify/node_modules/
 ```
-The first three are Cursor's own in-flight work, committed/modified on this shared
-branch *after* this session's Phase 5/6 commits landed — deliberately not touched
-(not mine to absorb mid-development). The last two are explicitly out-of-scope
-exclusions already covered above.
+All four are runtime artifacts / installed dependencies / an explicitly-named exclusion —
+none belong in git.
+
+## Phase 7 — Island deploy + cloud smoke + PR
+
+**Status:** complete
+
+**Pre-deploy safety check:** verified the working tree matched what was pushed before
+running the deploy script (which rsyncs the local working tree, not just committed
+history — per the doc's own constraint "Deploy only committed code you intend live").
+At the time of deploy, the tree was clean except the four out-of-scope items above, all
+of which are non-functional artifacts that don't affect application behavior even if
+physically present in the synced directory.
+
+**Preview first:** ran `deploy-island-live.ps1 -SkipSeeds -WhatIf` before the real deploy,
+since this script was previously unfamiliar and targets a live production server. Learned
+`-WhatIf` only partially no-ops — it genuinely rewrites the local
+`tbcc/infra/.env.revenue-island` file (self-healing step, detected the existing copy was
+corrupted at 0.5MB) but correctly skips the remote sync/build/recreate steps. Confirmed
+that file is `.gitignore`'d (`tbcc/.gitignore:6:infra/.env.revenue-island`) before
+proceeding, so no risk of secrets landing in a commit.
+
+**Real deploy:**
+```
+cd tbcc && powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\revenue-island\deploy-island-live.ps1 -SkipSeeds
+```
+**Image tag:** `ghcr.io/ianmxaof/tbcc-worker:local-20260813-0833`
+
+All 7 steps completed: env synced (101 keys from home `.env`), compose/scripts/env synced
+to `/opt/tbcc`, tunnel already configured (skipped), image built and unpacked on the
+island, `api` + `worker` + `worker_post` + `worker_telegram` + `beat` recreated and
+started, then `payment_bot` + `loot_bot` + `companion_bot` + `secretary_bot` +
+`album_composer_bot` recreated and started, seeds skipped per `-SkipSeeds`, DB watchdog
+timer confirmed active, island API health confirmed reachable both locally and via the
+public Cloudflare tunnel. (The `ssh.exe : ...NativeCommandError` lines throughout the
+output are PowerShell being verbose about remote stderr on successful commands, not
+actual failures — the deploy script's own post-checks and the smoke tests below confirm
+success.)
+
+**Cloud smoke tests (exact commands from the brief):**
+```
+curl -sS https://api.powercore.app/health
+{"status":"ok","external_payment_orders_impl":"uuid-epo-v2","crypto_auto_checkout":true}
+
+curl -sS https://api.powercore.app/tags/ | head -c 200
+[{"id":191,"slug":"access-vietbunny-content-below","name":"Access Vietbunny content below (emoji)","category":"manual","usage_count":2},{"id":198,"slug":"a-day-in-the-life-of-my-panties-pt1-pics","name":...
+(curl's "Failure writing output" after this is `head -c 200` closing the pipe early — cosmetic, not a real failure; valid JSON was flowing)
+
+curl -sS https://api.powercore.app/companion/ops
+{"bot_username":"aof_spicybot_bot","token_configured":true,...,"webhook_ok":true,"webhook_detail":"https://api.powercore.app/webhooks/companion/undress","pending_jobs":0,...}
+```
+All three pass.
+
+**Optional flavor-caption resync dry-run, run against the live island DB:**
+```
+ssh root@5.161.53.91 'cd /opt/tbcc/infra && docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island exec -T api python scripts/resync_flavor_captions.py --dry-run'
+
+  main    before_dedupe=110 after=103 unique_hooks=103
+  ai      before_dedupe=159 after=152 unique_hooks=152
+  blowjob before_dedupe=108 after=101 unique_hooks=101
+  ... (all 13 lanes, unique_hooks range 95-152)
+  PACKS: bank_size=101 live_before=101 would_change=False
+```
+This isn't part of this session's Phase 1-7 work (the flavor-resupply mechanism landed
+earlier this session via `024b594`, merged through PR #9) — but it's real confirmation,
+from live production data, that it's working as designed: every lane collapses ~7
+duplicate-hook slots per sync and lands comfortably above the ≥50-unique-hook target
+(95-152), and PACKS is already synced at its full 101-hook bank (`would_change=False`).
+Not executed with `--execute` — read-only dry-run only, per the brief.
+
+**PR:** [#10](https://github.com/ianmxaof/tbcc3/pull/10) — `lane-c/phase2-cloud` → `main`,
+opened after all slices landed and the island deploy + smoke passed.
