@@ -5,6 +5,7 @@
     "send-pack-pool": true,
     "save-pool": true,
     "save-saved": true,
+    "download-direct": true,
     "download-url": true,
     "download-frame": true,
     "toggle-select": true,

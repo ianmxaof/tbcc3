@@ -53,6 +53,9 @@ class CompanionJob:
     refine_age: str = ""
     character_look: str = ""
     character_pose: str = ""
+    media_type: str = "photo"  # photo | video
+    video_pose_id: str = ""
+    video_pose_name: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -143,6 +146,9 @@ def _from_dict(data: dict[str, Any]) -> CompanionJob | None:
             refine_age=str(data.get("refine_age") or ""),
             character_look=str(data.get("character_look") or ""),
             character_pose=str(data.get("character_pose") or ""),
+            media_type=str(data.get("media_type") or "photo"),
+            video_pose_id=str(data.get("video_pose_id") or ""),
+            video_pose_name=str(data.get("video_pose_name") or ""),
         )
     except (KeyError, TypeError, ValueError):
         return None

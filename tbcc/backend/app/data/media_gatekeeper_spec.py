@@ -22,6 +22,38 @@ QUALITY_BASE_SCORE = 50
 SCORE_APPROVE_MIN = 70
 SCORE_QUARANTINE_MIN = 40
 
+
+def hub_auto_approve_enabled() -> bool:
+    """Trusted Storage Hub ingest may skip quarantine when score clears the hub threshold."""
+    from app.services.hub_intake_policy import hub_master_auto_approve_enabled
+
+    return hub_master_auto_approve_enabled()
+
+
+def hub_auto_approve_min_score() -> int:
+    """Min quality score for trusted hub auto-approve (default SCORE_APPROVE_MIN)."""
+    import os
+
+    raw = (os.getenv("TBCC_GATEKEEPER_HUB_AUTO_APPROVE_MIN") or "").strip()
+    if raw:
+        try:
+            return max(SCORE_QUARANTINE_MIN, min(100, int(raw)))
+        except ValueError:
+            pass
+    return SCORE_APPROVE_MIN
+
+
+def hub_require_lane_detect_enabled() -> bool:
+    """When true, hub imports with expected lane but no detected lane → quarantine (AI/inbox exempt)."""
+    import os
+
+    raw = (os.getenv("TBCC_GATEKEEPER_HUB_REQUIRE_LANE_DETECT") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+# Lanes where uncaptioned / untagged media is expected (AI art, operator intake).
+LANE_UNKNOWN_ALLOW_KEYS: frozenset[str] = frozenset({"ai", "inbox"})
+
 PHOTO_MIN_SHORTEST_SIDE = 480
 PHOTO_MIN_FILESIZE_BYTES = 200 * 1024
 VIDEO_MIN_DURATION_SECONDS = 3.0
@@ -345,6 +377,18 @@ def glob_lane_fit(inp: MediaGatekeeperInput) -> GlobResult:
     if not detected:
         score_delta = -QUALITY_PENALTY_LANE_UNKNOWN
         flags.append("lane_unknown")
+        if (
+            expected
+            and expected not in LANE_UNKNOWN_ALLOW_KEYS
+            and hub_require_lane_detect_enabled()
+        ):
+            return GlobResult(
+                name="lane_fit",
+                pass_=False,
+                flags=flags,
+                score_delta=score_delta,
+                extra=extra,
+            )
         return GlobResult(name="lane_fit", pass_=True, flags=flags, score_delta=score_delta, extra=extra)
 
     if detected == expected:
@@ -525,7 +569,7 @@ def aggregate_verdict(
             globs=globs,
         )
 
-    if quality_score >= SCORE_APPROVE_MIN and source_trusted:
+    if quality_score >= hub_auto_approve_min_score() and source_trusted and hub_auto_approve_enabled():
         return MediaVerdict(
             verdict="approve",
             quality_score=quality_score,

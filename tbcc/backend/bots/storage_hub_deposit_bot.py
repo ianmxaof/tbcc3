@@ -46,9 +46,20 @@ def album_composer_storage_deposit_enabled() -> bool:
     )
 
 
+def payment_storage_deposit_enabled() -> bool:
+    return (os.getenv("TBCC_PAYMENT_STORAGE_DEPOSIT") or "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _deposit_disabled_message(bot_label: str) -> str:
     if bot_label == "album-composer":
         return "Storage /deposit is disabled on Album Composer (TBCC_ALBUM_COMPOSER_STORAGE_DEPOSIT)."
+    if bot_label == "payment":
+        return "Storage /deposit is disabled on Payment bot (TBCC_PAYMENT_STORAGE_DEPOSIT)."
     return "Storage /deposit is disabled on secretary bot (TBCC_SECRETARY_STORAGE_DEPOSIT)."
 
 
@@ -61,6 +72,12 @@ async def cmd_deposit(
     """Queue N newest deduped items from the current Storage Hub subtopic."""
     if bot_label == "album-composer":
         if not album_composer_storage_deposit_enabled():
+            msg = update.effective_message
+            if msg:
+                await msg.reply_text(_deposit_disabled_message(bot_label))
+            return
+    elif bot_label == "payment":
+        if not payment_storage_deposit_enabled():
             msg = update.effective_message
             if msg:
                 await msg.reply_text(_deposit_disabled_message(bot_label))
@@ -79,7 +96,35 @@ async def cmd_deposit(
         return
 
     chat = update.effective_chat
-    if not chat or int(chat.id) != storage_hub_chat_id_int():
+    if not chat:
+        return
+
+    from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT
+
+    if int(chat.id) == int(INBOX_CHANNEL_IDENT):
+        parsed = parse_deposit_command(msg.text or msg.caption or "")
+        if parsed is None:
+            await msg.reply_text("Usage: /deposit N (e.g. /deposit 50 both)")
+            return
+        limit_raw, media_override = parsed
+        limit = resolve_deposit_limit(limit_raw)
+        media_types = media_override or default_deposit_media_types()
+        db = SessionLocal()
+        try:
+            from app.services.storage_topic_deposit import queue_inbox_channel_deposit
+
+            report = queue_inbox_channel_deposit(db, limit=limit, media_types=media_types)
+        finally:
+            db.close()
+        if not report.get("ok"):
+            await msg.reply_text(format_deposit_error_text(report))
+            return
+        await msg.reply_text(
+            f"📥 Queued inbox channel deposit — {limit} ({media_types}). Job: {report.get('job_id') or '?'}"
+        )
+        return
+
+    if int(chat.id) != storage_hub_chat_id_int():
         await msg.reply_text("❌ /deposit only works inside Storage & Bot Hangar forum subtopics.")
         return
 

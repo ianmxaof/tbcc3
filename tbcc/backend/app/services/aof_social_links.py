@@ -23,6 +23,10 @@ def payment_bot_username() -> str:
     return (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
 
 
+def companion_bot_username() -> str:
+    return (os.getenv("TBCC_COMPANION_BOT_USERNAME") or "aof_spicybot_bot").strip().lstrip("@")
+
+
 def loot_public_cta_url() -> str:
     """
     Public top-of-funnel — bare AOF LOOT GOD bot profile (no deep-link params).
@@ -39,6 +43,11 @@ def loot_paid_checkout_url() -> str:
     """Payment-bot Loot Room key checkout (24h access)."""
     un = payment_bot_username()
     return f"https://t.me/{un}?start=loot" if un else ""
+
+
+def loot_free_start_url() -> str:
+    un = loot_bot_username()
+    return f"https://telegram.me/{un}?start=loot_free" if un else loot_public_cta_url()
 
 
 def aof_hub_invite_url() -> str:
@@ -121,6 +130,11 @@ def gravatar_profile_url() -> str:
     return (os.getenv("TBCC_GRAVATAR_PROFILE_URL") or "").strip()
 
 
+def affiliate_primary_fallback_url() -> str:
+    """Default affiliate when rotation pool is empty — undress credits."""
+    return affiliate_undress_primary_url()
+
+
 def affiliate_undress_primary_url() -> str:
     return (
         (os.getenv("TBCC_AFFILIATE_UNDRESS_URL") or "").strip()
@@ -151,6 +165,12 @@ def buffer_ig_default_image_url() -> str | None:
     if u.startswith("https://"):
         return u
 
+    from app.services.buffer_x_promo_image import direct_url_for_buffer, pick_promo_image
+
+    promo = direct_url_for_buffer(pick_promo_image())
+    if promo:
+        return promo
+
     basename = (os.getenv("TBCC_BUFFER_IG_PROMO_BASENAME") or "aof-buffer-ig.png").strip()
     base = (
         (os.getenv("TBCC_PROMO_PUBLIC_BASE_URL") or "").strip()
@@ -178,10 +198,20 @@ def fill_armory_template(
     for_x: bool = False,
 ) -> str:
     from app.services.utm_links import allmylinks_tracked_url
-    from app.services.promo_affiliate_rotation import resolve_affiliate_url
+    from app.services.promo_affiliate_rotation import pick_affiliate_pair, resolve_affiliate_url
 
     gate = x_outbound_url() if for_x else aof_gate_url()
     hub = aof_hub_invite_url()
+    if db is not None:
+        aff, aff2 = pick_affiliate_pair(db, "x_buffer", advance=advance_affiliate)
+    else:
+        aff = resolve_affiliate_url(
+            None,
+            "x_buffer",
+            advance=False,
+            fallback=affiliate_primary_fallback_url(),
+        )
+        aff2 = affiliate_drawai_url() or aff
     aml_base = allmylinks_url()
     if aml_base:
         aml = allmylinks_tracked_url(
@@ -191,17 +221,25 @@ def fill_armory_template(
             content=utm_content,
             base_url=aml_base,
         )
+    elif for_x:
+        # Never collapse map slots to {hub} on X — that triple-stacks lootgod.
+        aml = aff2 or aff
     else:
         aml = hub
-    grav = gravatar_profile_url() or aml
-    aff = resolve_affiliate_url(
-        db,
-        "x_buffer",
-        advance=advance_affiliate,
-        fallback=affiliate_undress_primary_url(),
-    )
+    grav_profile = gravatar_profile_url()
+    if grav_profile:
+        grav = grav_profile
+    elif for_x:
+        grav = aff if aff != aml else aff2
+    else:
+        grav = aml
     donate = donation_url() or aml
     gumroad_vip = gumroad_vip_url()
+    from app.services.promo_affiliate_rotation import resolve_spicy_companion_url
+
+    spicy = resolve_spicy_companion_url(db, placement="x_buffer") if db is not None else resolve_spicy_companion_url(None)
+    lootgod = loot_public_cta_url()
+    lootgod_free = loot_free_start_url()
     return (
         (text or "")
         .replace("{gate}", gate)
@@ -209,9 +247,13 @@ def fill_armory_template(
         .replace("{allmylinks}", aml)
         .replace("{gravatar}", grav)
         .replace("{affiliate}", aff)
+        .replace("{affiliate2}", aff2)
         .replace("{affiliate_undress}", aff)
         .replace("{affiliate_drawai}", affiliate_drawai_url())
         .replace("{affiliate_botynude}", affiliate_botynude_url())
+        .replace("{spicy}", spicy)
+        .replace("{lootgod}", lootgod)
+        .replace("{lootgod_free}", lootgod_free)
         .replace("{donate}", donate)
         .replace("{donation}", donate)
         .replace("{gumroad_vip}", gumroad_vip)

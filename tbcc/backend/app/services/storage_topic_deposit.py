@@ -27,7 +27,7 @@ from app.services.aof_growth_hub import _ensure_channel_row, _ensure_pool_row, s
 logger = logging.getLogger(__name__)
 
 _DEPOSIT_CMD = re.compile(
-    r"^/deposit(?:@\w+)?(?:\s+(\d+))?(?:\s+(both|photos|videos))?\s*$",
+    r"^/deposit(?:@\w+)?(?:\s+(\d+))?(?:\s+(both|photos|videos|image|images))?\s*$",
     re.I,
 )
 
@@ -50,6 +50,8 @@ def parse_deposit_command(text: str | None) -> tuple[int | None, str | None] | N
         except ValueError:
             limit = storage_pool_seed_batch_size()
     media = (m.group(2) or "").strip().lower() or None
+    if media in ("image", "images"):
+        media = "photos"
     if media and media not in ("both", "photos", "videos"):
         media = None
     return limit, media
@@ -277,6 +279,13 @@ def format_deposit_complete_text(
             f"\n\n📦 Cache composer: {composer_body.get('albums_built')} album(s) "
             f"× {composer_body.get('album_size', 5)} — check topic for Erome links."
         )
+    lane_evict_body = result.get("lane_evict") if isinstance(result.get("lane_evict"), dict) else None
+    lane_evict_line = ""
+    if lane_evict_body and int(lane_evict_body.get("evicted") or 0) > 0:
+        lane_evict_line = (
+            f"\n\n🧹 Removed {lane_evict_body.get('evicted')} duplicate(s) from this lane "
+            "(already in pool — vault archive unchanged)."
+        )
 
     headline = "Media finished uploading" if stored > 0 else "Storage deposit complete"
     if html:
@@ -286,7 +295,7 @@ def format_deposit_complete_text(
             f"<b>Pool:</b> {pool}\n"
             f"<b>Media:</b> <code>{mt}</code> · scanned {scanned}\n"
             f"<b>Job:</b> <code>{job_id}</code>\n\n"
-            f"{outcome}{mirror_line}{cache_line}{composer_line}{clip}"
+            f"{outcome}{mirror_line}{cache_line}{composer_line}{lane_evict_line}{clip}"
         )
     return (
         f"{'✅' if stored > 0 else '📥'} {_lbl(headline, html=False, markdown=markdown)}\n\n"
@@ -294,7 +303,7 @@ def format_deposit_complete_text(
         f"{_lbl('Pool', html=False, markdown=markdown)}: {pool}\n"
         f"{_lbl('Media', html=False, markdown=markdown)}: {_mono(mt, html=False, markdown=markdown)} · scanned {scanned}\n"
         f"{_lbl('Job', html=False, markdown=markdown)}: {_mono(job_id, html=False, markdown=markdown)}\n\n"
-        f"{outcome}{mirror_line}{cache_line}{composer_line}{clip}"
+        f"{outcome}{mirror_line}{cache_line}{composer_line}{lane_evict_line}{clip}"
     )
 
 
@@ -572,6 +581,9 @@ def queue_storage_topic_deposit(
     commit: bool = True,
     countdown: int = 0,
     message_ids: list[int] | None = None,
+    sent_cache: bool | None = None,
+    auto_pipe: bool = False,
+    qa_review_only: bool = False,
 ) -> dict[str, Any]:
     """
     Import up to `limit` NEW deduped items from one Storage Hub forum topic into its pool.
@@ -636,7 +648,13 @@ def queue_storage_topic_deposit(
     index_only = storage_deposit_index_only_enabled() and not apply_watermark
     from app.services.storage_sent_cache import storage_sent_cache_enabled
 
-    sent_cache = storage_sent_cache_enabled() and bool(row.network_key)
+    sent_cache_val = (
+        bool(sent_cache)
+        if sent_cache is not None
+        else (storage_sent_cache_enabled() and bool(row.network_key))
+    )
+    if auto_pipe:
+        sent_cache_val = False
 
     job = create_channel_import_job(
         db,
@@ -650,10 +668,14 @@ def queue_storage_topic_deposit(
         apply_watermark=apply_watermark,
         index_only=index_only,
         network_key=row.network_key,
-        sent_cache=sent_cache,
+        sent_cache=sent_cache_val,
         message_ids=message_ids,
+        auto_pipe=bool(auto_pipe),
+        qa_review_only=bool(qa_review_only),
     )
 
+    if auto_pipe:
+        include_topic_mirror = False
     mirror_limit = int(lim)
     mirror_report: dict[str, Any] | None = None
     task_id: str | None = None
@@ -744,7 +766,9 @@ def queue_storage_topic_deposit(
             "limit": lim,
             "media_types": mt,
             "index_only": index_only,
-            "sent_cache": sent_cache,
+            "sent_cache": sent_cache_val,
+            "auto_pipe": bool(auto_pipe),
+            "qa_review_only": bool(qa_review_only),
             "staged": bool(message_ids),
             "topic_mirror": mirror_report,
         }
@@ -780,3 +804,85 @@ def queue_storage_topic_deposit_staged(
         countdown=countdown,
         message_ids=ids,
     )
+
+
+def queue_inbox_channel_deposit(
+    db: Session,
+    *,
+    limit: int | None = None,
+    media_types: str | None = None,
+    commit: bool = True,
+    countdown: int = 0,
+) -> dict[str, Any]:
+    """Import newest media from AOF INBOX #CHANNEL shortcut into inbox pool."""
+    from app.data.aof_network import network_channel_by_key
+    from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT
+    from app.services.import_pipeline import (
+        create_channel_import_job,
+        enqueue_channel_import_job,
+        job_to_public_dict,
+        update_job,
+    )
+
+    net = network_channel_by_key("inbox")
+    if not net:
+        return {"ok": False, "error": "network_channel_missing", "network_key": "inbox"}
+
+    ch = db.query(Channel).filter(Channel.identifier == net.identifier).first()
+    if not ch:
+        ch = _ensure_channel_row(db, net)
+    if not ch:
+        return {
+            "ok": False,
+            "error": "channel_row_missing",
+            "network_key": "inbox",
+            "receive_channel": net.identifier,
+        }
+
+    pool = db.query(ContentPool).filter(ContentPool.name == net.pool_name).first()
+    if not pool:
+        pool = _ensure_pool_row(db, net, int(ch.id))
+        db.flush()
+    if not pool:
+        return {"ok": False, "error": "pool_missing", "pool_name": net.pool_name}
+
+    mt = (media_types or default_deposit_media_types()).strip().lower()
+    if mt not in ("both", "photos", "videos"):
+        mt = "videos"
+    lim = resolve_deposit_limit(limit)
+    source = f"telegram:{INBOX_CHANNEL_IDENT}"
+    index_only = storage_deposit_index_only_enabled()
+
+    job = create_channel_import_job(
+        db,
+        channel=INBOX_CHANNEL_IDENT,
+        pool_id=int(pool.id),
+        limit=lim,
+        media_types=mt,
+        message_thread_id=None,
+        source_label=source,
+        topic_title="AOF INBOX #CHANNEL",
+        apply_watermark=False,
+        index_only=index_only,
+        network_key="inbox",
+        sent_cache=False,
+        message_ids=None,
+    )
+    task_id = enqueue_channel_import_job(job.id, countdown=max(0, int(countdown)))
+    update_job(db, job, celery_task_id=task_id)
+    if commit:
+        db.commit()
+
+    body = job_to_public_dict(job)
+    body.update(
+        {
+            "ok": True,
+            "network_key": "inbox",
+            "channel": INBOX_CHANNEL_IDENT,
+            "limit": lim,
+            "media_types": mt,
+            "job_id": job.id,
+            "task_id": task_id,
+        }
+    )
+    return body

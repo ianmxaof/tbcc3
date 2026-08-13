@@ -1,0 +1,217 @@
+{
+  "campaign": "aof_promo_posters",
+  "schema_version": 3,
+  "master_template": {
+    "layout_lock_ref": "docs/samples/gemini_aof_promo_layout_lock.txt",
+    "style_anchors": "AOF 9:16 promo poster, QR + pill columns",
+    "negative_prompt": "misspelled UI, wrong aspect, cartoon",
+    "chrome_block": ""
+  },
+  "variations": [
+    {
+      "key": "promo_martyrs-ma07-10",
+      "subject_delta": "martyrs-ma07-10",
+      "tier": null,
+      "tags": [
+        "promo",
+        "x",
+        "poster"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance",
+        "x_teaser"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_martyrs-grid-classic",
+      "subject_delta": "martyrs-grid-classic",
+      "tier": null,
+      "tags": [
+        "promo",
+        "x",
+        "poster"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance",
+        "x_teaser"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_martyrs-single-breakfast",
+      "subject_delta": "martyrs-single-breakfast",
+      "tier": null,
+      "tags": [
+        "promo",
+        "x",
+        "poster"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance",
+        "x_teaser"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-01",
+      "subject_delta": "ma-01",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-02",
+      "subject_delta": "ma-02",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-03",
+      "subject_delta": "ma-03",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-04",
+      "subject_delta": "ma-04",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-05",
+      "subject_delta": "ma-05",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-06",
+      "subject_delta": "ma-06",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-07",
+      "subject_delta": "ma-07",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-08",
+      "subject_delta": "ma-08",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-09",
+      "subject_delta": "ma-09",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "promo_scene_ma-10",
+      "subject_delta": "ma-10",
+      "tier": null,
+      "tags": [
+        "promo",
+        "scene"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    }
+  ],
+  "notes": ""
+}

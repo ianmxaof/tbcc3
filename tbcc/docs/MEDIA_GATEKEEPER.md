@@ -225,13 +225,20 @@ After **K consecutive rejects** from the same `source_channel_id` (default K=5),
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `TBCC_SCRAPE_MICRO_PULL_ENABLED` | `0` | Celery Beat tick every 2h (ASS lane) |
-| `TBCC_SCRAPE_MICRO_PULL_LANE` | `ass` | Pilot lane key |
+| `TBCC_SCRAPE_MICRO_PULL_ENABLED` | `0` | Celery Beat tick every 2h (rotates lanes) |
+| `TBCC_SCRAPE_MICRO_PULL_LANE` | `ass` | Single-lane override when not using rotation |
+| `TBCC_SCRAPE_MICRO_PULL_LANES` | (all hub topics) | Comma list for round-robin Beat tick |
 | `TBCC_SCRAPE_MICRO_PULL_LIMIT` | `10` | Messages per source per run |
+| `TBCC_SCRAPE_MICRO_PULL_MODE` | (rotation) | `firehose` = SCRP BULK → AOF INBOX only |
+| `TBCC_SCRAPE_MICRO_PULL_DEDUPE` | `1` | Redis skip for already-forwarded source msg → hub topic |
+| `TBCC_SCRAPE_HUB_FIRST` | `1` | Block direct pool batch scrape; use micro-pull → hub |
 | `TBCC_MEDIA_GATEKEEPER_ENABLED` | `1` | Run `evaluate_media()` on ingest |
 
 CLI: `py -3.13 scripts/run_scrape_micro_pull.py --lane ass --execute`
-| **P2** | Quarantine Telegram review buttons | **Done** (`gatekeeper_review.py`, `gk:a` / `gk:r` on Album Composer) |
+
+**SCRP folder → lane:** `SCRP FULL` maps to `full_length` (AOF FULL LENGTH). `SCRP MODELS` is WIP — unmapped.
+
+| **P2** | Quarantine Telegram review buttons | **Done** (`gatekeeper_review.py`, `gk:a` / `gk:r` on Payment bot + Album Composer) |
 | **P3** | Source demote on reject streak | **Done** (`gatekeeper_source_demote.py`, default streak 5) |
 
 ### Env (review + demote)
@@ -239,9 +246,17 @@ CLI: `py -3.13 scripts/run_scrape_micro_pull.py --lane ass --execute`
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `TBCC_GATEKEEPER_REVIEW_NOTIFY` | `1` | Post review card on quarantine |
+| `TBCC_GATEKEEPER_REVIEW_BOT` | `payment` | Bot token for cards + callbacks (`album_composer` for AC) |
+| `TBCC_GATEKEEPER_REVIEW_COPY_MEDIA` | `1` | `copyMessage` preview from hub topic when `telegram_message_id` set |
 | `TBCC_GATEKEEPER_REVIEW_CHAT_ID` | Storage Hub id | Where review cards post |
-| `TBCC_GATEKEEPER_REVIEW_THREAD_ID` | (unset) | Optional forum thread for review queue |
+| `TBCC_GATEKEEPER_REVIEW_THREAD_ID` | (unset) | Optional forum thread for review queue (not General) |
 | `TBCC_GATEKEEPER_DEMOTE_STREAK` | `5` | Operator rejects before SCRP source demote |
+| `TBCC_GATEKEEPER_HUB_AUTO_APPROVE` | `1` | Trusted hub ingest may auto-approve at threshold |
+| `TBCC_GATEKEEPER_HUB_AUTO_APPROVE_MIN` | `70` | Min quality score for trusted hub auto-approve |
+| `TBCC_GATEKEEPER_APPROVE_MICRO_PULL` | `1` | On operator approve, queue one lane micro-pull |
+| `TBCC_GATEKEEPER_LANE_PICKER` | `1` | Emoji lane toggles on quarantine card; multi-lane hub route on approve |
 
-Buttons: **✅ Approve** / **🗑 Reject** on review card (Album Composer bot, admin-only).
+**Quality score on cards:** `quality_score` 0–100 from gatekeeper globs (not ML confidence). ≥70 + trusted source may auto-approve; 40–69 = quarantine for operator review. Future: auto-approve high scores on trusted hub ingest.
+
+Buttons: **emoji lane row(s)** + **✅ Approve** / **🗑 Reject** (Payment bot default, admin-only). Tap lane emoji(s) to multi-select, then Approve — forwards into matching Storage Hub subtopics.
 | **P4** | Quality-ranked pool / loot picks | Next |

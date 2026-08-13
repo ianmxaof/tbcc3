@@ -4,6 +4,7 @@ import {
   HeadObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  PutObjectCommand,
   type S3ClientConfig,
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
@@ -109,6 +110,41 @@ export async function signedGetUrl(key: string, expiresInSec = 60 * 60): Promise
   return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), {
     expiresIn: expiresInSec,
   });
+}
+
+/**
+ * Presigned PUT for direct browser → B2 uploads (P4 bulk upload).
+ */
+export async function signedPutUrl(
+  key: string,
+  contentType: string,
+  expiresInSec = 60 * 60
+): Promise<string> {
+  const { client, bucket } = getB2();
+  return getSignedUrl(
+    client,
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: contentType,
+    }),
+    { expiresIn: expiresInSec }
+  );
+}
+
+export async function getObjectBuffer(key: string): Promise<{ body: Buffer; contentType: string }> {
+  const { client, bucket } = getB2();
+  const r = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const stream = r.Body;
+  if (!stream) throw new Error(`empty body for ${key}`);
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stream as AsyncIterable<Uint8Array>) {
+    chunks.push(chunk);
+  }
+  return {
+    body: Buffer.concat(chunks),
+    contentType: r.ContentType ?? "application/octet-stream",
+  };
 }
 
 /**

@@ -362,7 +362,7 @@ def _packs_footer() -> str:
 
 
 def refresh_aof_packs_scheduler(db: Session) -> dict[str, Any]:
-    """Wire AOF PACKS scheduler: ~50 caption templates + send-time pack picker (full pool)."""
+    """Wire AOF PACKS scheduler: 100+ caption templates + send-time pack picker (full pool)."""
     from app.models.content_pool import ContentPool
     from app.models.scheduled_text_post import ScheduledTextPost
 
@@ -414,7 +414,7 @@ def refresh_aof_packs_scheduler(db: Session) -> dict[str, Any]:
     sched.album_size = 5
     sched.checkout_stars_enabled = True
     sched.checkout_stars_plan_id = STARS_PLAN_ID
-    sched.checkout_button_label = "⭐ VIP — skip ads (500⭐)"
+    sched.checkout_button_label = "⭐ VIP — skip ads (1500⭐)"
     sched.interval_minutes = 480
     db.commit()
 

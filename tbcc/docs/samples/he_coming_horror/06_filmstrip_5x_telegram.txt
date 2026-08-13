@@ -1,0 +1,65 @@
+HE'S COMING — TELEGRAM FILMSTRIP 5× (Gemini 9:16)
+
+OUTPUT: ONE tall image. FIVE complete HE'S COMING promo banners stacked top to bottom (Telegram scroll filmstrip).
+Each panel: wide landscape banner (~16:9) with full UI chrome. Overall composite: 9:16 portrait strip.
+NOT 2×2 grid. NOT one panel. Thin horizontal gutters between panels OK.
+Panel order top → bottom: PANEL-1 … PANEL-5.
+
+SERIES HEADER (panel-1 only, top of composite): small white text "AOF PRESENTS • HE'S COMING • READ THE LOGS AT YOUR OWN RISK"
+
+LAYOUT LOCK — identical structure on every panel (vary background + panel-specific pills only):
+TOP: distressed white "AOF" + red brush-stroke scene title (see SCENES)
+SUBHEAD: panel-specific subtitle (see SCENES)
+CENTER: compact QR code with Telegram paper-plane logo
+LEFT PILLS + RIGHT PILLS: panel-specific — glossy red pills, white caps text
+BELOW QR: "SURVEILLANCE HORROR • SESSION ARCHIVE" / "VOYEURISTIC DREAD • YOU CLICKED ANYWAY"
+LINK BAR: red bar, paper-plane icons, exact text "t.me/aofmainhub"
+BOTTOM FOOTER: five thin white icons + micro-labels (panel-specific)
+
+GLOBAL STYLE: cyberpunk neon-noir horror. Rainy Tokyo alley base bleeding through each panel — cyan/magenta neon, wet pavement reflections, deep black shadows, VHS scan lines. Voyeuristic dread, isolation, vulnerability, being watched. No explicit nudity, no sexual acts, no real faces. Cinematic photoreal.
+
+SCENES:
+
+PANEL-1 — THE DISCOVERY:
+TITLE: "THE LOGS"
+SUBHEAD: "SOMEONE LEFT A WINDOW OPEN • YOU SHOULDN'T HAVE LOOKED"
+BACKGROUND: cracked closet door, beige desktop behind water heater, green CRT glow, sticky-note "Enid", ghost folder icons.
+LEFT PILLS: HIDDEN TOWER • WINDOWS XP • HARLEY DESKTOP • SEVEN FOLDERS • FEB 2012
+RIGHT PILLS: WATER HEATER • PASSWORD YES • PRIVATE SESSIONS • MATTER-OF-FACT • YOU CLICKED LOGS
+FOOTER: EYE • FOLDER • PADLOCK • CAMERA • SKULL
+
+PANEL-2 — SESSION LOGS:
+TITLE: "SESSION LOGS"
+SUBHEAD: "DRY TONE • DARK REQUESTS • YOU COULDN'T STOP READING"
+BACKGROUND: webcam UI overlay 12:40 AM REC, empty chair, desk lamp, blurred chat sidebar, Cure-era poster hint.
+LEFT PILLS: BESTinLIFE • MARCOSPOLOTX • FREDDY NIGHT • SOBBING CLIENT • TONYMONTANA
+RIGHT PILLS: 11 MIN SESSIONS • PRIVATE CHAT • LOBBY FULL • WINDOW INTO MEN • NOT LIKE THAT
+FOOTER: CLOCK • CHAT • MIC • DOCUMENT • HEART-SLASH
+
+PANEL-3 — WINDOW FEED:
+TITLE: "HE'S IN THE WINDOW"
+SUBHEAD: "SHE NEVER SAW HIM • YOU DID"
+BACKGROUND: elliptical silhouette back-turned, black-masked figure pressed to window glass staring at viewer, flickering lights.
+LEFT PILLS: ELLIPTICAL FEED • OBLIVIOUS • BLACK SCREEN • POWER CUT • BREAKING GLASS
+RIGHT PILLS: MASK IN GLASS • STARES AT YOU • VIDEO CAPTURE • 18 MIN BLACK • GOTCHA
+FOOTER: WINDOW • WEBCAM • BOLT • SCREAM • POLICE
+
+PANEL-4 — CLOSET FEED:
+TITLE: "CLOSET FEED"
+SUBHEAD: "HELLO? • BANG • YELP"
+BACKGROUND: webcam POV bedroom, door shaking, closet cracked open, masked head leaning out staring into lens.
+LEFT PILLS: HUMBERTSQUARED • POORLY LIT • CLOSET AJAR • DOOR BANGING • 9 MIN
+RIGHT PILLS: MASK RETURNS • LOOKS AT YOU • FORWARDED LOG • DONNA COPIED • FEAR REAL
+FOOTER: DOOR • CLOSET • MASK • CHAT • TREMBLE
+
+PANEL-5 — BACKSEAT:
+TITLE: "HE'S COMING"
+SUBHEAD: "PARKING LOT • POCKET DIAL • TOO LATE"
+BACKGROUND: car interior rain on glass, rearview mirror with masked face rising behind seat, phone MISSED CALL glow, lonely parking walk.
+LEFT PILLS: ALICE VOICEMAIL • BACK LOT • THREE NIGHTS • RUSTLE • WHISPER
+RIGHT PILLS: HE'S COMING • 48 HOURS GONE • REARVIEW • CHLOROFORM • AWKWARD
+FOOTER: PHONE • CAR • MIRROR • MAP • ARE YOU COMING
+
+Generate now. Same locked UI structure on every panel. Vary only background + pills/footer. Panels must not bleed.
+
+AVOID: wrong aspect ratio, 2×2 grid, misspelled text, watermark, explicit nudity, gore, real faces, scenes bleeding across borders, bright cheerful palette.

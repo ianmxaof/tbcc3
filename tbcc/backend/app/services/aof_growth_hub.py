@@ -34,7 +34,6 @@ from app.models.scheduled_text_post import ScheduledTextPost
 from app.models.subscription_plan import SubscriptionPlan
 from app.services.link_gate_provider import wrap_gate_url, is_gate_host
 from app.services.pool_schedule_sync import sync_pool_album_settings_to_schedules
-from app.services.aof_gate_promo_copy import gate_fomo_post_bodies
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ def network_album_size() -> int:
     return _size()
 
 
-NETWORK_ALBUM_SIZE = 3  # default; sync uses network_album_size()
+NETWORK_ALBUM_SIZE = 1  # default; sync uses network_album_size()
 CHECKOUT_CAPTION_MARKER = "VIP checkout — Stars · crypto · card"
 DEFAULT_GROUP_ACCESS_PLAN_ID = 10  # monthly AOF VIP after Gumroad ladder (legacy id 6 retired)
 DEFAULT_CHECKOUT_BUTTON_LABEL = "Pay ⭐ 500"
@@ -193,6 +192,32 @@ def build_links_hub_bulletin(lv: dict[str, str], db: Session | None = None) -> s
     )
 
 
+def post_footer_vip_contrast_enabled() -> bool:
+    raw = (os.getenv("TBCC_POST_FOOTER_VIP_CONTRAST") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def build_vip_post_contrast_line_html() -> str:
+    """One-line public-vs-VIP contrast for lane footers and spotlight (stripped on VIP mirror)."""
+    from app.services.aof_feed_rhythm_v2 import (
+        main_group_album_size,
+        vip_album_roll_max,
+        vip_album_roll_min,
+    )
+    from app.services.aof_vip_early_drop import vip_early_drop_minutes
+
+    bot = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+    album_public = main_group_album_size()
+    album_vip_min = vip_album_roll_min()
+    album_vip_max = vip_album_roll_max()
+    minutes_early = vip_early_drop_minutes()
+    return (
+        f"⭐ <b>VIP rolls {album_vip_min}–{album_vip_max} from this same lane</b> "
+        f"· ~{minutes_early}m early · direct where mapped. This post: {album_public}. "
+        f"@{bot} /subscribe"
+    )
+
+
 def build_addlist_footer(lv: dict[str, str], *, sponsor_line_html: str | None = None) -> str:
     """Compact footer — pipe-separated links; VIP checkout is inline Pay ⭐ at send."""
     from app.services.aof_social_links import donation_link_html
@@ -203,10 +228,14 @@ def build_addlist_footer(lv: dict[str, str], *, sponsor_line_html: str | None = 
     donate = donation_link_html(label="☕ support")
     donate_bit = f" | {donate}" if donate else ""
     sponsor_bit = f"{sponsor_line_html.strip()}\n" if sponsor_line_html and sponsor_line_html.strip() else ""
+    vip_bit = ""
+    if post_footer_vip_contrast_enabled():
+        vip_bit = f"{build_vip_post_contrast_line_html()}\n"
     return (
         "\n\n━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>{FOOTER_MARKER}</b>\n"
         f"{sponsor_bit}"
+        f"{vip_bit}"
         f"🌐 {addlist} | 🔗 {hub}{donate_bit}\n"
         f"🗝 @{bot} · /loot · /subscribe · /referral"
     )
@@ -217,8 +246,22 @@ def network_pool_names() -> frozenset[str]:
 
 
 def resolve_group_access_plan_id(db: Session) -> int:
-    """Primary subscription plan for main-group access (monthly AOF VIP checkout on posts)."""
-    from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS
+    """Primary VIP checkout plan for network posts — prefer $10 intro when seeded."""
+    from app.data.aof_vip_membership import VIP_INTRO_PLAN_NAME, VIP_MEMBERSHIP_SKUS
+
+    intro = (
+        db.query(SubscriptionPlan)
+        .filter(
+            SubscriptionPlan.is_active.is_(True),
+            SubscriptionPlan.product_type == "subscription",
+            SubscriptionPlan.bot_section == "main",
+            SubscriptionPlan.name == VIP_INTRO_PLAN_NAME,
+            SubscriptionPlan.price_stars > 0,
+        )
+        .first()
+    )
+    if intro:
+        return int(intro.id)
 
     monthly_name = VIP_MEMBERSHIP_SKUS[0].name
     row = (
@@ -241,7 +284,7 @@ def resolve_group_access_plan_id(db: Session) -> int:
             SubscriptionPlan.bot_section == "main",
             SubscriptionPlan.price_stars > 0,
         )
-        .order_by(SubscriptionPlan.duration_days.asc(), SubscriptionPlan.id.asc())
+        .order_by(SubscriptionPlan.price_stars.asc(), SubscriptionPlan.duration_days.asc(), SubscriptionPlan.id.asc())
         .first()
     )
     return int(row.id) if row else DEFAULT_GROUP_ACCESS_PLAN_ID
@@ -667,6 +710,68 @@ def sync_main_group_liveness_checkout(
     return rows
 
 
+def unique_flavor_hook(caption: str) -> str:
+    """
+    The rotating "flavor" identity of a caption variation — everything before the
+    addlist/hub/affiliate footer block. Two variations with the same hook read as the
+    same post to a scrolling reader even if their footer (sponsor line, affiliate URL)
+    differs, so this is the key used to detect and collapse padded duplicates.
+
+    Conservative by design: returns the full pre-footer body rather than just the first
+    line, so it never over-collapses two genuinely different posts that happen to open
+    with the same emoji. Mirrors the prefix-split already used by _refresh_variation_footer.
+    """
+    text = (caption or "").strip()
+    if FOOTER_MARKER not in text:
+        return text
+    idx = text.find(FOOTER_MARKER)
+    split_at = text.rfind("\n\n", 0, idx)
+    if split_at < 0:
+        split_at = text.rfind("\n", 0, idx)
+    return text[:split_at].strip() if split_at > 0 else text[:idx].strip()
+
+
+def _dedupe_by_flavor_hook(variations: list[str]) -> list[str]:
+    """
+    Collapse variations that share the same unique_flavor_hook, keeping the first
+    (highest-priority) occurrence and preserving order. This is the structural fix for
+    the "~440-520 variations, ~13-25 unique hooks" padding: whatever upstream step
+    produced the duplicate (sponsor footer, stale sync, legacy VIP copy), this pass is
+    the single place that prunes it before a scheduler is saved.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in variations:
+        body = (v or "").strip()
+        if not body:
+            continue
+        hook = unique_flavor_hook(body)
+        if hook in seen:
+            continue
+        seen.add(hook)
+        out.append(body)
+    return out
+
+
+def _select_promo_footer(footer_variants: list[str], *, seed: str) -> str:
+    """
+    Deterministically choose which footer (base, sponsor-free — or one sponsor-carrying
+    variant) backs the single per-lane promo slot. Spreads affiliate sponsor exposure
+    across lanes without cloning the promo hook once per affiliate — the old behavior
+    that padded schedulers with the same opening line 100+ times over. The base footer
+    (index 0) stays reachable so this does not silently turn "sponsor sometimes" into
+    "sponsor on every lane's primary post" — affiliate exposure shifts which lane shows a
+    sponsor, it does not expand how often one appears. Same seed always picks the same
+    footer, so re-running sync is idempotent until the affiliate candidate list changes.
+    """
+    if len(footer_variants) <= 1:
+        return footer_variants[0] if footer_variants else ""
+    import zlib
+
+    idx = zlib.crc32(seed.encode("utf-8")) % len(footer_variants)
+    return footer_variants[idx]
+
+
 def _is_bulletin_variation(text: str) -> bool:
     return BULLETIN_MARKER in (text or "")
 
@@ -686,19 +791,6 @@ def _merge_variations(bulletin: str, promo: str, existing: list[str]) -> list[st
     if promo_body:
         out.append(promo_body)
     out.extend(kept)
-    return out
-
-
-def _append_gate_fomo_variations(variations: list[str], footer: str) -> list[str]:
-    """Add wrapped-link how-to / FOMO copy into scheduler rotation (skips bulletin slot)."""
-    seen = {v.strip() for v in variations}
-    out = list(variations)
-    for body in gate_fomo_post_bodies():
-        full = (body + footer).strip()
-        if full in seen:
-            continue
-        seen.add(full)
-        out.append(full)
     return out
 
 
@@ -725,7 +817,7 @@ def _gumroad_vip_promo_variations(footer: str) -> list[str]:
             "Same access as Stars · pick your term on the checkout page."
         ),
     ]
-    bodies.extend(vip_promo_minimal_bodies()[:1])
+    bodies.extend(vip_promo_minimal_bodies())
     return [(b + footer + f"\n\n{url}").strip() for b in bodies]
 
 
@@ -736,6 +828,68 @@ def _append_gumroad_vip_variations(variations: list[str], footer: str) -> list[s
         if full in seen:
             continue
         seen.add(full)
+        out.append(full)
+    return out
+
+
+def _append_vip_flavor_variations(variations: list[str], footer: str) -> list[str]:
+    """Phase 2 — general-purpose VIP hook bank (aof_flavor_hooks.vip_flavor_hooks()),
+    all >=15 bodies used, each paired with the same base footer (no per-body sponsor
+    rotation needed here — these already dedupe cleanly by hook since every body is
+    distinct wording, not a template)."""
+    from app.services.aof_flavor_hooks import vip_flavor_hooks
+
+    seen = {v.strip() for v in variations}
+    out = list(variations)
+    for body in vip_flavor_hooks():
+        full = (body + footer).strip()
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out
+
+
+def _append_gate_flavor_variations(variations: list[str], footer: str) -> list[str]:
+    """Phase 2 — expanded gate/FOMO bank (aof_flavor_hooks.gate_flavor_hooks(), >=15
+    bodies) replacing the plain 5-body gate_fomo_post_bodies() call site."""
+    from app.services.aof_flavor_hooks import gate_flavor_hooks
+
+    seen = {v.strip() for v in variations}
+    out = list(variations)
+    for body in gate_flavor_hooks():
+        full = (body + footer).strip()
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out
+
+
+def _append_lane_flavor_variations(
+    variations: list[str],
+    network_key: str,
+    footer_variants: list[str],
+) -> list[str]:
+    """
+    Phase 2 — the mechanism that gets each lane to >=50 unique rotating hooks. Adds
+    aof_flavor_hooks.lane_flavor_hooks(network_key) (>=50 lane-colored hook bodies), each
+    paired with exactly ONE footer via _select_promo_footer (seeded per hook index, not
+    per lane), so sponsor exposure spreads across many distinct hooks instead of cloning
+    any single hook across every affiliate footer — the exact padding bug Phase 1 fixed
+    for the single promo slot, generalized here to a much larger hook set.
+    """
+    from app.services.aof_flavor_hooks import lane_flavor_hooks
+
+    seen_hooks = {unique_flavor_hook(v) for v in variations}
+    out = list(variations)
+    for i, hook in enumerate(lane_flavor_hooks(network_key)):
+        hook_key = unique_flavor_hook(hook)
+        if hook_key in seen_hooks:
+            continue
+        footer = _select_promo_footer(footer_variants, seed=f"{network_key}:{i}")
+        full = (hook + footer).strip()
+        seen_hooks.add(hook_key)
         out.append(full)
     return out
 
@@ -773,24 +927,6 @@ def _strip_regenerated_promo_variations(existing: list[str], promo_html: str) ->
             continue
         kept.append(v)
     return kept
-
-
-def _append_sponsor_promo_variations(
-    variations: list[str],
-    promo_html: str,
-    footer_variants: list[str],
-) -> list[str]:
-    """Add promo+footer slots for each sponsor footer (slot 1 already set)."""
-    seen = {v.strip() for v in variations}
-    out = list(variations)
-    prefix = (promo_html or "").strip()
-    for footer in footer_variants[1:]:
-        full = (prefix + footer).strip()
-        if not full or full in seen:
-            continue
-        seen.add(full)
-        out.append(full)
-    return out
 
 
 def _ensure_channel_row(db: Session, net_ch) -> Channel | None:
@@ -913,25 +1049,33 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
         existing = _strip_regenerated_promo_variations(existing, net_ch.promo_html)
         footer_variants = build_telegram_footer_variants(db, lv, network_key=net_ch.key)
         base_footer = footer_variants[0]
-        promo = net_ch.promo_html + base_footer
+        promo_footer = _select_promo_footer(footer_variants, seed=net_ch.key)
+        promo = net_ch.promo_html + promo_footer
         merged = _merge_variations(bulletin, promo, existing)
-        if len(footer_variants) > 1:
-            merged = _append_sponsor_promo_variations(merged, net_ch.promo_html, footer_variants)
-        merged = _append_gate_fomo_variations(merged, base_footer)
+        merged = _append_gate_flavor_variations(merged, base_footer)
         merged = _append_gumroad_vip_variations(merged, base_footer)
+        merged = _append_vip_flavor_variations(merged, base_footer)
+        merged = _append_lane_flavor_variations(merged, net_ch.key, footer_variants)
         from app.services.aof_loot_goblin_promo import (
             append_prompt_drop_variations,
-            build_goblin_teaser_with_footer,
+            build_goblin_teaser_variations,
+            goblin_teaser_every_nth,
             inject_goblin_teaser_variations,
         )
 
-        goblin_teaser = build_goblin_teaser_with_footer(base_footer)
-        merged = inject_goblin_teaser_variations(merged, [goblin_teaser], every_nth=6)
+        goblin_teasers = build_goblin_teaser_variations(base_footer)
+        merged = inject_goblin_teaser_variations(
+            merged, goblin_teasers, every_nth=goblin_teaser_every_nth()
+        )
         if net_ch.key == "ai":
             merged = append_prompt_drop_variations(db, merged)
         merged = _sanitize_variations(merged, clean_footer=base_footer, skip_bulletin=True)
+        before_dedupe = len(merged)
+        merged = _dedupe_by_flavor_hook(merged)
         entry["variations"] = len(merged)
-        entry["sponsor_footers"] = max(0, len(footer_variants) - 1)
+        entry["variations_before_dedupe"] = before_dedupe
+        entry["unique_hooks"] = len({unique_flavor_hook(v) for v in merged})
+        entry["sponsor_footers_available"] = max(0, len(footer_variants) - 1)
         entry["scheduler_id"] = sched.id
         if execute:
             sched.content = merged[0]
@@ -1000,7 +1144,11 @@ def sync_network_schedulers(db: Session, *, execute: bool = True) -> dict[str, A
 
 def sync_affiliate_network(db: Session, *, execute: bool = True) -> dict[str, Any]:
     """Rebuild links hub partners + per-channel sponsor footer rotations."""
-    return sync_network_schedulers(db, execute=execute)
+    from app.services.checkout_list_hub import sync_checkout_list_hub
+
+    report = sync_network_schedulers(db, execute=execute)
+    report["checkout_list"] = sync_checkout_list_hub(db, execute=execute)
+    return report
 
 
 def growth_hub_status(db: Session) -> dict[str, Any]:

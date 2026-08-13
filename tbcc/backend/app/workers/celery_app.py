@@ -11,7 +11,8 @@ _load_paths = [
 ]
 for _p in _load_paths:
     if _p.exists():
-        load_dotenv(_p, override=True)
+        # Process/compose env wins over file (island Beat gates + secrets injection).
+        load_dotenv(_p, override=False)
         break
 
 from celery import Celery
@@ -41,17 +42,27 @@ celery.conf.include = [
     "app.workers.listening_relay_worker",
     "app.workers.goblin_worker",
     "app.workers.loot_promo_worker",
+    "app.workers.loot_creator_recruitment_worker",
+    "app.workers.mainhub_channel_spotlight_worker",
     "app.workers.import_telegram_worker",
     "app.workers.myjd_worker",
     "app.workers.mega_scraper_worker",
     "app.workers.buffer_armory_worker",
     "app.workers.stars_bait_outreach_worker",
+    "app.workers.lifecycle_dm_worker",
     "app.workers.content_performance_worker",
     "app.workers.drop_countdown_worker",
     "app.workers.topic_mirror_worker",
     "app.workers.storage_pool_seed_worker",
+    "app.workers.lane_survivor_refill_worker",
+    "app.workers.traffic_pulse_worker",
+    "app.workers.inbox_intake_worker",
     "app.workers.vip_weekly_mega_worker",
+    "app.workers.weekly_build_log_worker",
+    "app.workers.revenue_brief_worker",
     "app.workers.thumbnail_warm_worker",
+    "app.workers.storage_hub_r2_export_worker",
+    "app.workers.network_liveness_worker",
     "app.workers.k2s_mirror_worker",
     "app.workers.income_poll_worker",
     "app.workers.erome_analytics_worker",
@@ -60,8 +71,10 @@ celery.conf.include = [
     "app.workers.export_flywheel_worker",
     "app.workers.buffer_metrics_worker",
     "app.workers.sent_cache_composer_worker",
+    "app.workers.topic_rebundle_worker",
     "app.workers.sale_announce_worker",
     "app.workers.loot_reveal_video_worker",
+    "app.workers.creative_generate_worker",
 ]
 
 celery.conf.task_routes = {
@@ -72,6 +85,7 @@ celery.conf.task_routes = {
     # (revenue island worker consumes telegram; batch pool scrapes stay on GCP scrape queue).
     "app.workers.scrape_micro_pull_worker.*": {"queue": "telegram"},
     "app.workers.gatekeeper_review_worker.*": {"queue": "telegram"},
+    "app.workers.inbox_intake_worker.*": {"queue": "telegram"},
     "app.workers.scheduler_worker.*": {"queue": "celery"},
     # Scheduler lane (Beat due rows + manual Post now) — isolated from pool auto-post.
     "app.workers.poster_worker.post_scheduled_text": {"queue": "post_scheduler"},
@@ -93,19 +107,24 @@ celery.conf.task_routes = {
     # Telethon hub→pool deposits — island worker only consumes celery/subscription/telegram.
     # Keep on telegram (not ops_growth) or seeds strand forever on revenue island.
     "app.workers.storage_pool_seed_worker.*": {"queue": "telegram"},
+    "app.workers.lane_survivor_refill_worker.*": {"queue": "telegram"},
     "app.workers.erome_analytics_worker.*": {"queue": "ops_erome"},
     # Light / user-facing tasks stay on the home worker.
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
+    "app.workers.traffic_pulse_worker.*": {"queue": "celery"},
     "app.workers.sale_announce_worker.*": {"queue": "celery"},
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
     "app.workers.sent_cache_composer_worker.*": {"queue": "telegram"},
+    "app.workers.topic_rebundle_worker.*": {"queue": "telegram"},
     "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
     "app.workers.link_resolver_worker.*": {"queue": "celery"},
     "app.workers.myjd_worker.*": {"queue": "celery"},
     "app.workers.network_liveness_worker.*": {"queue": "subscription"},
+    "app.workers.weekly_build_log_worker.*": {"queue": "subscription"},
     "app.workers.drop_countdown_worker.*": {"queue": "subscription"},
     "app.workers.topic_mirror_worker.*": {"queue": "telegram"},
     "app.workers.thumbnail_warm_worker.*": {"queue": "telegram"},
+    "app.workers.storage_hub_r2_export_worker.*": {"queue": "telegram"},
     "app.workers.k2s_mirror_worker.*": {"queue": "celery"},
     "app.workers.content_performance_worker.*": {"queue": "celery"},
     "app.workers.emoji_factory_worker.*": {"queue": "celery"},
@@ -116,6 +135,18 @@ celery.conf.task_routes = {
 if os.name == "nt":
     celery.conf.worker_pool = "solo"
     celery.conf.worker_concurrency = 1
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        raw = default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _revenue_island_active() -> bool:
+    """True when this process is the dedicated revenue VPS (not home / GCP scrape)."""
+    return _env_flag("TBCC_REVENUE_ISLAND_ACTIVE", "0")
 
 
 def _beat_schedule_minutes() -> str:
@@ -153,19 +184,52 @@ celery.conf.beat_schedule = {
         "task": "app.workers.loot_promo_worker.send_loot_daily_promo",
         "schedule": crontab(minute=0, hour="*"),
     },
+    "loot-creator-recruitment-room": {
+        "task": "app.workers.loot_creator_recruitment_worker.send_loot_room_creator_recruitment",
+        "schedule": crontab(minute=5, hour="*"),
+    },
+    "loot-creator-recruitment-lane": {
+        "task": "app.workers.loot_creator_recruitment_worker.send_random_lane_creator_recruitment",
+        "schedule": crontab(minute=10, hour="*"),
+    },
+    "mainhub-channel-spotlight": {
+        "task": "app.workers.mainhub_channel_spotlight_worker.send_mainhub_channel_spotlight",
+        "schedule": crontab(minute=15, hour="*"),
+    },
+    "lane-of-day-liveness-refresh": {
+        "task": "app.workers.mainhub_channel_spotlight_worker.refresh_lane_of_the_day_liveness",
+        "schedule": crontab(minute=5, hour=0),
+    },
     "listening-relay-lastfm": {
         "task": "app.workers.listening_relay_worker.poll_listening_relay_lastfm",
         "schedule": crontab(minute="*/2"),
-    },
-    "scrape-scheduler-tick": {
-        "task": "app.workers.scrape_scheduler_worker.tick_scheduled_scrapes",
-        "schedule": crontab(minute="*/5"),
     },
     "buffer-armory-refill": {
         "task": "app.workers.buffer_armory_worker.refill_buffer_armory",
         "schedule": crontab(minute=20, hour=_buffer_armory_refill_crontab_hours()),
     },
 }
+
+# Cron scrape ticks only when a scrape consumer exists (GCP micro). Revenue island
+# has no scrape queue worker — default off so Redis does not fill with orphans.
+_scrape_sched_default = "0" if _revenue_island_active() else "1"
+if _env_flag("TBCC_SCRAPE_SCHEDULER_ENABLED", _scrape_sched_default):
+    celery.conf.beat_schedule["scrape-scheduler-tick"] = {
+        "task": "app.workers.scrape_scheduler_worker.tick_scheduled_scrapes",
+        "schedule": crontab(minute="*/5"),
+        "options": {"expires": 240},
+    }
+
+if (os.getenv("TBCC_CREATIVE_GEN_ENABLED") or "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    celery.conf.beat_schedule["creative-generate-tick"] = {
+        "task": "app.workers.creative_generate_worker.run_creative_generate_tick",
+        "schedule": crontab(minute=35, hour="*/6"),
+    }
 
 
 def _liveness_fomo_crontab_hours() -> str:
@@ -201,6 +265,16 @@ celery.conf.beat_schedule["vip-weekly-mega"] = {
     "schedule": crontab(minute=5, hour="*"),
 }
 
+celery.conf.beat_schedule["weekly-build-log"] = {
+    "task": "app.workers.weekly_build_log_worker.run_weekly_build_log",
+    "schedule": crontab(minute=30, hour="*"),
+}
+
+celery.conf.beat_schedule["revenue-brief"] = {
+    "task": "app.workers.revenue_brief_worker.run_revenue_brief",
+    "schedule": crontab(minute=30, hour="*"),
+}
+
 
 def _storage_pool_seed_crontab_hours() -> str:
     raw = (os.getenv("TBCC_STORAGE_POOL_SEED_HOURS") or "4").strip()
@@ -211,9 +285,16 @@ def _storage_pool_seed_crontab_hours() -> str:
     return f"*/{n}"
 
 
+celery.conf.beat_schedule["intake-schedule-tick"] = {
+    "task": "app.workers.inbox_intake_worker.run_intake_schedule_tick",
+    "schedule": crontab(minute="*/5"),
+}
+
+# Legacy alias — storage-pool-seed now delegates to intake tick (force all due lanes).
 celery.conf.beat_schedule["storage-pool-seed"] = {
-    "task": "app.workers.storage_pool_seed_worker.seed_pools_from_storage_hub",
+    "task": "app.workers.inbox_intake_worker.run_intake_schedule_tick",
     "schedule": crontab(minute=40, hour=_storage_pool_seed_crontab_hours()),
+    "kwargs": {"force": False},
 }
 
 if (os.getenv("TBCC_SCRAPE_MICRO_PULL_ENABLED") or "0").strip().lower() in (
@@ -239,6 +320,37 @@ if (os.getenv("TBCC_THIN_POOL_BACKFILL_ENABLED") or "0").strip().lower() in (
     celery.conf.beat_schedule["thin-pool-backfill"] = {
         "task": "app.workers.storage_pool_seed_worker.backfill_thin_pools",
         "schedule": crontab(minute=55, hour="*/4"),
+    }
+
+# Recycle posted/survivor stock into approved rotation (~2×/month). Opt-in; shares Telethon lock.
+if (os.getenv("TBCC_LANE_SURVIVOR_REFILL_ENABLED") or "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    celery.conf.beat_schedule["lane-survivor-refill"] = {
+        "task": "app.workers.lane_survivor_refill_worker.refill_lanes_from_survivors",
+        "schedule": crontab(minute=20, hour=7, day_of_month="1,15"),
+    }
+
+
+def _traffic_pulse_digest_crontab_minutes() -> str:
+    from app.services.traffic_pulse import traffic_pulse_digest_minutes
+
+    n = traffic_pulse_digest_minutes()
+    return f"*/{n}"
+
+
+if (os.getenv("TBCC_TRAFFIC_PULSE_ENABLED") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+):
+    celery.conf.beat_schedule["traffic-pulse-digest"] = {
+        "task": "app.workers.traffic_pulse_worker.send_traffic_pulse_digest",
+        "schedule": crontab(minute=_traffic_pulse_digest_crontab_minutes()),
     }
 
 
@@ -283,29 +395,47 @@ if (os.getenv("TBCC_EROME_VIEW_SYNC_ENABLED") or "1").strip().lower() not in (
         "schedule": crontab(minute=10, hour=_erome_view_sync_crontab_hours()),
     }
 
-if (os.getenv("TBCC_MARKET_INTEL_PROBE_ENABLED") or "1").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-):
+# Reddit hot.json is often 403 from VPS IPs — default off on revenue island.
+_mi_probe_default = "0" if _revenue_island_active() else "1"
+if _env_flag("TBCC_MARKET_INTEL_PROBE_ENABLED", _mi_probe_default):
     celery.conf.beat_schedule["market-intel-probe"] = {
         "task": "app.workers.market_intel_worker.run_market_intel_probe",
         "schedule": crontab(minute=20, hour="*/6"),
     }
 
-if (os.getenv("TBCC_MARKET_INTEL_CYCLE_ENABLED") or "1").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-):
+_mi_cycle_default = "0" if _revenue_island_active() else "1"
+if _env_flag("TBCC_MARKET_INTEL_CYCLE_ENABLED", _mi_cycle_default):
     _cycle_minute = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_MINUTE") or "5").strip() or "5")
     _cycle_hour = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_HOUR") or "9").strip() or "9")
     _cycle_dow = int((os.getenv("TBCC_MARKET_INTEL_CYCLE_WEEKDAY") or "1").strip() or "1")
     celery.conf.beat_schedule["market-intel-weekly-cycle"] = {
         "task": "app.workers.market_intel_worker.run_weekly_market_intel_cycle",
         "schedule": crontab(minute=_cycle_minute, hour=_cycle_hour, day_of_week=_cycle_dow),
+    }
+
+
+def _storage_hub_r2_export_crontab_minutes() -> str:
+    raw = (os.getenv("TBCC_STORAGE_HUB_R2_EXPORT_MINUTES") or "10").strip()
+    try:
+        n = max(5, min(59, int(raw)))
+    except ValueError:
+        n = 10
+    return f"*/{n}"
+
+
+# Volume path: Hub → R2. Default on for revenue island; opt-in elsewhere.
+_r2_export_default = "1" if _revenue_island_active() else "0"
+if _env_flag("TBCC_STORAGE_HUB_R2_EXPORT_ENABLED", _r2_export_default):
+    _r2_limit = 15
+    try:
+        _r2_limit = max(1, min(50, int((os.getenv("TBCC_STORAGE_HUB_R2_EXPORT_LIMIT") or "15").strip())))
+    except ValueError:
+        _r2_limit = 15
+    celery.conf.beat_schedule["storage-hub-r2-export"] = {
+        "task": "app.workers.storage_hub_r2_export_worker.export_storage_hub_media_to_r2",
+        "schedule": crontab(minute=_storage_hub_r2_export_crontab_minutes()),
+        "kwargs": {"since_id": 0, "limit": _r2_limit, "only_missing_r2": True},
+        "options": {"expires": 540},
     }
 
 
@@ -350,6 +480,20 @@ if (os.getenv("TBCC_BUFFER_METRICS_SYNC_ENABLED") or "1").strip().lower() not in
         "schedule": crontab(minute=45, hour=_buffer_metrics_sync_crontab_hours()),
     }
 
+
+def _lifecycle_dm_crontab_hour() -> int:
+    raw = (os.getenv("TBCC_LIFECYCLE_DM_HOUR_UTC") or "14").strip()
+    try:
+        return max(0, min(23, int(raw)))
+    except ValueError:
+        return 14
+
+
+if (os.getenv("TBCC_LIFECYCLE_DM_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on"):
+    celery.conf.beat_schedule["lifecycle-dm-tick"] = {
+        "task": "app.workers.lifecycle_dm_worker.run_lifecycle_dm_tick",
+        "schedule": crontab(minute=20, hour=_lifecycle_dm_crontab_hour()),
+    }
 
 if (os.getenv("TBCC_STARS_BAIT_DM_ENABLED") or "").strip().lower() in ("1", "true", "yes", "on"):
     _sb_min = (os.getenv("TBCC_STARS_BAIT_DM_INTERVAL_MIN") or "45").strip()

@@ -32,4 +32,17 @@ def record_post_outbound_event(
         extra_json=extra_json,
     )
     db.add(ev)
+    try:
+        from app.services.traffic_pulse import pulse_post_outbound
+
+        pulse_post_outbound(
+            ok=ok,
+            event_type=event_type,
+            channel_id=channel_id,
+            scheduled_post_id=scheduled_post_id,
+            error_message=error_message,
+            pool_id=pool_id,
+        )
+    except Exception:
+        pass
     return ev

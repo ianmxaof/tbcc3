@@ -18,7 +18,9 @@ _PLACEMENT = "x_link_first"
 _URL_RE = re.compile(r"https://[^\s<>\"'\)]+", re.I)
 _GUMROAD_RE = re.compile(r"gumroad\.com/l/", re.I)
 _AFFILIATE_RE = re.compile(
-    r"nodress|nudify\.now|musebox|playbun|fapify|drawai|botynude|/ref/|bot\?username=",
+    r"nodress|nudify\.now|musebox|playbun|fapify|drawai|botynude|heatme|vixal|pornmaker|"
+    r"venersbot|hotdreams|bangbros|brazzers|babesnetwork|mennetwork|eritonetwork|bromonetwork|"
+    r"seancody|spicevids|landing\.rk\.com|/ref/|bot\?|/myapp\?|t\.me/\w+bot",
     re.I,
 )
 _TELEGRAM_RE = re.compile(r"t\.me/", re.I)

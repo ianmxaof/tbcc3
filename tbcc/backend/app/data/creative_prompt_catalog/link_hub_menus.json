@@ -1,0 +1,133 @@
+{
+  "campaign": "link_hub_menus",
+  "schema_version": 3,
+  "master_template": {
+    "layout_lock_ref": null,
+    "style_anchors": "AOF link hub menu card, 9:16",
+    "negative_prompt": "gibberish text",
+    "chrome_block": ""
+  },
+  "variations": [
+    {
+      "key": "link_hub_channel_menus",
+      "subject_delta": "#",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_channels_v1_classic_orange_panel.png",
+      "subject_delta": "Vertical 9:16 Telegram menu card, dark charcoal background, burnt-orange monospace terminal text in decorative Unicode box frame. Header: AOF LINK HUB. Subheader rows: MAIN \u00b7 COMM \u00b7 UNITY and MAIN \u00b7 AOF \u00b7 LINK \u00b7 REPO. Entry row: HUB telegram.me/aofmainhub and FREE LOOT \u00b7 COMM AREA with tiny gold coin icon. Section CONTENT PIPES numbered 01-12 with small lane icons: addlist folder, AI brain, flame, music note, globe, package, forbidden sign, milf silhouette abstract, voyeur eye, spiral, lips, loot chest. Footer: SUBSCRIBE & ENJOY. Clean readable sans-mono hybrid, soft glow, no gibberish.\n\n#",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_channels_v2_neon_grid.png",
+      "subject_delta": "Vertical 9:16 cyberpunk channel matrix menu. Black background, cyan and magenta neon grid lines, holographic numbered tiles 01-12 for AOF network lanes (AI, ASS, BOP, BIG TITS, PACKS, TABOO, MILF, ABG, GOON, BLOWJOB, LOOT ROOM, ADDLIST). Each tile has tiny pictogram icon. Top bar: AOF CHANNEL MATRIX in electric cyan. Bottom entry strip: LOOT ROOM \u00b7 LINK HUB \u00b7 ADDLIST with lightning bolt accents. Futuristic UI, crisp readable labels.\n\n#",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_channels_v3_vhs_broadcast.png",
+      "subject_delta": "Vertical 9:16 retro VHS TV guide aesthetic. Warm brown scanline texture, cream and amber text, CRT curvature vignette. Title AOF BROADCAST GUIDE in vintage TV font. Table of 12 channel lanes with antenna and static icons beside each row. Footer buttons TUNE ALL CHANNELS and RETURN TO HUB styled as VCR OSD buttons. Nostalgic cable guide mood, highly legible.",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_ai_partnership_menus",
+      "subject_delta": "#",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_ai_v1_dark_panel.png",
+      "subject_delta": "Vertical 9:16 dark noir affiliate panel matching Telegram screenshot style. Charcoal panel, orange border frame, header UNDRESS \u00b7 GENERATOR LINKS with sublinks TOP FUNNEL AOFMAINHUB. Section AI TOOLS / AFFILIATES numbered 01-18 with tiny tool icons: robot, palette, film reel, brain, bunny, maker badge, video arrow, dream cloud, bot chip, scissors, suite grid, gateway portal, flame, coin, MotionMuse film clapper at 15, heart chat, star companion, satisfactory bot. Include row 15 MOTIONMUSE \u00b7 invite credits highlighted subtly. Footer MAINBOTS SEC LOOT SPICY and SUPPORT commands. Readable monospace, elegant dread, no logos.\n\n#",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_ai_v2_reveal_board.png",
+      "subject_delta": "Vertical 9:16 mobile-first reveal board UI. Dark purple gradient, each AI partner as a horizontal swipe card with green checkmark, number 01-18, partner name, micro icon thumbnail on left (abstract app icons only). Header UNDRESS \u00b7 GENERATOR with tap a lane subtitle. MotionMuse row 15 has film-motion icon. Glossy cards, high contrast white text, partner grid scroll aesthetic.\n\n#",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "link_hub_ai_v3_uniform_grid.png",
+      "subject_delta": "Vertical 9:16 uniform partner matrix. Deep black background, thin gold grid dividing 3-column table of 18 AI affiliates. Each cell: number, abstract icon glyph, short label (Undress, Musebox, DrawAI, Nakedly, Playbun, PornMaker, Vixal, Hot Dreams, Video Gen, DeleteMyPanties, Fapify, Gateway, HeatMe, BotyNude, MotionMuse, Lucid Dreams, Perfecto, Satisfactory). Top banner AOF AI GRID \u00b7 UNIFORM PARTNER MATRIX. Architectural catalog mood, perfectly aligned, readable.",
+      "tier": null,
+      "tags": [
+        "link_hub",
+        "menu"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    }
+  ],
+  "notes": ""
+}

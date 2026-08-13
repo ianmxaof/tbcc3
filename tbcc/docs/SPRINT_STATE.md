@@ -1,21 +1,27 @@
 # Sprint State
 
-**Last updated:** 2026-07-22 (loot reveal video 1–4 + island deploy)
+**Last updated:** 2026-08-13 (flavor resupply Phases 1–3 committed `024b594`; island seed 500 + resync execute `local-20260813-0415` — lanes 93–148 unique hooks, PACKS 101)
 
 ## Sprint goal
 
 Fully automated agent workflow — zero slash commands; ship-log and session rituals run on situational triggers + scheduled tasks.
 
-**Control-plane / revenue addendum:** Home = light optional workstation (true lean); money = dedicated ~$5–15/mo Linux island; scrape stays on GCP micro. See `docs/REVENUE_ISLAND.md`.
+**Control-plane / revenue addendum:** Home = light optional workstation (true lean); money = dedicated ~$5–15/mo Linux island; scrape stays on GCP micro. Always-on UI: compose `--profile ui` (dashboard + AOF Forum) — see `docs/ISLAND_UI_SURFACES.md`.
 
 ## In flight
 
 | Item | Owner | Notes |
 |------|-------|-------|
+| Module A revenue stack | agent + operator | **2026-08-08 — companion credit packs:** 5/15/50 reveal SKUs on payment bot (`bot_section=companion`, Stars + crypto); fulfillment → `grant_credits()`; companion balance/paywall deep links; single-reveal Stars stays native. Island `local-20260808-0200`. Prior: conversion ladder batch 2, DM guard, sprint wk32. **Operator:** firehose A/B; 48h scoreboard. |
+| Secretary sales-rep Phase 1 | agent | **2026-08-01 island:** per-customer Pilot/Auto (`reply_mode`), draft-card toggles, `secretary_new_lead` inbox, sales_strategy playbook (12 rows) + coach hint. Smoke: `/as_customer price objection` on @aof_secretary_bot. Phase 2 fleet table `secretary_bot_instances` + registry helpers; multi-app host deferred — `docs/handoffs/2026-08-01_secretary-fleet-phase2.md`. |
+| Loot album delivery + import starvation | agent | **2026-07-28 — deployed.** Survivor refill restored **605** approved (recycled). **2026-07-31 — route #1 ready:** `scripts/loot_durability_check.py` (dry-run/apply refill + paid-roll smoke steps); operator sandbox unlimited pulls for smoke. **Open:** fresh local imports + storage deposits; loop re-entrancy retry-only. Run on island: `python scripts/loot_durability_check.py` then `--apply-refill --unpause` if thin. |
+| Pool album duplicate tiles | agent | **2026-08-01 shipped:** sent-cache composer dedupe + per-item cache msg ids + hub fetch (`media_message_resolve`). Island `local-20260801-1911-fix`; `TBCC_SENT_CACHE_ALBUM_SIZE=3`; audit demoted **323** dup rows (voyeur 304, ASS 19). Watch next Loot Room albums for unique tiles. |
+| Remixer `/rebundle` any-admin | agent | **2026-08-05:** `/rebundle` + `/rebundle go` (partial + delete sources). Commit `ce5b684`. Island `local-20260805-2117` deployed (album_composer + workers). Operator smoke: `/rebundle` in any admin group or hub **✅ Rebundle (+partial)**. |
+| Listening relay + loot goblin | agent | **2026-07-26:** Phases 1–4 on island; alembic **102**; natural goblin spawn verified (drop 4, relay_log_id=2); production tuning restored (chance 0.20, cooldown 120). Key-roll album delivery fixed via `admin_import.session` (`local-20260725-2030`). Phase 5 Bot API relay = plan in `docs/handoffs/2026-07-26_relay-bot-api-phase5-plan.md`. |
 | True lean home cold-start | agent | **2026-07-15:** Lean = API + celery + beat + payment + loot; album_composer no longer mandatory; dashboard/secretary/post lanes default Off. Post-cutover: `TBCC_REVENUE_ISLAND_ACTIVE=1` + `mark-home-bots-off.ps1` keeps home payment/loot Off. |
 | Tray trust (Phase B honesty) | operator | Meltdown/`THROTTLE`/`STALE` already in panel — **smoke**, not greenfield. Doc sync done. Lane C only if smoke proves foundation bugs. |
 | Revenue island (dedicated VPS) | operator + agent | **2026-07-20:** Named tunnel `api.powercore.app`; Gumroad Ping 200; VIP ladder plans 10–14; checkout schedulers migrated off dead `start=c6` → plan 10 + `cm10` menu. `/uploads` volume on island for bundle zips. Buffer keys sync via `seed-island-env-from-home.ps1`. Home bots stay Off. |
-| Loot Lane Economy | agent | **2026-07-18:** Island `TBCC_API_REQUIRE_INTERNAL=1` (channels 403 without key). Alembic **094** head (`buyer_entitlements` + `lane_drops`). Ext Options API base → `http://5.161.53.91:8000` + internal key (no Tailscale on island yet — port left open). LV Playwright headed batch started (session expired; needs operator login). Gates LV-first flywheel still green. |
+| Loot Lane Economy | agent | **2026-07-27:** Module A+B handoffs shipped; **VIP floor $18** in code; `bonus_album_draws` applied to album size. **2026-08-03:** **VIP Intro Month** $10 / ~834⭐ — first main-section sub only; standard ladder unchanged. Reseed + island deploy. **Operator:** Gumroad add $10 intro tier (`price:1000` in PRODUCT_MAP). Lane Pass still shelved (0/11 ready). |
 | Mega → R2 vault | agent | **PAUSED 2026-07-16:** Export killed on island. Hold until media-purpose + Cloudflare profit case decided (ThisVid upload experiments inconclusive). Partial R2 prefix may exist — not the vault. |
 | Sale FOMO announce | agent | **2026-07-16:** Hub `main` = **Loot Room** (`-1003927742839`, invite `+97f4…`). Clear `TBCC_SALE_ANNOUNCE_SKIP_KEYS`. Island FOMO targets `network,buffer`. Bake `aof_network.py` into GHCR. |
 | Save AOF + watch lanes | agent | **2026-07-15:** Plan shipped — `aof_lane_tag_map` + watch preprocess/route; Ext Save AOF (watermark-bytes → inbox + `.tbcc-meta.json`); overlay Download = Save AOF by default. Folders: emoji `🍒 AOF BIG TITS` or `TBCC_WATCH_AOF_FOLDER_STYLE=disk` → `AOF NETWORK/AOF BIG TITS`. |
@@ -37,8 +43,8 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Calm Ops Phase 5 (Erome hands-off) | agent | Private staging + governance; **extension transport overlay** (live Pareto intel + Playwright record) |
 | Promo affiliate rotation | agent | Seed includes **PornMaker AI** `https://pornmaker.ai?ref=DExnc3FJ` (x_buffer / telegram_footer / links_hub_ai / loot_roll). |
 | Stars bait outreach (DM + channel pace) | agent | **2026-07-22:** Island `local-20260722-0610`; alembic **097** head; funnel RAG +9; scheduler **#148** (15 bait variations). DM pace: `ENABLED=1` batch=2 / 60min; pool=19 users. Smoke: `?start=bait_loot`. |
-| Stars bait outreach (DM + channel pace) | agent | **2026-07-22:** Island `local-20260722-0610`; alembic **097** head; funnel RAG +9 patterns; scheduler **#148** (15 bait variations). DM pace: `ENABLED=1` batch=2 / 60min; pool=19 users. Smoke: `?start=bait_loot` on payment bot. |
-| X ↔ Erome flywheel (SFW promo pool + Buffer) | agent | **2026-07-22:** `TBCC_POOL_BUFFER_MIRROR=0` on island (no false Erome claims). Honest opener + `#erome` only when URL present; armory reseeded (16 items w/ hashtags). Re-enable mirror when Erome upload reliable. |
+| Lifecycle DM (renewal + loot + companion re-engage) | agent | **2026-08-02:** daily beat — sub pre/post expiry, loot 7/14d, companion flirt 3/7/14d (`missed_you` deep link). `TBCC_LIFECYCLE_DM_ENABLED=1`. |
+| X ↔ Erome flywheel (SFW promo pool + Buffer) | agent | **2026-07-31:** Buffer X creative stack — 500 copy templates (5×100 JSON), `social_copy_templates` rotation (demote after 2), DSL (`CREATIVE_COPY_DSL.md`), v3 prompt catalog + ingest, `creative_rag`, optional `TBCC_CREATIVE_GEN_ENABLED` tick. **Island:** alembic **109**, seed copy + ingest + `provision_creative_prompt_gates.py --execute`. Prior: armory 16-cap raised to env **50**; `TBCC_BUFFER_X_SPICY_BIAS_EVERY` separate from copy rotation. |
 | AI curated packs relist | agent | **2026-07-20:** `seed_ai_curated_packs.py` — legacy AI zips → $3 / 250⭐ / crypto bundles with 3-image promo albums in `/packs` catalog. |
 | XEnhancer download parity | agent | **ext 1.40.7:** per-post DL → AOF name under `Downloads/tbcc/inbox` + sidecar (`defer_preprocess`); watch organizer watermarks. ZIP archive still `TBCC Bundle · …`. |
 | Remote scrape offload (GCP + GHCR) | agent | Scripts + GHCR workflow + capture-secret fix; go-live: create VM + enable-home-offload |

@@ -24,9 +24,17 @@ export default async function GalleriesIndex() {
 
   return (
     <>
-      <h1>Galleries</h1>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "1rem" }}>
+        <h1 style={{ margin: 0 }}>Galleries</h1>
+        <Link href="/g/new" className="primary" style={{ padding: "0.35rem 0.85rem", textDecoration: "none" }}>
+          New gallery
+        </Link>
+      </div>
       {galleries.length === 0 ? (
-        <div className="empty muted">No public galleries yet. Create one from any media page.</div>
+        <div className="empty muted">
+          No public galleries yet.{" "}
+          <Link href="/g/new">Create your first gallery</Link>.
+        </div>
       ) : (
         <div className="grid">
           {galleries.map((g) => (

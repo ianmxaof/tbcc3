@@ -90,6 +90,37 @@ def _dm_cursor_key() -> str:
     return "tbcc:stars_bait_dm:cursor"
 
 
+def _dm_unreachable_key(telegram_user_id: int) -> str:
+    return f"tbcc:stars_bait_dm:unreachable:{int(telegram_user_id)}"
+
+
+_DM_UNREACHABLE_TTL_SEC = 90 * 86400
+_DM_UNREACHABLE_ERRORS = (
+    "bot can't initiate conversation with a user",
+    "chat not found",
+    "user is deactivated",
+    "peer_id_invalid",
+)
+
+
+def _mark_dm_unreachable(redis_client, telegram_user_id: int, *, reason: str) -> None:
+    if not redis_client:
+        return
+    try:
+        redis_client.setex(_dm_unreachable_key(telegram_user_id), _DM_UNREACHABLE_TTL_SEC, reason[:120])
+    except Exception:
+        pass
+
+
+def _is_dm_unreachable(redis_client, telegram_user_id: int) -> bool:
+    if not redis_client:
+        return False
+    try:
+        return bool(redis_client.get(_dm_unreachable_key(telegram_user_id)))
+    except Exception:
+        return False
+
+
 def collect_outreach_user_ids(db: Session, *, limit: int = 5000) -> list[int]:
     """Users who have interacted with AOF commerce (bot can DM them)."""
     ids: set[int] = set()
@@ -135,6 +166,8 @@ def send_stars_bait_dm_sync(
 
     prod = product or _product_rotation(int(telegram_user_id) % 3)
     r = _redis()
+    if r and not force and _is_dm_unreachable(r, telegram_user_id):
+        return {"ok": True, "skipped": True, "reason": "unreachable", "product": prod.value}
     ck = _dm_cooldown_key(telegram_user_id, prod.value)
     if r and not force:
         try:
@@ -166,9 +199,13 @@ def send_stars_bait_dm_sync(
         return {"ok": False, "error": str(e)}
 
     if not data.get("ok"):
+        err = (data.get("description") or "telegram_error").strip()
+        err_l = err.lower()
+        if any(marker in err_l for marker in _DM_UNREACHABLE_ERRORS):
+            _mark_dm_unreachable(r, telegram_user_id, reason=err)
         return {
             "ok": False,
-            "error": data.get("description") or "telegram_error",
+            "error": err,
             "product": prod.value,
             "style": variation.style.value,
         }

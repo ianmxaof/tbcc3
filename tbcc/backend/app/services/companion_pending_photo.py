@@ -30,13 +30,21 @@ def _key(user_id: int) -> str:
     return f"tbcc:companion:pending_photo:{user_id}"
 
 
-def save_pending_photo(*, user_id: int, chat_id: int, file_id: str, filename: str) -> None:
+def save_pending_photo(
+    *,
+    user_id: int,
+    chat_id: int,
+    file_id: str,
+    filename: str,
+    media_type: str = "photo",
+) -> None:
     payload = json.dumps(
         {
             "user_id": int(user_id),
             "chat_id": int(chat_id),
             "file_id": file_id,
             "filename": filename or "photo.jpg",
+            "media_type": (media_type or "photo").strip().lower(),
         }
     )
     r = _redis()

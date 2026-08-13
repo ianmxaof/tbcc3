@@ -44,7 +44,8 @@ def test_consume_and_refund_trial():
     acc.lv_ack = True
     acc.member_verified = True
     ca.save_access(acc)
-    assert ca.consume_generation_allowance(uid)
+    ok, referral_credit = ca.consume_generation_allowance(uid)
+    assert ok
     assert ca.get_access(uid).generations_remaining() == 0
     ca.refund_generation_allowance(uid)
     assert ca.get_access(uid).generations_remaining() == 1

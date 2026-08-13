@@ -4,7 +4,7 @@ Central admin notification inbox — one tidy feed for payment, loot, ops, and i
 Events are stored in Redis (recent ~200) and optionally pushed instantly to ADMIN_TELEGRAM_ID
 via the secretary bot token. Digests: /inbox /now in `python -m bots.secretary_bot` (admin only).
 
-Categories: payment, loot, ops, invoice, system
+Categories: payment, loot, ops, invoice, system, traffic (growth alias legacy)
 Severity: critical, important, info
 
 Instant Telegram policy:
@@ -30,12 +30,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-Category = Literal["payment", "loot", "ops", "invoice", "system"]
+Category = Literal["payment", "loot", "ops", "invoice", "system", "traffic", "growth"]
 Severity = Literal["critical", "important", "info"]
 
 REDIS_KEY_EVENTS = "tbcc:admin_inbox:events"
 REDIS_KEY_LAST_READ = "tbcc:admin_inbox:last_read"
+REDIS_KEY_SECRETARY_ONLINE = "tbcc:admin_inbox:last_secretary_online"
 MAX_EVENTS = 200
+SECRETARY_ONLINE_DEDUP_SEC = 1200  # 20 min — deploy restarts should not flood inbox
 
 _CATEGORY_ICON: dict[str, str] = {
     "payment": "💰",
@@ -43,6 +45,8 @@ _CATEGORY_ICON: dict[str, str] = {
     "ops": "🔧",
     "invoice": "🧾",
     "system": "⚙️",
+    "traffic": "📡",
+    "growth": "📊",
 }
 
 _SEVERITY_RANK = {"info": 0, "important": 1, "critical": 2}
@@ -130,6 +134,45 @@ def _format_event_body_html(event: dict[str, Any], *, truncate: int | None = Non
             f"<b>{plan}</b> · {sale_kind.replace('_', ' ')}\n"
             f"Buyer <code>{uid}</code> · {stars} ⭐ · {pm}{ref_line}"
         )
+    elif cat == "growth":
+        slug = html.escape(str(meta.get("slug") or ""))
+        hits = int(meta.get("hit_count") or 0)
+        ip = html.escape(str(meta.get("ip") or "?"))
+        country = html.escape(str(meta.get("country") or "??"))
+        ua = html.escape(str(meta.get("user_agent") or "")[:100])
+        dest = html.escape(str(meta.get("destination_url") or "")[:160])
+        campaign = (meta.get("campaign_id") or "").strip()
+        lines = [
+            f"slug <code>{slug}</code> · hits {hits}",
+            f"ip {ip} · {country}",
+            f"ua {ua}",
+        ]
+        if campaign:
+            lines.append(f"id <code>{html.escape(campaign)}</code>")
+        lines.append(f"→ {dest}")
+        text = "\n".join(lines)
+    elif str(meta.get("code") or "") in (
+        "revenue_brief",
+        "secretary_draft",
+        "secretary_draft_fail",
+        "secretary_new_lead",
+    ) and raw_body:
+        # Pre-rendered Telegram HTML from revenue brief / secretary drafts.
+        text = raw_body[:1200]
+    elif cat == "traffic" and meta.get("pulse_event_type"):
+        from app.services.traffic_inbox_copy import format_traffic_detail
+
+        text = format_traffic_detail(meta, raw_body=raw_body)
+        if not text.strip() and raw_body:
+            text = html.escape(raw_body)
+    elif cat == "traffic" and (
+        str(meta.get("pulse_event_type") or "") == "beacon" or meta.get("slug")
+    ):
+        from app.services.traffic_beacon_notify import format_traffic_beacon_body_html
+
+        text = format_traffic_beacon_body_html(meta)
+        if not text.strip() and raw_body:
+            text = html.escape(raw_body)
     else:
         text = html.escape(raw_body) if raw_body else ""
 
@@ -337,6 +380,11 @@ def _store_event(event: dict[str, Any]) -> None:
 
 def _format_instant(event: dict[str, Any]) -> str:
     cat = str(event.get("category") or "system")
+    meta = event.get("meta") or {}
+    if cat == "traffic" and meta.get("pulse_event_type"):
+        from app.services.traffic_inbox_copy import format_traffic_compact_line
+
+        return format_traffic_compact_line(event, ago="now")
     icon = _CATEGORY_ICON.get(cat, "📬")
     sev = str(event.get("severity") or "info")
     if cat == "payment":
@@ -368,13 +416,23 @@ def push_admin_inbox_event(
     """Record an admin notification. Returns the event dict or None when disabled."""
     if not inbox_enabled():
         return None
+    title_s = (title or "").strip()[:200]
+    if category == "system" and title_s.lower() == "secretary bot online":
+        try:
+            r = _redis_client()
+            last = float(r.get(REDIS_KEY_SECRETARY_ONLINE) or 0)
+            if last and (_now_ts() - last) < SECRETARY_ONLINE_DEDUP_SEC:
+                return None
+            r.set(REDIS_KEY_SECRETARY_ONLINE, str(_now_ts()))
+        except Exception:
+            pass
     event: dict[str, Any] = {
         "id": secrets.token_hex(8),
         "ts": _now_iso(),
         "ts_unix": _now_ts(),
         "category": category,
         "severity": severity,
-        "title": (title or "").strip()[:200],
+        "title": title_s,
         "body": (body or "").strip()[:1200],
         "meta": meta or {},
     }
@@ -538,22 +596,43 @@ def format_inbox_digest(
     if unread_count:
         header += f" · <b>{unread_count}</b> unread"
     blocks: list[str] = [header, ""]
-    for ev in events:
+
+    traffic_events = [e for e in events if str(e.get("category") or "") == "traffic"]
+    other_events = [e for e in events if str(e.get("category") or "") != "traffic"]
+
+    from app.services.traffic_inbox_copy import format_system_compact_line, format_traffic_compact_line, format_traffic_rollup
+
+    rollup = format_traffic_rollup(traffic_events, ago_fn=_ago_label) if len(traffic_events) >= 4 else None
+    if rollup:
+        blocks.append(rollup)
+        blocks.append("")
+        digest_events = other_events
+    else:
+        digest_events = events
+
+    for ev in digest_events:
         cat = str(ev.get("category") or "system")
+        ago = _ago_label(float(ev.get("ts_unix") or 0))
+        if cat == "traffic":
+            blocks.append(format_traffic_compact_line(ev, ago=ago))
+            continue
+        if cat == "system":
+            blocks.append(format_system_compact_line(ev, ago=ago))
+            continue
         icon = _CATEGORY_ICON.get(cat, "📬")
         sev = str(ev.get("severity") or "info")
         sev_tag = {"critical": "🔴", "important": "🟠", "info": ""}.get(sev, "")
         t = html.escape(str(ev.get("title") or ""))
-        b = _format_event_body_html(ev, truncate=220)
-        ago = _ago_label(float(ev.get("ts_unix") or 0))
+        b = _format_event_body_html(ev, truncate=140)
         line = f"{icon} <b>{t}</b>"
         if sev_tag:
             line += f" {sev_tag}"
-        line += f" · <code>{ago}</code>"
-        blocks.append(line)
+        line += f" · <code>{html.escape(ago)}</code>"
         if b:
-            blocks.append(f"  {b}")
-        blocks.append("")
+            line += f"\n  <i>{b}</i>"
+        blocks.append(line)
+
+    blocks.append("")
     blocks.append("<i>/read marks all as seen · filters: /payment /loot /ops /critical</i>")
     text = "\n".join(blocks).strip()
     return text[:4096]

@@ -12,17 +12,19 @@ export default async function ForumIndex() {
     .order("name", { ascending: true });
   if (error) return <div className="empty">Error: {error.message}</div>;
 
+  const visible = (cats ?? []).filter((c) => c.slug !== "demo-hub-seed-v1");
+
   return (
     <>
       <h1>Forum</h1>
-      {(!cats || cats.length === 0) ? (
+      {visible.length === 0 ? (
         <div className="empty muted">
           No categories yet. An admin can insert rows into <code>forum_categories</code> via
           the Supabase dashboard or SQL: <code>insert into forum_categories (slug, name) values (&apos;general&apos;, &apos;General&apos;);</code>
         </div>
       ) : (
         <ul style={{ listStyle: "none", padding: 0 }}>
-          {cats.map((c) => (
+          {visible.map((c) => (
             <li key={c.id} className="card" style={{ marginBottom: "0.5rem" }}>
               <h3 style={{ margin: 0 }}><Link href={`/f/${c.slug}`}>{c.name}</Link></h3>
               {c.description && <p className="muted" style={{ margin: "0.25rem 0 0" }}>{c.description}</p>}

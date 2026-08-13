@@ -5,11 +5,12 @@
 #   powershell -NoProfile -File .\scripts\set-extension-island-api.ps1
 #   powershell -NoProfile -File .\scripts\set-extension-island-api.ps1 -ApiBase http://5.161.53.91:8000
 #
-# Prefers: LocalPort tunnel (127.0.0.1:8000) if /health OK, else island public IP.
+# Prefers: https://api.powercore.app (island tunnel), then local tunnel, then island IP.
 
 param(
   [string]$ApiBase = "",
-  [string]$IslandPublic = "http://5.161.53.91:8000",
+  [string]$IslandPublic = "https://api.powercore.app",
+  [string]$IslandIpFallback = "http://5.161.53.91:8000",
   [switch]$StartTunnel
 )
 
@@ -35,13 +36,15 @@ function Test-Health([string]$base) {
 }
 
 if (-not $ApiBase) {
-  if (Test-Health "http://127.0.0.1:8000") {
-    $ApiBase = "http://127.0.0.1:8000"
-  } elseif (Test-Health $IslandPublic) {
+  if (Test-Health $IslandPublic) {
     $ApiBase = $IslandPublic.TrimEnd('/')
+  } elseif (Test-Health "http://127.0.0.1:8000") {
+    $ApiBase = "http://127.0.0.1:8000"
+  } elseif (Test-Health $IslandIpFallback) {
+    $ApiBase = $IslandIpFallback.TrimEnd('/')
   } else {
-    Write-Host "No live API on 127.0.0.1:8000 or $IslandPublic" -ForegroundColor Red
-    Write-Host "Start tunnel: .\scripts\revenue-island\dashboard-tunnel.ps1" -ForegroundColor Yellow
+    Write-Host "No live API on $IslandPublic, 127.0.0.1:8000, or $IslandIpFallback" -ForegroundColor Red
+    Write-Host "Check island: curl -fsS https://api.powercore.app/health" -ForegroundColor Yellow
     exit 1
   }
 }

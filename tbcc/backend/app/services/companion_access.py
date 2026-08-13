@@ -24,6 +24,7 @@ from app.data.aof_network import AOF_NETWORK_CHANNELS, MAIN_GROUP_IDENT, ADDLIST
 logger = logging.getLogger(__name__)
 
 _ACCESS_TTL_SEC = 60 * 60 * 24 * 90  # 90 days
+_LAST_ACTIVE_ZSET = "tbcc:companion:last_active"
 _MEM: dict[int, dict[str, Any]] = {}
 
 _MEMBER_STATUSES = frozenset(
@@ -71,6 +72,25 @@ def affiliate_undress_url() -> str:
         (os.getenv("TBCC_COMPANION_AFFILIATE_UNDRESS_URL") or "").strip()
         or (os.getenv("TBCC_AFFILIATE_UNDRESS_URL") or "").strip()
     )
+
+
+def affiliate_undress_url_wrapped(*, db: Any | None = None) -> str:
+    """Undress affiliate URL with optional beacon wrap (placement companion_dm)."""
+    raw = affiliate_undress_url()
+    if not raw:
+        return ""
+    if db is not None:
+        from app.services.affiliate_beacon_wrap import wrap_companion_affiliate_url
+
+        return wrap_companion_affiliate_url(db, raw)
+    from app.database.session import SessionLocal
+    from app.services.affiliate_beacon_wrap import wrap_companion_affiliate_url
+
+    session = SessionLocal()
+    try:
+        return wrap_companion_affiliate_url(session, raw)
+    finally:
+        session.close()
 
 
 def free_trial_photos() -> int:
@@ -139,16 +159,21 @@ class CompanionAccess:
     credits: int = 0
     verified_at: float = 0.0
     vip_subscriber: bool = False
+    last_active_at: float = 0.0
 
     @property
     def gate_complete(self) -> bool:
         if not gate_enabled():
+            return True
+        if self.user_id in admin_telegram_ids():
             return True
         if self.vip_subscriber and vip_skip_gate_for_subscribers():
             return True
         return self.lv_ack and self.member_verified
 
     def generations_remaining(self) -> int:
+        if self.user_id in admin_telegram_ids():
+            return 999
         trial_left = max(0, free_trial_photos() - self.trial_used)
         return trial_left + max(0, self.credits)
 
@@ -162,6 +187,7 @@ class CompanionAccess:
             "credits": self.credits,
             "verified_at": self.verified_at,
             "vip_subscriber": self.vip_subscriber,
+            "last_active_at": self.last_active_at,
         }
 
     @classmethod
@@ -175,6 +201,7 @@ class CompanionAccess:
             credits=int(data.get("credits") or 0),
             verified_at=float(data.get("verified_at") or 0.0),
             vip_subscriber=bool(data.get("vip_subscriber")),
+            last_active_at=float(data.get("last_active_at") or 0.0),
         )
 
 
@@ -212,6 +239,53 @@ def save_access(access: CompanionAccess) -> None:
         except Exception as e:
             logger.warning("companion_access save failed: %s", e)
     _MEM[access.user_id] = access.to_dict()
+
+
+def touch_companion_activity(user_id: int) -> None:
+    """Record last DM/chat activity for paced re-engagement DMs."""
+    acc = get_access(user_id)
+    now = time.time()
+    acc.last_active_at = now
+    save_access(acc)
+    r = _redis()
+    if r is not None:
+        try:
+            r.zadd(_LAST_ACTIVE_ZSET, {str(int(user_id)): now})
+        except Exception as e:
+            logger.debug("companion last_active zadd uid=%s: %s", user_id, e)
+
+
+def companion_last_active_zset_key() -> str:
+    return _LAST_ACTIVE_ZSET
+
+
+def list_companion_user_ids_active_on_date(target_date) -> list[int]:
+    """Users whose last companion activity fell on target_date (UTC)."""
+    from datetime import datetime, time as dt_time
+
+    start_ts = datetime.combine(target_date, dt_time.min).timestamp()
+    end_ts = datetime.combine(target_date, dt_time.max).timestamp()
+    r = _redis()
+    if r is None:
+        return []
+    try:
+        raw = r.zrangebyscore(_LAST_ACTIVE_ZSET, start_ts, end_ts)
+        return [int(x) for x in raw if str(x).isdigit()]
+    except Exception as e:
+        logger.warning("companion last_active zrange failed: %s", e)
+        return []
+
+
+def companion_had_real_session(user_id: int) -> bool:
+    """Skip users who never passed gate or used a trial/credit."""
+    acc = get_access(user_id)
+    if user_id in admin_telegram_ids():
+        return True
+    if acc.trial_used > 0 or acc.credits > 0:
+        return True
+    if gate_enabled() and acc.gate_complete:
+        return True
+    return not gate_enabled() and acc.last_active_at > 0
 
 
 def mark_lv_acknowledged(user_id: int) -> CompanionAccess:
@@ -288,6 +362,16 @@ def _maybe_credit_referrer(user_id: int) -> None:
         logger.debug("companion referral credit skipped: %s", e)
 
 
+def _maybe_credit_referrer_on_first_reveal(user_id: int) -> dict | None:
+    try:
+        from app.services.companion_referral import maybe_credit_referrer_on_first_reveal
+
+        return maybe_credit_referrer_on_first_reveal(user_id)
+    except Exception as e:
+        logger.debug("companion referral first-reveal credit skipped: %s", e)
+        return None
+
+
 def can_spend_operator_api(user_id: int) -> tuple[bool, str]:
     """Whether we may charge YOUR undress API balance for this user."""
     if user_id in admin_telegram_ids():
@@ -300,32 +384,41 @@ def can_spend_operator_api(user_id: int) -> tuple[bool, str]:
     return False, "no_credits"
 
 
-def consume_generation_allowance(user_id: int) -> bool:
+def consume_generation_allowance(user_id: int, *, units: int = 1) -> tuple[bool, dict | None]:
+    units = max(1, int(units))
     acc = get_access(user_id)
     if user_id in admin_telegram_ids():
-        return True
+        return True, None
     trial_cap = free_trial_photos()
-    if acc.trial_used < trial_cap:
-        acc.trial_used += 1
+    consumed = False
+    for _ in range(units):
+        if acc.trial_used < trial_cap:
+            acc.trial_used += 1
+            consumed = True
+        elif acc.credits > 0:
+            acc.credits -= 1
+            consumed = True
+        else:
+            if consumed:
+                save_access(acc)
+            return False, None
+    if consumed:
         save_access(acc)
-        return True
-    if acc.credits > 0:
-        acc.credits -= 1
-        save_access(acc)
-        return True
-    return False
+    referral_credit = _maybe_credit_referrer_on_first_reveal(user_id) if consumed else None
+    return consumed, referral_credit
 
 
-def refund_generation_allowance(user_id: int) -> None:
-    """Return one photo slot after a failed queue (non-admin)."""
+def refund_generation_allowance(user_id: int, *, units: int = 1) -> None:
+    """Return photo slots after a failed queue (non-admin)."""
+    units = max(1, int(units))
     if user_id in admin_telegram_ids():
         return
     acc = get_access(user_id)
-    if acc.trial_used > 0:
-        acc.trial_used -= 1
-        save_access(acc)
-        return
-    acc.credits += 1
+    for _ in range(units):
+        if acc.trial_used > 0:
+            acc.trial_used -= 1
+        else:
+            acc.credits += 1
     save_access(acc)
 
 

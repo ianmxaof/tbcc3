@@ -63,6 +63,28 @@ class LootIntervalTier(Base):
     rarity_shift = Column(Integer, nullable=False, default=0)  # added to rolled tier before clamp 1..10
 
 
+class LootCreatorSubmission(Base):
+    """Self-serve creator promo applications — pending operator review before modifier pool."""
+
+    __tablename__ = "loot_creator_submissions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    telegram_user_id = Column(BigInteger, nullable=False, index=True)
+    submitted_url = Column(Text, nullable=False)
+    normalized_url = Column(Text, nullable=False)
+    platform_key = Column(String(32), nullable=False)
+    platform_label = Column(String(32), nullable=False)
+    path_handle = Column(String(64), nullable=False)
+    display_name = Column(String(64), nullable=True)
+    label = Column(String(256), nullable=False)
+    status = Column(String(16), nullable=False, default="pending")  # pending | approved | rejected
+    review_note = Column(Text, nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(BigInteger, nullable=True)
+    modifier_id = Column(Integer, ForeignKey("loot_modifiers.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class LootModifier(Base):
     """Mega packs, Telegram groups/channels, internal routes — rolled as caption modifiers."""
 
@@ -141,6 +163,9 @@ class LootPlayerStats(Base):
     free_pulls_used = Column(Integer, nullable=False, default=0)
     bonus_free_pulls = Column(Integer, nullable=False, default=0)
     vip_daily_pull_at = Column(DateTime, nullable=True)
+    daily_pull_at = Column(DateTime, nullable=True)
+    daily_streak_days = Column(Integer, nullable=False, default=0)
+    daily_streak_best = Column(Integer, nullable=False, default=0)
     first_roll_at = Column(DateTime, nullable=True)
     last_roll_at = Column(DateTime, nullable=True)
 

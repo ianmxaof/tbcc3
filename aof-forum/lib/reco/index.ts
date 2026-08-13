@@ -179,7 +179,15 @@ export async function groupFeed(opts: { groupId: number; limit?: number; before?
 export async function relatedGroups(groupId: number, limit = 12) {
   const db = await client();
   const { data, error } = await db.rpc("related_groups", { p_group_id: groupId, p_limit: limit });
-  if (error) throw new Error(`related_groups: ${error.message}`);
+  if (error) {
+    // group_coview MV may be empty / unpopulated in early local projects — soft-fail.
+    const msg = error.message || "";
+    if (/group_coview|has not been populated|materialized view/i.test(msg)) {
+      console.warn(`[relatedGroups] soft-fail (coview): ${msg}`);
+      return [] as RelatedGroupRow[];
+    }
+    throw new Error(`related_groups: ${msg}`);
+  }
   return (data ?? []) as RelatedGroupRow[];
 }
 

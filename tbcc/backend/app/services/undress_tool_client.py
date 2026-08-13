@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE = "https://public-api.undresstool.fun"
 
-# Last-known-good list from GET /api/v1/photos/poses (used when vendor returns 5xx).
 DEFAULT_PHOTO_POSES: tuple[str, ...] = (
     "Cumshot",
     "Missionary POV",
@@ -39,7 +38,17 @@ DEFAULT_PHOTO_POSES: tuple[str, ...] = (
     "Wet girl",
 )
 
+# Last-known-good video poses from GET /api/v1/video/poses (id + name).
+DEFAULT_VIDEO_POSES: tuple[dict[str, str], ...] = (
+    {"id": "doggy", "name": "Doggy Style"},
+    {"id": "missionary", "name": "Missionary POV"},
+    {"id": "cowgirl", "name": "Cowgirl POV"},
+    {"id": "blowjob", "name": "Blowjob"},
+    {"id": "titfuck", "name": "Tit Fuck"},
+)
+
 _pose_cache: tuple[float, list[str]] | None = None
+_video_pose_cache: tuple[float, list[dict[str, str]]] | None = None
 _POSE_CACHE_TTL_SEC = 3600
 
 
@@ -295,5 +304,171 @@ async def submit_photo_undress(
         id_gen=str(body.get("id_gen") or id_gen),
         status=status or "ok",
         message=str(body.get("message") or "queued"),
+        raw=body,
+    )
+
+
+async def list_video_poses(*, timeout: float = 30.0, allow_fallback: bool = True) -> list[dict[str, str]]:
+    global _video_pose_cache
+    now = time.time()
+    if _video_pose_cache and (now - _video_pose_cache[0]) < _POSE_CACHE_TTL_SEC:
+        return list(_video_pose_cache[1])
+
+    url = f"{base_url()}/api/v1/video/poses"
+    headers = _headers() if configured() else None
+    last_err: Exception | None = None
+
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.get(url, headers=headers)
+            if r.status_code >= 500:
+                last_err = httpx.HTTPStatusError(
+                    f"video poses API {r.status_code}",
+                    request=r.request,
+                    response=r,
+                )
+                await asyncio.sleep(0.6 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            data = r.json()
+            poses = data.get("poses") if isinstance(data, dict) else None
+            if not isinstance(poses, list):
+                break
+            out: list[dict[str, str]] = []
+            for item in poses:
+                if isinstance(item, dict) and item.get("id") and item.get("name"):
+                    out.append({"id": str(item["id"]), "name": str(item["name"])})
+            if out:
+                _video_pose_cache = (now, out)
+                return out
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError) as e:
+            last_err = e
+            await asyncio.sleep(0.6 * (attempt + 1))
+
+    if allow_fallback and DEFAULT_VIDEO_POSES:
+        logger.warning("list_video_poses: vendor unavailable (%s) — using defaults", last_err)
+        return [dict(p) for p in DEFAULT_VIDEO_POSES]
+    if last_err:
+        raise last_err
+    return []
+
+
+async def submit_video_undress(
+    *,
+    id_gen: str,
+    photo_bytes: bytes,
+    webhook_url: str,
+    filename: str = "photo.jpg",
+    timeout: float = 180.0,
+) -> UndressSubmitResult:
+    """POST /api/v1/video/undress — animated reveal (5 API credits)."""
+    if not configured():
+        raise RuntimeError("Set TBCC_UNDRESS_TOOL_API_KEY")
+    if not photo_bytes:
+        raise ValueError("photo_bytes empty")
+    if not webhook_url:
+        raise ValueError("webhook_url required")
+
+    url = f"{base_url()}/api/v1/video/undress"
+    data = {"id_gen": id_gen, "webhook": webhook_url}
+    files = {"photo": (filename, photo_bytes, "image/jpeg")}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(url, headers=_headers(), data=data, files=files)
+        try:
+            body = r.json() if r.content else {}
+        except json.JSONDecodeError:
+            body = {}
+        if not r.is_success:
+            msg = _format_http_error(r.status_code, body, r.text or "")
+            if not msg or msg == "request rejected":
+                msg = (r.text or f"HTTP {r.status_code}")[:400]
+            logger.warning("undress video submit HTTP %s: %s", r.status_code, msg)
+            return UndressSubmitResult(
+                ok=False,
+                id_gen=id_gen,
+                status="error",
+                message=msg,
+                raw={"status_code": r.status_code, "text": (r.text or "")[:500]},
+            )
+
+    if not isinstance(body, dict):
+        body = {"raw": body}
+    status = str(body.get("status") or "")
+    if status.lower() in ("error", "failed"):
+        return UndressSubmitResult(
+            ok=False,
+            id_gen=str(body.get("id_gen") or id_gen),
+            status=status,
+            message=str(body.get("message") or "video undress failed"),
+            raw=body,
+        )
+    return UndressSubmitResult(
+        ok=True,
+        id_gen=str(body.get("id_gen") or id_gen),
+        status=status or "ok",
+        message=str(body.get("message") or "video queued"),
+        raw=body,
+    )
+
+
+async def submit_video_undress_with_pose(
+    *,
+    id_gen: str,
+    photo_bytes: bytes,
+    webhook_url: str,
+    pose_id: str,
+    filename: str = "photo.jpg",
+    timeout: float = 180.0,
+) -> UndressSubmitResult:
+    """POST /api/v1/video/poses/undress — video with pose_id."""
+    if not configured():
+        raise RuntimeError("Set TBCC_UNDRESS_TOOL_API_KEY")
+    pose_id = (pose_id or "").strip()
+    if not pose_id:
+        raise ValueError("pose_id required")
+    if not photo_bytes:
+        raise ValueError("photo_bytes empty")
+    if not webhook_url:
+        raise ValueError("webhook_url required")
+
+    url = f"{base_url()}/api/v1/video/poses/undress"
+    data = {"id_gen": id_gen, "webhook": webhook_url, "pose_id": pose_id}
+    files = {"photo": (filename, photo_bytes, "image/jpeg")}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(url, headers=_headers(), data=data, files=files)
+        try:
+            body = r.json() if r.content else {}
+        except json.JSONDecodeError:
+            body = {}
+        if not r.is_success:
+            msg = _format_http_error(r.status_code, body, r.text or "")
+            if not msg or msg == "request rejected":
+                msg = (r.text or f"HTTP {r.status_code}")[:400]
+            logger.warning("undress video pose submit HTTP %s: %s", r.status_code, msg)
+            return UndressSubmitResult(
+                ok=False,
+                id_gen=id_gen,
+                status="error",
+                message=msg,
+                raw={"status_code": r.status_code, "text": (r.text or "")[:500]},
+            )
+
+    if not isinstance(body, dict):
+        body = {"raw": body}
+    status = str(body.get("status") or "")
+    if status.lower() in ("error", "failed"):
+        return UndressSubmitResult(
+            ok=False,
+            id_gen=str(body.get("id_gen") or id_gen),
+            status=status,
+            message=str(body.get("message") or "video pose failed"),
+            raw=body,
+        )
+    return UndressSubmitResult(
+        ok=True,
+        id_gen=str(body.get("id_gen") or id_gen),
+        status=status or "ok",
+        message=str(body.get("message") or "video queued"),
         raw=body,
     )

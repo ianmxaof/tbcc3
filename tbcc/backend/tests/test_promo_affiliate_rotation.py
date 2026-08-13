@@ -10,6 +10,7 @@ from app.services.promo_affiliate_rotation import (
     list_candidates,
     pick_affiliate,
     preview_affiliates,
+    resolve_spicy_companion_url,
     row_placements,
 )
 
@@ -22,11 +23,14 @@ def _add_row(
     placements: list[str],
     network_keys: list[str] | None = None,
     priority: int = 10,
+    payout_kind: str = "other",
+    payout_detail: str | None = None,
 ):
     row = PromoAffiliateLink(
         label=label,
         url=url,
-        payout_kind="other",
+        payout_kind=payout_kind,
+        payout_detail=payout_detail,
         priority_tier=priority,
         active=True,
         placements_json=json.dumps(placements),
@@ -65,7 +69,8 @@ def test_list_candidates_filters_placement_and_network(db):
     assert list_candidates(db, "telegram_footer", network_key="bop") == []
 
 
-def test_pick_affiliate_round_robin(db):
+def test_pick_affiliate_round_robin(db, monkeypatch):
+    monkeypatch.setenv("TBCC_BUFFER_X_SPICY_BIAS_EVERY", "0")
     _add_row(db, label="A", url="https://a.test/1", placements=["x_buffer"], priority=1)
     _add_row(db, label="B", url="https://b.test/1", placements=["x_buffer"], priority=2)
     first = pick_affiliate(db, "x_buffer", advance=True)
@@ -75,6 +80,34 @@ def test_pick_affiliate_round_robin(db):
     assert first.row.label == "A"
     assert second.row.label == "B"
     assert third.row.label == "A"
+
+
+def test_pick_affiliate_spicy_bias_every_third(db, monkeypatch):
+    monkeypatch.setenv("TBCC_BUFFER_X_SPICY_BIAS_EVERY", "3")
+    _add_row(db, label="A", url="https://a.test/1", placements=["x_buffer"], priority=1)
+    _add_row(db, label="B", url="https://b.test/1", placements=["x_buffer"], priority=2)
+    _add_row(
+        db,
+        label="AOF Spicy Companion",
+        url="https://telegram.me/aof_spicybot_bot?start=src_companion_promo",
+        placements=["x_buffer"],
+        priority=5,
+    )
+    first = pick_affiliate(db, "x_buffer", advance=True)  # idx 0 → bias
+    second = pick_affiliate(db, "x_buffer", advance=True)  # idx 1
+    third = pick_affiliate(db, "x_buffer", advance=True)  # idx 2
+    fourth = pick_affiliate(db, "x_buffer", advance=True)  # idx 0 → bias
+    assert first and first.row.label == "AOF Spicy Companion"
+    assert second and second.row.label == "B"
+    assert third and third.row.label == "AOF Spicy Companion"
+    assert fourth and fourth.row.label == "AOF Spicy Companion"
+
+
+def test_resolve_spicy_companion_url_fallback(monkeypatch):
+    monkeypatch.setenv("TBCC_COMPANION_BOT_USERNAME", "aof_spicybot_bot")
+    url = resolve_spicy_companion_url(None)
+    assert "aof_spicybot_bot" in url
+    assert "src_spicy_x" in url
 
 
 def test_build_sponsor_link_html(db):
@@ -94,3 +127,26 @@ def test_preview_affiliates_order(db):
     _add_row(db, label="B", url="https://b.test/2", placements=["links_hub"], priority=2)
     picks = preview_affiliates(db, "links_hub", count=2)
     assert [p["label"] for p in picks] == ["A", "B"]
+
+
+def test_list_candidates_cash_before_credits(db):
+    _add_row(
+        db,
+        label="Undress credits",
+        url="https://nodress.site/tg/bot",
+        placements=["x_buffer"],
+        priority=1,
+        payout_kind="revshare",
+        payout_detail="platform_credits",
+    )
+    _add_row(
+        db,
+        label="BangBros cash",
+        url="https://landing.bangbrosnetwork.com/?ats=x",
+        placements=["x_buffer"],
+        priority=99,
+        payout_kind="pps",
+        payout_detail="usd_cash",
+    )
+    rows = list_candidates(db, "x_buffer")
+    assert [r.label for r in rows] == ["BangBros cash", "Undress credits"]

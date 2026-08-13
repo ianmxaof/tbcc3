@@ -31,15 +31,19 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_OPENROUTER_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
+# OpenRouter Dolphin (paid; ~$0.20/M in, $0.90/M out as of 2026-08). :free tier retired.
+DEFAULT_OPENROUTER_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 DEFAULT_FEATHERLESS_MODEL = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 DEFAULT_VENICE_MODEL = "venice-uncensored-1-2"
 
+# Curated Dolphin slugs on OpenRouter (extend when Cognitive Computations adds more).
+OPENROUTER_DOLPHIN_MODELS: tuple[str, ...] = (
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition",
+)
+
 # Free-only OpenRouter cloud path (no Featherless / no Venice paid).
-# Dolphin Venice :free is the least-aligned option; OpenRouter marks it going away ~2026-07-19.
-# After that, prefer Hermes (less censored than stock Llama) then the free router.
+# Dolphin :free was sunset — use OPENROUTER_DOLPHIN_MODELS with --allow-paid for Dolphin.
 FREE_OPENROUTER_CHAT_MODELS: tuple[str, ...] = (
-    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
     "nousresearch/hermes-3-llama-3.1-405b:free",
     "openrouter/free",
     "meta-llama/llama-3.3-70b-instruct:free",

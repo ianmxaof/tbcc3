@@ -778,16 +778,29 @@ async def import_watermark_bytes(
     file: UploadFile = File(...),
     media_type: str = Form("photo"),
     skip_watermark: str = Form("false"),
+    watermark_config: str = Form(""),
+    db: Session = Depends(get_db),
 ):
     """
     Apply promo text watermark to raw bytes (gallery ZIP/download/export).
     Returns unchanged body when disabled or skip_watermark=true.
+    Optional watermark_config JSON overrides effective global settings.
     """
     raw = await file.read()
     if not raw:
         return Response(content=b"", status_code=400)
     skip = _truthy_flag(skip_watermark)
-    out = maybe_apply_media_watermark(raw, media_type, force_skip=skip)
+    cfg = None
+    wc = (watermark_config or "").strip()
+    if wc:
+        try:
+            import json
+
+            payload = json.loads(wc)
+            cfg = build_apply_config(db, override=payload)
+        except Exception:
+            cfg = None
+    out = maybe_apply_media_watermark(raw, media_type, force_skip=skip, config=cfg)
     kind, ext = sniff_media_kind(out)
     mt = (media_type or "photo").lower()
     if kind == "video" or mt == "video":

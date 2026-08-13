@@ -8,8 +8,8 @@
   const STORAGE_INBOX_MIRROR = "tbccSavedVideoUrls_mirror";
   const MASTER_CAP = 12000;
   const PAGE_SIZE = 100;
-  const ARCHIVE_API_BULK = "http://127.0.0.1:8000/archive/entries/bulk";
-  const ARCHIVE_API_SYNC = "http://127.0.0.1:8000/archive/entries/sync-bundle";
+  const ARCHIVE_PATH_SYNC = "/archive/entries/sync-bundle";
+  const ARCHIVE_PATH_BULK = "/archive/entries/bulk";
   const STORAGE_EXPORT_CHECKPOINT = "tbccMasterArchiveExportCheckpointV1";
   const AUTO_EXPORT_EVERY = 100;
 
@@ -215,26 +215,28 @@
 
   function voidSyncEntriesToServer(entries) {
     const list = (entries || []).map(normalizeEntry).filter(Boolean);
-    if (!list.length || typeof fetch === "undefined") return;
+    if (!list.length || typeof global.tbccFetchApi !== "function") return;
     try {
-      void fetch(ARCHIVE_API_BULK, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          entries: list.map((e) => ({
-            kind: e.kind,
-            value: e.value,
-            source: e.source,
-            ref: e.ref,
-            note: e.note,
-            tags: e.tags,
-            added_at: e.addedAt,
-            origin: "extension",
-          })),
-          merge: true,
-          auto_pack_queue: true,
-        }),
-      }).catch(() => {});
+      void global
+        .tbccFetchApi(ARCHIVE_PATH_BULK, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            entries: list.map((e) => ({
+              kind: e.kind,
+              value: e.value,
+              source: e.source,
+              ref: e.ref,
+              note: e.note,
+              tags: e.tags,
+              added_at: e.addedAt,
+              origin: "extension",
+            })),
+            merge: true,
+            auto_pack_queue: true,
+          }),
+        })
+        .catch(() => {});
     } catch (_) {}
   }
 
@@ -263,19 +265,13 @@
     );
   }
 
-  /** Pull server table into local master archive (merge by kind|value, newest addedAt wins). */
+  /** Pull island/server archive table into local master archive (merge by kind|value, newest addedAt wins). */
   async function syncFromServer() {
-    if (typeof fetch === "undefined") return { ok: false, error: "fetch unavailable" };
+    if (typeof global.tbccFetchApiJson !== "function") {
+      return { ok: false, error: "API client not loaded" };
+    }
     try {
-      const resp = await fetch(ARCHIVE_API_SYNC, { method: "GET" });
-      const text = await resp.text();
-      let data = {};
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch (_) {}
-      if (!resp.ok) {
-        return { ok: false, error: (data.detail || text || "HTTP " + resp.status).toString().slice(0, 200) };
-      }
+      const data = await global.tbccFetchApiJson(ARCHIVE_PATH_SYNC, { method: "GET" });
       const incoming = (data.entries || []).map((raw) =>
         normalizeEntry({
           kind: raw.kind,
@@ -308,7 +304,7 @@
       await writeEntries(combined);
       return { ok: true, merged, total: combined.length, pulled: incoming.length };
     } catch (e) {
-      return { ok: false, error: String(e.message || e) };
+      return { ok: false, error: String(e.message || e).slice(0, 200) };
     }
   }
 
@@ -550,8 +546,8 @@
     STORAGE_INBOX_MIRROR,
     MASTER_CAP,
     PAGE_SIZE,
-    ARCHIVE_API_BULK,
-    ARCHIVE_API_SYNC,
+    ARCHIVE_PATH_BULK,
+    ARCHIVE_PATH_SYNC,
     AUTO_EXPORT_EVERY,
     syncFromServer,
     voidSyncEntriesToServer,

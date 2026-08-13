@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -131,4 +133,57 @@ async def send_message_with_inline_keyboard(
         )
         return None
     result = data.get("result") or {}
+    return int(result.get("message_id") or 0) or None
+
+
+async def send_photo_with_inline_keyboard(
+    chat_id: str | int,
+    *,
+    photo_path: str | Path,
+    caption: str = "",
+    buttons_data: list,
+    parse_mode: str = "HTML",
+    disable_notification: bool = False,
+    timeout: float = 60.0,
+) -> int | None:
+    """sendPhoto with inline URL keyboard — payment bot must be admin in channel."""
+    token = _bot_token()
+    markup = buttons_to_inline_keyboard(buttons_data)
+    path = Path(photo_path)
+    if not token or not markup or not path.is_file():
+        return None
+    try:
+        cid: str | int = chat_id
+        if isinstance(chat_id, str) and chat_id.strip().lstrip("-").isdigit():
+            cid = int(chat_id.strip())
+    except (TypeError, ValueError):
+        cid = chat_id
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+    data = {
+        "chat_id": cid,
+        "caption": (caption or "")[:1024],
+        "parse_mode": parse_mode,
+        "reply_markup": json.dumps(markup),
+        "disable_notification": disable_notification,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            with path.open("rb") as f:
+                r = await client.post(
+                    url,
+                    data=data,
+                    files={"photo": (path.name, f, "image/png")},
+                )
+            payload = r.json()
+    except Exception as e:
+        logger.warning("sendPhoto+keyboard failed chat=%s: %s", chat_id, e)
+        return None
+    if not payload.get("ok"):
+        logger.warning(
+            "sendPhoto+keyboard rejected chat=%s: %s",
+            chat_id,
+            (payload.get("description") or payload)[:200],
+        )
+        return None
+    result = payload.get("result") or {}
     return int(result.get("message_id") or 0) or None

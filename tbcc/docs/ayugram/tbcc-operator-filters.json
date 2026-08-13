@@ -1,0 +1,347 @@
+{
+  "version": 2,
+  "peers": {
+    "-1003812457581": "https://t.me/+KT3qS_OfvNk4N2Mx"
+  },
+  "exclusions": [],
+  "removeExclusions": null,
+  "removeFiltersById": null,
+  "filters": [
+    {
+      "id": "a1000001-0001-4000-8000-000000000001",
+      "dialogId": -1003812457581,
+      "text": "📖 Storage Hub — lane manual",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "a1000001-0001-4000-8000-000000000002",
+      "dialogId": -1003812457581,
+      "text": "Lane control panel|📥 Lane control|🟡 Master panel",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "a1000001-0001-4000-8000-000000000003",
+      "dialogId": -1003812457581,
+      "text": "deposit complete|Queued for deposit|Deposit queued|Running deposit|deposit staged",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "a1000001-0001-4000-8000-000000000004",
+      "dialogId": -1003812457581,
+      "text": "Control panels repost|Tap lane emoji buttons|/qapanel|/hubpanel refreshes",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "a1000001-0001-4000-8000-000000000005",
+      "dialogId": -1003812457581,
+      "text": "Pool approved \\(flywheel|Lane quarantine waiting|Q&A batch buffer",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000001-0001-4000-8000-000000000006",
+      "dialogId": -1003812457581,
+      "text": "<button>.*Deposit.*</button>|<button>🔄 Refresh</button>|<button>.*Approve all.*</button>",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": true
+    },
+    {
+      "id": "a1000002-0002-4000-8000-000000000010",
+      "dialogId": null,
+      "text": "AOF_[\\w._-]+_telegram\\.me_aofmainhub",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000002-0002-4000-8000-000000000011",
+      "dialogId": null,
+      "text": "QUARANTINE #\\d+",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000020",
+      "dialogId": null,
+      "text": "✅🍒",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000021",
+      "dialogId": null,
+      "text": "✅🍑",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000022",
+      "dialogId": null,
+      "text": "✅💋",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000023",
+      "dialogId": null,
+      "text": "✅🤠",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000024",
+      "dialogId": null,
+      "text": "✅🤡",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000025",
+      "dialogId": null,
+      "text": "✅🤖",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000026",
+      "dialogId": null,
+      "text": "✅🧜‍♀️",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000027",
+      "dialogId": null,
+      "text": "✅📦",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000028",
+      "dialogId": null,
+      "text": "✅👀",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-000000000029",
+      "dialogId": null,
+      "text": "✅🔞",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-00000000002a",
+      "dialogId": null,
+      "text": "✅🥡",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-00000000002b",
+      "dialogId": null,
+      "text": "✅🎬",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-00000000002c",
+      "dialogId": null,
+      "text": "✅📥",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000003-0003-4000-8000-00000000002d",
+      "dialogId": null,
+      "text": "✅💗",
+      "reversed": true,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000030",
+      "dialogId": null,
+      "text": "#big_tits|#bbw|#busty|#bigboobs|#boobs|#tits",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000031",
+      "dialogId": null,
+      "text": "#ass|#booty|#pawg|#thick|#curvy",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000032",
+      "dialogId": null,
+      "text": "#milf|#gilf|#mature",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000033",
+      "dialogId": null,
+      "text": "#blowjob|#bj|#oral",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000034",
+      "dialogId": null,
+      "text": "#voyeur|#public",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000035",
+      "dialogId": null,
+      "text": "#taboo",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000036",
+      "dialogId": null,
+      "text": "#abg|#pinay|#filipina|#asian|#lbfm|#thai|#vietnamese",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000037",
+      "dialogId": null,
+      "text": "#ai|#deepfake",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000038",
+      "dialogId": null,
+      "text": "#goon|#bop",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-000000000039",
+      "dialogId": null,
+      "text": "#pack|#packs",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000004-0004-4000-8000-00000000003a",
+      "dialogId": null,
+      "text": "#full_length|#fulllength|#feature",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000001",
+      "dialogId": null,
+      "text": "#tbcc:quarantine",
+      "reversed": false,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000010",
+      "dialogId": null,
+      "text": "#tbcc:big_tits",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000011",
+      "dialogId": null,
+      "text": "#tbcc:ass",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000012",
+      "dialogId": null,
+      "text": "#tbcc:milf",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000013",
+      "dialogId": null,
+      "text": "#tbcc:inbox",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000014",
+      "dialogId": null,
+      "text": "#tbcc:voyeur",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000006-0006-4000-8000-000000000015",
+      "dialogId": null,
+      "text": "#tbcc:ai",
+      "reversed": true,
+      "caseInsensitive": true,
+      "enabled": false
+    },
+    {
+      "id": "a1000005-0005-4000-8000-000000000040",
+      "dialogId": null,
+      "text": "<type>0</type>",
+      "reversed": false,
+      "caseInsensitive": false,
+      "enabled": false
+    },
+    {
+      "id": "a1000005-0005-4000-8000-000000000041",
+      "dialogId": null,
+      "text": "<button>",
+      "reversed": false,
+      "caseInsensitive": false,
+      "enabled": false
+    }
+  ]
+}

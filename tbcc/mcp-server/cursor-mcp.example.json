@@ -7,6 +7,13 @@
         "TBCC_API_URL": "http://127.0.0.1:8000"
       }
     },
+    "tbcc-loot-media": {
+      "command": "py",
+      "args": ["-3.13", "REPLACE_WITH_REPO_PATH/tbcc/mcp-server/loot_media_server.py"],
+      "env": {
+        "TBCC_LOOT_TIER_CARD_DIR": "REPLACE_WITH_REPO_PATH/tbcc/backend/app/data/loot_tier_cards"
+      }
+    },
     "buffer": {
       "url": "https://mcp.buffer.com/mcp",
       "headers": {

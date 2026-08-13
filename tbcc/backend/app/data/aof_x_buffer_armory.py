@@ -8,7 +8,7 @@ from __future__ import annotations
 # Placeholders: {hub} {allmylinks} {gravatar} {affiliate} {affiliate_drawai}
 AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
     {
-        "text": "you weren't invited. you clicked anyway. good. {hub} · map {allmylinks} · operator {gravatar}",
+        "text": "you weren't invited. you clicked anyway. good. {hub} · map {affiliate} · operator {affiliate2}",
         "image": "",
     },
     {
@@ -93,6 +93,18 @@ AOF_X_BUFFER_ARMORY_TEMPLATES: list[dict[str, str]] = [
     },
     {
         "text": "shipped: relay Bot API + loot goblin + key-roll album fix on revenue island. TBCC keeps the firehose honest. {hub} · @aof_lootgod_bot",
+        "image": "",
+    },
+    {
+        "text": "free trial photo + chat: {spicy} · optional affiliate coins {affiliate} · hub {hub}",
+        "image": "",
+    },
+    {
+        "text": "upload → chat → unlock. {spicy} · revshare tools {affiliate} · map {allmylinks}",
+        "image": "",
+    },
+    {
+        "text": "owned bot first: {spicy} · affiliate coins if you want {affiliate} · AOF {hub}",
         "image": "",
     },
 ]

@@ -1,0 +1,35 @@
+AOF LOOT GOBLIN — GEMINI IMAGE PROMPT (clean art, no baked UI text)
+====================================================================
+Use for Perchance Card Lab / Gemini / R2 promo. Apply Telegram overlays in code.
+Aspect: 1:1 square OR 9:16 portrait (pick one per deliverable).
+
+SUBJECT
+Small mischievous loot goblin — gnarled green-purple skin, gold tooth grin, oversized pointed ears,
+wearing a cropped bomber jacket covered in stolen sticker-badges (abstract shapes only, no readable logos).
+A massive retro boombox (chrome + neon magenta/cyan grills) strapped to his shoulders with chains and duct tape.
+Bass cones visibly vibrating; thin arcs of electric loot-energy crackle from the speakers.
+
+ACTION / STORY BEAT
+Mid-teleport between Telegram channels: his body is 60% solid, 40% dissolving into a ribbon of pixel-static
+and portal light. Three ghosted channel-door frames float behind him (rounded rectangles like app tiles, EMPTY —
+no text, no icons, no usernames). Motion blur on the boombox; one foot still in the old frame, one stepping into the new.
+Loot coins and iridescent trading cards spiral in the wake (face-down, no legible art).
+
+STYLE
+Hyper-stylized digital illustration; AOF network vibe — chrome, oil-slick iridescence, dark club lighting.
+NOT photoreal. NOT 3D render unless painterly. High contrast, readable silhouette at thumbnail size.
+Palette: deep violet-black background, hot magenta accents, toxic green goblin skin, gold highlights.
+
+COMPOSITION
+Center-weighted goblin, boombox dominates upper silhouette. Negative space top for later HTML caption overlay.
+No speech bubbles. No Telegram UI chrome. No watermarks. No "@handles". No "Claim" button baked in.
+
+MOOD
+FOMO + mischief + underground radio pirate hopping frequencies. He heard the scrobble and stole the drop.
+
+NEGATIVE PROMPT
+text, letters, numbers, watermark, logo, UI mockup, telegram interface, blurry face, extra limbs,
+photorealistic human, gore, childlike proportions, copyrighted characters
+
+CTA (apply in bot / channel post, not in image)
+@aof_lootgod_bot?start=loot_free — goblin grants use goblin_<token> deep links only.

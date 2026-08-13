@@ -16,6 +16,10 @@ MAINHUB_RAW = "https://telegram.me/aofmainhub"
 MAINHUB_CHANNEL_IDENT = "-1003970144685"
 MAINHUB_SCHED_CTA_NAME = "AOF MAINHUB — VIP CTA (pinned)"
 MAINHUB_SCHED_LIVENESS_NAME = "AOF MAINHUB — pin liveness"
+# Loot Room forum topic — PATCH NOTES (live sync 2026-07-31, t.me/c/3927742839/2408)
+MAIN_GROUP_PATCH_NOTES_TOPIC_ID = 2408
+MAINHUB_WEEKLY_BUILD_LOG_SCHED_PREFIX = "AOF MAINHUB — weekly build log"
+LOOT_ROOM_PATCH_NOTES_SCHED_PREFIX = "AOF LOOT ROOM — PATCH NOTES"
 SFW_X_PROMO_POOL_NAME = "AOF SFW X PROMO POOL"
 
 STORAGE_HUB_IDENT = "-1003812457581"
@@ -61,8 +65,8 @@ AOF_NETWORK_CHANNELS: tuple[AofNetworkChannel, ...] = (
         identifier=MAIN_GROUP_IDENT,
         invite=MAIN_GROUP_INVITE,
         display_name="AOF LOOT ROOM",
-        scheduler_name="AOF MAIN GROUP + X SCHEDULER",
-        pool_name="AOF MAIN GROUP POOL",
+        scheduler_name="AOF LOOT ROOM + X SCHEDULER",
+        pool_name="AOF LOOT ROOM POOL",
         topic_patterns=_topic("main", "hub", "community", "loot"),
         promo_html=(
             "🪙 <b>AOF LOOT ROOM</b> — the live hub (keys, drops, network feed). "
@@ -220,6 +224,20 @@ AOF_NETWORK_CHANNELS: tuple[AofNetworkChannel, ...] = (
         promo_html=(
             "🎵 <b>AOF BOP</b> — rhythm &amp; motion lane.\n"
             "curated drops. no tourist energy.\n"
+            "→ @aofsubscriptions_bot"
+        ),
+    ),
+    AofNetworkChannel(
+        key="inbox",
+        identifier=STORAGE_HUB_IDENT,
+        invite=STORAGE_HUB_INVITE,
+        display_name="AOF INBOX",
+        scheduler_name="AOF INBOX INTAKE",
+        pool_name="AOF INBOX POOL",
+        topic_patterns=_topic("inbox", "aof inbox", "firehose", "intake"),
+        promo_html=(
+            "📥 <b>AOF INBOX</b> — operator intake queue.\n"
+            "Forward media here for gatekeeper review.\n"
             "→ @aofsubscriptions_bot"
         ),
     ),

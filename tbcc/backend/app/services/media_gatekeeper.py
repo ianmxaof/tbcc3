@@ -192,6 +192,10 @@ def build_gatekeeper_input(
     expected = expected_lane_for_storage_source(getattr(media, "source_channel", None))
     if not expected:
         expected = expected_lane_for_pool(db, getattr(media, "pool_id", None))
+    if not expected:
+        from app.services.tbcc_caption_stamp import parse_tbcc_lane_from_caption
+
+        expected = parse_tbcc_lane_from_caption(cap)
 
     enrich = enrich or {}
     nsfw_tier = enrich.get("nsfw_tier") or getattr(media, "nsfw_tier", None)

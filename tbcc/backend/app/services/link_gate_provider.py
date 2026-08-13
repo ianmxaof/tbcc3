@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 GATE_HOST_SUFFIXES: tuple[str, ...] = (
     "linkvertise.com",
     "link-center.net",
+    "link-hub.net",
     "link-target.net",
     "link-to.net",
     "direct-link.net",
@@ -82,6 +83,7 @@ def _host(url: str) -> str:
 _LINKVERTISE_HOST_SUFFIXES: tuple[str, ...] = (
     "linkvertise.com",
     "link-center.net",
+    "link-hub.net",
     "link-target.net",
     "link-to.net",
     "direct-link.net",

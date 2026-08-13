@@ -136,6 +136,34 @@ def test_example3_lane_mismatch_quarantine():
     assert v.globs["lane_fit"]["expected"] == "milf"
 
 
+def test_hub_lane_unknown_quarantines_content_lane():
+    inp = MediaGatekeeperInput(
+        media_type="photo",
+        caption="",
+        filename="upload.jpg",
+        width=1080,
+        height=1350,
+        expected_lane="milf",
+        source_trusted=True,
+    )
+    v = evaluate_media(inp)
+    assert v.verdict == "quarantine"
+    assert "lane_unknown" in v.globs["lane_fit"]["flags"]
+
+
+def test_hub_lane_unknown_allows_ai_lane():
+    inp = MediaGatekeeperInput(
+        media_type="photo",
+        caption="",
+        expected_lane="ai",
+        source_trusted=True,
+        width=1024,
+        height=1024,
+    )
+    v = evaluate_media(inp)
+    assert v.verdict == "approve"
+
+
 # ---------------------------------------------------------------------------
 # Worked example 4 — 2s video, URL wall → reject
 # ---------------------------------------------------------------------------

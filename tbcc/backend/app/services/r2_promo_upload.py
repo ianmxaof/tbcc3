@@ -35,6 +35,30 @@ DEFAULT_DESTINATION = "sfw_x_promo"
 DEFAULT_PREFIX = "sfw-x-promo"
 
 
+def x_promo_r2_public_base() -> str:
+    """Public https root for the dedicated X promo bucket (aof-x-promo)."""
+    explicit = (os.getenv("TBCC_X_PROMO_R2_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if explicit.startswith("https://"):
+        return explicit
+    return ""
+
+
+def x_promo_r2_prefix() -> str:
+    return (os.getenv("TBCC_X_PROMO_R2_PREFIX") or "upl2cf  aof-x-promo/").strip()
+
+
+def x_promo_r2_config() -> dict[str, str] | None:
+    """R2 config scoped to the X promo image bucket (defaults: aof-x-promo + pub r2.dev)."""
+    base = r2_config()
+    if not base:
+        return None
+    public_base = x_promo_r2_public_base()
+    if not public_base.startswith("https://"):
+        return None
+    bucket = (os.getenv("TBCC_X_PROMO_R2_BUCKET") or "aof-x-promo").strip()
+    return {**base, "bucket": bucket, "public_base": public_base.rstrip("/")}
+
+
 def r2_config() -> dict[str, str] | None:
     token = (os.getenv("TBCC_CF_API_TOKEN") or os.getenv("TBCC_CLOUDFLARE_API_TOKEN") or "").strip()
     account_id = (os.getenv("TBCC_R2_ACCOUNT_ID") or "").strip()
@@ -348,3 +372,155 @@ def iter_image_paths(folder: Path) -> list[Path]:
         raise ValueError(f"Not a directory: {folder}")
     paths = [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in _IMAGE_EXT]
     return paths
+
+
+def _list_r2_objects_s3(
+    *,
+    prefix: str = "",
+    max_keys: int = 1000,
+    cfg: dict[str, str] | None = None,
+    timeout: float = 60.0,
+) -> list[str]:
+    """List object keys in an R2 bucket via S3 ListObjectsV2 (access key auth)."""
+    import datetime as _dt
+    import hashlib
+    import hmac
+    import xml.etree.ElementTree as ET
+
+    conf = cfg or r2_config()
+    if not conf or not conf.get("access_key") or not conf.get("secret_key") or not conf.get("s3_endpoint"):
+        raise ValueError("R2 S3 list requires TBCC_R2_ACCESS_KEY_ID + TBCC_R2_SECRET_ACCESS_KEY + account id")
+
+    access = conf["access_key"]
+    secret = conf["secret_key"]
+    endpoint = conf["s3_endpoint"].rstrip("/")
+    bucket = conf["bucket"]
+    region = "auto"
+    host = endpoint.replace("https://", "").replace("http://", "")
+    amz_date = _dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    datestamp = amz_date[:8]
+    payload_hash = hashlib.sha256(b"").hexdigest()
+
+    query_parts = ["list-type=2", f"max-keys={max(1, min(max_keys, 1000))}"]
+    if prefix:
+        query_parts.append(f"prefix={quote(prefix, safe='')}")
+    canonical_querystring = "&".join(sorted(query_parts))
+    canonical_uri = f"/{bucket}"
+    canonical_headers = (
+        f"host:{host}\n"
+        f"x-amz-content-sha256:{payload_hash}\n"
+        f"x-amz-date:{amz_date}\n"
+    )
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = "\n".join(
+        ["GET", canonical_uri, canonical_querystring, canonical_headers, signed_headers, payload_hash]
+    )
+    credential_scope = f"{datestamp}/{region}/s3/aws4_request"
+    string_to_sign = "\n".join(
+        [
+            "AWS4-HMAC-SHA256",
+            amz_date,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+        ]
+    )
+
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+    k_date = _sign(("AWS4" + secret).encode("utf-8"), datestamp)
+    k_region = _sign(k_date, region)
+    k_service = _sign(k_region, "s3")
+    k_signing = _sign(k_service, "aws4_request")
+    signature = hmac.new(k_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    auth = (
+        f"AWS4-HMAC-SHA256 Credential={access}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    url = f"{endpoint}{canonical_uri}?{canonical_querystring}"
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.get(
+            url,
+            headers={
+                "Host": host,
+                "x-amz-content-sha256": payload_hash,
+                "x-amz-date": amz_date,
+                "Authorization": auth,
+            },
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"R2 S3 list failed {resp.status_code}: {(resp.text or '')[:400]}")
+
+    root = ET.fromstring(resp.text)
+    ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+    keys: list[str] = []
+    for contents in root.findall("s3:Contents", ns):
+        key_el = contents.find("s3:Key", ns)
+        if key_el is not None and key_el.text:
+            keys.append(key_el.text)
+    return keys
+
+
+def list_x_promo_r2_image_keys(*, prefix: str | None = None) -> list[str]:
+    """Object keys for image files in the X promo bucket."""
+    pref = prefix if prefix is not None else x_promo_r2_prefix()
+    cfg = x_promo_r2_config()
+    if not cfg:
+        return []
+    keys = _list_r2_objects_s3(prefix=pref, cfg=cfg)
+    return [k for k in keys if Path(k).suffix.lower() in _IMAGE_EXT]
+
+
+def build_x_promo_pool_entries_from_r2(*, prefix: str | None = None) -> list[dict[str, str]]:
+    """Direct https URLs for every image in the X promo R2 bucket."""
+    cfg = x_promo_r2_config()
+    if not cfg:
+        return []
+    base = cfg["public_base"]
+    out: list[dict[str, str]] = []
+    for key in list_x_promo_r2_image_keys(prefix=prefix):
+        direct = public_url_for_key(base, key)
+        label = Path(key).stem.replace("_", " ").strip()[:80]
+        out.append({"direct_url": direct, "label": label or Path(key).name})
+    return out
+
+
+def replace_pool_entries(entries: list[dict[str, str]], *, dry_run: bool = False) -> Path:
+    """Replace pool JSON with the given entries (deduped, example.com filtered)."""
+    path = pool_json_path()
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        direct = str(entry.get("direct_url") or "").strip()
+        if not direct.startswith("https://") or "example.com" in direct or direct in seen:
+            continue
+        seen.add(direct)
+        row: dict[str, str] = {"direct_url": direct}
+        label = str(entry.get("label") or "").strip()
+        if label:
+            row["label"] = label
+        viewer = str(entry.get("viewer_url") or "").strip()
+        if viewer.startswith("https://"):
+            row["viewer_url"] = viewer
+        merged.append(row)
+    if dry_run:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def sync_x_promo_pool_from_r2(*, prefix: str | None = None, dry_run: bool = False) -> dict[str, object]:
+    """Sync aof_x_promo_image_pool.json from the dedicated X promo R2 bucket."""
+    entries = build_x_promo_pool_entries_from_r2(prefix=prefix)
+    if not dry_run:
+        replace_pool_entries(entries, dry_run=False)
+    return {
+        "status": "ok" if entries else "empty",
+        "count": len(entries),
+        "pool_file": str(pool_json_path()),
+        "public_base": (x_promo_r2_config() or {}).get("public_base"),
+        "bucket": (x_promo_r2_config() or {}).get("bucket"),
+        "prefix": prefix if prefix is not None else x_promo_r2_prefix(),
+        "preview": [e["direct_url"] for e in entries[:3]],
+    }

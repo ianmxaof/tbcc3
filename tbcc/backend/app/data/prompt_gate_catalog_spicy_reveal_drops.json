@@ -1,0 +1,102 @@
+{
+  "campaign": "spicy_reveal_drops",
+  "source": "AOF Spicy companion — reveal-first promo arc",
+  "notes": "LV Text = prompt PACK (not poster). Posters: creative_prompt_catalog/spicy_reveal_drops.json",
+  "schema_version": 2,
+  "style_anchors": "phone DM noir, magenta-coral companion flirt, SFW poster chrome",
+  "negative_prompt": "explicit nudity, BUY language on poster, cartoon, gibberish UI, wrong aspect",
+  "engagement": {
+    "cadence_days": 2,
+    "arc_name": "Spicy Reveal Drops",
+    "x_hub_cta": "@aof_spicybot_bot",
+    "telegram_serial": true,
+    "filmstrip_after_drop": 4
+  },
+  "items": [
+    {
+      "key": "spicy_reveal_01_trial_photo",
+      "tier": "promo",
+      "prompt_ref": "docs/samples/spicy_reveal_drops/packs/01_trial_photo_reveal_pack.txt",
+      "prompt_body": "AOF SPICY REVEAL — DROP 01 PROMPT PACK\nPortrait trial + flirt DM scene (copy into your image tool or use with @aof_spicybot_bot)\n\n=== MASTER SCENE ===\nIntimate smartphone DM aesthetic, soft magenta rim light on dark navy, realistic phone UI frame, flirtatious companion energy, SFW suggestive silhouette only, cinematic shallow depth of field, no explicit anatomy.\n\n=== VARIATION A — \"She saw it first\" ===\nClose-up phone screen, blurred portrait thumbnail in sent bubble, typing indicator active, warm bedroom bokeh, companion waiting mood, text overlay space empty.\n\n=== VARIATION B — \"Typing back\" ===\nSame thread, her reply bubble glowing coral, heart-react micro-animation implied, intimate late-night palette, no readable gibberish text.\n\n=== VARIATION C — \"Reveal frame\" ===\nPhone held in hand POV, screen shows locked reveal state with soft glow (not explicit), anticipation composition, thumb near send button.\n\n=== VARIATION D — \"Trial sparkle\" ===\nMinimal poster cell: single sparkle icon over silhouette, TRIAL badge corner, @aof_spicybot_bot CTA strip at bottom.\n\n=== USE ===\nUpload your portrait in @aof_spicybot_bot → chat → reveal. Refer a friend through the gate for +1 reveal credit.",
+      "engagement": {
+        "drop_number": 1,
+        "quote_hook": "She already saw your photo before you sent it.",
+        "rollout_day": 0,
+        "telegram_teaser": "Drop 01 — trial photo tease. Upload, chat, reveal.",
+        "x_copy": {
+          "hook": "She already saw your photo before you sent it.",
+          "body": "Drop 01 — trial photo tease. Upload, chat, reveal. Full prompt pack behind one gate on Telegram.",
+          "cta": "Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub"
+        }
+      }
+    },
+    {
+      "key": "spicy_reveal_02_chat_persona",
+      "tier": "promo",
+      "prompt_ref": "docs/samples/spicy_reveal_drops/packs/02_chat_persona_pack.txt",
+      "prompt_body": "AOF SPICY REVEAL — DROP 02 PROMPT PACK\nCompanion persona + flirt reply scenes\n\n=== MASTER SCENE ===\nTelegram DM thread aesthetic, companion remembers prior messages, warm violet UI, coral accent on her bubbles, intimate late-night mood, SFW, cinematic.\n\n=== VARIATION A — \"Hey baby\" ===\nOpening flirt line bubble, soft emoji glow, empty user reply slot, anticipation framing.\n\n=== VARIATION B — \"Only you\" ===\nCompanion bubble dominant, exclusivity tone, heart react, shallow DOF on phone bezel.\n\n=== VARIATION C — \"What's on your mind\" ===\nQuestion hook bubble, typing indicator from user side, reciprocal intimacy composition.\n\n=== VARIATION D — \"Missed you\" ===\nRe-engage DM mockup, 3-day gap implied by timestamp style, warm return energy.\n\n=== USE ===\n@aof_spicybot_bot — chat builds context before reveal unlock.",
+      "engagement": {
+        "drop_number": 2,
+        "quote_hook": "The reply is not generic. It remembers.",
+        "rollout_day": 2,
+        "telegram_teaser": "Drop 02 — companion persona pack. She remembers the thread.",
+        "x_copy": {
+          "hook": "The reply is not generic. It remembers.",
+          "body": "Drop 02 — companion persona pack. She remembers the thread. Full prompt pack behind one gate on Telegram.",
+          "cta": "Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub"
+        }
+      }
+    },
+    {
+      "key": "spicy_reveal_03_referral_earn",
+      "tier": "promo",
+      "prompt_ref": "docs/samples/spicy_reveal_drops/packs/03_referral_earn_pack.txt",
+      "prompt_body": "AOF SPICY REVEAL — DROP 03 PROMPT PACK\nReferral-flirt copy variants (share after your own reveal)\n\n=== MASTER HOOK ===\nYou unlocked one reveal. Want another without paying yet? One real friend through the gate = one more credit.\n\n=== COPY A — Soft flirt ===\n\"Hey 🥰 I found this companion bot that actually remembers the chat… try it? I get an extra reveal if you finish the quick gate.\"\n\n=== COPY B — Direct ===\n\"Upload a photo, flirt in DM, reveal unlocks. I earned a bonus when you complete the gate — link below.\"\n\n=== COPY C — Mysterious ===\n\"She replies like she already knows you. I can't explain it — just try the bot and complete the gate.\"\n\n=== COPY D — Story ===\n\"Started as a joke upload. Now I'm out of trial reveals unless someone I send actually finishes the gate.\"\n\n=== RULES ===\nCredit only when invitee completes full AOF gate — not on click. Share personal compref link from /referral in bot.",
+      "engagement": {
+        "drop_number": 3,
+        "quote_hook": "One friend through the gate. One more reveal.",
+        "rollout_day": 4,
+        "telegram_teaser": "Drop 03 — referral copy variants. Earn, do not buy.",
+        "x_copy": {
+          "hook": "One friend through the gate. One more reveal.",
+          "body": "Drop 03 — referral copy variants. Earn, do not buy. Full prompt pack behind one gate on Telegram.",
+          "cta": "Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub"
+        }
+      }
+    },
+    {
+      "key": "spicy_reveal_04_scene_builder",
+      "tier": "promo",
+      "prompt_ref": "docs/samples/spicy_reveal_drops/packs/04_scene_builder_pack.txt",
+      "prompt_body": "AOF SPICY REVEAL — DROP 04 PROMPT PACK\nThree-step scene builder (portrait → context → reveal)\n\n=== STEP 1 — PORTRAIT INPUT ===\nMaster: clear face-forward portrait, neutral expression, soft key light, phone-camera realism, SFW.\nDelta A: slight smile. Delta B: over-shoulder glance. Delta C: hood up mystery.\n\n=== STEP 2 — CHAT CONTEXT ===\nMaster: DM thread with 2-3 flirt exchanges establishing mood before reveal (no explicit).\nDelta A: playful tease. Delta B: jealous-possessive tone. Delta C: sweet reassurance.\n\n=== STEP 3 — REVEAL FRAME ===\nMaster: locked reveal UI glow, anticipation, companion \"ready\" state — SFW silhouette only.\nDelta A: warm blush palette. Delta B: cool midnight palette. Delta C: coral accent match brand.\n\n=== WORKFLOW ===\n@aof_spicybot_bot — do not skip chat; reveal lands harder with context.",
+      "engagement": {
+        "drop_number": 4,
+        "quote_hook": "Upload, chat, reveal. That is the product.",
+        "rollout_day": 6,
+        "telegram_teaser": "Drop 04 — three-step scene builder pack.",
+        "x_copy": {
+          "hook": "Upload, chat, reveal. That is the product.",
+          "body": "Drop 04 — three-step scene builder pack. Full prompt pack behind one gate on Telegram.",
+          "cta": "Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub"
+        }
+      }
+    },
+    {
+      "key": "spicy_reveal_05_full_bundle",
+      "tier": "promo",
+      "prompt_ref": "docs/samples/spicy_reveal_drops/packs/05_full_bundle_pack.txt",
+      "prompt_body": "AOF SPICY REVEAL — FULL 5-PACK BUNDLE (behind single depth gate)\n\nThis bundle unlocks Drops 01–04 prompt packs in one LV completion.\n\nIncludes:\n• Drop 01 — Trial photo tease pack (4 variations)\n• Drop 02 — Chat persona pack (4 variations)\n• Drop 03 — Referral earn copy (4 variants)\n• Drop 04 — Scene builder (portrait → chat → reveal)\n\nEntry: @aof_spicybot_bot?start=src_prompt_pack\nHub arc: @aofmainhub for serial drops; one gate per Telegram message.\n\nDo not dump all prompts in one TG post — serial tension per ENGAGEMENT_DOCTRINE.",
+      "engagement": {
+        "drop_number": 5,
+        "quote_hook": "Five drops. One companion. Scroll.",
+        "rollout_day": 8,
+        "telegram_teaser": "Full 5-pack bundle behind one depth gate.",
+        "x_copy": {
+          "hook": "Five drops. One companion. Scroll.",
+          "body": "Full 5-pack bundle behind one depth gate. Full prompt pack behind one gate on Telegram.",
+          "cta": "Spicy companion trial → @aof_spicybot_bot · hub @aofmainhub"
+        }
+      }
+    }
+  ]
+}

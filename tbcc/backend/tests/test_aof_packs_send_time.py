@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from app.models.loot import LootModifier
 from app.services.aof_packs_caption_templates import (
+    MIN_PACK_TEMPLATES,
     PACK_BODY_PLACEHOLDER,
     list_pack_strategy_ids,
     pack_caption_template_variations,
@@ -13,10 +14,21 @@ from app.services.aof_packs_post_copy import format_pack_contents_block, merge_p
 from app.services.aof_packs_send_time import _inject_pack_body, pick_pack_modifier_for_send
 
 
-def test_pack_caption_templates_reach_fifty():
+def test_pack_caption_templates_reach_minimum_floor():
     templates = pack_caption_template_variations()
-    assert len(templates) == 50
+    assert len(templates) >= MIN_PACK_TEMPLATES
+    assert len(templates) == len(set(templates))  # every template distinct, no padding dupes
     assert all(PACK_BODY_PLACEHOLDER in t for t in templates)
+
+
+def test_pack_caption_templates_include_gold_planet_express_delivery_motif():
+    """Gold flavor sample explicitly asked for a Planet Express / NEW DELIVERY strategy —
+    confirm it made it into the bank as one hook among many, not the only opener."""
+    templates = pack_caption_template_variations()
+    assert any("PLANET EXPRESS" in t for t in templates)
+    assert any("NEW DELIVERY" in t for t in templates)
+    planet_express_count = sum(1 for t in templates if "PLANET EXPRESS" in t)
+    assert planet_express_count < len(templates)  # motif, not every line
 
 
 def test_pack_strategies_cycle_distinct_lanes():

@@ -60,6 +60,20 @@ def main_group_checkout_every_n() -> int:
         return 2
 
 
+def checkout_blocked_for_telegram_identifier(channel_identifier: str | Any) -> bool:
+    """Operator-only chats — never attach monetization checkout (Storage & Bot Hangar)."""
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+    from app.utils.telegram_peer import normalize_telethon_peer_identifier
+
+    ident = normalize_telethon_peer_identifier(channel_identifier)
+    if not ident or not isinstance(ident, str):
+        return False
+    try:
+        return int(ident) == int(STORAGE_HUB_IDENT)
+    except (ValueError, TypeError):
+        return ident == STORAGE_HUB_IDENT
+
+
 def checkout_active_for_send(
     post: Any,
     channel_identifier: str,
@@ -72,6 +86,8 @@ def checkout_active_for_send(
     from app.data.aof_network import MAIN_GROUP_IDENT
 
     ident = str(channel_identifier or "").strip()
+    if checkout_blocked_for_telegram_identifier(ident):
+        return False
     try:
         is_main = int(ident) == int(MAIN_GROUP_IDENT)
     except ValueError:
@@ -174,10 +190,12 @@ def bot_checkout_url(
 
 
 def stars_pay_button_label(plan: SubscriptionPlan) -> str:
-    stars = int(plan.price_stars or 0)
-    if stars > 0:
-        return f"Pay ⭐ {stars}"
-    return "Pay with Stars"
+    from app.data.telegram_stars_howto import stars_pay_entry_button_label
+
+    return stars_pay_entry_button_label(
+        price_stars=int(plan.price_stars or 0),
+        plan_name=str(plan.name or ""),
+    )
 
 
 def caption_has_checkout(text: str) -> bool:
@@ -257,13 +275,18 @@ def resolve_vip_promo_url(db: Session, plan_id: int) -> str:
 
 
 def _default_stars_button_label(plan: SubscriptionPlan) -> str:
+    from app.data.telegram_stars_howto import stars_pay_entry_button_label
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+
     stars = int(plan.price_stars or 0)
-    name = (plan.name or "Subscribe").strip()[:36]
+    name = (plan.name or "Subscribe").strip()
+    if is_vip_intro_plan_name(name):
+        return stars_pay_entry_button_label(price_stars=stars, plan_name=name)
     if use_vip_star_subscription() and vip_subscription_invite_url():
-        return f"⭐ Subscribe — {stars}⭐"
+        return f"⭐ Subscribe — {stars}⭐"[:64]
     if stars > 0:
-        return f"⭐ {name} — {stars}⭐"
-    return "⭐ Subscribe"
+        return f"⭐ {name[:28]} — {stars}⭐"[:64]
+    return "Subscribe"
 
 
 def resolve_primary_checkout_url(
@@ -371,6 +394,12 @@ async def deliver_stars_checkout_bot_followup(
     if not checkout_bot_followup_enabled():
         return None
     if not plan_id or not reply_to_message_id:
+        return None
+    if checkout_blocked_for_telegram_identifier(channel_identifier):
+        logger.debug(
+            "checkout Bot API follow-up skipped: storage hub chat=%s",
+            channel_identifier,
+        )
         return None
 
     from app.utils.telegram_peer import normalize_telethon_peer_identifier
@@ -513,6 +542,16 @@ def merge_checkout_buttons(
                     out.append({"text": str(gr_label).strip()[:64], "url": gr_url[:512]})
     except Exception:
         logger.debug("checkout: gumroad button skipped", exc_info=True)
+
+    try:
+        from app.services.aof_social_links import loot_free_start_url
+
+        loot_url = (loot_free_start_url() or "").strip()
+        loot_key = loot_url.lower().rstrip("/")
+        if loot_url and loot_key not in existing_urls:
+            out.append({"text": "🎲 Loot God — free roll", "url": loot_url[:512]})
+    except Exception:
+        logger.debug("checkout: loot_free button skipped", exc_info=True)
 
     return out
 

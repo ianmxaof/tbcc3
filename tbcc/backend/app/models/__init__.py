@@ -35,6 +35,7 @@ from .promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor
 from .capture_archive_entry import CaptureArchiveEntry
 from .import_job import ImportJob
 from .secretary_user_context import SecretaryMessageRecord, SecretaryUserContext
+from .secretary_bot_instance import SecretaryBotInstance
 from .secretary_settings import SecretarySettings
 from .secretary_knowledge import SecretaryKnowledgeEntry
 from .industry_benchmark import IndustryBenchmark
@@ -44,8 +45,11 @@ from .lane_drop import LaneDrop
 from .prompt_gate import PromptGate
 from .funnel_dm_consent import FunnelDmConsent
 from .funnel_strategy import FunnelStrategyEntry
+from .social_copy_template import SocialCopyTemplate
+from .creative_catalog import CreativeCatalogEntry
 from .click_link import ClickLink, ClickLinkHit
 from .loot import (
+    LootCreatorSubmission,
     LootDropEvent,
     LootGameConfig,
     LootIntervalTier,
@@ -84,6 +88,7 @@ __all__ = [
     "LootDropEvent",
     "LootGameConfig",
     "LootIntervalTier",
+    "LootCreatorSubmission",
     "LootModifier",
     "LootModifierTagWeight",
     "LootPlayerMediaSeen",
@@ -109,6 +114,7 @@ __all__ = [
     "ImportJob",
     "SecretaryUserContext",
     "SecretaryMessageRecord",
+    "SecretaryBotInstance",
     "SecretarySettings",
     "SecretaryKnowledgeEntry",
     "IndustryBenchmark",
@@ -118,6 +124,8 @@ __all__ = [
     "PromptGate",
     "FunnelDmConsent",
     "FunnelStrategyEntry",
+    "SocialCopyTemplate",
+    "CreativeCatalogEntry",
     "ClickLink",
     "ClickLinkHit",
 ]

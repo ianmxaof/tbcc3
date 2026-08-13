@@ -8,12 +8,21 @@
     "start": "next start -p 3001",
     "lint": "next lint",
     "ingest": "tsx workers/ingest/index.ts",
+    "ingest:inbox": "tsx workers/ingest/inbox-only.ts",
+    "ingest:inbox:watch": "tsx workers/ingest/inbox-watch.ts",
     "ingest:watch": "tsx workers/ingest/index.ts --watch",
     "stash:sync": "tsx workers/stash-sync/index.ts",
     "stash:sync:watch": "tsx workers/stash-sync/index.ts --watch",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",
-    "seed:mock": "tsx scripts/seed-mock-from-dir.ts"
+    "seed:mock": "tsx scripts/seed-mock-from-dir.ts",
+    "seed:demo": "tsx scripts/seed-demo-hub.ts",
+    "ingest:storage-hub": "tsx scripts/ingest-storage-hub.ts",
+    "ingest:storage-hub:smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/_smoke-storage-hub-once.ps1",
+    "ingest:storage-hub:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/drain-storage-hub-full.ps1",
+    "ingest:storage-hub:retry-failed": "tsx scripts/retry-storage-hub-failed.ts",
+    "ingest:storage-hub:manifest": "tsx scripts/ingest-storage-hub-manifest.ts",
+    "dev:bootstrap-user": "tsx scripts/dev-bootstrap-user.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.700.0",

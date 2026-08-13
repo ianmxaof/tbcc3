@@ -17,7 +17,10 @@ all topic media. ADMIN_TELEGRAM_ID plus any TBCC_ALBUM_COMPOSER_EXTRA_ADMIN_IDS 
 served; other senders are ignored silently (no denial replies). Sessions are chat-scoped:
 all admin accounts in a group share one draft. Post as yourself — anonymous /
 channel-as-sender posts are not recognized as admin, and media posted by OTHER BOTS is
-invisible to this bot (Telegram platform rule).
+invisible to this bot (Telegram platform rule). /rebundle groups loose media into albums
+in any group where this bot is admin (admin Telethon session must also be a member).
+Do not add this bot to @aofmainhub or other public channels — it is for DM + Storage Hub
+groups only.
 """
 from __future__ import annotations
 
@@ -412,11 +415,12 @@ def _actor_user_id(update: Update) -> int | None:
     return None
 
 
-def _is_group_chat(update: Update) -> bool:
+def _is_non_private_chat(update: Update) -> bool:
+    """Groups, supergroups, and channels — never spam denial replies outside DM."""
     chat = update.effective_chat
     if not chat:
         return False
-    return chat.type in ("group", "supergroup")
+    return chat.type in ("group", "supergroup", "channel")
 
 
 def _authorized(user_id: int | None) -> bool:
@@ -427,9 +431,9 @@ def _authorized(user_id: int | None) -> bool:
 async def _deny_unauthorized(update: Update) -> bool:
     if _authorized(_actor_user_id(update)):
         return False
-    # In groups the bot may see every message when BotFather privacy is off.
-    # Never reply with denial text there — it spams the storage topic on each photo.
-    if _is_group_chat(update):
+    # Outside DM the bot may see channel posts or every group message (privacy off).
+    # Never reply with denial text there — it spams storage topics and @aofmainhub.
+    if _is_non_private_chat(update):
         return True
     msg = update.effective_message
     if msg:
@@ -882,6 +886,7 @@ async def _present_confirm_step(
 
 
 def _storage_hub_deposit_rows(sess: ComposerSession) -> list[list[InlineKeyboardButton]]:
+    """Pinned payment-bot deposit panel covers bulk presets; workshop keeps staged-only shortcut."""
     try:
         from app.services.storage_topic_deposit import resolve_storage_topic_row, storage_hub_chat_id_int
         from bots.storage_hub_deposit_bot import album_composer_storage_deposit_enabled
@@ -896,19 +901,10 @@ def _storage_hub_deposit_rows(sess: ComposerSession) -> list[list[InlineKeyboard
             return []
     except Exception:
         return []
-    rows: list[list[InlineKeyboardButton]] = []
-    if sess.items:
-        n = len(sess.items)
-        rows.append(
-            [InlineKeyboardButton(f"📥 Deposit staged ({n})", callback_data="ac:depositstaged")]
-        )
-    rows.append(
-        [
-            InlineKeyboardButton("📥 Deposit 5", callback_data="ac:deposit:5"),
-            InlineKeyboardButton("📥 Deposit 15", callback_data="ac:deposit:15"),
-        ]
-    )
-    return rows
+    if not sess.items:
+        return []
+    n = len(sess.items)
+    return [[InlineKeyboardButton(f"📥 Deposit staged ({n})", callback_data="ac:depositstaged")]]
 
 
 def _main_keyboard(sess: ComposerSession) -> InlineKeyboardMarkup:
@@ -1462,6 +1458,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     sess = _session(context)
     from bots.remixer_cover import cover_help_blurb
+    from bots.remixer_rebundle import rebundle_help_blurb
 
     await update.message.reply_text(
         "<b>TBCC Album Composer</b>\n\n"
@@ -1471,8 +1468,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "2. Use the <b>workshop menu</b> below — caption, buttons, crop, post\n"
         "3. <b>Split to emojis</b> on the menu for emoji-pack grids\n"
         "4. <b>Preview post</b> before you send · <b>Make album(s)</b> to split large batches\n\n"
-        f"{cover_help_blurb()}\n\n"
-        "<b>Commands</b> /menu · /cover · /compose · /preview · /caption · /crop · /clear · /emoji_pack\n"
+        f"{cover_help_blurb()}\n"
+        f"{rebundle_help_blurb()}\n\n"
+        "<b>Commands</b> /menu · /cover · /compose · /rebundle · /preview · /caption · /crop · /clear · /emoji_pack\n"
         "The menu stays pinned at the bottom while you work.",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
@@ -2387,6 +2385,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             reply_msg=query.message,
         )
         return
+
+    data = str(query.data)
 
     if data.startswith("ac:deposit:"):
         from app.services.tbcc_telegram_admin import can_operate_storage_hub_bot_api
@@ -3359,6 +3359,18 @@ async def cmd_deposit_composer(update: Update, context: ContextTypes.DEFAULT_TYP
     await cmd_deposit(update, context, bot_label="album-composer")
 
 
+async def cmd_depositpanel_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.storage_deposit_control_handlers import cmd_deposit_panel
+
+    await cmd_deposit_panel(update, context)
+
+
+async def cmd_review_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from bots.review_control_handlers import cmd_review
+
+    await cmd_review(update, context)
+
+
 async def cmd_deposit_staged_composer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from bots.storage_hub_deposit_bot import cmd_deposit_staged
 
@@ -3396,22 +3408,43 @@ async def post_init(application: Application) -> None:
             BotCommand("drafts", "List saved drafts"),
             BotCommand("clear", "Clear staged media only"),
             BotCommand("emoji_pack", "Split media into Telegram emoji pack"),
+            BotCommand("rebundle", "Group loose media into albums (preview)"),
             BotCommand("deposit", "Queue N items into this topic's pool"),
+            BotCommand("depositpanel", "Bulk deposit presets (50/100/150)"),
             BotCommand("depositstaged", "Deposit staged workshop media"),
         ]
     )
     try:
+        from app.services.storage_hub_bot_wiring import album_composer_storage_hub_enabled
         from bots.storage_hub_deposit_bot import album_composer_storage_deposit_enabled
         from app.services.storage_topic_deposit import storage_hub_chat_id_int
 
-        if album_composer_storage_deposit_enabled():
+        if album_composer_storage_deposit_enabled() or album_composer_storage_hub_enabled():
+            hub_cmds = [
+                BotCommand("deposit", "Queue N deduped items into this topic's pool"),
+                BotCommand("depositstaged", "Deposit staged items to pool + SENT VAULT"),
+                BotCommand("depositpanel", "Lane control panel (deposit + auto-pipe)"),
+                BotCommand("hubpanel", "Refresh lane / vault / inbox panels"),
+                BotCommand("qapanel", "Q&A master control panel"),
+                BotCommand("review", "Bulk approve quarantine queue"),
+                BotCommand("intake", "Inbox intake scheduler panel"),
+                BotCommand("rebundle", "Group loose media into albums here"),
+                BotCommand("menu", "Workshop menu"),
+            ]
             await application.bot.set_my_commands(
-                [
-                    BotCommand("deposit", "Queue N deduped items into this topic's pool"),
-                    BotCommand("depositstaged", "Deposit staged items to pool + SENT CACHE"),
-                    BotCommand("menu", "Workshop menu"),
-                ],
+                hub_cmds,
                 scope=BotCommandScopeChat(chat_id=storage_hub_chat_id_int()),
+            )
+        if album_composer_storage_hub_enabled():
+            from bots.storage_hub_handlers import bootstrap_storage_hub_panels
+
+            report = await bootstrap_storage_hub_panels(application.bot)
+            lane = (report.get("lanes") or {}) if isinstance(report, dict) else {}
+            logger.info(
+                "Storage hub panels (remixer): posted=%s edited=%s errors=%s",
+                lane.get("posted"),
+                lane.get("edited"),
+                lane.get("errors"),
             )
     except Exception as e:
         logger.debug("album composer storage hub command scope: %s", e)
@@ -3446,10 +3479,16 @@ def main() -> None:
 
         await cmd_compose(update, context, deny=_deny_unauthorized)
 
+    async def _cmd_rebundle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from bots.remixer_rebundle import cmd_rebundle, deny_rebundle_unauthorized
+
+        await cmd_rebundle(update, context, deny=deny_rebundle_unauthorized)
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("cover", _cmd_cover))
     app.add_handler(CommandHandler("compose", _cmd_compose))
+    app.add_handler(CommandHandler("rebundle", _cmd_rebundle))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -3463,7 +3502,16 @@ def main() -> None:
     app.add_handler(CommandHandler("savecaption", cmd_savecaption))
     app.add_handler(CommandHandler("savepromo", cmd_savepromo))
     app.add_handler(CommandHandler("emoji_pack", cmd_emoji_pack))
-    app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
+    from app.services.storage_hub_bot_wiring import album_composer_storage_hub_enabled
+
+    if album_composer_storage_hub_enabled():
+        from bots.storage_hub_handlers import register_storage_hub_handlers
+
+        register_storage_hub_handlers(app, bot_label="album-composer")
+    else:
+        app.add_handler(CommandHandler("deposit", cmd_deposit_composer))
+        app.add_handler(CommandHandler("depositpanel", cmd_depositpanel_composer))
+        app.add_handler(CommandHandler("review", cmd_review_composer))
     app.add_handler(CommandHandler("depositstaged", cmd_deposit_staged_composer))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ac:"))
     app.add_error_handler(make_error_handler("album-composer-bot"))

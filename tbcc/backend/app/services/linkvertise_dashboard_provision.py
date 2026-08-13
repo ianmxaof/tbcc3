@@ -40,7 +40,7 @@ class PromptGateGuidelinesError(RuntimeError):
 
 _FLOW_PATH = Path(__file__).resolve().parents[1] / "data" / "linkvertise_dashboard_flow.json"
 _LV_SLUG_RE = re.compile(
-    r"https?://(?:link-target|link-center|link-to|direct-link|up-to-down)\.net/\d+/([A-Za-z0-9_-]+)",
+    r"https?://(?:link-target|link-center|link-hub|link-to|direct-link|up-to-down)\.net/\d+/([A-Za-z0-9_-]+)",
     re.I,
 )
 _PROBE_UA = {
@@ -254,7 +254,7 @@ def _navigate_to_wizard_start(
 
     entry = (cfg.wizard_entry_url or "").strip()
     if entry:
-        page.goto(entry, wait_until="networkidle", timeout=120000)
+        page.goto(entry, wait_until="domcontentloaded", timeout=120000)
         _dismiss_banners(page)
 
     start_spec = _spec(cfg, "wizard_start")
@@ -1091,12 +1091,9 @@ def _open_create_form(page: Any, cfg: FlowConfig, *, first_in_session: bool) -> 
 
 def _navigate_to_text_wizard_body(page: Any, cfg: FlowConfig, *, first: bool) -> None:
     """Reach the Text body step (Type -> Text -> Next -> /posts/create/paste)."""
-    if first:
-        _goto_create_type_step(page, cfg)
-    else:
-        _navigate_to_wizard_start(page, cfg, first=False, advance_past_type=False)
-        if not _type_step_visible(page):
-            _goto_create_type_step(page, cfg)
+    # Batch Text: always open the Type step by URL — the post-publish "Create new link"
+    # loop drifts on current LV UI and repeats the same click path without reaching paste.
+    _goto_create_type_step(page, cfg)
     if not _select_asset_type_text(page, cfg):
         raise RuntimeError("asset_type_text_option locator missing - run --record-text")
     page.wait_for_timeout(600)
@@ -1237,9 +1234,6 @@ class DashboardSession:
             guidelines_mode=ASSET_TYPE_TEXT,
         )
 
-        if cfg.reuse_create_new_link_loop:
-            _click_if_spec(page, cfg, "create_new_link_button")
-
         self._links_created += 1
         return normalized
 
@@ -1377,7 +1371,8 @@ def open_dashboard_session(
     )
     page = handle.get_page()
     page.set_default_timeout(60000)
-    page.goto(cfg.post_earn_url, wait_until="networkidle", timeout=120000)
+    entry = (cfg.wizard_entry_url or cfg.post_earn_url or "https://linkvertise.com/dashboard").strip()
+    page.goto(entry, wait_until="domcontentloaded", timeout=120000)
     _dismiss_banners(page)
     _ensure_logged_in(page, cfg, headed=headed)
     session = DashboardSession(
@@ -1507,6 +1502,336 @@ def create_dashboard_text_batch(
             session.close(force=True)
         else:
             session.close()
+
+
+def _gate_slug_suffix(gate_url: str) -> str:
+    m = _LV_SLUG_RE.search(gate_url or "")
+    if m:
+        return m.group(1)
+    return (gate_url or "").rstrip("/").split("/")[-1]
+
+
+def _navigate_to_posts_list(page: Any, cfg: FlowConfig) -> None:
+    posts_url = (os.getenv("TBCC_LINKVERTISE_POSTS_URL") or "").strip()
+    default_entry = "https://linkvertise.com/dashboard/overview"
+    entry = posts_url or (cfg.wizard_entry_url or cfg.post_earn_url or default_entry).strip()
+    page.goto(entry, wait_until="domcontentloaded", timeout=120000)
+    page.wait_for_timeout(2000)
+    nav = _spec(cfg, "post_earn_nav")
+    if nav and not posts_url:
+        try:
+            click_spec(page, nav)
+            page.wait_for_timeout(2000)
+        except Exception:
+            logger.debug("post_earn_nav click skipped", exc_info=True)
+    # Creator dashboard often defaults to 7-day filter — show all posts for search.
+    try:
+        page.get_by_role("button", name=re.compile(r"Past 7 days|Time range|All", re.I)).first.click(timeout=3000)
+        page.wait_for_timeout(500)
+        page.get_by_role("option", name=re.compile(r"All|Past 30|Past 90", re.I)).first.click(timeout=3000)
+        page.wait_for_timeout(1000)
+    except Exception:
+        pass
+
+
+def _search_posts_slug(page: Any, cfg: FlowConfig, slug: str, gate_url: str = "") -> None:
+    search_spec = _spec(cfg, "posts_search_input")
+    queries = [slug]
+    if gate_url:
+        queries.insert(0, gate_url.strip())
+    for q in queries:
+        if search_spec:
+            try:
+                loc = locator_from_spec(page, search_spec).first
+                _set_input_value_angular(page, loc, q)
+                page.wait_for_timeout(1500)
+                return
+            except Exception:
+                logger.debug("posts_search_input failed", exc_info=True)
+        for getter in (
+            lambda: page.get_by_placeholder(re.compile(r"Search", re.I)).first,
+            lambda: page.get_by_role("textbox", name=re.compile(r"Search", re.I)).first,
+        ):
+            try:
+                loc = getter()
+                if loc.count():
+                    _set_input_value_angular(page, loc, q)
+                    page.wait_for_timeout(1500)
+                    return
+            except Exception:
+                continue
+
+
+def _scroll_posts_table_for_actions(page: Any, row: Any = None) -> None:
+    """Horizontal posts table hides row actions (blue Edit) off-screen to the right."""
+    try:
+        page.evaluate(
+            """() => {
+            const nodes = document.querySelectorAll(
+              'table, [role=grid], .mat-mdc-table, .posts-table, lv-posts-table, .table-wrapper'
+            );
+            for (const el of nodes) {
+              el.scrollLeft = el.scrollWidth;
+            }
+            const scroller = document.querySelector('.mat-mdc-table-container, .table-container, [class*="scroll"]');
+            if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+        }"""
+        )
+        page.wait_for_timeout(600)
+    except Exception:
+        logger.debug("posts table scroll skipped", exc_info=True)
+    if row is not None and row.count():
+        try:
+            row.scroll_into_view_if_needed(timeout=8000)
+            page.wait_for_timeout(400)
+        except Exception:
+            pass
+
+
+def _row_for_slug(page: Any, slug: str) -> Any:
+    for sel in ("tr", "[role='row']", "mat-row", "tbody > *", "table *"):
+        row = page.locator(sel).filter(has_text=slug).first
+        if row.count():
+            return row
+    return page.locator("tr, [role='row'], mat-row").filter(has_text=slug).first
+
+
+def _post_edit_screen_visible(page: Any, cfg: FlowConfig) -> bool:
+    dest_spec = _spec(cfg, "edit_destination_input") or _spec(cfg, "destination_input")
+    if dest_spec:
+        try:
+            locator_from_spec(page, dest_spec).first.wait_for(state="visible", timeout=4000)
+            return True
+        except Exception:
+            pass
+    try:
+        page.get_by_role("textbox", name=re.compile(r"https://", re.I)).first.wait_for(
+            state="visible", timeout=4000
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _click_edit_for_slug(page: Any, cfg: FlowConfig, slug: str) -> None:
+    """Open single-post edit — scroll table right for the blue per-row Edit button."""
+    row = _row_for_slug(page, slug)
+    _scroll_posts_table_for_actions(page, row if row.count() else None)
+    edit_spec = _spec(cfg, "post_edit_button")
+
+    def _try_click(loc: Any, *, require_edit_screen: bool = True) -> bool:
+        try:
+            loc.first.click(timeout=15000)
+            page.wait_for_timeout(2000)
+            if not require_edit_screen:
+                return True
+            return _post_edit_screen_visible(page, cfg)
+        except Exception:
+            return False
+
+    if row.count() and edit_spec:
+        try:
+            if _try_click(locator_from_spec(row, edit_spec)):
+                return
+        except Exception:
+            pass
+
+    if row.count():
+        try:
+            btn = row.get_by_role("button", name=re.compile(r"^Edit$", re.I))
+            if btn.count() and _try_click(btn):
+                return
+        except Exception:
+            pass
+
+    _scroll_posts_table_for_actions(page)
+    try:
+        if _try_click(page.get_by_role("button", name=re.compile(r"^Edit$", re.I))):
+            return
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        f"Could not open edit UI for slug {slug} "
+        "(scroll right and click the blue row Edit button)"
+    )
+
+
+def retarget_post_destination(
+    page: Any,
+    cfg: FlowConfig,
+    gate_url: str,
+    beacon_destination: str,
+    *,
+    headed: bool = False,
+) -> dict[str, Any]:
+    """Change an existing LV post Target URL to the beacon (slug URL unchanged)."""
+    slug = _gate_slug_suffix(gate_url)
+    dest = _normalize_lv_destination((beacon_destination or "").strip())
+    if not dest.startswith(("http://", "https://")):
+        raise ValueError("invalid_beacon_destination")
+
+    _navigate_to_posts_list(page, cfg)
+    _search_posts_slug(page, cfg, slug, gate_url)
+    _click_edit_for_slug(page, cfg, slug)
+
+    dest_spec = _spec(cfg, "edit_destination_input") or _spec(cfg, "destination_input")
+    if not dest_spec:
+        raise RuntimeError("destination_input locator missing for edit flow")
+    dest_loc = locator_from_spec(page, dest_spec).first
+    _set_input_value_angular(page, dest_loc, dest)
+
+    # Edit flow may skip meta/access if unchanged — try Next then Publish/Save.
+    for next_key in ("wizard_next_after_url", "wizard_next_after_settings"):
+        _click_if_spec(page, cfg, next_key)
+        page.wait_for_timeout(600)
+
+    save_spec = _spec(cfg, "edit_save_button") or _spec(cfg, "submit_button")
+    if not save_spec:
+        raise RuntimeError("submit_button locator missing")
+    click_spec(page, save_spec)
+    page.wait_for_timeout(cfg.wait_after_submit_ms)
+
+    if headed:
+        _wait_for_manual_step(
+            page,
+            cfg,
+            prompt=f"Confirm retarget {slug} -> {dest[:60]}… then continue.",
+        )
+
+    probe = probe_lv_gate(gate_url)
+    return {
+        "ok": probe.get("ok"),
+        "slug": slug,
+        "gate_url": gate_url,
+        "beacon_destination": dest,
+        "probe": probe,
+    }
+
+
+def retarget_gate_beacons_for_week(
+    week: str,
+    *,
+    headed: bool = False,
+    dry_run: bool = False,
+    keys: list[str] | None = None,
+    beacon_base: str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Retarget canonical AOF manual LV gates to wkNN beacon URLs (Playwright)."""
+    from app.data.gate_beacon_plan import build_gate_beacon_plan
+    from app.services.click_beacon import public_beacon_base
+
+    plan = build_gate_beacon_plan(week)
+    if keys:
+        wanted = {k.strip().lower() for k in keys}
+        plan = [b for b in plan if b.key in wanted]
+    if limit is not None:
+        plan = plan[: max(0, int(limit))]
+
+    base = (beacon_base or public_beacon_base()).rstrip("/")
+    if dry_run:
+        rows: list[dict[str, Any]] = []
+        for b in plan:
+            if not is_linkvertise_host(b.gate_url):
+                rows.append(
+                    {
+                        "key": b.key,
+                        "skip": True,
+                        "reason": "no_linkvertise_slug",
+                        "gate_url": b.gate_url,
+                    }
+                )
+                continue
+            rows.append(
+                {
+                    "key": b.key,
+                    "gate_url": b.gate_url,
+                    "beacon_url": f"{base}/r/{b.slug}",
+                    "slug": _gate_slug_suffix(b.gate_url),
+                }
+            )
+        return rows
+
+    if not selectors_ready(load_flow_config()):
+        raise RuntimeError("Linkvertise flow not configured — run import_linkvertise_codegen first")
+
+    auth = auth_state_path()
+    if not auth.is_file() and not use_brave_persistent_profile():
+        raise RuntimeError(f"Missing auth: {auth} — run provision_linkvertise_dashboard_links.py --login")
+
+    session = open_dashboard_session(headed=headed, asset_type=ASSET_TYPE_LINK)
+    results: list[dict[str, Any]] = []
+    try:
+        page = session.page
+        cfg = session.cfg
+        for i, b in enumerate(plan):
+            if not is_linkvertise_host(b.gate_url):
+                results.append(
+                    {
+                        "key": b.key,
+                        "ok": False,
+                        "skip": True,
+                        "reason": "no_linkvertise_slug",
+                        "gate_url": b.gate_url,
+                    }
+                )
+                continue
+            beacon_url = f"{base}/r/{b.slug}"
+            try:
+                row = retarget_post_destination(
+                    page,
+                    cfg,
+                    b.gate_url,
+                    beacon_url,
+                    headed=headed,
+                )
+                row["key"] = b.key
+                results.append(row)
+                logger.info("LV retarget %s -> %s ok=%s", b.key, beacon_url, row.get("ok"))
+            except Exception as e:
+                logger.exception("LV retarget failed key=%s", b.key)
+                results.append(
+                    {
+                        "key": b.key,
+                        "ok": False,
+                        "gate_url": b.gate_url,
+                        "beacon_url": beacon_url,
+                        "error": str(e),
+                    }
+                )
+            if i + 1 < len(plan):
+                time.sleep(random.uniform(1.5, 4.0))
+        session.save_auth()
+    finally:
+        session.close()
+
+    return results
+
+
+def record_retarget_flow(*, headed: bool = True) -> None:
+    """Open LV posts list with Inspector — record Search + Edit + destination change."""
+    cfg = load_flow_config()
+    auth_path = auth_state_path()
+    handle = open_playwright_session(headed=True, slow_mo=80, storage_state=auth_path)
+    try:
+        page = handle.get_page()
+        _navigate_to_posts_list(page, cfg)
+        print(
+            "\n=== RECORD LINKVERTISE RETARGET FLOW ===\n"
+            "Start: https://linkvertise.com/dashboard/overview\n"
+            "NOT 'Edit all Posts' at top (bulk ad settings).\n"
+            "1. Search posts -> gate slug (e.g. dl1P4gLUfX0L)\n"
+            "2. Scroll the posts table RIGHT -> blue **Edit** on that row (far right)\n"
+            "3. Set Target URL to https://api.powercore.app/r/wk31-lv-loot\n"
+            "4. Next -> Publish / Save\n"
+            "Copy codegen from Inspector -> import_linkvertise_codegen.py\n"
+            "Press Resume when done.\n"
+        )
+        page.pause()
+        handle.context.storage_state(path=str(auth_path))
+    finally:
+        handle.close()
 
 
 def modifier_needs_lv(mod) -> bool:

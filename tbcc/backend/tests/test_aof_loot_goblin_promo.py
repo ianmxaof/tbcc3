@@ -7,6 +7,7 @@ from app.services.aof_loot_goblin_promo import (
     PROMPT_DROP_MARKER,
     append_prompt_drop_variations,
     build_goblin_teaser_with_footer,
+    build_goblin_teaser_variations,
     build_loot_room_goblin_bulletin_html,
     build_prompt_drop_html,
     inject_goblin_teaser_variations,
@@ -60,7 +61,7 @@ def test_strip_prompt_drop_footer_skips_addlist() -> None:
 
 def test_loot_room_bulletin_mentions_no_lv_on_goblin() -> None:
     html = build_loot_room_goblin_bulletin_html()
-    assert "Loot Goblin" in html
+    assert "LOOT GOBLIN" in html
     assert "No Linkvertise on goblin" in html
     assert "blink" in html.lower()
 
@@ -89,3 +90,13 @@ def test_append_prompt_drop_variations_appends_provisioned_rows() -> None:
             assert any(is_prompt_drop_variation(v) for v in merged)
     finally:
         db.close()
+
+
+def test_inject_multiple_goblin_teaser_bodies_at_scale() -> None:
+    """Five distinct teaser bodies → multiple slots in a ~90-hook rotation."""
+    variations = ["📢 bulletin"] + [f"hook {i}\n\n📌 footer" for i in range(88)]
+    teasers = build_goblin_teaser_variations("📌 footer")
+    merged = inject_goblin_teaser_variations(variations, teasers, every_nth=10)
+    goblin_slots = [v for v in merged if is_goblin_teaser_variation(v)]
+    assert len(goblin_slots) >= 3
+    assert len({v.strip() for v in goblin_slots}) >= 3

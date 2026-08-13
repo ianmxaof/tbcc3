@@ -144,3 +144,35 @@ def mirror_loot_daily_promo_to_buffer(db: Session) -> dict:
         "chars": len(plain),
         "queue_remaining": len(r.get_buffer_x_queue()) if r else 0,
     }
+
+
+def mirror_creator_recruitment_to_buffer(db: Session, *, variant: str) -> dict:
+    """Optional X mirror for daily /model creator recruitment (TBCC_CREATOR_RECRUITMENT_BUFFER_MIRROR=1)."""
+    from app.services.loot_creator_recruitment_posts import build_x_recruitment_line
+
+    eff = get_effective_loot_bot_settings(db)
+    if not eff.get("buffer_mirror_enabled"):
+        return {"ok": False, "skipped": True, "reason": "buffer_mirror_disabled"}
+    if not buffer_api_key():
+        return {"ok": False, "skipped": True, "reason": "no_buffer_api_key"}
+
+    chans = buffer_target_channel_ids(x_primary_only=True)
+    if not chans:
+        return {"ok": False, "skipped": True, "reason": "no_buffer_channels"}
+
+    plain = build_x_recruitment_line(variant=variant)  # type: ignore[arg-type]
+    if should_fit_for_x():
+        plain = finalize_buffer_x_caption(
+            plain,
+            db=db,
+            overflow_url=_loot_overflow_url(eff) or None,
+            advance_link_cycle=False,
+        )
+    publish_now = bool(eff.get("buffer_publish_now"))
+    share_mode = scheduled_buffer_share_mode(buffer_publish_now=publish_now)
+    capped = int(os.environ.get("TBCC_BUFFER_MIRROR_MAX_CHANNELS", "6") or 6)
+    chans = chans[: max(1, capped)]
+    results = create_posts_multi_channel(plain, channel_ids=chans, mode=share_mode)
+    ok = any(buffer_create_post_succeeded(r) for r in results)
+    logger.info("creator recruitment buffer mirror: variant=%s ok=%s", variant, ok)
+    return {"ok": ok, "mode": share_mode, "variant": variant}

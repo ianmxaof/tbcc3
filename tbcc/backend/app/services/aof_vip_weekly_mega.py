@@ -22,6 +22,7 @@ from app.services.mega_link_pipeline import resolve_to_file_host
 logger = logging.getLogger(__name__)
 
 WEEKLY_MEGA_SCHED_NAME = "AOF VIP — Weekly Mega Pack"
+WEEKLY_MEGA_PUBLIC_TEASE_PREFIX = "AOF LOOT ROOM — VIP mega tease"
 
 
 def vip_weekly_mega_enabled() -> bool:
@@ -100,6 +101,103 @@ def build_weekly_mega_caption_html(db: Session, mod: LootModifier, direct_url: s
     )
 
 
+def vip_weekly_mega_public_tease_enabled() -> bool:
+    raw = (os.getenv("TBCC_VIP_WEEKLY_MEGA_PUBLIC_TEASE_ENABLED") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def vip_weekly_mega_public_delay_days() -> int:
+    raw = (os.getenv("TBCC_VIP_WEEKLY_MEGA_PUBLIC_DELAY_DAYS") or "3").strip()
+    try:
+        return max(0, min(14, int(raw)))
+    except ValueError:
+        return 3
+
+
+def _public_gate_url_for_modifier(db: Session, mod: LootModifier) -> str | None:
+    target = (mod.target_url or "").strip().split()[0]
+    if not target:
+        return None
+    if is_gate_host(target):
+        return target
+    from app.services.link_gate_provider import wrap_gate_url
+
+    wrapped, _prov = wrap_gate_url(target)
+    return wrapped or target
+
+
+def build_weekly_mega_public_tease_caption_html(db: Session, mod: LootModifier, gate_url: str) -> str:
+    label = html.escape((mod.label or "MEGA PACK").strip()[:80])
+    delay = vip_weekly_mega_public_delay_days()
+    pay = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+    delay_bit = f" Public wrap in ~{delay}d." if delay > 0 else ""
+    return (
+        f"📦 <b>VIP WEEKLY MEGA — public tease</b>\n"
+        f"{label}\n"
+        "VIP members already got the <b>direct folder</b> in AOF VIP.\n"
+        f"{_a_tag(gate_url, 'gated preview (public)')}\n\n"
+        f"Want the skip button? @{pay} /subscribe{delay_bit}"
+    )
+
+
+def queue_weekly_mega_public_tease(
+    db: Session,
+    mod: LootModifier,
+    *,
+    week_key: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Loot Room tease when VIP mega drops — gated link, not the direct VIP URL."""
+    if not vip_weekly_mega_public_tease_enabled():
+        return {"ok": True, "skipped": True, "reason": "public_tease_disabled"}
+
+    from app.data.aof_network import MAIN_GROUP_IDENT
+
+    gate = _public_gate_url_for_modifier(db, mod)
+    if not gate:
+        return {"ok": False, "error": "no_public_gate_url", "modifier_id": mod.id}
+
+    loot_ch = db.query(Channel).filter(Channel.identifier == MAIN_GROUP_IDENT).first()
+    if not loot_ch:
+        return {"ok": False, "error": "loot_room_channel_not_registered"}
+
+    name = f"{WEEKLY_MEGA_PUBLIC_TEASE_PREFIX} ({week_key})"
+    existing = (
+        db.query(ScheduledTextPost)
+        .filter(ScheduledTextPost.name == name, ScheduledTextPost.sent_at.isnot(None))
+        .first()
+    )
+    if existing and not force:
+        return {"ok": True, "skipped": True, "reason": "public_tease_already_sent", "week": week_key}
+
+    body = build_weekly_mega_public_tease_caption_html(db, mod, gate)
+    now = datetime.now(timezone.utc)
+    sched = (
+        db.query(ScheduledTextPost)
+        .filter(ScheduledTextPost.channel_id == loot_ch.id, ScheduledTextPost.name == name)
+        .first()
+    )
+    if not sched:
+        sched = ScheduledTextPost(
+            name=name,
+            channel_id=loot_ch.id,
+            content=body,
+            send_silent=False,
+            pin_after_send=False,
+            created_at=now,
+        )
+        db.add(sched)
+        db.flush()
+    else:
+        sched.content = body
+        sched.sent_at = None
+        sched.interval_minutes = None
+
+    db.commit()
+    q = queue_post_scheduler(int(sched.id), countdown=0)
+    return {"ok": True, "week": week_key, "post_id": sched.id, "gate_url": gate, **q}
+
+
 def queue_weekly_vip_mega_drop(db: Session, *, force: bool = False) -> dict[str, Any]:
     """Idempotent weekly VIP mega post (one per ISO week unless force)."""
     if not vip_weekly_mega_enabled():
@@ -160,7 +258,7 @@ def queue_weekly_vip_mega_drop(db: Session, *, force: bool = False) -> dict[str,
 
     db.commit()
     q = queue_post_scheduler(int(sched.id), countdown=0)
-    return {
+    result = {
         "ok": True,
         "week": week_key,
         "post_id": sched.id,
@@ -168,3 +266,6 @@ def queue_weekly_vip_mega_drop(db: Session, *, force: bool = False) -> dict[str,
         "direct_url": direct,
         **q,
     }
+    tease = queue_weekly_mega_public_tease(db, mod, week_key=week_key, force=force)
+    result["public_tease"] = tease
+    return result

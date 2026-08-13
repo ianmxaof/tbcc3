@@ -11,6 +11,29 @@ from typing import Any
 
 BODY_PREFS_KEY = "body_prefs"
 
+BODY_PRESET_IDS: tuple[str, ...] = ("natural", "curvy", "bimbo")
+
+BODY_PRESETS: dict[str, dict[str, str]] = {
+    "natural": {
+        "age": "30",
+        "body_type": "normal",
+        "breast_size": "normal",
+        "butt_size": "normal",
+    },
+    "curvy": {
+        "age": "20",
+        "body_type": "curvy",
+        "breast_size": "normal",
+        "butt_size": "big",
+    },
+    "bimbo": {
+        "age": "20",
+        "body_type": "curvy",
+        "breast_size": "big",
+        "butt_size": "big",
+    },
+}
+
 # API-native values (BreastSizeEnum / ButtSizeEnum / BodyTypeEnum / AgeEnum)
 OPTION_GROUPS: dict[str, tuple[str, ...]] = {
     "age": ("18", "20", "30", "40", "50"),
@@ -24,20 +47,29 @@ CLOTH_OPTIONS: tuple[str, ...] = (
     "Naked",
     "Bikini",
     "Lingerie",
+    "Sport wear",
+    "BDSM",
     "Latex",
-    "Maid",
-    "Schoolgirl",
     "Teacher",
+    "Schoolgirl",
+    "Bikini leopard",
+    "Naked cum",
+    "Naked tatoo",
+    "Witch",
+    "Sexy Witch",
+    "Maid",
+    "Christmas underwear",
+    "Pregnant",
     "Cheerleader",
     "Police",
     "Secretary",
-    "Sport wear",
-    "BDSM",
+    "Blooming Bouquet",
+    "Leather dress",
     "Corset",
     "Mini bikini",
-    "Witch",
-    "Pregnant",
 )
+
+POST_GEN_OPTIONS: tuple[str, ...] = ("upscale", "anime")
 
 GROUP_LABELS: dict[str, str] = {
     "age": "Age look",
@@ -45,6 +77,7 @@ GROUP_LABELS: dict[str, str] = {
     "breast_size": "Chest size",
     "butt_size": "Butt size",
     "cloth": "Outfit",
+    "post_gen": "Enhance",
 }
 
 GROUP_SHORT: dict[str, str] = {
@@ -53,6 +86,7 @@ GROUP_SHORT: dict[str, str] = {
     "breast_size": "Chest",
     "butt_size": "Butt",
     "cloth": "Outfit",
+    "post_gen": "FX",
 }
 
 # Human-readable button labels (API value → display).
@@ -75,6 +109,7 @@ OPTION_DISPLAY: dict[str, dict[str, str]] = {
         "big": "Large",
     },
     "cloth": {v: v for v in CLOTH_OPTIONS},
+    "post_gen": {"upscale": "Upscale", "anime": "Anime"},
 }
 
 # Legacy UI values from an earlier pass — map before API submit.
@@ -93,10 +128,11 @@ class BodyPrefs:
     breast_size: str | None = None
     butt_size: str | None = None
     cloth: str | None = None
+    post_gen: str | None = None
 
     def to_api_kwargs(self) -> dict[str, str]:
         out: dict[str, str] = {}
-        for key in ("age", "body_type", "breast_size", "butt_size", "cloth"):
+        for key in ("age", "body_type", "breast_size", "butt_size", "cloth", "post_gen"):
             val = _api_value(key, getattr(self, key, None))
             if val:
                 out[key] = val
@@ -107,7 +143,7 @@ class BodyPrefs:
 
     def summary(self) -> str:
         parts = []
-        for key in ("age", "body_type", "breast_size", "butt_size", "cloth"):
+        for key in ("age", "body_type", "breast_size", "butt_size", "cloth", "post_gen"):
             val = getattr(self, key, None)
             label = GROUP_LABELS.get(key, key)
             shown = display_value(key, val) if val else "default"
@@ -132,27 +168,42 @@ def option_button_label(group: str, api_value: str, *, selected: bool = False) -
 
 def styles_help_text() -> str:
     return (
-        "<b>Body tuning</b> (undresstool.fun)\n\n"
-        "Chest <b>Bimbo max</b> = API largest setting (<code>big</code>) + auto <b>Curvy</b> body.\n"
-        "Use the <b>Bimbo preset</b> button for the full stack.\n\n"
-        "<b>Pose + body together</b>\n"
-        "When you pick a <code>/poses</code> act <i>and</i> body sliders, we run "
-        "<b>body → pose → bimbo refine</b> when chest is Bimbo max (3 API passes).\n\n"
-        "<b>Separate</b>: <code>/poses</code> only = act without chest sizing.\n\n"
-        "Tap <b>Done</b> when ready."
+        "<b>Body preset</b> — best-effort shaping on <i>your</i> photo.\n\n"
+        "• <b>Natural</b> — subtle, close to source\n"
+        "• <b>Curvy</b> — fuller hips + shape\n"
+        "• <b>Bimbo max</b> — strongest volume (works best with a pose)\n\n"
+        "<i>Tip: pick a pose + Bimbo for the biggest visual change.</i>"
     )
+
+
+def preset_label(preset_id: str, *, selected: bool = False) -> str:
+    labels = {"natural": "Natural", "curvy": "Curvy", "bimbo": "Bimbo max"}
+    text = labels.get(preset_id, preset_id)
+    return f"✓ {text}" if selected else text
+
+
+def active_preset_id(prefs: BodyPrefs) -> str | None:
+    api = prefs.to_api_kwargs()
+    if not api:
+        return None
+    for preset_id, values in BODY_PRESETS.items():
+        if all(api.get(k) == v for k, v in values.items()):
+            return preset_id
+    return None
+
+
+def apply_body_preset(user_data: dict[str, Any], preset_id: str) -> BodyPrefs:
+    preset_id = (preset_id or "").strip().lower()
+    raw = BODY_PRESETS.get(preset_id)
+    if not raw:
+        return load_body_prefs(user_data)
+    user_data[BODY_PREFS_KEY] = dict(raw)
+    return load_body_prefs(user_data)
 
 
 def apply_bimbo_preset(user_data: dict[str, Any]) -> BodyPrefs:
     """Maximize API breast/butt — big + curvy + young look."""
-    raw = {
-        "breast_size": "big",
-        "butt_size": "big",
-        "body_type": "curvy",
-        "age": "20",
-    }
-    user_data[BODY_PREFS_KEY] = raw
-    return load_body_prefs(user_data)
+    return apply_body_preset(user_data, "bimbo")
 
 
 def _api_value(group: str, raw: str | None) -> str | None:
@@ -161,6 +212,11 @@ def _api_value(group: str, raw: str | None) -> str | None:
         return None
     if group == "cloth":
         if s in CLOTH_OPTIONS:
+            return s
+        return None
+    if group == "post_gen":
+        s = s.lower()
+        if s in POST_GEN_OPTIONS:
             return s
         return None
     s = s.lower()
@@ -183,12 +239,13 @@ def load_body_prefs(user_data: dict[str, Any]) -> BodyPrefs:
         breast_size=_api_value("breast_size", _clean(raw.get("breast_size"))),
         butt_size=_api_value("butt_size", _clean(raw.get("butt_size"))),
         cloth=_api_value("cloth", raw.get("cloth") if raw.get("cloth") is not None else None),
+        post_gen=_api_value("post_gen", _clean(raw.get("post_gen"))),
     )
 
 
 def save_body_pref(user_data: dict[str, Any], group: str, value: str | None) -> BodyPrefs:
     group = (group or "").strip().lower()
-    if group not in OPTION_GROUPS and group != "cloth":
+    if group not in OPTION_GROUPS and group not in ("cloth", "post_gen"):
         return load_body_prefs(user_data)
     raw = user_data.get(BODY_PREFS_KEY)
     if not isinstance(raw, dict):

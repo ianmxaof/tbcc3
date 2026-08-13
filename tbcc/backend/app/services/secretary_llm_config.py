@@ -26,10 +26,99 @@ from app.services.secretary_settings_effective import ensure_settings_row, get_e
 
 COMETAPI_DEFAULT_BASE = "https://api.cometapi.com/v1"
 COMETAPI_DEFAULT_MODEL = "gpt-4o-mini"
+OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
+OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1"
+HCNSEC_DEFAULT_BASE = "https://api.hcnsec.cn/v1"
+HCNSEC_DEFAULT_MODEL = "step-3.5-flash"
+
+
+def cometapi_api_key() -> str:
+    return (os.getenv("TBCC_COMETAPI_API_KEY") or os.getenv("COMETAPI_API_KEY") or "").strip()
+
+
+def custom_gateway_api_key() -> str:
+    """Third-party OpenAI-compatible gateway key (hcnsec / Model Square credits)."""
+    return (os.getenv("TBCC_LLM_API_KEY") or "").strip()
+
+
+def custom_gateway_base_url() -> str | None:
+    raw = (os.getenv("TBCC_LLM_BASE_URL") or os.getenv("TBCC_OPENAI_BASE_URL") or "").strip()
+    if not raw:
+        return None
+    try:
+        return normalize_llm_base_url(raw)
+    except ValueError:
+        return None
+
+
+def openai_only_api_key() -> str:
+    """OpenAI.com key only — never TBCC_LLM_API_KEY (may be a third-party proxy)."""
+    return (os.getenv("TBCC_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+
+
+def env_llm_preset_catalog() -> list[dict[str, Any]]:
+    """Env-backed presets the operator can one-tap without pasting keys in Telegram."""
+    or_key = openrouter_api_key()
+    oa_key = openai_only_api_key()
+    custom_key = custom_gateway_api_key()
+    custom_base = custom_gateway_base_url() or HCNSEC_DEFAULT_BASE
+    comet_key = cometapi_api_key()
+    custom_model = (os.getenv("TBCC_LLM_MODEL") or "").strip() or HCNSEC_DEFAULT_MODEL
+    return [
+        {
+            "id": "hcnsec",
+            "label": "Hcnsec (env)",
+            "available": bool(custom_key and custom_gateway_base_url()),
+            "api_key_hint": _mask_api_key(custom_key) if custom_key else None,
+            "model": custom_model,
+            "base_url": custom_base,
+        },
+        {
+            "id": "openrouter",
+            "label": "OpenRouter (env)",
+            "available": bool(or_key),
+            "api_key_hint": _mask_api_key(or_key) if or_key else None,
+            "model": (os.getenv("TBCC_OPENROUTER_MODEL") or "").strip() or "openai/gpt-4o-mini",
+            "base_url": OPENROUTER_DEFAULT_BASE,
+        },
+        {
+            "id": "openai",
+            "label": "OpenAI (env)",
+            "available": bool(oa_key),
+            "api_key_hint": _mask_api_key(oa_key) if oa_key else None,
+            "model": (os.getenv("TBCC_SECRETARY_LLM_MODEL") or "").strip() or "gpt-4o-mini",
+            "base_url": OPENAI_DEFAULT_BASE,
+        },
+        {
+            "id": "cometapi",
+            "label": "CometAPI (env)",
+            "available": bool(comet_key),
+            "api_key_hint": _mask_api_key(comet_key) if comet_key else None,
+            "model": COMETAPI_DEFAULT_MODEL,
+            "base_url": COMETAPI_DEFAULT_BASE,
+        },
+    ]
 
 
 def is_cometapi_base_url(base_url: str | None) -> bool:
     return "cometapi.com" in (base_url or "").lower()
+
+
+def is_openrouter_base_url(base_url: str | None) -> bool:
+    return "openrouter.ai" in (base_url or "").lower()
+
+
+def is_hcnsec_base_url(base_url: str | None) -> bool:
+    return "hcnsec.cn" in (base_url or "").lower()
+
+
+def is_custom_gateway_base_url(base_url: str | None) -> bool:
+    """Non-OpenAI / non-OpenRouter OpenAI-compatible hosts (hcnsec, etc.)."""
+    if not base_url:
+        return False
+    if is_openrouter_base_url(base_url) or "api.openai.com" in base_url.lower():
+        return False
+    return True
 
 
 def fetch_cometapi_account_quota(api_key: str) -> dict[str, Any] | None:
@@ -79,9 +168,25 @@ def normalize_llm_base_url(raw: str | None) -> str | None:
         u = u[: -len("/chat/completions")].rstrip("/")
     if not re.match(r"^https?://", u, re.I):
         raise ValueError("Endpoint URL must start with http:// or https://")
+    # CometAPI OpenAI-compatible surface lives under /v1 (bare host → 404 Invalid URL).
+    if re.fullmatch(r"https?://api\.cometapi\.com", u, re.I):
+        u = u.rstrip("/") + "/v1"
     if len(u) > _URL_MAX_LEN:
         raise ValueError(f"Endpoint URL too long (max {_URL_MAX_LEN})")
     return u
+
+
+def normalize_llm_model_id(raw: str | None) -> str | None:
+    """Take first non-empty line only (Telegram pastes often glue two model ids)."""
+    if raw is None:
+        return None
+    for line in str(raw).replace("\r", "\n").split("\n"):
+        cleaned = line.strip()
+        if cleaned:
+            if len(cleaned) > _MODEL_MAX_LEN:
+                raise ValueError(f"Model id too long (max {_MODEL_MAX_LEN})")
+            return cleaned
+    return None
 
 
 def _validate_api_key(key: str) -> str:
@@ -101,15 +206,6 @@ def resolve_secretary_text_llm_runtime(db: Session | None = None) -> TextLlmRunt
         provider = "openai"
 
     api_key = str(eff.get("llm_api_key") or "").strip()
-    if not api_key:
-        api_key = openrouter_api_key() if provider == "openrouter" else openai_api_key()
-    if not api_key:
-        return None
-
-    model = str(eff.get("llm_model") or "").strip()
-    if not model:
-        model = resolve_text_model(os.getenv("TBCC_SECRETARY_LLM_MODEL") or None)
-
     base_url = str(eff.get("llm_base_url") or "").strip() or None
     if base_url:
         try:
@@ -118,22 +214,63 @@ def resolve_secretary_text_llm_runtime(db: Session | None = None) -> TextLlmRunt
             base_url = None
     elif provider == "openrouter":
         base_url = normalize_llm_base_url(
-            os.getenv("TBCC_OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+            os.getenv("TBCC_OPENROUTER_BASE_URL") or OPENROUTER_DEFAULT_BASE
         )
 
-    # CometAPI and other OpenAI-compatible gateways must not use OpenRouter headers.
-    if is_cometapi_base_url(base_url):
+    # Base URL wins over a stale provider field (e.g. openai + openrouter URL).
+    if is_openrouter_base_url(base_url):
+        provider = "openrouter"
+    elif is_custom_gateway_base_url(base_url):
+        # Comet / hcnsec / other proxies: OpenAI-compatible, no OpenRouter headers.
         provider = "openai"
-        if not str(eff.get("llm_model") or "").strip():
-            model = COMETAPI_DEFAULT_MODEL
+
+    if not api_key:
+        if provider == "openrouter" or is_openrouter_base_url(base_url):
+            api_key = openrouter_api_key()
+        elif is_cometapi_base_url(base_url):
+            api_key = cometapi_api_key() or custom_gateway_api_key()
+        elif is_custom_gateway_base_url(base_url) or is_hcnsec_base_url(base_url):
+            api_key = custom_gateway_api_key() or openai_api_key()
+        else:
+            api_key = openai_only_api_key() or openai_api_key()
+    if not api_key:
+        return None
+
+    model = normalize_llm_model_id(str(eff.get("llm_model") or "")) or ""
+    if not model:
+        # Prefer secretary/openrouter model envs — TBCC_LLM_MODEL may be a custom-proxy id
+        # (e.g. step-3.5-flash) that is invalid on OpenRouter.
+        if provider == "openrouter":
+            model = (
+                (os.getenv("TBCC_SECRETARY_LLM_MODEL") or "").strip()
+                or (os.getenv("TBCC_OPENROUTER_MODEL") or "").strip()
+                or "openai/gpt-4o-mini"
+            )
+        elif is_custom_gateway_base_url(base_url):
+            model = (
+                (os.getenv("TBCC_LLM_MODEL") or "").strip()
+                or (os.getenv("TBCC_SECRETARY_LLM_MODEL") or "").strip()
+                or HCNSEC_DEFAULT_MODEL
+            )
+        else:
+            model = resolve_text_model(os.getenv("TBCC_SECRETARY_LLM_MODEL") or None)
+
+    # CometAPI default model when unset.
+    if is_cometapi_base_url(base_url) and not normalize_llm_model_id(str(eff.get("llm_model") or "")):
+        model = COMETAPI_DEFAULT_MODEL
 
     return TextLlmRuntime(
         provider=provider,
         api_key=api_key,
         model=model,
         base_url=base_url,
-        referer=(os.getenv("TBCC_OPENROUTER_REFERER") or "https://tbcc.local").strip(),
-        title=(os.getenv("TBCC_OPENROUTER_TITLE") or "TBCC Secretary").strip(),
+        # Only OpenRouter needs these referer headers; omit for custom gateways.
+        referer=(os.getenv("TBCC_OPENROUTER_REFERER") or "https://tbcc.local").strip()
+        if provider == "openrouter"
+        else "",
+        title=(os.getenv("TBCC_OPENROUTER_TITLE") or "TBCC Secretary").strip()
+        if provider == "openrouter"
+        else "",
     )
 
 
@@ -257,9 +394,7 @@ def persist_llm_provider(provider: str) -> dict[str, Any]:
 
 
 def persist_llm_model(model: str | None) -> dict[str, Any]:
-    cleaned = (model or "").strip() or None
-    if cleaned and len(cleaned) > _MODEL_MAX_LEN:
-        raise ValueError(f"Model id too long (max {_MODEL_MAX_LEN})")
+    cleaned = normalize_llm_model_id(model)
     db = SessionLocal()
     try:
         row = ensure_settings_row(db)
@@ -268,6 +403,144 @@ def persist_llm_model(model: str | None) -> dict[str, Any]:
         return {"ok": True, "model": cleaned or resolve_text_model(None)}
     finally:
         db.close()
+
+
+def apply_openrouter_preset(*, model: str | None = None) -> dict[str, Any]:
+    """Point secretary at OpenRouter (env key) with a known-good default model."""
+    cleaned_model = normalize_llm_model_id(model) or (
+        (os.getenv("TBCC_OPENROUTER_MODEL") or "").strip() or "openai/gpt-4o-mini"
+    )
+    db = SessionLocal()
+    try:
+        row = ensure_settings_row(db)
+        row.llm_provider = "openrouter"
+        row.llm_base_url = OPENROUTER_DEFAULT_BASE
+        row.llm_model = cleaned_model
+        # Drop dashboard keys so env TBCC_OPENROUTER_API_KEY is used.
+        row.llm_api_key = None
+        db.commit()
+        runtime = resolve_secretary_text_llm_runtime(db)
+        return {
+            "ok": True,
+            "preset": "openrouter",
+            "provider": "openrouter",
+            "model": cleaned_model,
+            "base_url": OPENROUTER_DEFAULT_BASE,
+            "endpoint_url": chat_completions_url(runtime) if runtime else None,
+            "configured": runtime is not None,
+            "api_key_hint": _mask_api_key(runtime.api_key) if runtime else None,
+        }
+    finally:
+        db.close()
+
+
+def apply_openai_env_preset(*, model: str | None = None) -> dict[str, Any]:
+    """OpenAI.com via env TBCC_OPENAI_API_KEY — never TBCC_LLM_API_KEY."""
+    cleaned_model = normalize_llm_model_id(model) or (
+        (os.getenv("TBCC_SECRETARY_LLM_MODEL") or "").strip() or "gpt-4o-mini"
+    )
+    db = SessionLocal()
+    try:
+        row = ensure_settings_row(db)
+        row.llm_provider = "openai"
+        row.llm_base_url = None
+        row.llm_model = cleaned_model
+        row.llm_api_key = None
+        db.commit()
+        runtime = resolve_secretary_text_llm_runtime(db)
+        key = openai_only_api_key()
+        return {
+            "ok": True,
+            "preset": "openai",
+            "provider": "openai",
+            "model": cleaned_model,
+            "base_url": OPENAI_DEFAULT_BASE,
+            "endpoint_url": chat_completions_url(runtime) if runtime else None,
+            "configured": runtime is not None,
+            "api_key_hint": _mask_api_key(key) if key else None,
+            "missing_env": None if key else "TBCC_OPENAI_API_KEY",
+        }
+    finally:
+        db.close()
+
+
+def apply_cometapi_env_preset(*, model: str | None = None) -> dict[str, Any]:
+    """CometAPI OpenAI-compatible gateway — env key or dashboard override."""
+    cleaned_model = normalize_llm_model_id(model) or COMETAPI_DEFAULT_MODEL
+    env_key = cometapi_api_key()
+    db = SessionLocal()
+    try:
+        row = ensure_settings_row(db)
+        row.llm_base_url = COMETAPI_DEFAULT_BASE
+        row.llm_provider = "openai"
+        row.llm_model = cleaned_model
+        row.llm_api_key = env_key or None
+        db.commit()
+        runtime = resolve_secretary_text_llm_runtime(db)
+        return {
+            "ok": True,
+            "preset": "cometapi",
+            "provider": "openai",
+            "model": cleaned_model,
+            "base_url": COMETAPI_DEFAULT_BASE,
+            "endpoint_url": chat_completions_url(runtime) if runtime else None,
+            "configured": runtime is not None,
+            "api_key_hint": _mask_api_key(env_key) if env_key else None,
+            "missing_env": None if env_key else "TBCC_COMETAPI_API_KEY",
+        }
+    finally:
+        db.close()
+
+
+def apply_hcnsec_env_preset(*, model: str | None = None) -> dict[str, Any]:
+    """
+    Hcnsec / Model Square gateway (TBCC_LLM_BASE_URL + TBCC_LLM_API_KEY).
+
+    This is the credit wallet at https://api.hcnsec.cn — swap models via Model Square
+    ids (Set model id). Same lane companion spicy chat already uses.
+    """
+    base = custom_gateway_base_url() or HCNSEC_DEFAULT_BASE
+    cleaned_model = normalize_llm_model_id(model) or (
+        (os.getenv("TBCC_LLM_MODEL") or "").strip() or HCNSEC_DEFAULT_MODEL
+    )
+    env_key = custom_gateway_api_key()
+    db = SessionLocal()
+    try:
+        row = ensure_settings_row(db)
+        row.llm_provider = "openai"
+        row.llm_base_url = base
+        row.llm_model = cleaned_model
+        # Prefer env key — clear stale Comet/OpenRouter dashboard pastes.
+        row.llm_api_key = None
+        db.commit()
+        runtime = resolve_secretary_text_llm_runtime(db)
+        return {
+            "ok": True,
+            "preset": "hcnsec",
+            "provider": "openai",
+            "model": cleaned_model,
+            "base_url": base,
+            "endpoint_url": chat_completions_url(runtime) if runtime else f"{base}/chat/completions",
+            "configured": runtime is not None,
+            "api_key_hint": _mask_api_key(env_key) if env_key else None,
+            "missing_env": None if env_key else "TBCC_LLM_API_KEY",
+        }
+    finally:
+        db.close()
+
+
+def apply_env_llm_preset(preset_id: str, *, model: str | None = None) -> dict[str, Any]:
+    """One-tap env preset: hcnsec | openrouter | openai | cometapi."""
+    pid = (preset_id or "").strip().lower()
+    if pid in ("hcnsec", "custom", "gateway"):
+        return apply_hcnsec_env_preset(model=model)
+    if pid == "openrouter":
+        return apply_openrouter_preset(model=model)
+    if pid == "openai":
+        return apply_openai_env_preset(model=model)
+    if pid == "cometapi":
+        return apply_cometapi_env_preset(model=model)
+    raise ValueError(f"Unknown env preset: {preset_id!r}")
 
 
 def clear_llm_api_key_override() -> dict[str, Any]:
@@ -292,7 +565,7 @@ def clear_llm_base_url_override() -> dict[str, Any]:
         db.close()
 
 
-def test_secretary_llm(
+def probe_secretary_llm(
     *,
     db: Session | None = None,
     runtime: TextLlmRuntime | None = None,
@@ -310,10 +583,12 @@ def test_secretary_llm(
         }
 
     endpoint = chat_completions_url(rt)
+    # Reasoning models (e.g. step-3.5-flash on hcnsec) spend budget on reasoning_*
+    # fields — keep max_tokens high enough that content is not truncated to empty.
     payload = {
         "model": rt.model,
         "messages": [{"role": "user", "content": "Reply with exactly: TBCC_OK"}],
-        "max_tokens": 16,
+        "max_tokens": 64,
         "temperature": 0,
     }
     t0 = time.perf_counter()
@@ -363,14 +638,14 @@ def test_secretary_llm(
         return out
 
 
-def test_llm_credentials(
+def probe_llm_credentials(
     *,
     api_key: str,
     provider: str = "openai",
     model: str | None = None,
     base_url: str | None = None,
 ) -> dict[str, Any]:
-    """Test credentials before persisting (e.g. preview in Telegram)."""
+    """Probe credentials before persisting (e.g. preview in Telegram)."""
     try:
         rt = build_text_llm_runtime(
             api_key=api_key,
@@ -380,4 +655,5 @@ def test_llm_credentials(
         )
     except ValueError as e:
         return {"ok": False, "stage": "validation", "message": str(e)}
-    return test_secretary_llm(runtime=rt)
+    return probe_secretary_llm(runtime=rt)
+

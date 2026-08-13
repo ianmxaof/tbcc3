@@ -27,7 +27,13 @@ from app.services.loot_pool_eligibility_seed import (
     seed_content_pool_loot_eligibility,
     seed_loot_room_pool_eligibility,
 )
-from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS
+from app.data.aof_vip_membership import (
+    VIP_INTRO_PLAN_NAME,
+    VIP_INTRO_PRICE_CENTS,
+    VIP_INTRO_SKU,
+    VIP_MEMBERSHIP_SKUS,
+    protected_main_vip_plan_names,
+)
 from app.data.aof_network import AOF_VIP_IDENT
 from app.data.loot_lane_economy import LANE_PASS_SKU, MONTHLY_MEGA, PACK_DROP, usd_to_stars
 from app.models.channel import Channel
@@ -182,9 +188,66 @@ def seed_vip_membership_skus(db, *, execute: bool, report: dict) -> None:
         )
 
 
+def seed_vip_intro_month(db, *, execute: bool, report: dict) -> None:
+    """Idempotent: one-time intro VIP month for first-time main-section buyers."""
+    from app.services.vip_intro_eligibility import vip_intro_usd
+
+    sku = VIP_INTRO_SKU
+    usd = vip_intro_usd()
+    stars = usd_to_stars(usd, stars_per_usd=STARS_USD)
+    vip_ch = _vip_channel_db_id(db)
+    channel_id = vip_ch if vip_ch is not None else MAIN_HUB_CHANNEL_ID
+    desc = (
+        f"{sku.blurb}\n"
+        f"${usd:.0f} / {sku.duration_days}d · {stars}⭐ · <b>first VIP only</b>\n"
+        "Same perks as monthly VIP. Renew at standard rates after 30 days.\n"
+        "Card / crypto / Stars via @aofsubscriptions_bot → VIP invite DM."
+    )
+    existing = db.query(SubscriptionPlan).filter(SubscriptionPlan.name == VIP_INTRO_PLAN_NAME).first()
+    if existing:
+        report["plans"].append(
+            {
+                "name": VIP_INTRO_PLAN_NAME,
+                "stars": stars,
+                "usd": usd,
+                "section": "main",
+                "status": "update" if execute else "exists",
+                "intro": True,
+            }
+        )
+        if execute:
+            existing.price_stars = stars
+            existing.duration_days = sku.duration_days
+            existing.nowpayments_price_usd = usd
+            existing.nowpayments_allow_any_currency = True
+            existing.is_active = True
+            existing.product_type = "subscription"
+            existing.bot_section = "main"
+            existing.description = desc
+            existing.channel_id = channel_id
+        return
+    _ensure_plan(
+        db,
+        execute=execute,
+        report=report,
+        name=VIP_INTRO_PLAN_NAME,
+        stars=stars,
+        usd=usd,
+        duration_days=sku.duration_days,
+        product_type="subscription",
+        bot_section="main",
+        channel_id=channel_id,
+        description=desc,
+        variations=[
+            f"Intro VIP · ${usd:.0f} first month",
+            "First-time VIP only · renew at standard rates",
+        ],
+    )
+
+
 def deactivate_legacy_main_vip_plans(db, *, execute: bool, report: dict) -> None:
-    """Retire duplicate monthly-only main rows so /subscribe shows the 5-term VIP ladder only."""
-    vip_names = frozenset(sku.name for sku in VIP_MEMBERSHIP_SKUS)
+    """Retire duplicate monthly-only main rows so /subscribe shows the VIP ladder only."""
+    protected = protected_main_vip_plan_names()
     rows = (
         db.query(SubscriptionPlan)
         .filter(
@@ -195,7 +258,7 @@ def deactivate_legacy_main_vip_plans(db, *, execute: bool, report: dict) -> None
         .all()
     )
     for row in rows:
-        if (row.name or "") in vip_names:
+        if (row.name or "") in protected:
             continue
         low = (row.name or "").lower()
         if not any(tok in low for tok in ("main", "vip", "premium", "group access", "aof main")):
@@ -207,19 +270,36 @@ def deactivate_legacy_main_vip_plans(db, *, execute: bool, report: dict) -> None
 
 def build_gumroad_product_map(db) -> dict[str, int]:
     """JSON-ready map for TBCC_GUMROAD_PRODUCT_MAP (permalink + price cents → plan_id)."""
-    from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS
+    from app.data.aof_vip_membership import (
+        VIP_INTRO_PLAN_NAME,
+        VIP_INTRO_PRICE_CENTS,
+        VIP_MEMBERSHIP_SKUS,
+        VIP_PRICE_CENTS_TO_RECURRENCE,
+        sku_for_recurrence,
+    )
 
     out: dict[str, int] = {}
-    monthly_id: int | None = None
+    recurrence_to_pid: dict[str, int] = {}
     for sku in VIP_MEMBERSHIP_SKUS:
         row = db.query(SubscriptionPlan).filter(SubscriptionPlan.name == sku.name).first()
         if not row or not row.is_active:
             continue
         pid = int(row.id)
+        recurrence_to_pid[sku.gumroad_recurrence] = pid
         cents = int(round(float(sku.price_usd) * 100))
         out[f"price:{cents}"] = pid
-        if sku.gumroad_recurrence == "monthly":
-            monthly_id = pid
+
+    intro_row = db.query(SubscriptionPlan).filter(SubscriptionPlan.name == VIP_INTRO_PLAN_NAME).first()
+    if intro_row and intro_row.is_active:
+        out[f"price:{VIP_INTRO_PRICE_CENTS}"] = int(intro_row.id)
+
+    # Legacy + current Gumroad ping price cents → plan id (grandfathered renewals)
+    for cents, recurrence in VIP_PRICE_CENTS_TO_RECURRENCE.items():
+        pid = recurrence_to_pid.get(recurrence)
+        if pid is not None:
+            out[f"price:{int(cents)}"] = pid
+
+    monthly_id = recurrence_to_pid.get("monthly")
     if monthly_id is not None:
         out["ynnulc"] = monthly_id
     return out
@@ -356,6 +436,7 @@ def seed(execute: bool) -> dict:
         # Lane economy + VIP ladder — always idempotent (even when other plans already exist)
         seed_lane_economy_skus(db, execute=execute, report=report)
         seed_vip_membership_skus(db, execute=execute, report=report)
+        seed_vip_intro_month(db, execute=execute, report=report)
         deactivate_legacy_main_vip_plans(db, execute=execute, report=report)
         if execute:
             db.flush()
@@ -407,6 +488,9 @@ def seed(execute: bool) -> dict:
             db.commit()
             report["eligibility"] = seed_loot_room_pool_eligibility(db)
             report["content_pool_eligibility"] = seed_content_pool_loot_eligibility(db)
+            from app.data.telegram_stars_howto import ensure_stars_howto_caption_snippet
+
+            report["stars_howto_snippet"] = ensure_stars_howto_caption_snippet(db)
         else:
             tiers = db.query(LootIntervalTier).count()
             report["loot_interval_tiers"] = tiers

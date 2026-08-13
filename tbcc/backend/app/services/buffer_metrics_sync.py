@@ -43,6 +43,8 @@ def sync_buffer_post_metrics(db: Session, *, limit: int = 40) -> dict[str, Any]:
         .limit(max(1, min(200, limit)))
         .all()
     )
+    from app.services.buffer_graphql import BufferRateLimitError
+
     updated = 0
     scanned = 0
     for row in rows:
@@ -52,6 +54,19 @@ def sync_buffer_post_metrics(db: Session, *, limit: int = 40) -> dict[str, Any]:
         scanned += 1
         try:
             views = fetch_post_impressions(post_id)
+        except BufferRateLimitError as e:
+            logger.warning(
+                "buffer metrics sync: rate limited after %s scans (retry_after=%s)",
+                scanned,
+                e.retry_after_s,
+            )
+            return {
+                "ok": True,
+                "updated": updated,
+                "scanned": scanned,
+                "rate_limited": True,
+                "retry_after_s": e.retry_after_s,
+            }
         except Exception as e:
             logger.debug("buffer metrics fetch failed post=%s: %s", post_id[:20], e)
             continue

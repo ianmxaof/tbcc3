@@ -163,9 +163,10 @@ def attribution_summary(db: Session, *, days: int = 30) -> dict[str, Any]:
 
     source_rollup: dict[str, Any] = {}
     try:
-        from app.services.traffic_attribution import conversions_by_source
+        from app.services.traffic_attribution import conversions_by_source, revenue_by_source
 
         source_rollup = conversions_by_source(db, days=days)
+        source_rollup.update(revenue_by_source(db, days=days))
     except Exception:
         logger.debug("conversions_by_source rollup failed", exc_info=True)
 

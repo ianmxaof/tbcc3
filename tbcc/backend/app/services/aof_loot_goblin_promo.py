@@ -33,6 +33,32 @@ GOBLIN_TEASER_BODY = (
     f'<a href="{GOBLIN_FREE_DEEP_LINK}">Claim on @aof_lootgod_bot</a>'
 )
 
+# Distinct opener lines — inject_goblin_teaser_variations rotates these so ~1/N slots
+# stay visible even at 90+ flavor hooks (single body dedupes to one slot).
+GOBLIN_TEASER_BODY_VARIANTS: tuple[str, ...] = (
+    GOBLIN_TEASER_BODY,
+    (
+        "👺 <b>Loot Goblin</b> just hijacked a lane signal — "
+        "five free DM pulls, first taps win.\n"
+        f'<a href="{GOBLIN_FREE_DEEP_LINK}">Tap @aof_lootgod_bot</a>'
+    ),
+    (
+        "👺 <b>Now playing?</b> Goblin blink — "
+        "complimentary roll waiting in DM if you're fast.\n"
+        f'<a href="{GOBLIN_FREE_DEEP_LINK}">Claim on @aof_lootgod_bot</a>'
+    ),
+    (
+        "👺 <b>Loot Goblin</b> spotted on the network — "
+        "not in chat; claim link only.\n"
+        f'<a href="{GOBLIN_FREE_DEEP_LINK}">Free taste @aof_lootgod_bot</a>'
+    ),
+    (
+        "👺 <b>Goblin drop</b> — listening relay bonus. "
+        "Five tappers, one tier-capped teaser each.\n"
+        f'<a href="{GOBLIN_FREE_DEEP_LINK}">@aof_lootgod_bot</a>'
+    ),
+)
+
 MILESTONE_X_TEMPLATE = (
     "shipped: relay Bot API + loot goblin + key-roll album fix on revenue island. "
     "TBCC keeps the firehose honest. {hub} · @aof_lootgod_bot"
@@ -54,10 +80,31 @@ def is_prompt_drop_variation(text: str) -> bool:
 
 def build_goblin_teaser_with_footer(footer: str) -> str:
     """Network scheduler slot — clearnet claim link + standard addlist footer."""
+    return build_goblin_teaser_variations(footer)[0]
+
+
+def build_goblin_teaser_variations(footer: str) -> list[str]:
+    """All goblin teaser bodies with the lane footer appended (for rotation injection)."""
     foot = (footer or "").strip()
-    if foot and not GOBLIN_TEASER_BODY.endswith(foot):
-        return f"{GOBLIN_TEASER_BODY}\n\n{foot}".strip()
-    return GOBLIN_TEASER_BODY.strip()
+    out: list[str] = []
+    for body in GOBLIN_TEASER_BODY_VARIANTS:
+        text = body.strip()
+        if foot and not text.endswith(foot):
+            text = f"{text}\n\n{foot}".strip()
+        out.append(text)
+    return out
+
+
+def goblin_teaser_every_nth() -> int:
+    import os
+
+    raw = (os.getenv("TBCC_GOBLIN_TEASER_EVERY_NTH") or "10").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 10
+    return max(4, min(24, n))
+
 
 
 def build_loot_room_goblin_bulletin_html() -> str:
@@ -175,6 +222,30 @@ def append_prompt_drop_variations(db: Session, variations: list[str]) -> list[st
             continue
         seen.add(key)
         out.append(body)
+
+    # Also surface creative catalog entries linked to prompt gates (RAG path).
+    try:
+        from app.services.creative_rag import search_creative
+
+        creative_rows = search_creative(db, entry_type="image_prompt", limit=20)
+        for entry in creative_rows:
+            gate_key = (entry.prompt_gate_key or entry.catalog_key or "").strip()
+            if not gate_key:
+                continue
+            from app.services.prompt_gate_lookup import prompt_gate_url
+
+            url = prompt_gate_url(gate_key, db=db)
+            if not url:
+                continue
+            title = (entry.title or gate_key).replace("_", " ")
+            body = build_prompt_drop_html(gate_url=url, title=title, tier_label=entry.campaign)
+            key = body.strip()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(body)
+    except Exception:
+        pass
     return out
 
 

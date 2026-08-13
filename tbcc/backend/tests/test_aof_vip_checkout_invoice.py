@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from app.services.aof_vip_checkout import (
     build_checkout_caption_line,
     checkout_active_for_send,
+    checkout_blocked_for_telegram_identifier,
     is_bare_vip_invite_url,
     merge_checkout_buttons,
     refresh_checkout_caption_for_send,
@@ -91,6 +92,37 @@ def test_merge_checkout_buttons_use_invoice(mock_use, mock_link):
     assert buttons[0]["text"] == "Pay ⭐ 500"
 
 
+@patch("app.services.aof_vip_checkout.create_stars_invoice_link")
+@patch("app.services.aof_vip_checkout.use_invoice_link_checkout", return_value=True)
+def test_merge_checkout_buttons_include_loot_free(mock_use, mock_link):
+    mock_link.return_value = "https://t.me/$invoice/abc"
+    plan = MagicMock()
+    plan.is_active = True
+    plan.price_stars = 500
+    plan.name = "AOF Main"
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = plan
+
+    with patch.dict(
+        "os.environ",
+        {
+            "TBCC_PAYMENT_BOT_USERNAME": "aofsubscriptions_bot",
+            "TBCC_LOOT_BOT_USERNAME": "aof_lootgod_bot",
+        },
+        clear=False,
+    ):
+        buttons = merge_checkout_buttons(
+            [],
+            db,
+            checkout_stars_enabled=True,
+            checkout_stars_plan_id=6,
+            checkout_button_label="Pay ⭐ 500",
+            allow_inline_checkout=True,
+        )
+    urls = [b["url"] for b in buttons]
+    assert any("loot_free" in u for u in urls)
+
+
 def test_checkout_followup_uses_deal_stack():
     db = MagicMock()
     plan = MagicMock()
@@ -118,3 +150,42 @@ def test_checkout_active_for_send_main_group_every_post_by_default():
         assert checkout_active_for_send(post, MAIN_GROUP_IDENT, caption_slot_index=0) is True
         assert checkout_active_for_send(post, MAIN_GROUP_IDENT, caption_slot_index=1) is False
     assert checkout_active_for_send(post, "-1003997525573", caption_slot_index=1) is True
+
+
+def test_checkout_blocked_for_storage_hub_identifier():
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+
+    assert checkout_blocked_for_telegram_identifier(STORAGE_HUB_IDENT) is True
+    assert checkout_blocked_for_telegram_identifier("3812457581") is True
+    assert checkout_blocked_for_telegram_identifier("-1003997525573") is False
+
+
+def test_checkout_active_for_send_skips_storage_hub():
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+
+    post = MagicMock()
+    post.checkout_stars_enabled = True
+    post.checkout_stars_plan_id = 10
+    assert checkout_active_for_send(post, STORAGE_HUB_IDENT, caption_slot_index=0) is False
+
+
+def test_deliver_checkout_followup_skips_storage_hub():
+    import asyncio
+
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+    from app.services.aof_vip_checkout import deliver_stars_checkout_bot_followup
+
+    db = MagicMock()
+
+    async def _run():
+        with patch("app.services.telegram_bot_markup.send_message_with_inline_keyboard") as mock_send:
+            out = await deliver_stars_checkout_bot_followup(
+                STORAGE_HUB_IDENT,
+                db,
+                plan_id=10,
+                reply_to_message_id=12345,
+            )
+        assert out is None
+        mock_send.assert_not_called()
+
+    asyncio.run(_run())

@@ -1,4 +1,5 @@
 importScripts(
+  "tbcc-api-client.js",
   "tbcc-username-filter.js",
   "model-search-shared.js",
   "username-search-history-shared.js",
@@ -10,13 +11,10 @@ importScripts(
   "tbcc-extension-modules.js",
   "launch-full-stack.js",
   "severity-toast-colors.js",
-  "tbcc-zip-naming.js"
+  "tbcc-zip-naming.js",
+  "tbcc-promo-watermark.js"
 );
 
-const API_URL = "http://localhost:8000/import/url";
-const API_BYTES = "http://localhost:8000/import/bytes";
-const API_SAVED_BATCH = "http://localhost:8000/import/saved-batch";
-const API_MEDIA_BULK_TAGS = "http://localhost:8000/media/bulk/tags";
 const SAVED_ALBUM_CHUNK = 10;
 /** Match capture.js: overlap session fetches before sequential /import/saved-batch POSTs. */
 const TBCC_FETCH_CONCURRENCY = 3;
@@ -55,7 +53,6 @@ const TBCC_GALLERY_JOB_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const STORAGE_IMPORT_QUEUE_PAUSED = "tbccImportQueuePaused";
 const TBCC_IMPORT_POLL_ALARM_PREFIX = "tbcc-ipoll:";
 const TBCC_IMPORT_POLL_DELAY_MIN = 0.12;
-const TBCC_IMPORT_API_JOBS = "http://localhost:8000/import/jobs";
 const STORAGE_COLLECTED = "tbcc_collected";
 const STORAGE_MODEL_SEARCH_ENABLED = "tbccModelSearchEnabledSites";
 const STORAGE_MODEL_SEARCH_MODE = "tbccModelSearchOpenMode";
@@ -758,6 +755,10 @@ function hostNeedsSessionFetch(url) {
       h === "fetlife.com" ||
       h.endsWith(".fetlife.com") ||
       h.includes("fetlife") ||
+      h === "fapello.com" ||
+      h.endsWith(".fapello.com") ||
+      h === "nudostar.com" ||
+      h.endsWith(".nudostar.com") ||
       h === "video.twimg.com" ||
       h.includes("bunkr") ||
       h.includes("bunkrr") ||
@@ -802,6 +803,25 @@ function isEromeMediaUrl(url) {
   } catch (_) {
     return false;
   }
+}
+
+/** CDN path …/content/m/r/{slug}/… → https://fapello.com/{slug}/ */
+function fapelloProfileRefererFromMediaUrl(url) {
+  try {
+    const u = new URL(url);
+    const h = (u.hostname || "").toLowerCase();
+    if (h !== "fapello.com" && !h.endsWith(".fapello.com")) return "";
+    const m = (u.pathname || "").match(/\/content\/m\/r\/([^/]+)/i);
+    if (!m || !m[1]) return "";
+    return `${u.protocol}//${u.hostname}/${encodeURIComponent(m[1])}/`;
+  } catch (_) {
+    return "";
+  }
+}
+
+function isFapelloHost(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  return h === "fapello.com" || h.endsWith(".fapello.com");
 }
 
 /** CDN path …/albumId/file.mp4 → https://www.erome.com/a/albumId */
@@ -1548,15 +1568,47 @@ async function fetchUrlWithBrowserSession(url, refererPageUrl, tabId, opts) {
       for (const ref of refs) {
         try {
           let res = await fetch(url, { method: "GET", credentials: "omit", headers: { ...base, Referer: ref } });
-          if (res.ok) return await res.arrayBuffer();
+          if (res.ok) return await readBody(res);
           res = await fetch(url, {
             method: "GET",
             credentials: "omit",
             headers: { ...base, Referer: ref, Origin: `${u.protocol}//${u.hostname}` },
           });
-          if (res.ok) return await res.arrayBuffer();
+          if (res.ok) return await readBody(res);
         } catch (_) {}
       }
+    }
+    if (isFapelloHost(h)) {
+      const refs = [];
+      const addRef = (s) => {
+        const t = String(s || "").trim().split("#")[0];
+        if (t && /^https?:\/\//i.test(t) && !refs.includes(t)) refs.push(t);
+      };
+      addRef(refererPageUrl);
+      addRef(fapelloProfileRefererFromMediaUrl(url));
+      addRef(`${u.protocol}//${u.hostname}/`);
+      if (tabId != null) {
+        for (const ref of refs) {
+          if (!ref) continue;
+          const fromTab = await fetchMediaBytesFromTab(tabId, url, ref);
+          if (fromTab instanceof ArrayBuffer && fromTab.byteLength > 256) return fromTab;
+        }
+      }
+      for (const ref of refs) {
+        try {
+          let res = await fetch(url, { method: "GET", credentials: "omit", headers: { ...base, Referer: ref } });
+          if (res.ok) return await readBody(res);
+          res = await fetch(url, {
+            method: "GET",
+            credentials: "omit",
+            headers: { ...base, Referer: ref, Origin: new URL(ref).origin },
+          });
+          if (res.ok) return await readBody(res);
+        } catch (_) {}
+      }
+      throw new Error(
+        "Fapello CDN blocked fetch — keep the profile tab open in Chrome, then retry ZIP download."
+      );
     }
     /** Twitter / X: CDN rejects Referer https://video.twimg.com/ — must look like navigation from x.com.
      * Prefer no Cookie (signed amplify URLs); reject tiny bodies (CDN error stubs ~15 B). */
@@ -2278,7 +2330,7 @@ function shouldFallbackToSessionFetch(errorMsg) {
 
 async function tryBackendSavedImport(body) {
   try {
-    const resp = await fetch(API_URL, {
+    const resp = await tbccFetchApi("/import/url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -2355,7 +2407,7 @@ async function importViaExtensionBytesSavedBatch(urls, caption, tabId) {
       form.append("files", new Blob([p.ab], { type: p.type }), p.name || `media_${j}`);
     });
     if (cap) form.append("caption", cap);
-    const r = await fetch(API_SAVED_BATCH, { method: "POST", body: form });
+    const r = await tbccFetchApi("/import/saved-batch", { method: "POST", body: form });
     const text = await r.text();
     let data = {};
     try {
@@ -2499,7 +2551,7 @@ function tbccIsBackendImportTerminal(status) {
 }
 
 async function tbccFetchBackendImportJob(backendJobId) {
-  const r = await fetch(`${TBCC_IMPORT_API_JOBS}/${encodeURIComponent(backendJobId)}`, {
+  const r = await tbccFetchApi(`/import/jobs/${encodeURIComponent(backendJobId)}`, {
     cache: "no-store",
   });
   const text = await r.text();
@@ -2589,7 +2641,7 @@ async function tbccReconcileGalleryJobsWithServer() {
   const local = await tbccReadGalleryJobs();
   let serverJobs = [];
   try {
-    const r = await fetch(`${TBCC_IMPORT_API_JOBS}?active=true`, { cache: "no-store" });
+    const r = await tbccFetchApi("/import/jobs?active=true", { cache: "no-store" });
     const body = await r.json();
     serverJobs = Array.isArray(body.jobs) ? body.jobs : [];
   } catch (_) {
@@ -3353,7 +3405,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-health-system") {
     (async () => {
       try {
-        const r = await fetch("http://localhost:8000/health/system");
+        const r = await tbccFetchApi("/health/system");
         const data = await r.json();
         sendResponse({ ok: r.ok, data });
       } catch (e) {
@@ -3367,10 +3419,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       try {
         const profile = msg.profile ? String(msg.profile).trim().toLowerCase() : "off";
         const reason = msg.reason ? String(msg.reason) : "Extension gallery";
-        const url =
-          profile === "off"
-            ? "http://localhost:8000/ops/focus/restore"
-            : "http://localhost:8000/ops/focus";
+        const path = profile === "off" ? "/ops/focus/restore" : "/ops/focus";
         const opts =
           profile === "off"
             ? { method: "POST" }
@@ -3379,7 +3428,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ profile, reason }),
               };
-        const r = await fetch(url, opts);
+        const r = await tbccFetchApi(path, opts);
         const data = await r.json().catch(() => ({}));
         sendResponse({ ok: r.ok, data, error: r.ok ? "" : String(data.detail || data.error || r.status) });
       } catch (e) {
@@ -3419,6 +3468,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         });
         const removed = jobs.length - next.length;
         await tbccWriteGalleryJobs(next);
+        sendResponse({ ok: true, removed, jobs: next });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e.message || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.action === "tbcc-gallery-job-purge-types") {
+    (async () => {
+      try {
+        const types = new Set(Array.isArray(msg.types) ? msg.types.map(String) : []);
+        const jobs = await tbccReadGalleryJobs();
+        const next = jobs.filter((j) => !j || !types.has(String(j.type || "")));
+        const removed = jobs.length - next.length;
+        if (removed) await tbccWriteGalleryJobs(next);
         sendResponse({ ok: true, removed, jobs: next });
       } catch (e) {
         sendResponse({ ok: false, error: String(e.message || e) });
@@ -3498,7 +3562,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-import-queue-status") {
     (async () => {
       try {
-        const r = await fetch("http://localhost:8000/import/queue/status", { cache: "no-store" });
+        const r = await tbccFetchApi("/import/queue/status", { cache: "no-store" });
         const data = await r.json();
         sendResponse({ ok: r.ok, data });
       } catch (e) {
@@ -3640,7 +3704,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: "No URL." });
           return;
         }
-        const r = await fetch("http://localhost:8000/loot/pack-pool/queue", {
+        const r = await tbccFetchApi("/loot/pack-pool/queue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -4099,6 +4163,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+function tbccInboxRelPath(prefix, leafName) {
+  const leaf = String(leafName || "media.bin").split(/[\\/]/).pop() || "media.bin";
+  return `${prefix}/${leaf}`.replace(/\/+/g, "/");
+}
+
   if (msg.action === "tbcc-x-media-download") {
     (async () => {
       try {
@@ -4138,14 +4207,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           Number.isFinite(indexHint) && indexHint >= 1
             ? Math.floor(indexHint)
             : Math.floor(10000 + Math.random() * 90000);
-        const fileName =
-          naming && naming.buildZipFilename
-            ? naming.buildZipFilename(naming.DEFAULT_TEMPLATE, { name: profile, index, ext: extHint })
-            : tbccBuildAofDownloadName(url, referer, extHint);
+        let fileName = await tbccBuildAofDownloadName(url, referer, extHint, {
+          profileHint: profile,
+          index,
+        });
         const prefix = await tbccGetWatchInboxPrefix();
-        const relMedia = `${prefix}/${fileName}`.replace(/\/+/g, "/");
-        const sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
-        const relSidecar = `${prefix}/${sidecarName}`.replace(/\/+/g, "/");
+        let relMedia = tbccInboxRelPath(prefix, fileName);
+        let sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
+        let relSidecar = tbccInboxRelPath(prefix, sidecarName);
         const meta = {
           tags: [],
           source_url: url,
@@ -4175,7 +4244,31 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           }
         }
 
-        // Path A — direct CDN URL (XEnhancer GM_download parity; works in MV3 SW).
+        // Photos: always fetch + sniff/convert — X CDN often serves WebP bytes as .jpg (direct download breaks ZIP/viewers).
+        if (kind !== "video") {
+          const tabId = await tbccResolveSessionTabId(_sender, msg);
+          const ab = await fetchUrlWithBrowserSession(url, referer, tabId, { stallTimeoutMs: 45000 });
+          const prep = await tbccPrepareImportArrayBuffer(ab, url);
+          fileName = prep.name || fileName;
+          meta.source_file = fileName;
+          relMedia = tbccInboxRelPath(prefix, fileName);
+          sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
+          relSidecar = tbccInboxRelPath(prefix, sidecarName);
+          const dataUrl = tbccArrayBufferToDataUrl(prep.buffer, prep.type || "application/octet-stream");
+          if (dataUrl.length > 80 * 1024 * 1024) {
+            sendResponse({
+              ok: false,
+              error: "Image too large for extension download — open the post and retry.",
+            });
+            return;
+          }
+          const id = await tbccChromeDownloadsDownload({ filename: relMedia, saveAs: false, conflictAction: "uniquify", url: dataUrl });
+          await writeInboxSidecar();
+          sendResponse({ ok: true, downloadId: id, via: "photo-prep", filename: relMedia });
+          return;
+        }
+
+        // Path A — direct CDN URL (videos; XEnhancer GM_download parity).
         try {
           const id = await tbccChromeDownloadsDownload({ ...dlOpts, url });
           await writeInboxSidecar();
@@ -4189,6 +4282,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const tabId = await tbccResolveSessionTabId(_sender, msg);
         const ab = await fetchUrlWithBrowserSession(url, referer, tabId, { stallTimeoutMs: 45000 });
         const prep = await tbccPrepareImportArrayBuffer(ab, url);
+        fileName = prep.name || fileName;
+        meta.source_file = fileName;
+        relMedia = tbccInboxRelPath(prefix, fileName);
+        sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
+        relSidecar = tbccInboxRelPath(prefix, sidecarName);
         const dataUrl = tbccArrayBufferToDataUrl(prep.buffer, prep.type);
         // Chrome rejects enormous data: URLs — fail clearly instead of createObjectURL.
         if (dataUrl.length > 80 * 1024 * 1024) {
@@ -4198,7 +4296,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           });
           return;
         }
-        const id = await tbccChromeDownloadsDownload({ ...dlOpts, url: dataUrl });
+        const id = await tbccChromeDownloadsDownload({ filename: relMedia, saveAs: false, conflictAction: "uniquify", url: dataUrl });
         await writeInboxSidecar();
         sendResponse({ ok: true, downloadId: id, via: "data-url", filename: relMedia });
       } catch (e) {
@@ -4311,7 +4409,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 async function tbccSyncAofPools() {
   try {
-    const r = await fetch("http://localhost:8000/extension/aof-pools", { cache: "no-store" });
+    const r = await tbccFetchApi("/extension/aof-pools", { cache: "no-store" });
     if (!r.ok) return false;
     const data = await r.json();
     const pools = Array.isArray(data.pools) ? data.pools : [];
@@ -4494,7 +4592,7 @@ function tbccInstallAofPoolContextMenus(mac) {
 
 async function tbccSyncExtensionContextMenuSettings() {
   try {
-    const r = await fetch("http://localhost:8000/extension/context-menu", { cache: "no-store" });
+    const r = await tbccFetchApi("/extension/context-menu", { cache: "no-store" });
     if (!r.ok) return false;
     const data = await r.json();
     const pageMenu = data && data.pageMenu && typeof data.pageMenu === "object" ? data.pageMenu : null;
@@ -4776,7 +4874,7 @@ const TBCC_OPS_ALERTS_SEEN_KEY = "tbccOpsAlertsSeenIds";
 
 async function tbccPollOpsAlerts() {
   try {
-    const r = await fetch("http://localhost:8000/ops/alerts/poll", { cache: "no-store" });
+    const r = await tbccFetchApi("/ops/alerts/poll", { cache: "no-store" });
     if (!r.ok) return;
     const data = await r.json();
     if (data && data.enabled === false) return;
@@ -4993,7 +5091,7 @@ function tbccFormatImportError(msg) {
     return s.length > 420 ? s.slice(0, 420) + "…" : s;
   }
   if (s.includes("fetch") || s.includes("Failed to fetch")) {
-    return "Cannot reach backend at localhost:8000. Is it running? Check GET /health/telegram for Telethon.";
+    return "Cannot reach TBCC API. Set Options → API base (e.g. https://api.powercore.app) + Internal key, or start home tray backend.";
   }
   return s.length > 280 ? s.slice(0, 280) + "…" : s;
 }
@@ -5027,14 +5125,14 @@ async function tbccTakeNotificationAction(notificationId) {
 
 async function tbccOpenTelegramSavedMessages() {
   try {
-    const r = await fetch("http://localhost:8000/telegram/open-saved", { method: "POST", cache: "no-store" });
+    const r = await tbccFetchApi("/telegram/open-saved", { method: "POST", cache: "no-store" });
     if (r.ok) return;
   } catch (_) {}
 
   let userId = null;
   let username = "";
   try {
-    const r = await fetch("http://localhost:8000/health/telegram/import", { cache: "no-store" });
+    const r = await tbccFetchApi("/health/telegram/import", { cache: "no-store" });
     const j = await r.json();
     if (j && j.ok) {
       userId = j.user_id != null ? Number(j.user_id) : null;
@@ -5043,7 +5141,7 @@ async function tbccOpenTelegramSavedMessages() {
   } catch (_) {}
   if (!userId && !username) {
     try {
-      const r = await fetch("http://localhost:8000/health/telegram", { cache: "no-store" });
+      const r = await tbccFetchApi("/health/telegram", { cache: "no-store" });
       const j = await r.json();
       if (j && j.ok) {
         userId = j.user_id != null ? Number(j.user_id) : null;
@@ -5352,7 +5450,7 @@ async function tbccBuildAutoTagPayloadAsync(url, refererPageUrl, tabId) {
   }
 
   try {
-    const r = await fetch("http://localhost:8000/tags/enrich-send", {
+    const r = await tbccFetchApi("/tags/enrich-send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -5392,8 +5490,6 @@ const STORAGE_WATCH_INBOX_PREFIX = "tbccWatchInboxPrefix";
 const STORAGE_SAVE_AOF_ON_DOWNLOAD = "tbccSaveAofOnDownload";
 const STORAGE_API_BASE = "tbccApiBase";
 const API_WATERMARK_BYTES_PATH = "/import/watermark-bytes";
-const API_WATERMARK_UPLOAD_R2 = "http://localhost:8000/import/watermark-upload-r2";
-const API_ZIP_FLYWHEEL = "http://localhost:8000/import/zip-flywheel";
 /** Soft size gate for SW data: URL downloads after watermark (bytes). */
 const TBCC_SAVE_AOF_MAX_DATA_URL = 55 * 1024 * 1024;
 /** Soft size gate for SW → R2 multipart upload (bytes). */
@@ -5402,25 +5498,55 @@ const TBCC_R2_UPLOAD_MAX_BYTES = 80 * 1024 * 1024;
 const TBCC_ZIP_FLYWHEEL_MAX_BYTES = 200 * 1024 * 1024;
 const TBCC_WM_TEXT = "telegram.me/aofmainhub";
 
-async function tbccResolveApiBases() {
-  // Prefer operator custom (Tailscale / https://api.aof-forum…) — never hardcode public VPS IP.
-  const bases = ["http://127.0.0.1:8000", "http://localhost:8000"];
+async function tbccGetPromoWatermarkConfigFromStorage() {
   try {
-    const d = await chrome.storage.local.get(STORAGE_API_BASE);
-    const custom = String(d[STORAGE_API_BASE] || "").trim().replace(/\/+$/, "");
-    if (custom && /^https?:\/\//i.test(custom)) bases.unshift(custom);
-  } catch (_) {}
-  return [...new Set(bases)];
+    const data = await chrome.storage.local.get("tbcc_gallery_settings");
+    const s = data.tbcc_gallery_settings || {};
+    if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.promoWatermarkFromGallerySettings) {
+      return TbccPromoWatermark.promoWatermarkFromGallerySettings(s);
+    }
+    return { enabled: s.skipPromoWatermark !== true };
+  } catch (_) {
+    return typeof TbccPromoWatermark !== "undefined"
+      ? TbccPromoWatermark.normalizePromoWatermark({})
+      : { enabled: true };
+  }
 }
 
-async function tbccInternalApiHeaders() {
-  const h = { "Content-Type": "application/json" };
-  try {
-    const d = await chrome.storage.local.get("tbccInternalApiKey");
-    const key = String(d.tbccInternalApiKey || "").trim();
-    if (key) h["X-TBCC-Internal-Key"] = key;
-  } catch (_) {}
-  return h;
+async function tbccWatermarkBytesViaApi(arrayBuffer, mediaTypeHint) {
+  const bases = await tbccResolveApiBases();
+  const cfg = await tbccGetPromoWatermarkConfigFromStorage();
+  let lastErr = null;
+  for (const base of bases) {
+    try {
+      const blob = new Blob([arrayBuffer], {
+        type: mediaTypeHint === "video" ? "video/mp4" : "application/octet-stream",
+      });
+      const form = new FormData();
+      form.append("file", blob, mediaTypeHint === "video" ? "media.mp4" : "media.jpg");
+      form.append("media_type", mediaTypeHint === "video" ? "video" : "photo");
+      form.append("skip_watermark", cfg.enabled ? "false" : "true");
+      if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.appendWatermarkConfigToForm) {
+        TbccPromoWatermark.appendWatermarkConfigToForm(form, cfg);
+      }
+      const headers = await tbccInternalApiHeaders();
+      const r = await fetch(base.replace(/\/+$/, "") + API_WATERMARK_BYTES_PATH, {
+        method: "POST",
+        body: form,
+        headers,
+      });
+      if (!r.ok) {
+        lastErr = new Error(`watermark-bytes HTTP ${r.status} @ ${base}`);
+        continue;
+      }
+      const ab = await r.arrayBuffer();
+      if (ab && ab.byteLength) return ab;
+      lastErr = new Error(`empty watermark response @ ${base}`);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("watermark-bytes unreachable");
 }
 
 /**
@@ -5516,38 +5642,16 @@ async function tbccFetchBrowseIntelSummary(urlHint, days) {
   throw new Error(`Intel summary unreachable (${lastErr})`);
 }
 
-async function tbccWatermarkBytesViaApi(arrayBuffer, mediaTypeHint) {
-  const bases = await tbccResolveApiBases();
-  let lastErr = null;
-  for (const base of bases) {
-    try {
-      const blob = new Blob([arrayBuffer], {
-        type: mediaTypeHint === "video" ? "video/mp4" : "application/octet-stream",
-      });
-      const form = new FormData();
-      form.append("file", blob, mediaTypeHint === "video" ? "media.mp4" : "media.jpg");
-      form.append("media_type", mediaTypeHint === "video" ? "video" : "photo");
-      form.append("skip_watermark", "false");
-      const r = await fetch(base.replace(/\/+$/, "") + API_WATERMARK_BYTES_PATH, {
-        method: "POST",
-        body: form,
-      });
-      if (!r.ok) {
-        lastErr = new Error(`watermark-bytes HTTP ${r.status} @ ${base}`);
-        continue;
-      }
-      const ab = await r.arrayBuffer();
-      if (ab && ab.byteLength) return ab;
-      lastErr = new Error(`empty watermark response @ ${base}`);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error("watermark-bytes unreachable");
-}
-
 /** SW-local image burn-in when API is down (photos only). */
-async function tbccWatermarkImageBytesLocal(arrayBuffer, mimeHint) {
+async function tbccWatermarkImageBytesLocal(arrayBuffer, mimeHint, cfg) {
+  const wmCfg = cfg || (await tbccGetPromoWatermarkConfigFromStorage());
+  if (!wmCfg.enabled) return arrayBuffer;
+  if (typeof TbccPromoWatermark !== "undefined" && TbccPromoWatermark.applyPromoWatermarkBlob) {
+    const mime = String(mimeHint || "image/jpeg").split(";")[0] || "image/jpeg";
+    const blob = new Blob([arrayBuffer], { type: mime.startsWith("image/") ? mime : "image/jpeg" });
+    const out = await TbccPromoWatermark.applyPromoWatermarkBlob(blob, "photo", wmCfg);
+    return await out.arrayBuffer();
+  }
   if (typeof createImageBitmap !== "function" || typeof OffscreenCanvas === "undefined") {
     throw new Error("OffscreenCanvas unavailable");
   }
@@ -5599,7 +5703,8 @@ async function tbccApplySaveAofWatermark(body, kind, mime) {
   }
   if (!asVideo) {
     try {
-      const local = await tbccWatermarkImageBytesLocal(body, mime);
+      const wmCfg = await tbccGetPromoWatermarkConfigFromStorage();
+      const local = await tbccWatermarkImageBytesLocal(body, mime, wmCfg);
       if (local && local.byteLength) return { buffer: local, applied: true, via: "local" };
     } catch (e) {
       console.warn("[TBCC] Save AOF local image watermark failed", e);
@@ -5659,15 +5764,38 @@ function tbccGuessMediaKind(url, mime) {
   return "photo";
 }
 
-function tbccBuildAofDownloadName(url, refererPageUrl, extHint) {
-  const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
-  let name = "media";
-  if (naming) {
-    name =
-      naming.profileNameFromSourceUrl(refererPageUrl || "") ||
-      naming.profileNameFromSourceUrl(url || "") ||
-      "media";
+async function tbccGetExportNamingPrefs() {
+  try {
+    const data = await chrome.storage.local.get(["tbcc_gallery_settings", "tbccXProfileGallerySettings"]);
+    const s =
+      data.tbcc_gallery_settings && typeof data.tbcc_gallery_settings === "object"
+        ? data.tbcc_gallery_settings
+        : {};
+    const looms =
+      data.tbccXProfileGallerySettings && typeof data.tbccXProfileGallerySettings === "object"
+        ? data.tbccXProfileGallerySettings
+        : {};
+    const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+    const heuristicNaming = s.zipHeuristicNaming !== false;
+    const entryTemplate =
+      (s.zipEntryTemplate && String(s.zipEntryTemplate).trim()) ||
+      (looms.zipNameTemplate && String(looms.zipNameTemplate).trim()) ||
+      (naming ? naming.DEFAULT_TEMPLATE : "");
+    return { heuristicNaming, entryTemplate, naming };
+  } catch (_) {
+    const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+    return {
+      heuristicNaming: true,
+      entryTemplate: naming ? naming.DEFAULT_TEMPLATE : "",
+      naming,
+    };
   }
+}
+
+async function tbccBuildAofDownloadName(url, refererPageUrl, extHint, opts) {
+  const o = opts && typeof opts === "object" ? opts : {};
+  const prefs = await tbccGetExportNamingPrefs();
+  const naming = prefs.naming;
   const ext =
     (extHint || "").replace(/^\./, "") ||
     (() => {
@@ -5679,7 +5807,32 @@ function tbccBuildAofDownloadName(url, refererPageUrl, extHint) {
       } catch (_) {}
       return "jpg";
     })();
-  const index = Math.floor(10000 + Math.random() * 90000);
+  const index =
+    o.index != null && Number.isFinite(Number(o.index)) && Number(o.index) >= 1
+      ? Math.floor(Number(o.index))
+      : Math.floor(10000 + Math.random() * 90000);
+  if (naming && naming.buildExportFilename) {
+    return naming.buildExportFilename({
+      sourceUrl: refererPageUrl || url || "",
+      pageTitle: o.pageTitle || "",
+      profileHint: o.profileHint || o.profileName || "",
+      index,
+      ext,
+      baseName: o.baseName,
+      mime: o.mime,
+      template: prefs.entryTemplate,
+      heuristicNaming: prefs.heuristicNaming,
+    });
+  }
+  let name = "media";
+  if (naming && naming.inferZipContext) {
+    name = naming.inferZipContext({ sourceUrl: refererPageUrl || url || "" }).name;
+  } else if (naming) {
+    name =
+      naming.profileNameFromSourceUrl(refererPageUrl || "") ||
+      naming.profileNameFromSourceUrl(url || "") ||
+      "media";
+  }
   if (naming && naming.buildZipFilename) {
     return naming.buildZipFilename(naming.DEFAULT_TEMPLATE, { name, index, ext });
   }
@@ -5771,7 +5924,7 @@ async function tbccSaveAofMediaToWatch(opts) {
           : mime.includes("gif")
             ? "gif"
             : "jpg";
-  const fileName = tbccBuildAofDownloadName(downloadUrl, refererPageUrl, extHint);
+  const fileName = await tbccBuildAofDownloadName(downloadUrl, refererPageUrl, extHint);
 
   const relMedia = `${prefix}/${fileName}`.replace(/\/+/g, "/");
   const sidecarName = fileName.replace(/\.[^.]+$/, "") + ".tbcc-meta.json";
@@ -5784,9 +5937,12 @@ async function tbccSaveAofMediaToWatch(opts) {
     aof_preprocessed: !!watermarkApplied,
     watermark_applied: !!watermarkApplied,
     watermark_via: watermarkVia || undefined,
-    name: (typeof TbccZipNaming !== "undefined" && TbccZipNaming.profileNameFromSourceUrl
-      ? TbccZipNaming.profileNameFromSourceUrl(refererPageUrl || downloadUrl)
-      : "") || "media",
+    name:
+      (typeof TbccZipNaming !== "undefined" && TbccZipNaming.inferZipContext
+        ? TbccZipNaming.inferZipContext({ sourceUrl: refererPageUrl || downloadUrl }).name
+        : typeof TbccZipNaming !== "undefined" && TbccZipNaming.profileNameFromSourceUrl
+          ? TbccZipNaming.profileNameFromSourceUrl(refererPageUrl || downloadUrl)
+          : "") || "media",
     source_file: fileName,
     route_hint: "extension_save_aof",
   };
@@ -5912,7 +6068,7 @@ async function tbccZipFlywheelUpload(opts) {
   if (opts && opts.planId) form.append("plan_id", String(opts.planId));
   form.append("source_note", String((opts && opts.sourceNote) || "ext_zip_flywheel").slice(0, 200));
 
-  const r = await fetch(API_ZIP_FLYWHEEL, { method: "POST", body: form });
+  const r = await tbccFetchApi("/import/zip-flywheel", { method: "POST", body: form });
   let data = null;
   try {
     data = await r.json();
@@ -5989,7 +6145,7 @@ async function tbccWatermarkUploadToR2(opts) {
   mime = (prep && prep.type) || "";
   const body = (prep && prep.buffer) || ab;
   const kind = tbccGuessMediaKind(downloadUrl, mime);
-  const fileName = tbccBuildAofDownloadName(
+  const fileName = await tbccBuildAofDownloadName(
     downloadUrl,
     refererPageUrl,
     kind === "video" ? "mp4" : mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg"
@@ -6006,7 +6162,7 @@ async function tbccWatermarkUploadToR2(opts) {
   form.append("filename", fileName);
   form.append("skip_watermark", "false");
 
-  const r = await fetch(API_WATERMARK_UPLOAD_R2, { method: "POST", body: form });
+  const r = await tbccFetchApi("/import/watermark-upload-r2", { method: "POST", body: form });
   const text = await r.text();
   let data = {};
   try {
@@ -6035,7 +6191,7 @@ async function tbccApplyTagsToImportedMediaIds(mediaIds, tagsCsv) {
   if (!csv) return;
   const ids = [...new Set((mediaIds || []).map((x) => parseInt(x, 10)).filter((x) => Number.isFinite(x)))];
   if (!ids.length) return;
-  const r = await fetch(API_MEDIA_BULK_TAGS, {
+  const r = await tbccFetchApi("/media/bulk/tags", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids, tags: csv, tags_merge: true }),
@@ -6327,7 +6483,7 @@ async function tbccAppendSavedVideoUrl(url, refPageUrl, opts) {
 async function tbccSavedImportNotifyMessage(data) {
   let account = "";
   try {
-    const r = await fetch("http://localhost:8000/health/telegram/import", { cache: "no-store" });
+    const r = await tbccFetchApi("/health/telegram/import", { cache: "no-store" });
     const j = await r.json();
     if (j && j.ok && j.username) account = "@" + String(j.username).replace(/^@+/, "");
     else if (j && j.ok && j.user_id) account = "user " + j.user_id;
@@ -6433,7 +6589,7 @@ async function importUrlViaTbcc(url, savedOnly, source, refererPageUrl, autoTagP
       tabId
     );
   } else {
-    const resp = await fetch(API_URL, {
+    const resp = await tbccFetchApi("/import/url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -7221,8 +7377,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-download-url-from-page-menu" || msg.action === "tbcc-save-aof-to-watch") {
     (async () => {
       try {
-        let useAof = msg.action === "tbcc-save-aof-to-watch" || msg.saveAof === true;
-        if (!useAof) {
+        let useAof;
+        if (msg.saveAof === false) {
+          useAof = false;
+        } else if (msg.action === "tbcc-save-aof-to-watch" || msg.saveAof === true) {
+          useAof = true;
+        } else {
           try {
             const d = await chrome.storage.local.get(STORAGE_SAVE_AOF_ON_DOWNLOAD);
             useAof = d[STORAGE_SAVE_AOF_ON_DOWNLOAD] !== false;
@@ -7279,15 +7439,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           try {
             const u = new URL(downloadUrl);
             const base = (u.pathname.split("/").pop() || "media").replace(/[^\w.\-]+/g, "_");
-            return base || "media";
+            const dot = base.lastIndexOf(".");
+            return dot > 0 ? base.slice(dot + 1).toLowerCase().replace(/[^\w]/g, "").slice(0, 5) : "jpg";
           } catch (_) {
-            return "media";
+            return "jpg";
           }
         })();
+        const leaf = await tbccBuildAofDownloadName(downloadUrl, refererPageUrl, path, { index: 1 });
+        const naming = typeof TbccZipNaming !== "undefined" ? TbccZipNaming : null;
+        const filename =
+          naming && naming.tbccDownloadFolderPath ? naming.tbccDownloadFolderPath(leaf) : "tbcc/" + leaf;
         chrome.downloads.download(
           {
             url: downloadUrl,
-            filename: path,
+            filename,
             saveAs: false,
             conflictAction: "uniquify",
           },

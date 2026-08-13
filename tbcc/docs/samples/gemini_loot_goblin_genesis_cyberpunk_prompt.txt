@@ -1,0 +1,55 @@
+AOF LOOT GOBLIN — GEMINI IMAGE PROMPT v2
+Genesis box-art × modern 3D × cyberpunk red
+====================================================================
+Aspect: 9:16 portrait (Genesis cover energy) OR 1:1 square for Telegram promo.
+Deliverable: clean hero art; gate-card frames can be composited in code if needed.
+
+REFERENCE FACE
+Loot Goblin face = Unicode 👺 Japanese ogre mask:
+— saturated crimson-red skin, heavy black brow ridge, gold upper fangs, wide menacing grin,
+  horn nubs or swept-back oni horns, white eye glare (no human realism).
+Stylized 3D — not photoreal, not anime chibi. Reads as 👺 at thumbnail size.
+
+SUBJECT & POSE
+Low-angle action hero shot. Goblin sprinting left-to-right, torso twisted toward camera,
+one shoulder slammed under a **boombox that is also a treasure chest**:
+— lower half = lacquered red cyber-chest with gold_hasps, angular sci-fi panel lines;
+— upper half = chrome boombox grille + twin subwoofers pulsing magenta-red LED rings;
+— shoulder strap = heavy chain + neon cable harness.
+Chest lid cracked open; **four distinct Gate Cards** erupt in a fan arc (each card unique silhouette
+and border motif — one jagged lightning frame, one hex-grid vault door, one spiral lock glyph,
+one shattered chain motif; **abstract iconography only, NO readable words or URLs**).
+Cards trail red particle sparks and scan-line holograms.
+
+TELEPORT / ZONES
+Background split into **three vertical zone slices** (Genesis cover “level select” vibe):
+LEFT zone: dark megacity alley — red neon kanji-style light shapes (decorative, illegible).
+CENTER zone: white-hot portal tear — goblin 50% duplicated, RGB glitch offset, voxel dust.
+RIGHT zone: industrial vault corridor — receding red laser grid floor, fading into black.
+Motion streaks connect zones; goblin’s trailing foot dissolves into pixel shards.
+
+STYLE LOCK
+• **Modern real-time 3D render** (Unreal/Octane polish) composed like **Sega Genesis / Mega Drive
+  box art**: airbrushed sunset gradients, hard rim light, exaggerated perspective, posterized shadows,
+  slight CRT scanline overlay (subtle, 8–12% opacity).
+• **Cyberpunk red palette:** blood crimson, hot magenta neon, black chrome, gold hardware accents,
+  electric white highlights. No blue-primary palette.
+• High contrast, collectible game-cover framing — thick dark vignette on edges.
+
+COMPOSITION
+Goblin + chest-boombox dominate center-right; Gate Cards arc toward upper-left (negative space).
+**Bottom-right corner:** small official-style **18+** age-rating medallion (white “18+” on black/red
+circle, like European PEGI / mature sticker — **only** rating text allowed in image).
+No other typography. No Telegram UI. No @handles. No “Claim loot” button baked in.
+
+MOOD
+Arcade heist at 2 AM — he stole the gates and the bass line is still ringing.
+
+NEGATIVE PROMPT
+photoreal human, cute chibi, western green goblin, LOTR goblin, copyrighted game characters,
+Sonic/Mortal Kombat logos, readable text on cards, QR codes, watermarks, telegram mockup,
+blurry face, extra fingers, gore, nudity, childlike proportions, muddy brown palette
+
+POST (apply in channel / bot — not in image)
+👺 Loot goblin — tap Claim loot before the post vanishes.
+@aof_lootgod_bot?start=loot_free

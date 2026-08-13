@@ -58,6 +58,7 @@ class WatermarkApplyConfig:
     mode: str = "rotate"
     position: WatermarkPosition = "bottom_right"
     strip_previous: bool = False
+    size_ratio: float | None = None
     skip: bool = False
 
 
@@ -160,9 +161,6 @@ def watermark_text() -> str:
     explicit = (os.getenv("TBCC_WATERMARK_TEXT") or "").strip()
     if explicit:
         return _normalize_wm_brand(explicit)
-    base = (os.getenv("TBCC_PUBLIC_BASE_URL") or os.getenv("TBCC_PROMO_PUBLIC_BASE_URL") or "").strip()
-    if base:
-        return _normalize_wm_brand(base.replace("https://", "").replace("http://", "").split("/")[0])
     try:
         from app.data.aof_telegram_links import AOF_WATERMARK_DEFAULT
 
@@ -234,6 +232,7 @@ def watermark_config_public(db=None) -> dict:
         "position": cfg.position,
         "opacity": cfg.opacity,
         "color": cfg.color_hex,
+        "size_ratio": watermark_size_ratio(),
         "strip_previous": cfg.strip_previous,
         "apply_on_saved_import": False,
         "apply_on_album_composer": True,
@@ -275,8 +274,9 @@ def _font_path() -> str | None:
     return None
 
 
-def _font_size(w: int, h: int) -> int:
-    base = int(min(w, h) * watermark_size_ratio())
+def _font_size(w: int, h: int, size_ratio: float | None = None) -> int:
+    ratio = size_ratio if size_ratio is not None else watermark_size_ratio()
+    base = int(min(w, h) * ratio)
     return max(9, min(28, base))
 
 
@@ -373,13 +373,14 @@ def _draw_watermark_on_rgba(
     *,
     opacity: float,
     rgb: tuple[int, int, int],
+    size_ratio: float | None = None,
 ):
     from PIL import Image, ImageDraw, ImageFont
 
     w, h = im.size
     if w < 8 or h < 8:
         return im
-    fs = _font_size(w, h)
+    fs = _font_size(w, h, size_ratio)
     if position == "center_diagonal":
         rotated = _render_rotated_text_layer(text, fs, opacity, rgb=rgb)
         rx, ry = (w - rotated.width) // 2, (h - rotated.height) // 2
@@ -418,8 +419,17 @@ def _apply_image_watermark_config(data: bytes, cfg: WatermarkApplyConfig) -> byt
     pos_list = _positions_for_texts(cfg, len(cfg.texts))
     rgb = parse_color_hex(cfg.color_hex)
     opacity = cfg.opacity
+    size_ratio = cfg.size_ratio
     for text, pos in zip(cfg.texts, pos_list):
-        data = _apply_image_watermark(data, text, pos, opacity=opacity, rgb=rgb, strip_previous=cfg.strip_previous)
+        data = _apply_image_watermark(
+            data,
+            text,
+            pos,
+            opacity=opacity,
+            rgb=rgb,
+            strip_previous=cfg.strip_previous,
+            size_ratio=size_ratio,
+        )
     return data
 
 
@@ -431,6 +441,7 @@ def _apply_image_watermark(
     opacity: float | None = None,
     rgb: tuple[int, int, int] | None = None,
     strip_previous: bool = False,
+    size_ratio: float | None = None,
 ) -> bytes:
     from PIL import Image, ImageSequence
 
@@ -448,7 +459,7 @@ def _apply_image_watermark(
             fr = frame.convert("RGBA")
             if strip_previous:
                 _strip_previous_watermark_bands(fr)
-            out = _draw_watermark_on_rgba(fr, text, position, opacity=op, rgb=color)
+            out = _draw_watermark_on_rgba(fr, text, position, opacity=op, rgb=color, size_ratio=size_ratio)
             frames.append(out.convert("P", palette=Image.ADAPTIVE, dither=Image.Dither.FLOYDSTEINBERG))
             durations.append(frame.info.get("duration", 100))
         buf = io.BytesIO()
@@ -467,7 +478,7 @@ def _apply_image_watermark(
         base = im.convert("RGBA")
         if strip_previous:
             _strip_previous_watermark_bands(base)
-        out = _draw_watermark_on_rgba(base, text, position, opacity=op, rgb=color)
+        out = _draw_watermark_on_rgba(base, text, position, opacity=op, rgb=color, size_ratio=size_ratio)
         buf = io.BytesIO()
         out.save(buf, format="PNG", optimize=True)
         return buf.getvalue()
@@ -476,7 +487,7 @@ def _apply_image_watermark(
     rgba = base.convert("RGBA")
     if strip_previous:
         _strip_previous_watermark_bands(rgba)
-    out = _draw_watermark_on_rgba(rgba, text, position, opacity=op, rgb=color)
+    out = _draw_watermark_on_rgba(rgba, text, position, opacity=op, rgb=color, size_ratio=size_ratio)
     buf = io.BytesIO()
     out.convert("RGB").save(buf, format="JPEG", quality=92, optimize=True)
     return buf.getvalue()
@@ -662,6 +673,7 @@ def maybe_apply_media_watermark(
             mode=cfg.mode,
             position=cfg.position,
             strip_previous=cfg.strip_previous,
+            size_ratio=cfg.size_ratio,
             skip=cfg.skip,
         )
     kind, _ext = sniff_media_kind(data)

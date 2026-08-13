@@ -1,0 +1,175 @@
+{
+  "campaign": "jackal_tapes",
+  "schema_version": 3,
+  "master_template": {
+    "layout_lock_ref": null,
+    "style_anchors": "war-noir documentary horror, Betacam VHS grain, scan lines, chromatic bleed, dust, sepia-to-blood-orange, mercenary Africa mood, cyan/magenta accent bleed, cinematic photoreal, high contrast, voyeuristic dread",
+    "negative_prompt": "clean surfaces, bright cheerful palette, cartoon, anime, 3d render, glossy plastic, game character likeness, Ubisoft IP, celebrity face, gore, explicit violence, wrong aspect ratio, misspelled UI text, watermark",
+    "chrome_block": ""
+  },
+  "variations": [
+    {
+      "key": "jackal_tapes_interview",
+      "subject_delta": "Vertical 9:16 social promo poster, war-noir documentary horror aesthetic. Dust-choked unnamed African bush at golden hour bleeding into blood-orange dusk. Top: distressed white \"AOF\" + red brush-stroke \"JACKAL TAPES\" + subtitle \"REUBEN'S INTERVIEW \u2022 THE ARMS DEALER SPEAKS.\"\n\nBackground: degraded Betacam/VHS interview frame \u2014 journalist silhouette with mic, opposite figure in shadow (The Jackal) half-lit, cassette recorder on crate, tangled cables, bullet casings on red earth. Scan lines, timestamp burn-in 00:14:33, REC dot. Mood: voyeuristic dread, you are listening to something you should not have found.\n\nCenter: white QR with Telegram paper-plane icon. Red pill columns:\n\nLeft: TAPE 01 \u2022 REUBEN OLUWAGEMBI \u2022 MIKE'S BAR \u2022 COLLECTIBLE \u2022 INVESTIGATIVE REPORTER\nRight: THE JACKAL \u2022 ARMS TRADE \u2022 CIVIL WAR \u2022 PROFIT CYCLE \u2022 PULITZER MATERIAL\n\nBelow QR: \"SCATTERED ACROSS THE COUNTRY \u2022 RETURN TO REUBEN\" + red CTA pill t.me/aofmainhub\n\nFooter icons: CASSETTE \"FOUND TAPE\" \u2022 MIC \"ON RECORD\" \u2022 MAP \"UNNAMED COUNTRY\" \u2022 EYE \"WATCHING WAR\" \u2022 SKULL \"NO ENDING CHANGE\"\n\nSTYLE ANCHORS: war-noir documentary horror, Betacam VHS grain, scan lines, cinematic photoreal, high contrast. AVOID: cartoon, game IP likeness, gore, bright palette.",
+      "tier": "promo",
+      "tags": [
+        "jackal_tapes"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "tape_number": 1,
+        "narrative_tension": "Discovery of prohibited truth",
+        "quote_hook": null,
+        "rollout_day": 0,
+        "telegram_teaser": "Tape 01 \u2014 Reuben's interview. The arms dealer speaks. REC dot burning in.",
+        "x_copy": {
+          "hook": "Some truths aren't classified. They're just buried behind a water heater.",
+          "body": "Tape 01: a journalist, a shadow, and an arms dealer who talks like war is weather. The collectible isn't loot \u2014 it's context.",
+          "cta": "Full tape arc + prompt gates on the hub \u2192 @aofmainhub"
+        },
+        "tts_script": null
+      },
+      "prompt_ref": "docs/samples/jackal_tapes/01_the_interview.txt"
+    },
+    {
+      "key": "jackal_tapes_break_the_man",
+      "subject_delta": "Vertical 9:16 war-philosophy horror promo, same AOF neon-dust hybrid: magenta/cyan accents bleeding through sepia combat footage. Title: white grunge \"AOF\" + red slasher \"BREAK THE MAN\" + tagline \"NOT THE BODY \u2022 THE MIND \u2022 THE DIGNITY.\"\n\nBackground: split visual \u2014 left, silhouette of man standing tall amid beatings/shadows (abstract, not graphic); right, cracked mirror reflecting a soldier's face fragmenting. Overlay quote space (distressed type): \"THE HARDER YOU BEAT A MAN, THE TALLER HE STANDS.\" Cassette tape labeled TAPE 02 wedged in frame corner.\n\nCenter QR. Pills:\n\nLeft: NOT A DOG \u2022 NOT A HORSE \u2022 BREAK THE MIND \u2022 ANESTHETIC OF MURDER \u2022 DIGNIFIED COMBAT\nRight: PRECONCEPTION \u2022 TRUE MONSTER \u2022 MESSY HORROR \u2022 RELISH THE KILL \u2022 POSTURE VS SOUL\n\nCTA: t.me/aofmainhub\nMicrocopy: \"YOU CAN'T BREAK A MAN THE WAY YOU BREAK A DOG\"\n\nFooter: FIST \"HARDER BEAT\" \u2022 FIGURE \"STANDS TALLER\" \u2022 MASK \"DISPLAY ONLY\" \u2022 BRAIN \"BREAK THE WILL\" \u2022 WARNING \"LOSE YOURSELF\"\n\nSTYLE ANCHORS: war-noir, VHS grain, split silhouette, cracked mirror, high contrast typography. AVOID: cartoon, gore, game IP.",
+      "tier": "promo",
+      "tags": [
+        "jackal_tapes"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "tape_number": 2,
+        "narrative_tension": "Nihilistic philosophy as weapon",
+        "quote_hook": "The harder you beat a man, the taller he stands.",
+        "rollout_day": 2,
+        "telegram_teaser": "Tape 02 \u2014 break the mind, not the body. The quote that rewires the arc.",
+        "x_copy": {
+          "hook": "\"The harder you beat a man, the taller he stands.\"",
+          "body": "Cruelty isn't the point \u2014 dignity is the anesthetic men use to endure murder. Tape 02 breaks the preconception, not the spine.",
+          "cta": "Tape 02 breakdown + full prompt pack \u2192 @aofmainhub"
+        },
+        "tts_script": "[cassette hiss] You can't break a man the way you break a dog. The harder you beat him\u2026 the taller he stands. [pause] Break the mind."
+      },
+      "prompt_ref": "docs/samples/jackal_tapes/02_break_the_man.txt"
+    },
+    {
+      "key": "jackal_tapes_war_is_home",
+      "subject_delta": "Vertical 9:16 mercenary noir promo poster. Rain-slick convoy road at night through savanna, headlights cutting dust, distant muzzle flashes on horizon. Title: \"AOF\" distressed white + red \"WAR IS MY HOME\" + subtitle \"THE JACKAL \u2022 CYNICISM AS SURVIVAL.\"\n\nBackground: lone mercenary jeep POV, dashboard cassette player chewing tape, Jackal's voice implied not shown. Burned village silhouette far left, diamond mine glow far right \u2014 profit and puppet strings as abstract wire overlays. Deep isolation, endless cycle.\n\nCenter QR. Pills:\n\nLeft: WAR IS HOME \u2022 ARMS DEALER \u2022 EXTERNAL PROFIT \u2022 FACTION PUPPETS \u2022 ENDLESS CYCLE\nRight: MERCENARY LENS \u2022 YOUR ACTIONS \u2022 MORAL AMBIGUITY \u2022 NO CLEAN SIDE \u2022 RECONTEXTUALIZE\n\nCTA t.me/aofmainhub\n\nFooter: CONVOY \"NIGHT RUN\" \u2022 TAPE \"PLAYING NOW\" \u2022 FIRE \"DISTANT\" \u2022 DIAMOND \"MOTIVE\" \u2022 LOOP \"NO EXIT\"\n\nSTYLE ANCHORS: night convoy, cassette texture, puppet-wire overlay, mercenary noir. AVOID: cartoon, gore, bright palette.",
+      "tier": "promo",
+      "tags": [
+        "jackal_tapes"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "tape_number": 3,
+        "narrative_tension": "Complicity without mechanical reward",
+        "quote_hook": "War is my home.",
+        "rollout_day": 4,
+        "telegram_teaser": "Tape 03 \u2014 night convoy. Puppet strings. You're already in the loop.",
+        "x_copy": {
+          "hook": "War is my home.",
+          "body": "No clean side. External profit, faction puppets, your mercenary lens on the whole mess. Tape 03 doesn't give you loot \u2014 it recontextualizes your run.",
+          "cta": "Arc + gates on the hub \u2192 @aofmainhub"
+        },
+        "tts_script": "[engine rumble] War is my home. [cassette click] You think you're watching. You're driving."
+      },
+      "prompt_ref": "docs/samples/jackal_tapes/03_war_is_home.txt"
+    },
+    {
+      "key": "jackal_tapes_mikes_bar",
+      "subject_delta": "Vertical 9:16 dim-bar collectible promo, smoke-hazed interior, African mercenary bar at night (Mike's Bar mood). Title: \"AOF\" + red \"RETURN THE TAPES\" + \"REUBEN WAITS \u2022 WORTHLESS FRIENDSHIP ONLY.\"\n\nBackground: worn wooden bar, fan spinning slow, stack of labeled cassette tapes on counter, journalist figure (face obscured) reaching for tape player. Player mercenary hand offers a tape \u2014 transactional, lonely. Trophy wall: \"INVESTIGATIVE REPORTER\" ghost text. No gameplay reward, only context.\n\nCenter QR. Pills:\n\nLeft: MIKE'S BAR \u2022 REUBEN \u2022 THANK YOU DIALOGUE \u2022 NO LOOT \u2022 STORY ONLY\nRight: ALL TAPES \u2022 ACHIEVEMENT UNLOCK \u2022 PULITZER MATERIAL \u2022 COLLECTIBLE RUN \u2022 TAPE HUNT\n\nCTA t.me/aofmainhub\n\nFooter: BAR \"SMOKE\" \u2022 HAND \"EXCHANGE\" \u2022 STACK \"FOUND TAPES\" \u2022 CUP \"STALE BEER\" \u2022 FRIEND \"WORTHLESS\"\n\nSTYLE ANCHORS: smoky bar interior, warm poison mood, cassette stack. AVOID: cartoon, game IP.",
+      "tier": "promo",
+      "tags": [
+        "jackal_tapes"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "tape_number": 4,
+        "narrative_tension": "Transactional narrative progression",
+        "quote_hook": null,
+        "rollout_day": 6,
+        "telegram_teaser": "Tape 04 \u2014 return the tapes to Reuben. Worthless friendship. Story only.",
+        "x_copy": {
+          "hook": "He offers worthless friendship. You keep coming back anyway.",
+          "body": "Mike's Bar: smoke, stale beer, cassette barter. No achievement loot \u2014 just the next piece of the philosophy. That's the engagement trap.",
+          "cta": "Collect the arc \u2192 @aofmainhub"
+        },
+        "tts_script": null
+      },
+      "prompt_ref": "docs/samples/jackal_tapes/04_mikes_bar.txt"
+    },
+    {
+      "key": "jackal_tapes_monster_display",
+      "subject_delta": "Vertical 9:16 psychological war-horror promo. Title: \"AOF\" white distressed + red \"THE DISPLAY\" + subtitle \"BRUTALITY AS POSTURE \u2022 LOSE YOURSELF AND DIE.\"\n\nBackground: theatrical horror tableau \u2014 black-masked figure (original fiction, not game asset) standing over abstract battlefield mud, not graphic. Mirror/shadow shows same figure reduced to hollow posture. VHS static bands, tape degradation. Visual metaphor: monster who destroys dignity by showing messy killing vs man who succumbs and becomes less than human.\n\nCenter QR. Pills:\n\nLeft: TRUE MONSTER \u2022 MESSY KILLING \u2022 DESTROY DIGNITY \u2022 ANESTHETIC GONE \u2022 SHOW THE HORROR\nRight: ONLY A DISPLAY \u2022 SUCCUMB \u2022 LESS THAN MAN \u2022 FATAL \u2022 RELISH WITHOUT BECOMING\n\nCTA t.me/aofmainhub\nQuote microcopy: \"IF YOU LOSE YOURSELF IN THE DISPLAY \u2014 YOU ARE ALREADY DEAD\"\n\nFooter: MASK \"POSTURE\" \u2022 MUD \"REALITY\" \u2022 MIRROR \"SELF\" \u2022 TAPE \"JACKAL 05\" \u2022 HEART-SLASH \"SPIRIT BROKEN\"\n\nSTYLE ANCHORS: mud tableau, VHS static, mirror shadow, performative horror. AVOID: gore, game IP, cartoon.",
+      "tier": "promo",
+      "tags": [
+        "jackal_tapes"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "tape_number": 5,
+        "narrative_tension": "Dehumanization and performative horror",
+        "quote_hook": "If you lose yourself in the display \u2014 you are already dead.",
+        "rollout_day": 8,
+        "telegram_teaser": "Tape 05 \u2014 brutality as posture. The display eats the man who believes it.",
+        "x_copy": {
+          "hook": "Brutality is a display. Believe it and you're already dead.",
+          "body": "Tape 05 \u2014 the monster doesn't need your fear. He needs you to forget it's theater. Final tape before the full filmstrip drops.",
+          "cta": "Full 5-tape scroll + prompts \u2192 @aofmainhub"
+        },
+        "tts_script": "[static burst] It's only a display. Succumb to it\u2026 and you're less than a man. [tape stop]"
+      },
+      "prompt_ref": "docs/samples/jackal_tapes/05_monster_display.txt"
+    },
+    {
+      "key": "jackal_tapes_filmstrip_5x",
+      "subject_delta": "OUTPUT: ONE tall image. FIVE complete JACKAL TAPES promo banners stacked top to bottom (Telegram scroll filmstrip). Each panel: wide landscape banner (~16:9) with full UI chrome. Overall composite: 9:16 portrait strip. NOT 2\u00d72 grid. Panel order: PANEL-1 THE INTERVIEW, PANEL-2 BREAK THE MAN, PANEL-3 WAR IS HOME, PANEL-4 MIKE'S BAR, PANEL-5 THE DISPLAY. LAYOUT LOCK per panel: distressed white AOF + red JACKAL TAPES, panel subtitle, compact QR with Telegram logo, red pill columns, t.me/aofmainhub link bar, footer icons. STYLE: war-noir Betacam/VHS grain, mercenary Africa, voyeuristic documentary dread, no IP likeness, no gore. Panel-1: interview silhouettes REC 00:14:33. Panel-2: split silhouette + cracked mirror, quote THE HARDER YOU BEAT A MAN THE TALLER HE STANDS. Panel-3: night convoy cassette player puppet wires. Panel-4: Mike's Bar smoke tape exchange. Panel-5: mud tableau mask mirror VHS static IF YOU LOSE YOURSELF IN THE DISPLAY. Same UI every panel, vary backgrounds only. AVOID: 2x2 grid, bleeding panels, misspelled text, gore.",
+      "tier": "promo",
+      "tags": [
+        "jackal_tapes"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "telegram",
+        "x_teaser"
+      ],
+      "engagement": {
+        "tape_number": null,
+        "narrative_tension": "Arc completion \u2014 scroll depth",
+        "quote_hook": "Five tapes. One philosophy. Scroll.",
+        "rollout_day": 10,
+        "telegram_teaser": "Full Jackal Tapes filmstrip \u2014 all 5 panels, one Telegram scroll.",
+        "x_copy": {
+          "hook": "Five tapes. One philosophy. Scroll.",
+          "body": "Interview \u2192 break the man \u2192 war is home \u2192 Mike's Bar \u2192 the display. Full 5\u00d7 filmstrip + gated Gemini prompts live on the hub.",
+          "cta": "@aofmainhub"
+        },
+        "tts_script": null
+      },
+      "prompt_ref": "docs/samples/jackal_tapes/06_filmstrip_5x_telegram.txt"
+    }
+  ],
+  "notes": "Gemini 9:16 promo \u2014 war philosophy, original-fiction visuals only. Import: provision_prompt_gates.py --import-json"
+}

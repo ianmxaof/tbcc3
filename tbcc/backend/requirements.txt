@@ -22,7 +22,7 @@ playwright>=1.49.0
 praw>=8.0.2
 # Optional — Cursor SDK agent triage (TBCC_CURSOR_TRIAGE_ENABLED=1)
 # cursor-sdk>=0.1.0
-# Optional — AOF promo image generation (scripts/generate_aof_promo_gemini.py)
-# google-genai>=1.0.0
+# Optional — AOF promo image generation + creative_generate_tick
+google-genai>=1.0.0
 # mega.py (inventory scripts): pins tenacity<6 — on Python 3.13 install after pip install -r requirements.txt:
 #   py -m pip install mega.py --no-deps

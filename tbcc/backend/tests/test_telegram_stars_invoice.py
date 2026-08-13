@@ -19,6 +19,11 @@ from bots.payment_pipeline import parse_invoice_payload, validate_pre_checkout
 def test_stars_invoice_payload_shareable_link():
     assert stars_invoice_payload(6, product_type="subscription", user_id=0) == "sub_6_0"
     assert stars_invoice_payload(3, product_type="bundle", user_id=0) == "bundle_3_0"
+    assert stars_invoice_payload(9, product_type="companion_credits", user_id=0) == "credits_9_0"
+
+
+def test_parse_invoice_payload_companion_credits():
+    assert parse_invoice_payload("credits_12_42") == ("credits", 12, 42)
 
 
 def test_parse_invoice_payload_accepts_zero_user():

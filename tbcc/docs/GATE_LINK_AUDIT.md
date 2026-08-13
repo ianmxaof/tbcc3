@@ -22,7 +22,7 @@ Slug stays; **change the Telegram target** behind each:
 |-----|----------|---------------------|
 | mainhub | https://link-center.net/1367336/DgIo85a7oux0 | https://telegram.me/aofmainhub |
 | main / main_group | https://link-center.net/1367336/eURa9KVdlIR2 | https://telegram.me/aof_lootgod_bot |
-| loot | https://direct-link.net/1367336/S4isAVBXklrz | https://telegram.me/+97f4Crv3G1RkMGU5 |
+| loot | https://link-center.net/1367336/dl1P4gLUfX0L | **wk30 campaign:** `https://api.powercore.app/r/wk30-lv-loot` → loot bot `?start=src_lv_loot_wk30`. Default room: `https://telegram.me/+97f4Crv3G1RkMGU5` |
 | ai | https://direct-link.net/1367336/ZrNHOhHaxSYM | *(lane invite — update to current telegram.me invite)* |
 | ass | https://link-hub.net/1367336/6PIRZVafUcTa | *(lane invite)* |
 | blowjob | https://link-target.net/1367336/QBzt1dFPTqai | *(lane invite)* |
@@ -36,7 +36,50 @@ Slug stays; **change the Telegram target** behind each:
 | packs | https://direct-link.net/1367336/ARbG9LkABgVV | *(lane invite)* |
 | addlist | https://link-target.net/1367336/OXrWginA5Ztr | *(current addlist — prefer telegram.me/addlist/… if TG shows that form)* |
 
-**Verified broken earlier:** loot gate `S4isAVBXklrz` still landed on old `t.me/+NWathiLSqZ1lMzlh` — retarget to `+97f4Crv3G1RkMGU5` ASAP.
+**2026-07-25:** loot gate replaced — `dl1P4gLUfX0L` → `+97f4Crv3G1RkMGU5` (replaces dead `S4isAVBXklrz` / `+NWathiLSqZ1lMzlh`).
+
+## Beacon sweep (every gate, not just loot)
+
+Until 2026-07-27 only the `loot` gate was beaconed, so no other lane could be
+credited with a click. `scripts/seed_gate_beacons.py` now generates one beacon
+per gate on the locked naming convention:
+
+| Piece | Shape | Example |
+|-------|-------|---------|
+| Beacon slug | `{week}-lv-{key}` | `wk31-lv-ass` |
+| Source ref | `src_lv_{key}_{week}` | `src_lv_ass_wk31` |
+| Beacon URL | `{TBCC_CLICK_BEACON_PUBLIC_BASE}/r/{slug}` | `https://api.powercore.app/r/wk31-lv-ass` |
+
+```powershell
+cd tbcc/backend
+py -3.13 scripts/seed_gate_beacons.py --week wk31            # dry run + paste table
+py -3.13 scripts/seed_gate_beacons.py --week wk31 --execute  # writes click_links
+```
+
+Then paste each printed Beacon URL into that slug's destination field in the
+Linkvertise dashboard. Re-run with a new `--week` per campaign; slugs never
+collide across weeks, so week-over-week gate performance is comparable.
+
+**Attribution classes — do not paper over the difference:**
+
+| Class | Gates | What you get |
+|-------|-------|--------------|
+| `full` | 14 gates: every lane, plus `loot`, `main_group`, `lootgod` | Beacon hit **and** `?start=src_lv_*` touch → conversion joins in `revenue_by_source` |
+| `click_only` | `mainhub`, `addlist` | Beacon hit only — no single channel to relay to |
+
+Lanes reach `full` through the **loot bot relay**: the slug points at
+`aof_lootgod_bot?start=src_lv_<lane>_<wk>`, the bot records the touch and then
+hands over the same invite (`lane_gate_relay.py`). One extra tap for the user,
+full attribution for you. `mainhub` and `addlist` stay `click_only` because
+there is no single channel to hand over — faking a start payload there would
+report conversions that never happened.
+
+**Deploy ordering:** the loot bot must ship the relay handler *before* the
+beacons are re-pointed, or lane clicks land on a bot that cannot answer them.
+
+**Seeded 2026-07-27 (wk31):** all 16 beacons live on the island, verified with
+`scripts/smoke_lane_gate_relay.py --week wk31` (16/16 resolvable and
+round-tripping). Read results at `GET /analytics/gate-funnel`.
 
 ## AdMaven + Work.ink
 
@@ -63,7 +106,9 @@ Env tips:
 
 ## Operator checkbox
 
-- [ ] LV loot → `+97f4…`
+- [x] Run `seed_gate_beacons.py --week wkNN --execute` on the island *(wk31 done 2026-07-27)*
+- [ ] **Paste every printed beacon URL into its Linkvertise slug** — the only remaining manual step; until this is done the beacons exist but receive no traffic
+- [ ] LV loot → **wk30:** `https://api.powercore.app/r/wk30-lv-loot` (or room `+97f4…` when campaign off)
 - [ ] LV mainhub → `telegram.me/aofmainhub`
 - [ ] LV main_group → `telegram.me/aof_lootgod_bot`
 - [ ] Each lane LV → current invite (telegram.me form)

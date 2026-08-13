@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bring up revenue island API plane only (postgres redis api worker worker_post beat).
+# Bring up revenue island API plane only (postgres redis api worker worker_telegram worker_post beat).
 # NEVER starts payment_bot / loot_bot — use up-island-bots.sh after home bots are down.
 #
 # Expects layout from sync-island-files.ps1:
@@ -40,8 +40,13 @@ cd "$INFRA"
 echo "Pulling image (GHCR)..."
 docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island pull || true
 
-echo "Starting postgres redis api worker worker_post beat (NO bots profile)..."
-docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d postgres redis api worker worker_post beat
+echo "Starting postgres redis api worker worker_telegram worker_post beat (NO bots profile)..."
+docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d postgres redis api worker worker_telegram worker_post beat
+
+if [[ -x "${ROOT}/scripts/revenue-island/install-island-database-watchdog.sh" ]]; then
+  echo "Installing database watchdog timer (postgres + redis every 5 min)..."
+  bash "${ROOT}/scripts/revenue-island/install-island-database-watchdog.sh"
+fi
 
 echo ""
 echo "OK: API plane up. Smoke: curl -fsS http://127.0.0.1:8000/health || true"

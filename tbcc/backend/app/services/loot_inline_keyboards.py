@@ -7,6 +7,30 @@ import os
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 _DEFAULT_FREE_PULL_LIMIT = 5
+_MIDPOINT_FREE_PULL_NUMBER = 3
+
+
+def should_show_free_pull_midpoint(
+    *,
+    free_pull_number: int,
+    free_pulls_remaining: int | None,
+) -> bool:
+    """Peak engagement on complimentary pull 3/5 — upsell before exhaustion."""
+    if int(free_pull_number or 0) != _MIDPOINT_FREE_PULL_NUMBER:
+        return False
+    if free_pulls_remaining is not None and int(free_pulls_remaining) <= 0:
+        return False
+    return True
+
+
+def free_pull_midpoint_upsell_row(*, payment_bot_username: str) -> list[InlineKeyboardButton]:
+    pay = (payment_bot_username or "").strip().lstrip("@")
+    if not pay:
+        return []
+    return [
+        InlineKeyboardButton("🗝 Room key — unlock ladder", url=f"https://t.me/{pay}?start=loot"),
+        InlineKeyboardButton("⭐ VIP daily roll", url=f"https://t.me/{pay}?start=subscribe"),
+    ]
 
 
 def roll_action_label(
@@ -32,6 +56,7 @@ def build_loot_roll_inline_markup(
     free_pull_number: int = 0,
     free_pulls_remaining: int | None = None,
     free_pull_limit: int = _DEFAULT_FREE_PULL_LIMIT,
+    rarity_tier: int = 0,
 ) -> InlineKeyboardMarkup:
     invite = (os.getenv("TBCC_LOOT_ROOM_INVITE_URL") or "").strip()
     pay = (
@@ -53,6 +78,13 @@ def build_loot_roll_inline_markup(
             InlineKeyboardButton("🔗 Referral", callback_data="loot:referral"),
         ],
     ]
+    if should_show_free_pull_midpoint(
+        free_pull_number=free_pull_number,
+        free_pulls_remaining=free_pulls_remaining,
+    ):
+        midpoint = free_pull_midpoint_upsell_row(payment_bot_username=pay)
+        if midpoint:
+            rows.append(midpoint)
     if pay:
         rows.append(
             [
@@ -62,6 +94,10 @@ def build_loot_roll_inline_markup(
         )
     if invite:
         rows.append([InlineKeyboardButton("🚪 Loot Room invite", url=invite)])
+    if int(rarity_tier or 0) >= 7 and pay:
+        rows.append(
+            [InlineKeyboardButton("⭐ VIP — bigger daily drops", url=f"https://t.me/{pay}?start=subscribe")]
+        )
     rows.append(
         [
             InlineKeyboardButton("📖 Guide", callback_data="loot:guide"),

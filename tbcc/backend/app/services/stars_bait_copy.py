@@ -98,6 +98,9 @@ def resolve_bait_plan_ids(db: Session) -> dict[str, int | None]:
 
 def checkout_start_payload(product: StarsBaitProduct, plan_ids: dict[str, int | None]) -> str:
     """Deep link that lands on Stars checkout (cmN menu or bait handoff)."""
+    campaign = _campaign_start_payload()
+    if campaign:
+        return campaign
     if product == StarsBaitProduct.LOOT_KEY:
         pid = plan_ids.get("loot_key")
         return f"cm{pid}" if pid else "bait_loot"
@@ -108,7 +111,16 @@ def checkout_start_payload(product: StarsBaitProduct, plan_ids: dict[str, int | 
     return f"cm{pid}" if pid else "bait_vip"
 
 
+def _campaign_start_payload() -> str | None:
+    """Optional wkNN burst tag, e.g. TBCC_STARS_BAIT_CAMPAIGN_START=src_bait_batch_wk30."""
+    p = (os.getenv("TBCC_STARS_BAIT_CAMPAIGN_START") or "").strip()
+    return p or None
+
+
 def bait_handoff_payload(product: StarsBaitProduct) -> str:
+    campaign = _campaign_start_payload()
+    if campaign:
+        return campaign
     return {
         StarsBaitProduct.LOOT_KEY: "bait_loot",
         StarsBaitProduct.DAY_PASS: "bait_day",
@@ -119,7 +131,7 @@ def bait_handoff_payload(product: StarsBaitProduct) -> str:
 _PRODUCT_LABELS = {
     StarsBaitProduct.LOOT_KEY: ("24h Loot Room key", "150", "🗝"),
     StarsBaitProduct.DAY_PASS: ("Lane Pass — 24h", "250", "🎫"),
-    StarsBaitProduct.SUBSCRIPTION: ("AOF VIP — 30d", "500", "💎"),
+    StarsBaitProduct.SUBSCRIPTION: ("AOF VIP — 30d", "1500", "💎"),
 }
 
 

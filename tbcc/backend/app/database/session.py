@@ -17,6 +17,11 @@ if DATABASE_URL.startswith("sqlite"):
 _engine_kw: dict = {"connect_args": connect_args}
 if DATABASE_URL.startswith("sqlite"):
     _engine_kw["poolclass"] = NullPool
+elif DATABASE_URL.startswith("postgresql"):
+    # After container restarts / idle drops, pooled connections can go stale and raise
+    # psycopg2.OperationalError: server closed the connection unexpectedly.
+    _engine_kw["pool_pre_ping"] = True
+    _engine_kw["pool_recycle"] = 1800
 
 engine = create_engine(DATABASE_URL, **_engine_kw)
 

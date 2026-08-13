@@ -24,8 +24,10 @@ export async function LeftNav() {
       <h4>Browse</h4>
       <Link href="/">Hot</Link>
       <Link href="/?sort=recent">New</Link>
+      <Link href="/live" style={{ color: "var(--live-accent-2)" }}>Live</Link>
       <Link href="/foryou">For You</Link>
       <Link href="/g">Galleries</Link>
+      <Link href="/connect">Connect</Link>
       <Link href="/groups">Groups</Link>
       <Link href="/f">Forum</Link>
 

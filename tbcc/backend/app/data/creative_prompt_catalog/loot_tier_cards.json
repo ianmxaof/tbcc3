@@ -1,0 +1,183 @@
+{
+  "campaign": "loot_tier_cards",
+  "schema_version": 3,
+  "master_template": {
+    "layout_lock_ref": "docs/samples/gemini_loot_card_layout_lock.txt",
+    "style_anchors": "magenta marquee trading card chrome, loot god tier reveal",
+    "negative_prompt": "gibberish UI text, wrong aspect ratio, watermark",
+    "chrome_block": ""
+  },
+  "variations": [
+    {
+      "key": "loot_card_tier-01",
+      "subject_delta": "CENTER (explicit): adult woman 30s, topless tease on dark bed edge, phone-cam grain, dull grey-green neon, bare breasts half-covered by arm, hungry eye contact. Sparse \u00b7\u00b7\u00b7\u00b7 dust ASCII in corners. Mood: barely a taste \u2014 still filthy. Bottom band exact text: CRUMB",
+      "tier": "1",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-02",
+      "subject_delta": "CENTER (explicit): voyeur doorway \u2014 adult woman lifting skirt, no panties, wet pussy glimpse, cool blue neon, mirror edge, caught mid-flash. ASCII HUD: > peek_ cursor. Mood: almost-caught, explicit peek. Bottom band exact text: PEEK",
+      "tier": "2",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-03",
+      "subject_delta": "CENTER (explicit): locker-room steam, adult athletic woman nude, towel slipped, full frontal, wet skin, amber neon, cum-smear aesthetic on tile (tasteful but clear). Cracked \u2588\u2588\u2588\u2588 ASCII bar. Mood: leaked nudes energy. Bottom band exact text: LEAK",
+      "tier": "3",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-04",
+      "subject_delta": "CENTER (explicit): close-up adult erect cock glistening with precum OR aroused wet vulva, pulse-red neon rim, sweat sheen, shallow DOF, body heat extreme. ASCII heartbeat \u2581\u2582\u2583\u2585\u2583\u2582\u2581. Mood: throbbing need. Bottom band exact text: THROB",
+      "tier": "4",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-05",
+      "subject_delta": "CENTER (explicit): adult woman on black vinyl, legs spread, pussy dripping, hot-pink neon, spit/oil sheen, fingers spreading. ASCII dripping \u2502 \u2502 \u2502. Mood: sticky mid-tier fuck heat. Bottom band exact text: DRIP",
+      "tier": "5",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-06",
+      "subject_delta": "CENTER (explicit): adult couple mid-sex against VIP corridor wall, orange neon, penetration visible, mixed fluids, velvet rope behind. Box-drawing ASCII \u2554\u2550\u2550\u2557 SOAK. Mood: denser haul, soaked. Bottom band exact text: SOAK",
+      "tier": "6",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-07",
+      "subject_delta": "CENTER (explicit): toxic-green vault light, adult woman on knees covered in cum, open mouth, tits glazed, 'RESTRICTED' chrome badge, absolute filth. ASCII \u2302 FILTH \u2302. Mood: forbidden archive, filthy. Bottom band exact text: FILTH",
+      "tier": "7",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-08",
+      "subject_delta": "CENTER (explicit): chaotic aftercare mess \u2014 adult bodies fucked raw, purple/gold chrome, creampie visible, ruined makeup, ticket stub confetti mixed with fluids. ASCII \u265b RUIN \u265b. Mood: no soft landing. Bottom band exact text: RUIN",
+      "tier": "8",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-09",
+      "subject_delta": "CENTER (explicit): near-black room, ultraviolet slash across adult woman in extreme bondage / CNC-aesthetic consensual scene, explicit anatomy lit by UV, glitch HUD BLACKOUT. ASCII \u2593\u2591\u2588 BLACKOUT \u2588\u2591\u2593. Mood: mythic, mean, explicit. Bottom band exact text: BLACKOUT",
+      "tier": "9",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    },
+    {
+      "key": "loot_card_tier-10",
+      "subject_delta": "CENTER (explicit): boss-drop orgy energy \u2014 adult woman gold body-paint accents, multiple partners implied, blood-red + gold chrome, cumshot finale, *** GODROLL *** stamp as UI only. Mood: max dopamine porn jackpot. Bottom band exact text: GODROLL",
+      "tier": "10",
+      "tags": [
+        "loot",
+        "card",
+        "tier"
+      ],
+      "surfaces": [
+        "lv_gate",
+        "gemini",
+        "perchance"
+      ],
+      "engagement": {},
+      "prompt_ref": null
+    }
+  ],
+  "notes": ""
+}

@@ -28,6 +28,11 @@ _PUBLIC_GET_PREFIXES: tuple[str, ...] = (
     "/r/",
 )
 
+# Authenticated export for aof-forum ingest — must NOT inherit the public /media/ GET allowlist.
+_PROTECTED_GET_PREFIXES: tuple[str, ...] = (
+    "/media/export",
+)
+
 
 def api_require_internal_enabled() -> bool:
     raw = (os.getenv("TBCC_API_REQUIRE_INTERNAL") or "").strip().lower()
@@ -46,6 +51,9 @@ def path_is_public(path: str, method: str) -> bool:
         if p == pref.rstrip("/") or p.startswith(pref):
             return True
     if method.upper() == "GET":
+        for pref in _PROTECTED_GET_PREFIXES:
+            if p == pref or p.startswith(pref + "/"):
+                return False
         for pref in _PUBLIC_GET_PREFIXES:
             if p.startswith(pref):
                 return True

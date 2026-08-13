@@ -23,7 +23,12 @@ def test_legacy_values_map_to_api_enums():
     assert prefs.breast_size == "big"
     assert prefs.butt_size == "big"
     assert prefs.age == "20"
-    assert prefs.to_api_kwargs() == {"breast_size": "big", "butt_size": "big", "age": "20"}
+    assert prefs.to_api_kwargs() == {
+        "breast_size": "big",
+        "butt_size": "big",
+        "age": "20",
+        "body_type": "curvy",
+    }
 
 
 def test_big_chest_auto_curvy():
@@ -34,10 +39,10 @@ def test_big_chest_auto_curvy():
 
 
 def test_bimbo_preset():
-    from app.services.companion_body_prefs import apply_bimbo_preset
+    from app.services.companion_body_prefs import apply_body_preset
 
     ud: dict = {}
-    prefs = apply_bimbo_preset(ud)
+    prefs = apply_body_preset(ud, "bimbo")
     api = prefs.to_api_kwargs()
     assert api["breast_size"] == "big"
     assert api["butt_size"] == "big"

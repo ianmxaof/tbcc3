@@ -42,23 +42,9 @@ async def post_album(
     if not media_items:
         return []
     from app.services.content_performance import message_ids_from_send
-    from app.services.local_media_storage import is_local_pool_media, telethon_file_from_media
+    from app.services.media_message_resolve import fetch_album_medias
 
-    saved_ids = [m.telegram_message_id for m in media_items if not is_local_pool_media(m)]
-    msg_map: dict = {}
-    if saved_ids:
-        messages = await client.get_messages("me", ids=saved_ids)
-        msg_map = {m.id: m for m in messages if m}
-    medias = []
-    for m in media_items:
-        if is_local_pool_media(m):
-            f = telethon_file_from_media(m)
-            if f is not None:
-                medias.append(f)
-            continue
-        msg = msg_map.get(m.telegram_message_id)
-        if msg and msg.media:
-            medias.append(msg.media)
+    medias = await fetch_album_medias(client, media_items)
     if len(medias) != len(media_items):
         logger.warning("Could not fetch all media; skipping album to avoid partial send")
         return []
@@ -103,6 +89,8 @@ async def post_pool_albums(
     *,
     mark_posted: bool = True,
 ) -> dict:
+    from app.services.media_album_dedupe import dedupe_media_for_album
+
     approved = (
         db.query(Media)
         .filter(Media.pool_id == pool_id, Media.status == "approved")
@@ -119,6 +107,7 @@ async def post_pool_albums(
                 approved = ranked + [m for m in approved if m.id not in {x.id for x in ranked}]
     except Exception:
         logger.debug("export flywheel rank skipped", exc_info=True)
+    approved = dedupe_media_for_album(approved)
     # Group by media_type so each album has same type (Telegram requirement)
     by_type = defaultdict(list)
     for m in approved:

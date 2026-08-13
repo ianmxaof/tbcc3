@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { MediaGrid } from "@/components/MediaGrid";
 import { HomeExploreRails } from "@/components/HomeExploreRails";
+import { ModeStrip } from "@/components/ModeStrip";
+import { TelegramCtaStrip } from "@/components/TelegramCtaStrip";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +14,8 @@ export default function FeedPage({
   const sort = searchParams?.sort === "recent" ? "recent" : "hot";
   return (
     <>
+      <ModeStrip />
+      <TelegramCtaStrip />
       <HomeExploreRails />
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "1rem" }}>
         <h1>{sort === "recent" ? "New" : "Hot"}</h1>

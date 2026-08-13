@@ -1,14 +1,11 @@
 """
 Import + normalize Gemini border animations for loot reveals.
 
-Single-clip model: each file contains open + sustain (stasis folder deprecated).
-
-Source folder (operator Downloads):
-  BORDER OPEN ANIMATIONS/ → borders/open/
+Auto-crops letterboxed magenta gutters to tight chrome bbox, then scales to square.
 
   cd tbcc/backend
-  py -3 scripts/import_loot_border_animations.py
-  py -3 scripts/import_loot_border_animations.py --trim 7.6 --size 512
+  py -3 scripts/import_loot_border_animations.py --src "C:\\Users\\ianmp\\Downloads"
+  py -3 scripts/import_loot_border_animations.py --src clip.mp4 --trim 7.6 --size 512
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.services.loot_border_plates import card_crop_bbox_for_clip, ffmpeg_chrome_crop_scale_chain
 from app.services.loot_border_reveal import border_clips_dir
 from app.services.media_frame_sample import ffmpeg_available
 
@@ -42,12 +40,14 @@ def _encode(
     size: int,
     trim_s: float | None,
     start_s: float = 0.0,
+    auto_crop: bool = True,
 ) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    vf = (
-        f"fps=24,scale={size}:{size}:force_original_aspect_ratio=increase,"
-        f"crop={size}:{size},setsar=1"
-    )
+    crop_bbox = card_crop_bbox_for_clip(src) if auto_crop else None
+    if crop_bbox:
+        x0, y0, x1, y1 = crop_bbox
+        print(f"  crop chrome {x1 - x0}x{y1 - y0} @ ({x0},{y0})")
+    vf = ffmpeg_chrome_crop_scale_chain(crop_bbox, size=size, fps=24)
     cmd = [
         "ffmpeg",
         "-hide_banner",
@@ -89,18 +89,15 @@ def _encode(
     return True
 
 
-def _import_folder(
-    src: Path,
+def _import_files(
+    files: list[Path],
     out: Path,
     *,
     size: int,
     trim_s: float | None,
     preserve_names: bool,
+    auto_crop: bool,
 ) -> int:
-    if not src.is_dir():
-        print(f"SKIP missing: {src}")
-        return 0
-    files = sorted(p for p in src.iterdir() if p.suffix.lower() in {".mp4", ".mov", ".webm"})
     ok = 0
     for i, fp in enumerate(files, 1):
         if preserve_names:
@@ -108,20 +105,34 @@ def _import_folder(
         else:
             slug = _slug(fp.stem)
             dest = out / f"border-{i:03d}-{slug}.mp4"
-        if _encode(fp, dest, size=size, trim_s=trim_s):
+        print(fp.name)
+        if _encode(fp, dest, size=size, trim_s=trim_s, auto_crop=auto_crop):
             ok += 1
     return ok
 
 
+def _collect_sources(src: Path) -> list[Path]:
+    if src.is_file():
+        return [src] if src.suffix.lower() in {".mp4", ".mov", ".webm"} else []
+    if not src.is_dir():
+        return []
+    return sorted(p for p in src.iterdir() if p.suffix.lower() in {".mp4", ".mov", ".webm"})
+
+
 def main() -> int:
-    p = argparse.ArgumentParser(description="Import single border animation clips")
-    p.add_argument("--src", type=Path, default=DEFAULT_SRC)
+    p = argparse.ArgumentParser(description="Import border animations with auto chrome crop")
+    p.add_argument("--src", type=Path, default=DEFAULT_SRC, help="File or folder of clips")
     p.add_argument("--size", type=int, default=512)
     p.add_argument(
         "--trim",
         type=float,
         default=0.0,
         help="Optional max seconds to keep (0 = full clip length)",
+    )
+    p.add_argument(
+        "--no-crop",
+        action="store_true",
+        help="Disable auto crop-to-chrome (legacy center-crop only)",
     )
     p.add_argument(
         "--preserve-names",
@@ -141,9 +152,21 @@ def main() -> int:
         print("ffmpeg not on PATH")
         return 1
 
+    files = _collect_sources(args.src)
+    if not files:
+        print(f"No video files under {args.src}")
+        return 1
+
     out = border_clips_dir()
-    print(f"clips -> {out}")
-    n = _import_folder(args.src, out, size=args.size, trim_s=trim, preserve_names=preserve)
+    print(f"clips -> {out}  auto_crop={not args.no_crop}  size={args.size}")
+    n = _import_files(
+        files,
+        out,
+        size=args.size,
+        trim_s=trim,
+        preserve_names=preserve,
+        auto_crop=not args.no_crop,
+    )
     print(f"Done imported={n}")
     return 0 if n > 0 else 1
 

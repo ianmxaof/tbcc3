@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.40.35",
+  "version": "1.40.43",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -122,6 +122,12 @@
       ],
       "js": ["tbcc-module-gate.js", "perchance-suite.bundle.js"],
       "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://made.porn/*", "*://*.made.porn/*"],
+      "js": ["tbcc-module-gate.js", "madeporn-harvest.js"],
+      "run_at": "document_idle",
       "all_frames": false
     },
     {

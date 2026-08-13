@@ -1,3 +1,4 @@
 mcp>=1.2.0
 httpx>=0.26.0
 python-dotenv>=1.0.0
+# loot_media_server.py imports tbcc/backend — also install google-genai from backend requirements

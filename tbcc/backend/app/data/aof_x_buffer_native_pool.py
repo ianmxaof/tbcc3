@@ -20,6 +20,12 @@ AOF_X_BUFFER_NATIVE_POOL: list[dict[str, str]] = [
         "text": "AI tools lane — revshare on every purchase. try {affiliate} · @aof_spicybot_bot · map {allmylinks}",
     },
     {
+        "text": "two lanes: free credits on the affiliate bot {affiliate} · or DM @aof_spicybot_bot for a trial photo + chat. hub {hub}",
+    },
+    {
+        "text": "upload → chat → unlock. @aof_spicybot_bot in DM · revshare tools {affiliate} · AOF map {allmylinks}",
+    },
+    {
         "text": "pack drops land on Telegram first. impatient people fund the network. {hub} · keys @aofsubscriptions_bot",
     },
     {

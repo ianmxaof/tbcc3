@@ -38,5 +38,5 @@ foreach ($name in $files) {
 
 & ssh $HostName "chmod 600 $remoteDir/admin.session* ; ls -la $remoteDir"
 
-Write-Host "Next: recreate api+worker+worker_post so they mount /sessions" -ForegroundColor Cyan
-Write-Host ("  ssh {0} ""cd /opt/tbcc/infra; docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d --force-recreate api worker worker_post""" -f $HostName)
+Write-Host "Next: recreate api+worker+worker_telegram+worker_post so they mount /sessions" -ForegroundColor Cyan
+Write-Host ("  ssh {0} ""cd /opt/tbcc/infra; docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d --force-recreate api worker worker_telegram worker_post""" -f $HostName)

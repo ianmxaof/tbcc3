@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import os
+from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors.rpcerrorlist import ImageProcessFailedError
@@ -1019,7 +1020,11 @@ class TelegramStorage:
             file_id=file_id,
             file_unique_id=file_unique_id,
             media_type=media_type,
-            source_channel=str(chat_identifier).strip()[:512],
+            source_channel=(
+                str(source_label).strip()[:512]
+                if "#topic:" in str(source_label or "").lower()
+                else str(chat_identifier).strip()[:512]
+            ),
             pool_id=pool_id,
             status="pending",
         )
@@ -1308,14 +1313,16 @@ class TelegramStorage:
         skipped_media_type = 0
         skipped_no_media = 0
         scanned = 0
+        selected_for_batch = 0
         stored_messages: list[dict[str, int]] = []
+        duplicate_lane_message_ids: list[int] = []
         entity = await resolve_telethon_entity(self.client, channel_identifier)
         iter_kw: dict = {}
         if message_thread_id is not None:
             iter_kw["reply_to"] = int(message_thread_id)
 
         async def _store_one(message) -> None:
-            nonlocal stored, skipped_duplicate, skipped_media_type, skipped_no_media, scanned
+            nonlocal stored, skipped_duplicate, skipped_media_type, skipped_no_media, scanned, selected_for_batch
             scanned += 1
             kind = _channel_message_media_kind(message)
             if not kind:
@@ -1324,8 +1331,12 @@ class TelegramStorage:
             if not _channel_accepts_media_kind(kind, media_types):
                 skipped_media_type += 1
                 return
+            if selected_for_batch >= target_stored:
+                return
+            selected_for_batch += 1
             if self.is_duplicate_message(message, pool_id, db):
                 skipped_duplicate += 1
+                duplicate_lane_message_ids.append(int(message.id))
                 await asyncio.sleep(0.02 if index_only else 0.05)
                 return
             try:
@@ -1351,6 +1362,7 @@ class TelegramStorage:
                     )
                 else:
                     skipped_duplicate += 1
+                    duplicate_lane_message_ids.append(int(message.id))
             except Exception:
                 logger.exception(
                     "import_from_telegram_channel store failed pool_id=%s msg_id=%s",
@@ -1365,7 +1377,7 @@ class TelegramStorage:
 
             target_stored = len(explicit_ids)
             for mid in explicit_ids:
-                if stored >= target_stored:
+                if selected_for_batch >= target_stored:
                     break
                 messages = await self.client.get_messages(entity, ids=int(mid))
                 msg = messages if not isinstance(messages, list) else (messages[0] if messages else None)
@@ -1383,6 +1395,8 @@ class TelegramStorage:
                 scanned += 1
                 if scanned > max_scan:
                     break
+                if selected_for_batch >= target_stored:
+                    break
                 kind = _channel_message_media_kind(message)
                 if not kind:
                     skipped_no_media += 1
@@ -1390,8 +1404,10 @@ class TelegramStorage:
                 if not _channel_accepts_media_kind(kind, media_types):
                     skipped_media_type += 1
                     continue
+                selected_for_batch += 1
                 if self.is_duplicate_message(message, pool_id, db):
                     skipped_duplicate += 1
+                    duplicate_lane_message_ids.append(int(message.id))
                     await asyncio.sleep(0.02 if index_only else 0.05)
                     continue
                 try:
@@ -1417,6 +1433,7 @@ class TelegramStorage:
                         )
                     else:
                         skipped_duplicate += 1
+                        duplicate_lane_message_ids.append(int(message.id))
                 except Exception:
                     logger.exception(
                         "import_from_telegram_channel store failed pool_id=%s msg_id=%s",
@@ -1424,8 +1441,6 @@ class TelegramStorage:
                         getattr(message, "id", "?"),
                     )
                 await asyncio.sleep(0.05 if index_only else 0.35)
-                if stored >= target_stored:
-                    break
         return {
             "stored": stored,
             "skipped_duplicate": skipped_duplicate,
@@ -1434,8 +1449,10 @@ class TelegramStorage:
             "messages_scanned": scanned,
             "message_thread_id": message_thread_id,
             "target_stored": target_stored,
-            "scan_cap_reached": scanned >= max_scan and stored < target_stored,
+            "batch_selected": selected_for_batch,
+            "scan_cap_reached": scanned >= max_scan and selected_for_batch < target_stored,
             "stored_messages": stored_messages,
+            "duplicate_lane_message_ids": duplicate_lane_message_ids,
         }
 
     async def forward_channel_to_forum_topic(
@@ -1450,6 +1467,7 @@ class TelegramStorage:
         """
         Scrape recent media from source_channel and forward (or re-upload) into a forum subtopic.
         Admin session must read the source and post in the destination group/topic.
+        When TBCC_STORAGE_HUB_ALBUM_INTAKE=1, posts albums (no singles) instead of one-by-one forwards.
         """
         from app.services.scrape_channel_intel import is_forward_restricted_error
         from app.utils.telegram_peer import resolve_telethon_entity
@@ -1459,13 +1477,24 @@ class TelegramStorage:
         skipped_media_type = 0
         skipped_no_media = 0
         skipped_forward_restricted = 0
+        skipped_already_mirrored = 0
         errors = 0
         scanned = 0
+        albums_posted = 0
         source_entity = await resolve_telethon_entity(self.client, source_channel)
         dest_entity = await resolve_telethon_entity(self.client, dest_channel)
         topic_id = int(message_thread_id)
         lim = max(1, min(int(limit), 500))
+        from telethon.utils import get_peer_id
 
+        from app.services.scrape_hub_forward_dedupe import (
+            is_hub_forward_duplicate,
+            mark_hub_forward_done,
+        )
+
+        source_chat_id = int(get_peer_id(source_entity))
+
+        candidates: list[tuple[Any, str, int]] = []
         async for message in self.client.iter_messages(source_entity, limit=lim):
             scanned += 1
             kind = _channel_message_media_kind(message)
@@ -1475,6 +1504,41 @@ class TelegramStorage:
             if not _channel_accepts_media_kind(kind, media_types):
                 skipped_media_type += 1
                 continue
+            msg_id = int(getattr(message, "id", 0) or 0)
+            if msg_id and is_hub_forward_duplicate(topic_id, source_chat_id, msg_id):
+                skipped_already_mirrored += 1
+                continue
+            candidates.append((message, kind, msg_id))
+
+        from app.services.storage_hub_album_intake import storage_hub_album_intake_enabled
+
+        if storage_hub_album_intake_enabled() and candidates:
+            album_out = await self._post_messages_as_storage_topic_albums(
+                dest_entity,
+                topic_id,
+                candidates,
+                source_chat_id=source_chat_id,
+            )
+            forwarded = int(album_out.get("forwarded") or 0)
+            uploaded = int(album_out.get("uploaded") or 0)
+            albums_posted = int(album_out.get("albums_posted") or 0)
+            errors = int(album_out.get("errors") or 0)
+            return {
+                "forwarded": forwarded,
+                "uploaded": uploaded,
+                "albums_posted": albums_posted,
+                "skipped_forward_restricted": skipped_forward_restricted,
+                "skipped_media_type": skipped_media_type,
+                "skipped_no_media": skipped_no_media,
+                "skipped_already_mirrored": skipped_already_mirrored,
+                "errors": errors,
+                "messages_scanned": scanned,
+                "source_channel": str(source_channel),
+                "dest_channel": str(dest_channel),
+                "message_thread_id": topic_id,
+            }
+
+        for message, kind, msg_id in candidates:
             try:
                 await self.client.forward_messages(
                     dest_entity,
@@ -1483,6 +1547,8 @@ class TelegramStorage:
                     reply_to=topic_id,
                 )
                 forwarded += 1
+                if msg_id:
+                    mark_hub_forward_done(topic_id, source_chat_id, msg_id)
             except Exception as e:
                 if is_forward_restricted_error(e):
                     skipped_forward_restricted += 1
@@ -1496,10 +1562,12 @@ class TelegramStorage:
                     kwargs = {**kwargs, "reply_to": topic_id}
                     await self.client.send_file(dest_entity, f, **kwargs)
                     uploaded += 1
+                    if msg_id:
+                        mark_hub_forward_done(topic_id, source_chat_id, msg_id)
                 except Exception:
                     logger.exception(
                         "forward_channel_to_forum_topic failed msg_id=%s",
-                        getattr(message, "id", "?"),
+                        msg_id,
                     )
                     errors += 1
             await asyncio.sleep(0.45)
@@ -1516,6 +1584,93 @@ class TelegramStorage:
             "source_channel": str(source_channel),
             "dest_channel": str(dest_channel),
             "message_thread_id": topic_id,
+        }
+
+    async def _post_messages_as_storage_topic_albums(
+        self,
+        dest_entity,
+        topic_id: int,
+        candidates: list[tuple[Any, str, int]],
+        *,
+        source_chat_id: int,
+    ) -> dict[str, int]:
+        """Post scrape/micro-pull candidates into a Storage Hub topic as albums only."""
+        from app.services.intake_scheduler import get_album_size
+        from app.services.scrape_channel_intel import is_forward_restricted_error
+        from app.services.scrape_hub_forward_dedupe import mark_hub_forward_done
+
+        album_size = min(TELEGRAM_ALBUM_MAX, max(2, get_album_size()))
+        min_post = 2
+        by_bucket: dict[str, list[tuple[Any, str, int]]] = {"photo": [], "video": []}
+        for message, kind, msg_id in candidates:
+            bucket = "video" if kind == "video" else "photo"
+            by_bucket[bucket].append((message, kind, msg_id))
+
+        forwarded = 0
+        uploaded = 0
+        albums_posted = 0
+        errors = 0
+
+        async def _mark_done(msg_ids: list[int]) -> None:
+            for mid in msg_ids:
+                if mid:
+                    mark_hub_forward_done(topic_id, source_chat_id, int(mid))
+
+        for bucket_items in by_bucket.values():
+            idx = 0
+            while idx < len(bucket_items):
+                remaining = len(bucket_items) - idx
+                if remaining < min_post:
+                    break
+                take = album_size if remaining >= album_size else remaining
+                if take < min_post:
+                    break
+                chunk = bucket_items[idx : idx + take]
+                idx += take
+                messages = [m for m, _, _ in chunk]
+                msg_ids = [mid for _, _, mid in chunk]
+                try:
+                    await self.client.send_file(
+                        dest_entity,
+                        messages,
+                        reply_to=topic_id,
+                        silent=True,
+                    )
+                    forwarded += len(chunk)
+                    albums_posted += 1
+                    await _mark_done(msg_ids)
+                except Exception as e:
+                    if is_forward_restricted_error(e):
+                        try:
+                            prepared = []
+                            for message, kind, _mid in chunk:
+                                data = await self.client.download_media(message, bytes)
+                                if not data:
+                                    errors += 1
+                                    continue
+                                prepared.append(self._prepare_file_for_send(data, kind))
+                            if len(prepared) < min_post:
+                                errors += 1
+                                continue
+                            files = [p[0] for p in prepared]
+                            kwargs = {**prepared[0][1], "reply_to": topic_id, "silent": True}
+                            await self.client.send_file(dest_entity, files, **kwargs)
+                            uploaded += len(prepared)
+                            albums_posted += 1
+                            await _mark_done(msg_ids)
+                        except Exception:
+                            logger.exception("storage topic album upload failed", exc_info=True)
+                            errors += 1
+                    else:
+                        logger.warning("storage topic album forward failed: %s", e)
+                        errors += 1
+                await asyncio.sleep(0.35)
+
+        return {
+            "forwarded": forwarded,
+            "uploaded": uploaded,
+            "albums_posted": albums_posted,
+            "errors": errors,
         }
 
     async def forward_storage_topic_to_main_topic(

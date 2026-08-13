@@ -1,0 +1,10 @@
+LAYOUT LOCK — identical chrome in every SPICY REVEAL drop poster:
+TOP: distressed white "AOF" + coral-magenta brush "SPICY REVEAL" + subtitle "DROP {NN} • COMPANION PROMO"
+SUBHEAD: "UPLOAD → CHAT → REVEAL" (never use BUY on poster)
+CENTER: large QR with Telegram paper-plane logo inside
+LEFT PILLS: TRIAL PHOTO | FLIRT CHAT | PRIVATE DM | ONE REVEAL | @aof_spicybot_bot
+RIGHT PILLS: REFERRAL EARN | STARS UNLOCK | NO TOURIST MODE | OWNED BOT | DEPTH GATE
+BELOW QR: "SHE REPLIES LIKE SHE REMEMBERS YOU" / red CTA pill telegram.me/aof_spicybot_bot
+LINK BAR: coral bar, paper-plane icons, exact text "telegram.me/aof_spicybot_bot"
+BOTTOM ICONS: PHONE "DM MOCKUP" • HEART "FLIRT" • LOCK "REVEAL" • SPARKLE "TRIAL" • GATE "UNLOCK"
+UI priority #1. Text sharp, spelled exactly. SFW — no explicit nudity on poster.

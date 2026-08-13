@@ -595,12 +595,24 @@ def apply_network_liveness(db: Session, *, execute: bool = True) -> dict[str, An
                 checkout_button_label=button_label,
             )
         )
+        from app.services.lane_of_the_day import (
+            build_liveness_featured_drop_ticker,
+            build_liveness_featured_spotlight,
+            lane_of_day_align_enabled,
+        )
+
+        if lane_of_day_align_enabled():
+            drop_vars = [build_liveness_featured_drop_ticker(db, footer)] + _build_drop_ticker_variations(
+                footer
+            )
+        else:
+            drop_vars = _build_drop_ticker_variations(footer)
         pulse_rows.append(
             _upsert_recurring_scheduler(
                 db,
                 channel_id=main.id,
                 name=DROP_TICKER_NAME,
-                variations=_build_drop_ticker_variations(footer),
+                variations=drop_vars,
                 interval_minutes=intervals["drop_ticker_min"],
                 execute=execute,
                 send_silent=True,
@@ -609,24 +621,40 @@ def apply_network_liveness(db: Session, *, execute: bool = True) -> dict[str, An
                 checkout_button_label=button_label,
             )
         )
-        spotlight = _build_spotlight_variations(db, lv, footer)
+
+        if lane_of_day_align_enabled():
+            spotlight = [
+                build_liveness_featured_spotlight(db, lv, footer),
+            ]
+        else:
+            spotlight = _build_spotlight_variations(db, lv, footer)
         from app.services.aof_growth_hub import _append_gumroad_vip_variations
 
-        spotlight = _append_gumroad_vip_variations(spotlight, footer)
-        pulse_rows.append(
-            _upsert_recurring_scheduler(
-                db,
-                channel_id=main.id,
-                name=SPOTLIGHT_NAME,
-                variations=spotlight,
-                interval_minutes=max(intervals["heartbeat_min"], intervals["drop_ticker_min"]) + 30,
-                execute=execute,
-                send_silent=True,
-                message_thread_id=thread_id,
-                checkout_plan_id=plan_id if liveness_checkout_enabled() else None,
-                checkout_button_label=button_label,
-            )
+        if not lane_of_day_align_enabled():
+            spotlight = _append_gumroad_vip_variations(spotlight, footer)
+        pulse_row = _upsert_recurring_scheduler(
+            db,
+            channel_id=main.id,
+            name=SPOTLIGHT_NAME,
+            variations=spotlight,
+            interval_minutes=max(intervals["heartbeat_min"], intervals["drop_ticker_min"]) + 30,
+            execute=execute,
+            send_silent=True,
+            message_thread_id=thread_id,
+            checkout_plan_id=plan_id if liveness_checkout_enabled() else None,
+            checkout_button_label=button_label,
         )
+        pulse_rows.append(pulse_row)
+        if execute and lane_of_day_align_enabled() and pulse_row.get("id"):
+            from app.services.lane_of_the_day import apply_lane_of_day_tease_media, lane_of_the_day_key
+
+            sched = (
+                db.query(ScheduledTextPost)
+                .filter(ScheduledTextPost.id == int(pulse_row["id"]))
+                .first()
+            )
+            if sched:
+                apply_lane_of_day_tease_media(db, sched, lane_of_the_day_key())
 
     report = {
         "execute": execute,
@@ -640,6 +668,12 @@ def apply_network_liveness(db: Session, *, execute: bool = True) -> dict[str, An
         "first_sub_celebrated": first_sub_celebration_sent(db),
     }
     if execute:
+        from app.services.lane_of_the_day import lane_of_the_day_key, lane_of_day_align_enabled
+
+        report["lane_of_the_day"] = {
+            "align": lane_of_day_align_enabled(),
+            "network_key": lane_of_the_day_key(),
+        }
         db.commit()
     else:
         db.rollback()
@@ -687,6 +721,8 @@ def liveness_status(db: Session) -> dict[str, Any]:
         or 0
     )
 
+    from app.services.lane_of_the_day import lane_of_the_day_key, lane_of_day_align_enabled
+
     return {
         "intervals": intervals,
         "main_pulses": pulses,
@@ -694,6 +730,10 @@ def liveness_status(db: Session) -> dict[str, Any]:
         "pools_with_backup_post": pool_backup_on,
         "subscriber_count_real": active_subscription_subscriber_count(db),
         "first_sub_celebrated": first_sub_celebration_sent(db),
+        "lane_of_the_day": {
+            "align": lane_of_day_align_enabled(),
+            "network_key": lane_of_the_day_key(),
+        },
     }
 
 

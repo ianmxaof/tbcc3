@@ -619,6 +619,162 @@ def pending_media_summary(db: Session = Depends(get_db)):
     }
 
 
+_MEDIA_EXPORT_DEFAULT_LIMIT = 20
+_MEDIA_EXPORT_MAX_LIMIT = 50
+
+
+def _clamp_export_limit(limit: int | None) -> int:
+    raw = int(limit) if limit is not None else _MEDIA_EXPORT_DEFAULT_LIMIT
+    return max(1, min(raw, _MEDIA_EXPORT_MAX_LIMIT))
+
+
+def _trusted_aof_pool_ids(db: Session) -> list[int]:
+    """Content pools that receive Storage Hub /deposit copies (AOF network lanes)."""
+    from app.data.aof_network import AOF_NETWORK_CHANNELS
+    from app.models.content_pool import ContentPool
+
+    names = [ch.pool_name for ch in AOF_NETWORK_CHANNELS]
+    if not names:
+        return []
+    rows = db.query(ContentPool.id).filter(ContentPool.name.in_(names)).all()
+    return [int(r[0]) for r in rows]
+
+
+def _apply_storage_hub_export_filter(q, db: Session):
+    """Storage Hub deposits: hangar topic labels or trusted AOF network pools."""
+    from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+    from app.models.media import Media
+
+    hub_tail = STORAGE_HUB_IDENT.lstrip("-")
+    clauses = [Media.source_channel.ilike(f"%{hub_tail}%")]
+    pool_ids = _trusted_aof_pool_ids(db)
+    if pool_ids:
+        clauses.append(Media.pool_id.in_(pool_ids))
+    return q.filter(or_(*clauses))
+
+
+def _network_key_for_export_row(db: Session, media) -> str | None:
+    from app.services.media_gatekeeper import expected_lane_for_storage_source
+    from app.services.export_flywheel_service import network_key_for_pool
+
+    nk = expected_lane_for_storage_source(media.source_channel)
+    if nk:
+        return nk
+    if media.pool_id:
+        return network_key_for_pool(db, int(media.pool_id))
+    return None
+
+
+def _pool_name_for_export_row(db: Session, pool_id: int | None) -> str | None:
+    if not pool_id:
+        return None
+    from app.models.content_pool import ContentPool
+
+    row = db.query(ContentPool.name).filter(ContentPool.id == int(pool_id)).first()
+    return str(row[0]).strip() if row and row[0] else None
+
+
+def _r2_fields_for_export(media) -> dict:
+    from app.services.storage_hub_r2_export import r2_meta_from_media
+
+    meta = r2_meta_from_media(media) or {}
+    object_key = str(meta.get("object_key") or "").strip() or None
+    direct_url = str(meta.get("direct_url") or "").strip() or None
+    return {
+        "object_key": object_key,
+        "direct_url": direct_url,
+        "byte_size": meta.get("byte_size"),
+        "content_type": meta.get("content_type"),
+        "has_r2": bool(object_key),
+    }
+
+
+@router.get("/export")
+def export_media_for_hub(
+    db: Session = Depends(get_db),
+    since_id: int = 0,
+    limit: int | None = None,
+    status: str = "approved",
+    pool_id: int | None = None,
+    origin: str | None = None,
+    has_r2: bool | None = None,
+):
+    """Paginated ascending export for aof-forum ingest. Requires X-TBCC-Internal-Key when gate is on.
+
+    origin=storage_hub — only Storage Hub topic rows and media in trusted AOF network pools
+    (copies from /deposit and lane auto-pipe).
+
+    has_r2=true — only rows already exported to R2 (classification_json.r2.object_key).
+    Prefer object_key/direct_url over file_path when present (no Telethon download).
+    """
+    from app.models.media import Media
+    from app.services.storage_hub_r2_export import media_has_r2
+
+    since = max(int(since_id or 0), 0)
+    page_limit = _clamp_export_limit(limit)
+    q = db.query(Media).filter(Media.id > since)
+    st = (status or "").strip().lower()
+    if st:
+        q = q.filter(Media.status == st)
+    if pool_id is not None:
+        q = q.filter(Media.pool_id == int(pool_id))
+    origin_key = (origin or "").strip().lower()
+    if origin_key == "storage_hub":
+        q = _apply_storage_hub_export_filter(q, db)
+    # Oversample when filtering has_r2 in Python (JSON shape varies).
+    fetch_n = page_limit * 5 if has_r2 is not None else page_limit
+    rows = q.order_by(Media.id.asc()).limit(fetch_n).all()
+    if has_r2 is True:
+        rows = [m for m in rows if media_has_r2(m)][:page_limit]
+    elif has_r2 is False:
+        rows = [m for m in rows if not media_has_r2(m)][:page_limit]
+    else:
+        rows = rows[:page_limit]
+    items = []
+    for m in rows:
+        item = {
+            "id": int(m.id),
+            "source_channel": m.source_channel,
+            "media_type": m.media_type,
+            "telegram_message_id": m.telegram_message_id,
+            "file_unique_id": m.file_unique_id,
+            "tags": m.tags,
+            "pool_id": m.pool_id,
+            "pool_name": _pool_name_for_export_row(db, m.pool_id),
+            "network_key": _network_key_for_export_row(db, m),
+            "status": m.status,
+            "file_path": f"/media/{int(m.id)}/file",
+        }
+        item.update(_r2_fields_for_export(m))
+        items.append(item)
+    next_since = int(rows[-1].id) if rows else since
+    return {
+        "items": items,
+        "next_since_id": next_since,
+        "count": len(items),
+        "origin": origin_key or None,
+    }
+
+
+@router.post("/export/r2/tick")
+def export_storage_hub_r2_tick(
+    db: Session = Depends(get_db),
+    since_id: int = 0,
+    limit: int = 10,
+    async_celery: bool = True,
+):
+    """Enqueue or run one Storage Hub → R2 export batch (internal key required)."""
+    from app.services.storage_hub_r2_export import export_storage_hub_batch
+
+    lim = _clamp_export_limit(limit)
+    if async_celery:
+        from app.workers.storage_hub_r2_export_worker import export_storage_hub_media_to_r2
+
+        task = export_storage_hub_media_to_r2.delay(since_id=int(since_id or 0), limit=lim)
+        return {"ok": True, "queued": True, "task_id": task.id, "since_id": since_id, "limit": lim}
+    return export_storage_hub_batch(db, since_id=int(since_id or 0), limit=lim)
+
+
 @router.get("/{media_id}")
 def get_media(media_id: int, db: Session = Depends(get_db)):
     from app.models.media import Media

@@ -31,13 +31,54 @@ def test_invoice_description_under_255_chars():
 def test_build_vip_deal_caption_has_checkout_cta():
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = MagicMock(
-        price_stars=500, duration_days=30
+        price_stars=500, duration_days=30, name="AOF VIP — 1 Month"
     )
     with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=6):
         html = build_vip_deal_caption_html(db, 6)
     assert "AOF VIP" in html
     assert "Pay ⭐" in html
-    assert len(html) < 400
+    assert "What you get" in html
+    assert "Hall Pass" in html
+
+
+def test_build_vip_deal_caption_full_stack_is_default():
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = MagicMock(
+        price_stars=1500, duration_days=30, name="AOF VIP — 1 Month"
+    )
+    with patch.dict("os.environ", {}, clear=False):
+        import os
+
+        os.environ.pop("TBCC_VIP_CHECKOUT_CAPTION_MINIMAL", None)
+        with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=6):
+            html = build_vip_deal_caption_html(db, 6)
+    assert "THE HALL PASS" in html
+    assert "Public vs VIP" in html
+
+
+def test_build_vip_deal_caption_intro_variant():
+    db = MagicMock()
+    plan = MagicMock(price_stars=834, duration_days=30)
+    plan.name = "AOF VIP — Intro Month"
+    db.query.return_value.filter.return_value.first.return_value = plan
+    with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=99):
+        html = build_vip_deal_caption_html(db, 99)
+    assert "FIRST MONTH" in html
+    assert "one-time intro" in html.lower()
+    assert "Daily God Roll" in html
+    assert "THE HALL PASS" not in html
+
+
+def test_build_vip_deal_caption_minimal_when_env_set():
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = MagicMock(
+        price_stars=500, duration_days=30, name="AOF VIP — 1 Month"
+    )
+    with patch.dict("os.environ", {"TBCC_VIP_CHECKOUT_CAPTION_MINIMAL": "1"}):
+        with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=6):
+            html = build_vip_deal_caption_html(db, 6)
+    assert "AOF VIP" in html
+    assert "What you get" not in html
 
 
 def test_pick_urgency_line_stable():

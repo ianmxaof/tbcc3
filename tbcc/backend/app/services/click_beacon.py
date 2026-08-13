@@ -17,9 +17,23 @@ from app.models.click_link import ClickLink, ClickLinkHit
 logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{4,32}$")
+_START_SRC_RE = re.compile(r"[?&]start=(src_[A-Za-z0-9_]+)")
 _ip_hits: dict[str, list[float]] = {}
+_notify_dedupe: dict[tuple[str, str], float] = {}
 _RATE_WINDOW_S = 60.0
 _RATE_MAX = 30
+_NOTIFY_DEDUPE_S = 900.0  # 15 min — same slug+ip
+
+_NOISE_UA_MARKERS = (
+    "curl/",
+    "telegrambot",
+    "like twitterbot",
+    "headlesschrome",
+    "python-requests",
+    "go-http-client",
+    "wget/",
+    "httpie/",
+)
 
 
 def public_beacon_base() -> str:
@@ -29,6 +43,56 @@ def public_beacon_base() -> str:
         or "http://127.0.0.1:8000"
     )
     return raw.rstrip("/")
+
+
+def click_beacon_notify_enabled() -> bool:
+    return (os.getenv("TBCC_CLICK_BEACON_NOTIFY") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def click_beacon_instant_telegram() -> bool:
+    """Instant DM on beacon hit — default off (inbox only); smokes/crawlers spam otherwise."""
+    return (os.getenv("TBCC_CLICK_BEACON_INSTANT") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def click_beacon_notify_bots() -> bool:
+    return (os.getenv("TBCC_CLICK_BEACON_NOTIFY_BOTS") or "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def is_noise_beacon_user_agent(user_agent: str | None) -> bool:
+    ua = (user_agent or "").strip().lower()
+    if not ua:
+        return False
+    return any(marker in ua for marker in _NOISE_UA_MARKERS)
+
+
+def should_notify_beacon_hit(link: ClickLink, hit: ClickLinkHit) -> bool:
+    if not click_beacon_notify_enabled():
+        return False
+    if is_noise_beacon_user_agent(hit.user_agent) and not click_beacon_notify_bots():
+        return False
+    ip = (hit.ip or "").strip() or "unknown"
+    key = (str(link.slug), ip)
+    now = time.monotonic()
+    last = _notify_dedupe.get(key)
+    if last is not None and (now - last) < _NOTIFY_DEDUPE_S:
+        return False
+    _notify_dedupe[key] = now
+    return True
 
 
 def validate_destination_url(url: str) -> str:
@@ -47,12 +111,19 @@ def _new_slug() -> str:
     return secrets.token_urlsafe(9)[:12]
 
 
+def derive_source_ref(destination_url: str) -> str | None:
+    """Pull the ?start=src_* payload out of a destination so clicks can join touches."""
+    m = _START_SRC_RE.search(destination_url or "")
+    return m.group(1)[:64] if m else None
+
+
 def create_click_link(
     db: Session,
     *,
     destination_url: str,
     label: str | None = None,
     slug: str | None = None,
+    source_ref: str | None = None,
 ) -> ClickLink:
     dest = validate_destination_url(destination_url)
     s = (slug or "").strip() or _new_slug()
@@ -60,10 +131,12 @@ def create_click_link(
         raise ValueError("slug must be 4-32 chars [A-Za-z0-9_-]")
     if db.query(ClickLink).filter(ClickLink.slug == s).first():
         raise ValueError("slug_taken")
+    ref = (source_ref or "").strip()[:64] or derive_source_ref(dest)
     row = ClickLink(
         slug=s,
         destination_url=dest,
         label=(label or "").strip()[:128] or None,
+        source_ref=ref,
         active=1,
         hit_count=0,
     )
@@ -128,29 +201,39 @@ def record_hit(
 
 
 def notify_admin_click(link: ClickLink, hit: ClickLinkHit) -> None:
+    if not should_notify_beacon_hit(link, hit):
+        return
     try:
+        from app.services.traffic_pulse import pulse_beacon_hit, traffic_pulse_enabled
+
+        if traffic_pulse_enabled():
+            from app.services.traffic_beacon_notify import beacon_pulse_meta
+
+            pulse_beacon_hit(
+                (link.label or link.slug).strip(),
+                str(link.slug),
+                (link.source_ref or "").strip() or None,
+                int(link.hit_count or 0),
+                **{
+                    k: v
+                    for k, v in beacon_pulse_meta(link, hit).items()
+                    if k not in ("slug", "source_ref", "hit_count", "link_label")
+                },
+            )
+            return
         from app.services.admin_inbox import push_admin_inbox_event
+        from app.services.traffic_beacon_notify import beacon_pulse_meta, format_traffic_beacon_body_html
 
         label = (link.label or link.slug).strip()
-        body = (
-            f"slug <code>{link.slug}</code> · hits {link.hit_count}\n"
-            f"ip {hit.ip or '?'} · {hit.country or '??'}\n"
-            f"ua {(hit.user_agent or '')[:120]}\n"
-            f"id={hit.campaign_id or '—'}\n"
-            f"→ {link.destination_url[:120]}"
-        )
+        meta = beacon_pulse_meta(link, hit, link_label=label)
+        meta["pulse_event_type"] = "beacon"
         push_admin_inbox_event(
-            category="growth",
+            category="traffic",
             severity="info",
             title=f"Click beacon · {label}",
-            body=body,
-            meta={
-                "slug": link.slug,
-                "hit_id": hit.id,
-                "ip": hit.ip,
-                "campaign_id": hit.campaign_id,
-            },
-            instant=True,
+            body=format_traffic_beacon_body_html(meta),
+            meta=meta,
+            instant=click_beacon_instant_telegram(),
         )
     except Exception as e:
         logger.warning("click beacon notify failed: %s", e)
@@ -166,6 +249,7 @@ def link_as_dict(link: ClickLink) -> dict[str, Any]:
         "slug": link.slug,
         "destination_url": link.destination_url,
         "label": link.label,
+        "source_ref": link.source_ref,
         "active": bool(link.active),
         "hit_count": int(link.hit_count or 0),
         "public_url": link_public_url(link),

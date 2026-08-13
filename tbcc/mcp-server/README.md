@@ -56,6 +56,24 @@ Restart Cursor after saving. Run tool **`tbcc_health`** to confirm connectivity.
 
 Pair with **Buffer MCP** (`https://mcp.buffer.com/mcp`) for X/IG/Threads queue outside TBCC’s Telegram-first mirror.
 
+## Loot God card media MCP (`tbcc-loot-media`)
+
+Separate server for **Gemini image gen + border animation bulk export** (no TBCC API required).
+
+See **[docs/LOOT_CARD_MEDIA_MCP.md](../docs/LOOT_CARD_MEDIA_MCP.md)** for setup, staging workflow, and tool list.
+
+```json
+"tbcc-loot-media": {
+  "command": "py",
+  "args": ["-3.13", "C:/Powercore-repo-main/telegram_bot2/tbcc/mcp-server/loot_media_server.py"],
+  "env": {
+    "TBCC_LOOT_TIER_CARD_DIR": "C:/Powercore-repo-main/telegram_bot2/tbcc/backend/app/data/loot_tier_cards"
+  }
+}
+```
+
+Quick test in Cursor: **`loot_pipeline_spec`** then **`loot_bulk_greenlight`** with `import_incoming=false`.
+
 ## Example prompts
 
 **Recurring pool campaign + Buffer mirror**

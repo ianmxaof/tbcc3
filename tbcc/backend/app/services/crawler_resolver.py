@@ -12,7 +12,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-CrawlerAdapter = Literal["auto", "erome", "onlyfans", "bunkr", "generic"]
+CrawlerAdapter = Literal["auto", "erome", "onlyfans", "bunkr", "madeporn", "generic"]
 
 _RATE_LIMITS: dict[str, float] = {}
 _RATE_LIMIT_INTERVAL = 1.0
@@ -954,6 +954,102 @@ async def resolve_generic(
     )
 
 
+# ---------------------------------------------------------------------------
+# made.porn adapter — gallery pages embed /vs/*.mp4 and /is/*.jpg in HTML
+# ---------------------------------------------------------------------------
+
+_MADEPORN_MP4_RE = re.compile(
+    r"https?://made\.porn/vs/[^\"'<>\s\\]+\.mp4",
+    flags=re.I,
+)
+_MADEPORN_IMG_RE = re.compile(
+    r"https?://made\.porn/is/[^\"'<>\s\\]+\.(?:jpe?g|webp)",
+    flags=re.I,
+)
+
+
+def _is_madeporn_url(url: str) -> bool:
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "made.porn" or host.endswith(".made.porn")
+
+
+def _madeporn_variant_rank(url: str) -> int:
+    u = url.lower()
+    if "_avc." in u:
+        return 3
+    if "_av1." in u:
+        return 2
+    return 1
+
+
+def _madeporn_mp4_group_key(url: str) -> str:
+    return re.sub(r"_(?:av1|avc)\.mp4$", ".mp4", url, flags=re.I).split("?")[0].lower()
+
+
+def _dedupe_madeporn_mp4_urls(urls: list[str]) -> list[str]:
+    best: dict[str, str] = {}
+    for u in urls:
+        key = _madeporn_mp4_group_key(u)
+        prev = best.get(key)
+        if not prev or _madeporn_variant_rank(u) > _madeporn_variant_rank(prev):
+            best[key] = u
+    return list(best.values())
+
+
+def _extract_madeporn_media_urls(page: str) -> tuple[list[str], list[str]]:
+    mp4s = _dedupe_madeporn_mp4_urls(list(dict.fromkeys(_MADEPORN_MP4_RE.findall(page))))
+    images = list(dict.fromkeys(_MADEPORN_IMG_RE.findall(page)))
+    return mp4s, images
+
+
+async def resolve_madeporn(
+    url: str, cookies: str | None = None, limit: int = 500
+) -> CrawlerResult:
+    if not _is_madeporn_url(url):
+        raise ValueError("made.porn crawler expects a made.porn URL.")
+
+    page, warnings = await _fetch_with_cookies_and_retry(
+        url, cookies=cookies, referer=url
+    )
+    title = _extract_title(page)
+    mp4s, images = _extract_madeporn_media_urls(page)
+
+    items: list[CrawlerMediaItem] = []
+    for u in mp4s:
+        items.append(
+            CrawlerMediaItem(
+                url=u,
+                media_type="video",
+                filename=_filename_for_url(u),
+            )
+        )
+    for u in images:
+        items.append(
+            CrawlerMediaItem(
+                url=u,
+                media_type="image",
+                filename=_filename_for_url(u),
+            )
+        )
+
+    if limit > 0:
+        items = items[:limit]
+
+    if not items:
+        warnings.append("No made.porn media URLs found in page HTML.")
+
+    return CrawlerResult(
+        adapter="madeporn",
+        source_url=url,
+        title=title,
+        items=items,
+        warnings=warnings,
+    )
+
+
 def _detect_adapter(url: str) -> CrawlerAdapter:
     if _is_erome_url(url) and _classify_erome_url(url) in ("album", "profile", "search"):
         return "erome"
@@ -961,6 +1057,8 @@ def _detect_adapter(url: str) -> CrawlerAdapter:
         return "bunkr"
     if _is_onlyfans_url(url):
         return "onlyfans"
+    if _is_madeporn_url(url):
+        return "madeporn"
     return "generic"
 
 
@@ -984,4 +1082,6 @@ async def resolve_crawler_url(
         return asdict(await resolve_bunkr_album(clean, cookies=cookies, limit=limit))
     if selected == "onlyfans":
         return asdict(await resolve_onlyfans(clean, cookies=cookies, limit=limit))
+    if selected == "madeporn":
+        return asdict(await resolve_madeporn(clean, cookies=cookies, limit=limit))
     return asdict(await resolve_generic(clean, cookies=cookies, limit=limit))

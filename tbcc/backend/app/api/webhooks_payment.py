@@ -178,6 +178,7 @@ async def gumroad_ping(request: Request, db: Session = Depends(get_db)):
             payment_method="gumroad",
             telegram_charge_id=gr.sale_charge_id(payload, ref),
             income_amount_usd=gr.income_usd_from_payload(payload),
+            buyer_email=gr.extract_buyer_email(payload),
         )
         if result.get("error"):
             logger.error("Gumroad fulfill failed: %s", result.get("error"))
@@ -211,6 +212,7 @@ async def gumroad_ping(request: Request, db: Session = Depends(get_db)):
             "telegram_payment_charge_id": charge,
             "referral_reward_days": 7,
             "income_amount_usd": gr.income_usd_from_payload(payload),
+            "buyer_email": gr.extract_buyer_email(payload),
         },
         db,
     )

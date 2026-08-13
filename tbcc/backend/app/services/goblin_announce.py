@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.models.channel import Channel
 from app.models.goblin_drop import GoblinDrop
 from app.models.listening_relay_settings import ListeningRelaySettings
-from app.services.aof_social_links import loot_bot_username
+from app.services.aof_social_links import companion_bot_username, loot_bot_username
 from app.services.loot_bot_settings_effective import resolve_bot_token_raw
 from app.services.telegram_bot_api import tg_post_with_token
 from app.utils.telegram_peer import normalize_telethon_peer_identifier
@@ -32,6 +32,13 @@ def build_goblin_announce_html(*, claims_cap: int, ttl_seconds: int) -> str:
 def build_goblin_deep_link(token: str) -> str:
     user = loot_bot_username()
     return f"https://t.me/{user}?start=goblin_{token}"
+
+
+def build_spicybot_trial_deep_link(*, drop_id: int | None = None) -> str:
+    """Companion trial intro — attributed via src_spicy_goblin[_<drop_id>]."""
+    user = companion_bot_username()
+    payload = f"src_spicy_goblin_{int(drop_id)}" if drop_id else "src_spicy_goblin"
+    return f"https://t.me/{user}?start={payload}"
 
 
 def send_goblin_announce(
@@ -58,6 +65,7 @@ def send_goblin_announce(
     chat_id = normalize_telethon_peer_identifier(ch.identifier)
     text = build_goblin_announce_html(claims_cap=cap, ttl_seconds=ttl)
     deep = build_goblin_deep_link(drop.token)
+    spicy = build_spicybot_trial_deep_link(drop_id=int(drop.id) if drop.id else None)
     payload: dict[str, Any] = {
         "chat_id": chat_id,
         "text": text,
@@ -65,7 +73,10 @@ def send_goblin_announce(
         "disable_web_page_preview": True,
         "disable_notification": True,
         "reply_markup": {
-            "inline_keyboard": [[{"text": "👺 Claim loot", "url": deep}]],
+            "inline_keyboard": [
+                [{"text": "👺 Claim loot", "url": deep}],
+                [{"text": "🔥 Free spicy trial", "url": spicy}],
+            ],
         },
     }
     if drop.message_thread_id:

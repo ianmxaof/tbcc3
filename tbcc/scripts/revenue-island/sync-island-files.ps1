@@ -29,6 +29,9 @@ Write-Host "mkdir $RemoteDir on $HostName ..." -ForegroundColor DarkCyan
 $files = @(
   @{ Local = (Join-Path $infra "docker-compose.revenue-island.yml"); Remote = "$RemoteDir/infra/" },
   @{ Local = (Join-Path $infra "env.revenue-island.example"); Remote = "$RemoteDir/infra/" },
+  @{ Local = (Join-Path $scripts "ensure-island-api-reachable.sh"); Remote = "$RemoteDir/scripts/revenue-island/" },
+  @{ Local = (Join-Path $scripts "ensure-island-databases.sh"); Remote = "$RemoteDir/scripts/revenue-island/" },
+  @{ Local = (Join-Path $scripts "install-island-database-watchdog.sh"); Remote = "$RemoteDir/scripts/revenue-island/" },
   @{ Local = (Join-Path $scripts "bootstrap-island.sh"); Remote = "$RemoteDir/scripts/revenue-island/" },
   @{ Local = (Join-Path $scripts "up-island-bots.sh"); Remote = "$RemoteDir/scripts/revenue-island/" },
   @{ Local = (Join-Path $scripts "install-island-api-tunnel.sh"); Remote = "$RemoteDir/scripts/revenue-island/" },

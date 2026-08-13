@@ -114,10 +114,23 @@ async def send_media_to_storage_hub_topic(
     if mt not in ("photo", "video"):
         mt = "photo"
     skip_wm = _truthy(skip_watermark)
-    cap = (caption or "").strip()
     key = (network_key or "").strip() or (network_key_for_storage_topic(tid) or "")
+    from app.services.tbcc_caption_stamp import hub_intake_caption
+
+    cap = hub_intake_caption(key, (caption or "").strip())
 
     async def _job(storage: TelegramStorage):
+        from app.services.storage_hub_album_intake import (
+            enqueue_storage_hub_media,
+            storage_hub_album_intake_enabled,
+        )
+
+        if storage_hub_album_intake_enabled():
+            return enqueue_storage_hub_media(
+                raw=raw,
+                media_type=mt,
+                message_thread_id=tid,
+            )
         return await storage.post_bytes_to_channel(
             STORAGE_HUB_IDENT,
             [(raw, mt)],
@@ -134,6 +147,26 @@ async def send_media_to_storage_hub_topic(
         return JSONResponse({"ok": False, "error": friendly_telegram_error(e)}, status_code=502)
 
     ok = bool(result.get("ok")) if isinstance(result, dict) else False
+    if ok and network_key_for_storage_topic(tid):
+        try:
+            from app.services.storage_auto_pipe import signal_lane_auto_pipe
+
+            lane = network_key_for_storage_topic(tid) or key
+            if lane:
+                signal_lane_auto_pipe(lane, tid)
+        except Exception:
+            logger.debug("extension auto-pipe signal failed topic=%s", tid, exc_info=True)
+    if isinstance(result, dict) and result.get("buffered"):
+        return {
+            "ok": True,
+            "buffered": True,
+            "pending": result.get("pending"),
+            "album_size": result.get("album_size"),
+            "flushed": result.get("flushed") or [],
+            "storage_hub_ident": STORAGE_HUB_IDENT,
+            "message_thread_id": tid,
+            "network_key": key,
+        }
     return {
         "ok": ok,
         "storage_hub_ident": STORAGE_HUB_IDENT,

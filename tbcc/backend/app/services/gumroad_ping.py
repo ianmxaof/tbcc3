@@ -232,6 +232,15 @@ def extract_tbcc_ref(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_buyer_email(payload: dict[str, Any]) -> str | None:
+    """Gumroad ping email field (buyer address for Kit capture)."""
+    raw = payload.get("email") or payload.get("purchaser_email")
+    if raw is None:
+        return None
+    email = str(raw).strip()
+    return email or None
+
+
 def extract_telegram_user_id(payload: dict[str, Any]) -> int | None:
     d = _as_dict(payload.get("custom_fields"))
     for key in (

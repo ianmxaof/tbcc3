@@ -12,6 +12,10 @@ import { publicMediaUrl, signedGetUrl } from "./b2";
  * Safe to call from Route Handlers / RSC. Do not import from client components.
  */
 export async function resolveMediaUrl(b2Key: string): Promise<string> {
+  // Demo seed stores direct HTTPS URLs in b2_key when B2 is not configured locally.
+  if (b2Key.startsWith("http://") || b2Key.startsWith("https://")) {
+    return b2Key;
+  }
   if (process.env.NEXT_PUBLIC_MEDIA_BASE_URL) {
     return publicMediaUrl(b2Key);
   }
