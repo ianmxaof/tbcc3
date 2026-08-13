@@ -22,8 +22,8 @@ CHECKOUT_LIST_DISPLAY_NAME = "The Checkout List"
 CHECKOUT_LIST_BULLETIN_SCHED_NAME = "CHECKOUT LIST — deals board (pinned)"
 
 _CATEGORY_ORDER: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("💳", "FINANCE", ("cloudfarm", "cloud farm", "chime.com", "revolut.com")),
     ("🛠", "DEV & PRODUCTIVITY", ("cursor.com", "claude.ai", "anthropic.com", "proton.", "pr.tn", "cometapi.com")),
-    ("💳", "FINANCE", ("chime.com", "revolut.com")),
     ("🛍", "SHOPPING", ("rakuten.com", "amazon.", "flipkart.com", "dealscrown.com")),
     ("📦", "INFRA & MISC", ("pulsedmedia.com", "rewards.bing.com", "cloudflare.com", "hetzner.com")),
 )
