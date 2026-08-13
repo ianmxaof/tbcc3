@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 R2_JSON_KEY = "r2"
+R2_SKIP_KEY = "r2_export_skip"
 OBJECT_KEY_PREFIX = "library/hub"
 
 
@@ -42,6 +43,44 @@ def r2_meta_from_media(media) -> dict[str, Any] | None:
 
 def media_has_r2(media) -> bool:
     return r2_meta_from_media(media) is not None
+
+
+def media_r2_export_skipped(media) -> bool:
+    """Permanent skip (e.g. Telegram message deleted) — do not retry every Beat tick."""
+    raw = getattr(media, "classification_json", None) or ""
+    if not str(raw).strip():
+        return False
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    skip = parsed.get(R2_SKIP_KEY)
+    return isinstance(skip, dict) and bool(str(skip.get("reason") or "").strip())
+
+
+def _merge_r2_export_skip(media, *, reason: str, detail: str = "") -> None:
+    existing: dict[str, Any] = {}
+    raw = getattr(media, "classification_json", None) or ""
+    if str(raw).strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                existing = parsed
+        except Exception:
+            existing = {}
+    existing[R2_SKIP_KEY] = {
+        "reason": reason,
+        "detail": (detail or "")[:500],
+        "marked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    media.classification_json = json.dumps(existing, ensure_ascii=False)
+
+
+def _is_telegram_missing_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "404" in msg and "telegram" in msg
 
 
 def _merge_r2_into_classification(media, r2_meta: dict[str, Any]) -> None:
@@ -125,6 +164,15 @@ def export_one_media_to_r2(db: Session, media_id: int, *, force: bool = False) -
         data, content_type = _download_media_bytes_sync(int(media_id))
     except Exception as e:
         logger.warning("storage_hub r2 download failed media_id=%s: %s", media_id, e)
+        if _is_telegram_missing_error(e):
+            _merge_r2_export_skip(media, reason="telegram_404", detail=str(e))
+            db.commit()
+            return {
+                "ok": True,
+                "media_id": media_id,
+                "skipped": True,
+                "reason": "telegram_404",
+            }
         return {"ok": False, "media_id": media_id, "error": f"download:{e}"}
 
     if not data:
@@ -198,7 +246,7 @@ def iter_storage_hub_media_ids(
     out: list[int] = []
     for mid in ids:
         m = db.query(Media).filter(Media.id == mid).first()
-        if m and not media_has_r2(m):
+        if m and not media_has_r2(m) and not media_r2_export_skipped(m):
             out.append(mid)
         if len(out) >= max(1, min(int(limit), 100)):
             break
