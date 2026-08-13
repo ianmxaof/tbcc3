@@ -2,7 +2,7 @@
 
 **Lock:** Money runs on a small paid Linux VPS (~$5–15/mo). The existing **GCP scrape e2-micro stays scrape-only** (leave it running; do not put island on it). Home becomes an optional workstation (sleep OK after cutover).
 
-**One-liner:** Home = light lean cold-start; island = Postgres + Redis + API + payment + loot + Beat + slim Celery; scrape = separate; agents never Start bots.
+**One-liner:** Home = light lean cold-start; island = Postgres + Redis + API + payment + loot + Beat + slim Celery + **optional always-on dashboard/forum** (`--profile ui`); scrape = separate; agents never Start bots.
 
 **CLI-first:** After you have a Hetzner account + one API token, provision and operate the island with `hcloud` / `ssh` / `scp` / Docker Compose. Browser only for account signup (if needed) and creating the API token.
 
@@ -120,6 +120,33 @@ docker compose -f /opt/tbcc/infra/docker-compose.revenue-island.yml --env-file /
 
 curl -fsS http://127.0.0.1:8000/health
 ```
+
+### 3b. Always-on dashboard + AOF Forum (optional profile `ui`)
+
+Keeps the control-plane UI and forum up on the VPS without home Vite. Full runbook: [`ISLAND_UI_SURFACES.md`](./ISLAND_UI_SURFACES.md).
+
+```powershell
+.\scripts\revenue-island\sync-island-ui.ps1 -HostName "root@$ip"
+# On VPS: fill Supabase + TBCC_DASHBOARD_PUBLIC_URL / TBCC_FORUM_PUBLIC_URL / bridge secret, then:
+# bash /opt/tbcc/scripts/revenue-island/up-island-ui.sh
+# Tunnel dash.powercore.app → :5173 and forum.powercore.app → :3001 (Access on dash).
+```
+
+### Database uptime (Postgres + Redis)
+
+Island money stack depends on **postgres** + **redis** containers. Compose uses `restart: always`; a **systemd timer** re-checks every 5 minutes and after boot:
+
+```bash
+# One-time install (also runs from bootstrap-island.sh and deploy-island-live.ps1):
+bash /opt/tbcc/scripts/revenue-island/install-island-database-watchdog.sh
+
+# Manual check:
+bash /opt/tbcc/scripts/revenue-island/ensure-island-databases.sh
+systemctl status tbcc-island-databases.timer
+journalctl -u tbcc-island-databases.service -n 20
+```
+
+`ensure-island-api-reachable.sh` runs database ensure before API/tunnel checks.
 
 ### 4. Public webhooks (CLI-friendly)
 

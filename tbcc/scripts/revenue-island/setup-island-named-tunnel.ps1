@@ -36,7 +36,7 @@ Write-Host "[2/2] Create tunnel + route DNS + patch island env..." -ForegroundCo
 
 Write-Host ""
 Write-Host "Recreating api + payment_bot with new public URL..." -ForegroundColor Yellow
-& ssh $HostName "cd $RemoteDir/infra && docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d --pull never --force-recreate api payment_bot worker worker_post beat"
+& ssh $HostName "cd $RemoteDir/infra && docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d --pull never --force-recreate api payment_bot worker worker_telegram worker_post beat"
 
 Write-Host ""
 & (Join-Path $PSScriptRoot "wire-island-webhooks.ps1") -HostName $HostName

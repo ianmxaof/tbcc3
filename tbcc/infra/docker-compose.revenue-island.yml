@@ -1,17 +1,20 @@
 # TBCC revenue island — dedicated Linux VPS (~$5–15/mo). NOT the scrape e2-micro.
 #
 # Queue audit (celery_app.py task_routes) — slim workers must consume:
-#   celery       — sale_announce, loot_promo, scheduler_worker, misc fulfill helpers
-#   subscription — grant_access, subscription_worker, milestones, drop_countdown, network_liveness
-#   telegram     — import/mirror helpers used by fulfillment paths
-#   post_scheduler + post — sale FOMO + scheduled channel posts (worker_post; separate from fulfill)
-# Explicitly EXCLUDED: scrape (GCP micro). ops_relay co-located on island worker (listening relay).
+#   celery + subscription + ops_* — fulfill / growth / relay (worker)
+#   telegram                     — Hub→R2 + Telethon import (worker_telegram; solo lock)
+#   post_scheduler + post        — sale FOMO + scheduled posts (worker_post)
+# Explicitly EXCLUDED: scrape (GCP micro). Do not raise solo concurrency on this VPS.
 #
 # Typical bring-up (API only, then bots after home payment/loot stopped):
-#   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island up -d postgres redis api worker worker_post beat
+#   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island \
+#     up -d postgres redis api worker worker_telegram worker_post beat
 #   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island --profile bots up -d
 #
 # Prefer GHCR pull (set TBCC_WORKER_IMAGE). Build-on-VPS is discouraged on small droplets.
+#
+# Always-on UI (dashboard + AOF Forum) — optional profile, see docs/ISLAND_UI_SURFACES.md:
+#   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island --profile ui up -d dashboard forum
 
 x-island-image: &island-image
   image: ${TBCC_WORKER_IMAGE:-ghcr.io/ianmxaof/tbcc-worker:latest}
@@ -26,7 +29,7 @@ x-island-image: &island-image
 services:
   postgres:
     image: postgres:15
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-tbcc}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
@@ -43,7 +46,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    restart: always
     ports:
       - "6379:6379"
     healthcheck:
@@ -62,6 +65,7 @@ services:
       --forwarded-allow-ips='*'
     environment:
       PYTHONPATH: /app
+      TBCC_REVENUE_ISLAND_ACTIVE: "1"
       # Loot media load from Saved Messages (see REVENUE_ISLAND.md). ONE host only.
       TELEGRAM_SESSION_PATH: /sessions/admin
       TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
@@ -88,28 +92,26 @@ services:
       redis:
         condition: service_healthy
 
+  # Fulfill + growth + relay — no telegram queue (Telethon lock lives on worker_telegram).
   worker:
     <<: *island-image
     command: >
       celery -A app.workers.celery_app worker
       -l info
       -P solo
-      -Q celery,subscription,telegram,ops_growth,ops_relay
+      -Q celery,subscription,ops_growth,ops_relay
       -n island@%h
       --without-gossip
       --without-mingle
     environment:
       PYTHONPATH: /app
+      TBCC_REVENUE_ISLAND_ACTIVE: "1"
       TELEGRAM_SESSION_PATH: /sessions/admin
-      # Storage Hub → pool → SENT CACHE (telegram queue). Absolute path survives cwd=/app.
-      TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
-      TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
       TBCC_RELAY_USE_BOT_API: ${TBCC_RELAY_USE_BOT_API:-0}
       # Beat seed (ops_growth until next GHCR bake routes seed → telegram).
       TBCC_STORAGE_POOL_SEED_ENABLED: "1"
       TBCC_STORAGE_POOL_SEED_BATCH: "12"
       TBCC_STORAGE_POOL_SEED_HOURS: "2"
-      # Old AOF Main is restricted — mirroring burns the solo telegram worker.
       TBCC_DEPOSIT_TOPIC_MIRROR: "0"
       TBCC_TOPIC_MIRROR_ENABLED: "0"
       # Buffer X queue stocking (beat + worker_ready startup refill).
@@ -138,8 +140,39 @@ services:
       redis:
         condition: service_healthy
 
+  # Telethon / Hub→R2 / import — dedicated solo process so R2 drain does not block grant_access.
+  worker_telegram:
+    <<: *island-image
+    command: >
+      celery -A app.workers.celery_app worker
+      -l info
+      -P solo
+      -Q telegram
+      -n island-tg@%h
+      --without-gossip
+      --without-mingle
+    environment:
+      PYTHONPATH: /app
+      TBCC_REVENUE_ISLAND_ACTIVE: "1"
+      TELEGRAM_SESSION_PATH: /sessions/admin
+      TBCC_IMPORT_TELEGRAM_SESSION: /sessions/admin_import
+      TBCC_IMPORT_AUTO_COPY_ADMIN_SESSION: "1"
+      TBCC_DEPOSIT_TOPIC_MIRROR: "0"
+      TBCC_TOPIC_MIRROR_ENABLED: "0"
+      TBCC_MEDIA_FILES_DIR: /uploads/media-files
+      TBCC_POOL_IMPORT_LOCAL: "1"
+      TBCC_STORAGE_HUB_R2_EXPORT_ENABLED: "1"
+    volumes:
+      - /opt/tbcc/sessions:/sessions:rw
+      - /opt/tbcc/uploads:/uploads:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   # Sale FOMO + scheduled text/media posts. Separate solo worker so fulfill
-  # (subscription/telegram) never waits behind Telethon poster lock.
+  # never waits behind Telethon poster lock.
   worker_post:
     <<: *island-image
     command: >
@@ -172,11 +205,19 @@ services:
       celery -A app.workers.celery_app beat
       -l info
     environment:
+      TBCC_REVENUE_ISLAND_ACTIVE: "1"
+      # No scrape consumer on island — leave scheduler + micro-pull off (Hub→R2 is volume path).
+      TBCC_SCRAPE_SCHEDULER_ENABLED: "0"
+      TBCC_SCRAPE_MICRO_PULL_ENABLED: "0"
+      TBCC_MARKET_INTEL_PROBE_ENABLED: "0"
+      TBCC_MARKET_INTEL_CYCLE_ENABLED: "0"
+      TBCC_STORAGE_HUB_R2_EXPORT_ENABLED: "1"
       TBCC_LANE_SURVIVOR_REFILL_ENABLED: "1"
       TBCC_TRAFFIC_PULSE_ENABLED: "1"
     depends_on:
       - redis
       - worker
+      - worker_telegram
 
   payment_bot:
     <<: *island-image
@@ -249,6 +290,57 @@ services:
       - api
       - redis
       - postgres
+
+  # --- Always-on UI surfaces (profile: ui) — no home npm / Vite required ---
+  # Bring-up:
+  #   docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island --profile ui up -d dashboard forum
+  # Tunnel hostnames (Cloudflare Access recommended on dash):
+  #   dash.powercore.app  → http://127.0.0.1:5173  (or dashboard:80 on compose network via cloudflared)
+  #   forum.powercore.app → http://127.0.0.1:3001
+  dashboard:
+    profiles: ["ui"]
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    image: ${TBCC_DASHBOARD_IMAGE:-ghcr.io/ianmxaof/tbcc-dashboard:latest}
+    pull_policy: ${TBCC_ISLAND_PULL_POLICY:-if_not_present}
+    restart: unless-stopped
+    env_file:
+      - .env.revenue-island
+    environment:
+      TBCC_API_UPSTREAM: http://api:8000
+      TBCC_API_UPSTREAM_HOST: api
+      TBCC_API_UPSTREAM_PORT: "8000"
+      TBCC_INTERNAL_API_KEY: ${TBCC_INTERNAL_API_KEY:-}
+    ports:
+      # All interfaces + iptables allowlist (localhost + Tailscale 100.64/10). Tunnel still hits 127.0.0.1.
+      - "5173:80"
+    depends_on:
+      - api
+
+  forum:
+    profiles: ["ui"]
+    build:
+      context: ${AOF_FORUM_BUILD_CONTEXT:-../../aof-forum}
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SITE_URL: ${TBCC_FORUM_PUBLIC_URL:-https://forum.powercore.app}
+    image: ${AOF_FORUM_IMAGE:-ghcr.io/ianmxaof/aof-forum:latest}
+    pull_policy: ${TBCC_ISLAND_PULL_POLICY:-if_not_present}
+    restart: unless-stopped
+    env_file:
+      - .env.revenue-island
+    environment:
+      PORT: "3001"
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_SITE_URL: ${TBCC_FORUM_PUBLIC_URL:-https://forum.powercore.app}
+      TBCC_DASHBOARD_PUBLIC_URL: ${TBCC_DASHBOARD_PUBLIC_URL:-https://dash.powercore.app}
+      TBCC_ADMIN_BRIDGE_SECRET: ${TBCC_ADMIN_BRIDGE_SECRET:-}
+      TBCC_INTERNAL_API_KEY: ${TBCC_INTERNAL_API_KEY:-}
+    ports:
+      - "3001:3001"
+    depends_on:
+      - api
 
 volumes:
   island_pgdata:

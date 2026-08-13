@@ -49,7 +49,7 @@ Write-Host "`n[2/7] Sync compose/scripts/env to island" -ForegroundColor Yellow
 & (Join-Path $PSScriptRoot "sync-island-files.ps1") -HostName $HostName -IncludeFilledEnv
 $installTunnel = Join-Path $PSScriptRoot "install-island-api-tunnel.sh"
 & scp $installTunnel "${HostName}:$RemoteDir/scripts/revenue-island/"
-Invoke-Remote "sed -i 's/\r$//' $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh && chmod +x $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh"
+Invoke-Remote "sed -i 's/\r`$//' $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh && chmod +x $RemoteDir/scripts/revenue-island/install-island-api-tunnel.sh"
 
 # 3) HTTPS tunnel for webhooks (skip if TBCC_ISLAND_API_PUBLIC_URL already set on home)
 if (-not $SkipTunnel) {
@@ -70,7 +70,7 @@ if (-not $SkipTunnel) {
 # 4) Code deploy — rsync backend + build on island OR pull GHCR
 if ($UseGhcrPull) {
   Write-Host "`n[4/7] Pull GHCR :latest on island" -ForegroundColor Yellow
-  Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile pull api worker worker_post beat payment_bot loot_bot companion_bot secretary_bot || true"
+  Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile pull api worker worker_telegram worker_post beat payment_bot loot_bot companion_bot secretary_bot || true"
 } elseif (-not $SkipBuild) {
   Write-Host "`n[4/7] Rsync backend + docker build on island ($localTag)" -ForegroundColor Yellow
   Invoke-Remote "mkdir -p $RemoteDir/backend-src"
@@ -119,7 +119,7 @@ grep -q '^TBCC_WORKER_IMAGE=' $RemoteDir/infra/$envFile && sed -i 's|^TBCC_WORKE
 
 # 5) Recreate stack
 Write-Host "`n[5/7] Recreate api + workers + bots" -ForegroundColor Yellow
-Invoke-Compose "up -d --pull never --force-recreate api worker worker_post beat"
+Invoke-Compose "up -d --pull never --force-recreate api worker worker_telegram worker_post beat"
 Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot companion_bot secretary_bot album_composer_bot"
 
 # 6) Migrations + seeds
@@ -137,14 +137,37 @@ if (-not $SkipSeeds) {
 } else {
   Write-Host "`n[6/7] Skip seeds (-SkipSeeds)" -ForegroundColor DarkGray
 }
+Write-Host "Refresh @aofmainhub VIP pin (CTA comparison)" -ForegroundColor Yellow
+try {
+  Invoke-Compose "exec -T api python scripts/apply_mainhub_growth.py --execute --post-now"
+} catch {
+  Write-Host 'WARN: apply_mainhub_growth failed - run manually on island' -ForegroundColor Yellow
+}
 
-# 7) Verify
-Write-Host "`n[7/7] Health + plan count" -ForegroundColor Yellow
-$health = Invoke-Remote "curl -fsS http://127.0.0.1:8000/health"
-Write-Host $health -ForegroundColor Green
-$plans = Invoke-Remote @"
-cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile exec -T postgres psql -U postgres -d tbcc -t -c "SELECT id, name, price_stars, is_active FROM subscription_plans WHERE bot_section='main' ORDER BY id;"
-"@
+# 7) Verify + ensure databases + tunnel/API reachable
+Write-Host "`n[7/7] DB watchdog + health + tunnel ensure" -ForegroundColor Yellow
+$ensureDbScript = Join-Path $PSScriptRoot "ensure-island-databases.sh"
+$installWatchdog = Join-Path $PSScriptRoot "install-island-database-watchdog.sh"
+$ensureScript = Join-Path $PSScriptRoot "ensure-island-api-reachable.sh"
+& scp $ensureDbScript $installWatchdog $ensureScript "${HostName}:$RemoteDir/scripts/revenue-island/"
+$normalizeScripts = "sed -i 's/\r`$//' $RemoteDir/scripts/revenue-island/ensure-island-databases.sh $RemoteDir/scripts/revenue-island/install-island-database-watchdog.sh $RemoteDir/scripts/revenue-island/ensure-island-api-reachable.sh; chmod +x $RemoteDir/scripts/revenue-island/ensure-island-databases.sh $RemoteDir/scripts/revenue-island/install-island-database-watchdog.sh $RemoteDir/scripts/revenue-island/ensure-island-api-reachable.sh"
+Invoke-Remote $normalizeScripts
+try {
+  Invoke-Remote "bash $RemoteDir/scripts/revenue-island/install-island-database-watchdog.sh"
+} catch {
+  Write-Host 'WARN: database watchdog install failed - run install-island-database-watchdog.sh on VPS' -ForegroundColor Yellow
+}
+try {
+  $health = Invoke-Remote "bash $RemoteDir/scripts/revenue-island/ensure-island-api-reachable.sh --public-check"
+  Write-Host $health -ForegroundColor Green
+} catch {
+  Write-Host 'WARN: ensure-island-api-reachable failed - check tunnel + api on VPS' -ForegroundColor Yellow
+  $health = Invoke-Remote 'curl -fsS --max-time 8 http://127.0.0.1:8000/health || true'
+  Write-Host $health
+}
+$plansSql = 'SELECT id, name, price_stars, is_active FROM subscription_plans WHERE bot_section=''main'' ORDER BY id;'
+$plansCmd = "cd $RemoteDir/infra; docker compose -f $composeFile --env-file $envFile exec -T postgres psql -U postgres -d tbcc -t -c `"$plansSql`""
+$plans = Invoke-Remote $plansCmd
 Write-Host $plans
 
 Write-Host "`nCompanion ops:" -ForegroundColor Yellow
@@ -157,5 +180,5 @@ try {
 
 Write-Host ""
 Write-Host "=== Deploy complete ===" -ForegroundColor Green
-Write-Host "Update Gumroad Ping + NOWPayments IPN to the URL in infra/.api-public-url on the VPS if tunnel was (re)started."
-Write-Host "Smoke: payment /subscribe · loot /roll · @aof_spicybot_bot /start · GET /companion/ops"
+Write-Host 'Update Gumroad Ping + NOWPayments IPN to the URL in infra/.api-public-url on the VPS if tunnel was restarted.'
+Write-Host 'Smoke: payment /subscribe - loot /roll - @aof_spicybot_bot /start - GET /companion/ops'
