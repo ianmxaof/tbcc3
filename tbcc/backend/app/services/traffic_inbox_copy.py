@@ -15,6 +15,7 @@ _PLACEMENT_HUMAN: dict[str, str] = {
     "telegram_footer": "TG channel caption footer",
     "links_hub": "@aofmainhub link hub",
     "links_hub_ai": "link hub · AI tools row",
+    "links_hub_sfw": "@thecheckoutlist deals board",
     "loot_roll": "Loot God DM roll footer",
     "manual_only": "dashboard insert only",
 }

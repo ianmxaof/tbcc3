@@ -46,6 +46,7 @@ def test_intake_creates_and_syncs(db, monkeypatch):
     assert result.ok is True
     assert result.created is True
     assert result.link_id is not None
+    assert result.lane == "sfw"
     assert sync_calls == [True]
 
     result2 = intake_affiliate_sponsor(
@@ -56,3 +57,18 @@ def test_intake_creates_and_syncs(db, monkeypatch):
     )
     assert result2.ok is True
     assert result2.created is False
+
+
+def test_intake_nsfw_lane(db, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.secretary_affiliate_intake.sync_affiliate_network",
+        lambda _db, *, execute=True: {"ok": True},
+    )
+    result = intake_affiliate_sponsor(
+        db,
+        label="Undress",
+        url="https://nodress.site/tg/bot?username=x",
+        sync=False,
+    )
+    assert result.lane == "nsfw"
+    assert "links_hub_sfw" not in (result.message or "")

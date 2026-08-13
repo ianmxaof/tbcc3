@@ -46,6 +46,7 @@ AFFILIATE_PLACEMENTS: frozenset[str] = frozenset(
         "telegram_footer",
         "links_hub",
         "links_hub_ai",
+        "links_hub_sfw",
         "loot_roll",
     }
 )
