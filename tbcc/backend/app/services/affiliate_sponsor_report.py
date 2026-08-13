@@ -221,68 +221,104 @@ def collect_affiliate_sponsor_rows(
     return out
 
 
+def _human_payout_blurb(row: dict[str, Any]) -> str:
+    """Prefer copy_template reward text; fall back to kind/detail/rail."""
+    tpl = (row.get("copy_template") or "").strip()
+    if tpl:
+        clean = (
+            tpl.replace("{link}", "…")
+            .replace("{url}", "…")
+            .replace("{label}", row.get("label") or "sponsor")
+        )
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if clean:
+            return clean[:140]
+    kind = (row.get("payout_kind") or "other").strip()
+    detail = (row.get("payout_detail") or "").strip()
+    rail = (row.get("payout_rail") or "").strip()
+    parts = [p for p in (kind, detail, f"rail {rail}" if rail else "") if p]
+    return " · ".join(parts) if parts else "—"
+
+
+def _format_sponsor_card(i: int, r: dict[str, Any], *, revenue_days: int) -> str:
+    """One glanceable Telegram HTML card for a sponsor."""
+    label = html.escape(r.get("label") or f"#{r['id']}")
+    url_raw = (r.get("url") or "").strip()
+    url_esc = html.escape(url_raw)
+    short_raw = (r.get("short_url") or "").strip()
+    placements = ", ".join(r.get("placements") or []) or "—"
+    nets = ", ".join(r.get("network_keys") or []) or "all lanes"
+    clicks = int(r.get("clicks") or 0)
+    beacons = len(r.get("beacon_links") or [])
+    usd = float(r.get("attributed_usd") or 0.0)
+    entries = int(r.get("attributed_entries") or 0)
+    inactive = "" if r.get("active", True) else " · <i>inactive</i>"
+
+    if beacons:
+        click_note = f"<i>across {beacons} beacon{'s' if beacons != 1 else ''}</i>"
+    else:
+        click_note = "<i>no beacon yet</i>"
+
+    if url_raw:
+        link_block = (
+            f'🔗 <a href="{url_esc}">Open link</a>\n'
+            f"<code>{url_esc}</code>"
+        )
+    else:
+        link_block = "🔗 <i>no URL</i>"
+    if short_raw:
+        link_block += f"\n📎 short: <code>{html.escape(short_raw)}</code>"
+
+    blurb = html.escape(_human_payout_blurb(r))
+
+    return "\n".join(
+        [
+            "──────────────",
+            f"<b>{i}. {label}</b>{inactive}",
+            f"<i>id {r['id']} · tier {r['priority_tier']} · {html.escape(str(r.get('payout_rail') or '—'))}</i>",
+            "",
+            link_block,
+            "",
+            f"💵 <b>{blurb}</b>",
+            f"📊 <u>{clicks} clicks</u>  ·  {click_note}",
+            f"💸 <u>${usd:.2f}</u> attributed ({revenue_days}d)  ·  <i>{entries} ledger</i>",
+            f"📍 <i>{html.escape(placements)}</i>",
+            f"🗂 <i>{html.escape(nets)}</i>",
+        ]
+    )
+
+
 def format_affiliate_sponsor_report_html(
     rows: list[dict[str, Any]],
     *,
     revenue_days: int = 30,
-    max_chars: int = 3500,
+    max_chars: int = 3200,
 ) -> list[str]:
-    """Chunked HTML messages for Telegram DM."""
+    """Chunked HTML messages — spaced sponsor cards for Telegram DM."""
     total_clicks = sum(int(r["clicks"]) for r in rows)
     total_usd = round(sum(float(r["attributed_usd"]) for r in rows), 2)
     header = (
-        f"💰 <b>Affiliate sponsors</b> ({len(rows)} active)\n"
-        f"TBCC clicks: <b>{total_clicks}</b> · "
-        f"attributed ledger ({revenue_days}d): <b>${total_usd:.2f}</b>\n"
-        "<i>Clicks = click-beacon hits when wrap is on. "
-        "Attributed $ = income_entries joined by source_ref — "
-        "not the affiliate program’s own dashboard balance "
-        "(e.g. Cloud Farm USDT wallet must be checked in-app).</i>\n"
+        f"💰 <b>Affiliate sponsors</b>\n"
+        f"<b>{len(rows)}</b> listed  ·  "
+        f"<u>{total_clicks} clicks</u>  ·  "
+        f"<u>${total_usd:.2f}</u> ledger ({revenue_days}d)\n"
+        "\n"
+        "<i>Clicks = TBCC beacon hits. "
+        "Attributed $ = your ledger by source_ref — "
+        "not the program’s own wallet/dashboard "
+        "(check Cloud Farm / PPS portals in-app for live rewards).</i>\n"
     )
     chunks: list[str] = []
     buf = header
     for i, r in enumerate(rows, start=1):
-        placements = ", ".join(r["placements"]) or "—"
-        nets = ", ".join(r["network_keys"]) or "all"
-        detail = (r.get("payout_detail") or "—")
-        short = (r.get("short_url") or "").strip()
-        url = html.escape(r.get("url") or "")
-        label = html.escape(r.get("label") or f"#{r['id']}")
-        block_lines = [
-            "",
-            f"<b>{i}. {label}</b> · id <code>{r['id']}</code> · tier <code>{r['priority_tier']}</code>",
-            f"URL: <code>{url}</code>",
-        ]
-        if short:
-            block_lines.append(f"Short: <code>{html.escape(short)}</code>")
-        block_lines.extend(
-            [
-                f"Payout: <code>{html.escape(str(r.get('payout_kind') or ''))}</code> / "
-                f"<code>{html.escape(str(detail))}</code> · rail <code>{html.escape(r['payout_rail'])}</code>",
-                f"Placements: <code>{html.escape(placements)}</code>",
-                f"Networks: <code>{html.escape(nets)}</code>",
-                f"Clicks: <b>{int(r['clicks'])}</b>"
-                + (
-                    f" across {len(r['beacon_links'])} beacon(s)"
-                    if r["beacon_links"]
-                    else " (no beacon yet — wrap off or never served)"
-                ),
-                f"Attributed ({revenue_days}d): <b>${float(r['attributed_usd']):.2f}</b> "
-                f"· {int(r['attributed_entries'])} ledger entr"
-                + ("y" if int(r["attributed_entries"]) == 1 else "ies"),
-            ]
-        )
-        tpl = (r.get("copy_template") or "").strip()
-        if tpl:
-            block_lines.append(f"Copy: <code>{html.escape(tpl[:120])}</code>")
-        block = "\n".join(block_lines)
+        block = "\n" + _format_sponsor_card(i, r, revenue_days=revenue_days)
         if len(buf) + len(block) > max_chars and buf.strip() != header.strip():
             chunks.append(buf.rstrip())
-            buf = f"<b>Sponsors</b> <i>(cont.)</i>\n{block}"
+            buf = f"💰 <b>Sponsors</b> <i>(continued)</i>\n{block}"
         else:
             buf += block
     if buf.strip():
-        chunks.append(buf.rstrip())
+        chunks.append(buf.rstrip() + "\n──────────────")
     return chunks or [header]
 
 

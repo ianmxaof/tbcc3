@@ -81,10 +81,10 @@ def test_format_chunks_include_disclaimer():
             "payout_rail": "cash",
             "placements": ["x_buffer"],
             "network_keys": [],
-            "copy_template": None,
+            "copy_template": "☁️ {link} — $2 USDT per referral",
             "expires_at": None,
             "clicks": 3,
-            "beacon_links": [],
+            "beacon_links": [{"slug": "aff-demo-x", "hits": 3}],
             "attributed_usd": 0.0,
             "attributed_usd_cents": 0,
             "attributed_entries": 0,
@@ -94,5 +94,11 @@ def test_format_chunks_include_disclaimer():
     ]
     msgs = format_affiliate_sponsor_report_html(rows)
     assert msgs
-    assert "not the affiliate program" in msgs[0].lower() or "dashboard" in msgs[0].lower()
-    assert "Demo" in msgs[0]
+    body = msgs[0]
+    assert "not the program" in body.lower() or "dashboard" in body.lower()
+    assert "<b>1. Demo</b>" in body
+    assert "<u>3 clicks</u>" in body
+    assert "Open link" in body
+    assert "$2 USDT per referral" in body
+    assert "──────────────" in body
+
