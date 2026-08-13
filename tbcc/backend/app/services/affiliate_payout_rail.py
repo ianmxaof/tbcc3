@@ -77,8 +77,17 @@ def infer_payout_rail(row: PromoAffiliateLink) -> str:
 
 def affiliate_sort_key(row: PromoAffiliateLink) -> tuple[int, int, int]:
     rail = infer_payout_rail(row)
+    tier = getattr(row, "priority_tier", None)
+    try:
+        tier_n = int(99 if tier is None else tier)
+    except (TypeError, ValueError):
+        tier_n = 99
+    try:
+        id_n = int(getattr(row, "id", None) or 0)
+    except (TypeError, ValueError):
+        id_n = 0
     return (
         RAIL_SORT_KEY.get(rail, len(RAIL_ORDER)),
-        int(row.priority_tier or 99),
-        int(row.id or 0),
+        tier_n,
+        id_n,
     )

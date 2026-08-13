@@ -8,6 +8,13 @@ def test_classify_sfw_hosts():
     assert classify_affiliate_lane("https://www.rakuten.com/r/IANMPO3", "Rakuten") == "sfw"
     assert classify_affiliate_lane("https://www.chime.com/r/x", "Chime") == "sfw"
     assert classify_affiliate_lane("https://pr.tn/ref/95GM632C", "Proton") == "sfw"
+    assert (
+        classify_affiliate_lane(
+            "https://t.me/CloudFarmWalletBot/cloud?startapp=7787282561",
+            "Cloud Farm Wallet",
+        )
+        == "sfw"
+    )
 
 
 def test_classify_nsfw_hosts():

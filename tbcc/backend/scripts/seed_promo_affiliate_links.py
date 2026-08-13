@@ -24,6 +24,23 @@ PURGE_URL_SUBSTRINGS = ("carrotwallettgbot", "carrotwallet", "temu.com")
 
 SEED_ITEMS: list[dict] = [
     {
+        # Top cash CPA — $2 USDT per referral; lead rotation on all cash surfaces.
+        "label": "Cloud Farm Wallet",
+        "url": "https://t.me/CloudFarmWalletBot/cloud?startapp=7787282561",
+        "payout_kind": "cpa",
+        "payout_detail": "usd_cash",
+        "priority_tier": 0,
+        "placements": [
+            "x_buffer",
+            "telegram_footer",
+            "links_hub",
+            "links_hub_sfw",
+            "loot_roll",
+        ],
+        "network_keys": [],
+        "copy_template": "☁️ {link} — $2 USDT per referral · cloud farm",
+    },
+    {
         "label": "AOF VIP card checkout",
         "url": "https://aof69.gumroad.com/l/ynnulc",
         "payout_kind": "subscription",
