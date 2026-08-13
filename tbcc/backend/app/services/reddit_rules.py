@@ -117,20 +117,6 @@ def pick_eligible_subreddits(
     erome_url: str | None = None,
     prefer_gallery: bool = False,
 ) -> list[tuple[RedditSubredditProfile, RedditEligibility]]:
-    if erome_url:
-        row = (
-            db.query(RedditSubredditProfile)
-            .filter(
-                RedditSubredditProfile.name == "erome",
-                RedditSubredditProfile.status.in_(("active", "probation")),
-            )
-            .first()
-        )
-        if row:
-            el = check_subreddit_eligibility(row, account_karma=account_karma, account_age_days=account_age_days)
-            if el.ok:
-                return [(row, el)]
-
     q = db.query(RedditSubredditProfile).filter(RedditSubredditProfile.status.in_(("active", "probation")))
     if tier:
         q = q.filter(RedditSubredditProfile.tier == tier)

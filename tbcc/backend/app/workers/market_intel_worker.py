@@ -13,11 +13,21 @@ logger = logging.getLogger(__name__)
 def run_market_intel_probe():
     from app.services.erome_browse_intel import sync_from_drop_file
     from app.services.market_intel_probe import run_market_probes
+    from app.services.market_intel_scrolller_probe import run_scrolller_probes
+    from app.services.scrolller_reddit_registry import suggest_reddit_registry_from_scrolller
 
     try:
         drop = sync_from_drop_file()
         probe = run_market_probes()
-        report = {"ok": True, "drop_sync": drop, "probe": probe}
+        scrolller = run_scrolller_probes()
+        registry_suggest = suggest_reddit_registry_from_scrolller()
+        report = {
+            "ok": True,
+            "drop_sync": drop,
+            "probe": probe,
+            "scrolller_probe": scrolller,
+            "scrolller_registry_suggest": registry_suggest,
+        }
         logger.info("market intel probe: %s", report)
         return report
     except Exception as e:
@@ -33,10 +43,14 @@ def run_weekly_market_intel_cycle():
     from app.services.market_intel_cycle import evaluate_weekly_cycle
     from app.services.market_intel_cycle_executor import execute_cycle_actions
     from app.services.market_intel_probe import run_market_probes
+    from app.services.market_intel_scrolller_probe import run_scrolller_probes
+    from app.services.scrolller_reddit_registry import suggest_reddit_registry_from_scrolller
 
     try:
         drop = sync_from_drop_file()
         probe = run_market_probes()
+        scrolller = run_scrolller_probes()
+        registry_suggest = suggest_reddit_registry_from_scrolller()
         cycle = evaluate_weekly_cycle(force=False)
         actions: dict = {"skipped": True, "reason": "cycle_not_complete"}
         if cycle.get("complete"):
@@ -49,6 +63,8 @@ def run_weekly_market_intel_cycle():
             "ok": True,
             "drop_sync": drop,
             "probe": probe,
+            "scrolller_probe": scrolller,
+            "scrolller_registry_suggest": registry_suggest,
             "cycle": {
                 "week_id": cycle.get("week_id"),
                 "complete": cycle.get("complete"),

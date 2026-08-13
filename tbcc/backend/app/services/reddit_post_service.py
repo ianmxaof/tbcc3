@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.data.aof_reddit_subreddit_registry import AOF_REDDIT_SUBREDDIT_REGISTRY
 from app.models.reddit_subreddit_profile import RedditSubredditProfile
+from app.services.reddit_global_state import (
+    check_global_reddit_eligibility,
+    record_global_reddit_post,
+)
+from app.services.reddit_post_ledger import append_reddit_post_ledger
 from app.services.reddit_rules import (
     check_subreddit_eligibility,
     normalize_subreddit_name,
@@ -187,9 +192,67 @@ def _download_image_paths(urls: list[str]) -> list[str]:
     return paths
 
 
-def submit_post(db: Session, plan: RedditPostPlan) -> dict[str, Any]:
+def _ledger_row(
+    plan: RedditPostPlan,
+    *,
+    ok: bool,
+    dry_run: bool,
+    result: dict[str, Any] | None = None,
+    error: str | None = None,
+    utm_campaign: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "ok": ok,
+        "dry_run": dry_run,
+        "subreddit": plan.subreddit,
+        "post_kind": plan.post_kind,
+        "title": plan.title[:200],
+        "comment_link": plan.comment_link,
+        "utm_campaign": utm_campaign,
+    }
+    if result:
+        row.update(
+            {
+                "submission_id": result.get("submission_id"),
+                "permalink": result.get("permalink"),
+                "comment_url": result.get("comment_url"),
+            }
+        )
+    if error:
+        row["error"] = error[:500]
+    return row
+
+
+def submit_post(
+    db: Session,
+    plan: RedditPostPlan,
+    *,
+    utm_campaign: str | None = None,
+) -> dict[str, Any]:
     if plan.dry_run or not reddit_execute_enabled():
-        return {"ok": True, "dry_run": True, "plan": plan.to_dict()}
+        out = {"ok": True, "dry_run": True, "plan": plan.to_dict()}
+        try:
+            append_reddit_post_ledger(_ledger_row(plan, ok=True, dry_run=True, utm_campaign=utm_campaign))
+        except Exception:
+            logger.debug("reddit ledger append failed", exc_info=True)
+        return out
+
+    global_el = check_global_reddit_eligibility()
+    if not global_el.ok:
+        out = {"ok": False, "error": global_el.reason, "global": global_el.to_dict()}
+        try:
+            append_reddit_post_ledger(
+                _ledger_row(
+                    plan,
+                    ok=False,
+                    dry_run=False,
+                    error=global_el.reason,
+                    utm_campaign=utm_campaign,
+                )
+            )
+        except Exception:
+            logger.debug("reddit ledger append failed", exc_info=True)
+        return out
 
     prof = (
         db.query(RedditSubredditProfile)
@@ -270,18 +333,33 @@ def submit_post(db: Session, plan: RedditPostPlan) -> dict[str, Any]:
                 logger.warning("reddit comment link failed: %s", e)
 
         record_subreddit_post_attempt(db, prof, ok=True)
+        record_global_reddit_post()
         db.commit()
-        return {
+        out = {
             "ok": True,
             "dry_run": False,
             "submission_id": getattr(submission, "id", None),
             "permalink": getattr(submission, "permalink", None),
             "comment_url": comment_url,
         }
+        try:
+            append_reddit_post_ledger(
+                _ledger_row(plan, ok=True, dry_run=False, result=out, utm_campaign=utm_campaign)
+            )
+        except Exception:
+            logger.debug("reddit ledger append failed", exc_info=True)
+        return out
     except Exception as e:
         record_subreddit_post_attempt(db, prof, ok=False, skip_reason=str(e)[:200])
         db.commit()
-        return {"ok": False, "error": str(e)[:500]}
+        err = str(e)[:500]
+        try:
+            append_reddit_post_ledger(
+                _ledger_row(plan, ok=False, dry_run=False, error=err, utm_campaign=utm_campaign)
+            )
+        except Exception:
+            logger.debug("reddit ledger append failed", exc_info=True)
+        return {"ok": False, "error": err}
 
 
 def fanout_reddit_teaser(
@@ -295,6 +373,10 @@ def fanout_reddit_teaser(
 ) -> list[dict[str, Any]]:
     if not reddit_enabled():
         return [{"ok": False, "skipped": True, "reason": "TBCC_REDDIT_ENABLED=0"}]
+
+    global_el = check_global_reddit_eligibility()
+    if not global_el.ok:
+        return [{"ok": False, "skipped": True, "reason": global_el.reason, "global": global_el.to_dict()}]
 
     karma, age = account_stats()
     picks = pick_eligible_subreddits(
@@ -321,5 +403,5 @@ def fanout_reddit_teaser(
         if not plan:
             results.append({"ok": False, "subreddit": prof.name, "error": "plan_failed"})
             continue
-        results.append(submit_post(db, plan))
+        results.append(submit_post(db, plan, utm_campaign=utm_campaign))
     return results
