@@ -149,22 +149,55 @@ def pose_keyboard(
     return InlineKeyboardMarkup(rows)
 
 
-def video_pose_keyboard(poses: list[dict[str, str]], *, selected_id: str | None = None) -> InlineKeyboardMarkup | None:
+VIDEO_POSES_PER_PAGE = 15
+
+
+def video_pose_page_count(poses: list[dict[str, str]], *, per_page: int = VIDEO_POSES_PER_PAGE) -> int:
+    if not poses:
+        return 0
+    per = max(1, int(per_page))
+    return (len(poses) + per - 1) // per
+
+
+def video_pose_keyboard(
+    poses: list[dict[str, str]],
+    *,
+    page: int = 0,
+    per_page: int = VIDEO_POSES_PER_PAGE,
+    selected_id: str | None = None,
+) -> InlineKeyboardMarkup | None:
     if not poses:
         return None
+    per = max(1, int(per_page))
+    total_pages = video_pose_page_count(poses, per_page=per)
+    page = max(0, min(page, max(0, total_pages - 1)))
+    start = page * per
+    chunk = poses[start : start + per]
+
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
-    for i, pose in enumerate(poses[:12]):
+    for offset, pose in enumerate(chunk):
+        global_idx = start + offset
         pid = str(pose.get("id") or "")
-        name = str(pose.get("name") or pid or f"Pose {i}")
+        name = str(pose.get("name") or pid or f"Pose {global_idx}")
         prefix = "✓ " if selected_id and pid == selected_id else ""
         label = f"{prefix}{name}" if len(name) <= 20 else f"{prefix}{name[:17]}…"
-        row.append(InlineKeyboardButton(label, callback_data=f"comp_vpose:{i}"))
+        row.append(InlineKeyboardButton(label, callback_data=f"comp_vpose:{global_idx}"))
         if len(row) >= 3:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+
+    if total_pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"comp_vpage:{page - 1}"))
+        nav.append(InlineKeyboardButton(f"· {page + 1}/{total_pages} ·", callback_data="comp_vpage:stay"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ▶", callback_data=f"comp_vpage:{page + 1}"))
+        rows.append(nav)
+
     rows.append(
         [
             InlineKeyboardButton("Default video", callback_data="comp_vpose:clear"),

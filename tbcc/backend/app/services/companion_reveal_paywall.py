@@ -11,6 +11,7 @@ from app.services.companion_monetize_cta import (
     companion_exhaustion_cta_html,
     companion_exhaustion_inline_keyboard_rows,
 )
+from app.services.companion_credit_checkout import companion_credit_pack_button_rows
 from app.services.companion_referral import (
     referral_bonus_photos,
     referral_link,
@@ -28,8 +29,11 @@ def reveal_paywall_lines() -> list[str]:
     lines: list[str] = []
     if stars_enabled():
         lines.append(
-            f"Buy another reveal: <b>{stars_per_photo()}⭐</b> — tap <b>Reveal</b> or /buy."
+            f"Buy one reveal now: <b>{stars_per_photo()}⭐</b> — tap <b>Reveal</b> or /buy."
         )
+        lines.append("Or grab a <b>credit pack</b> below (Stars + crypto via payment bot).")
+    elif companion_credit_pack_button_rows():
+        lines.append("Top up with a <b>credit pack</b> below (Stars + crypto).")
     if referrals_enabled():
         bonus = referral_bonus_photos()
         lines.append(
@@ -40,8 +44,10 @@ def reveal_paywall_lines() -> list[str]:
 
 
 def reveal_paywall_keyboard(*, bot_username: str, user_id: int) -> InlineKeyboardMarkup | None:
-    """Loot/VIP bridge + invite-friends row for exhaustion moment."""
+    """Loot/VIP bridge + credit packs + invite-friends row for exhaustion moment."""
     rows: list[list[InlineKeyboardButton]] = []
+    for pack_row in companion_credit_pack_button_rows():
+        rows.append([InlineKeyboardButton(text=btn["text"], url=btn["url"]) for btn in pack_row])
     if referrals_enabled():
         link = referral_link(bot_username, user_id)
         rows.append([InlineKeyboardButton("🔗 Invite friends (earn credits)", url=link)])

@@ -113,6 +113,8 @@ from app.services.companion_menu import (
     repeat_menu_hint_text,
     start_menu_text,
     video_pose_keyboard,
+    video_pose_page_count,
+    VIDEO_POSES_PER_PAGE,
     welcome_caption,
 )
 from app.services.companion_assets import (
@@ -129,6 +131,7 @@ from app.services.nudify_client import configured as nudify_configured
 from app.services.llm_chat import complete_llm_chat, default_system_prompt, provider_configured
 from app.services.undress_tool_client import (
     DEFAULT_PHOTO_POSES,
+    check_video_submit_allowed,
     configured as undress_configured,
     get_me,
     list_photo_poses,
@@ -149,6 +152,7 @@ POSE_OPTIONS_KEY = "pose_options"
 MEDIA_MODE_KEY = "media_mode"
 VIDEO_POSE_KEY = "video_pose"
 VIDEO_POSE_OPTIONS_KEY = "video_pose_options"
+VIDEO_POSE_PAGE_KEY = "video_pose_page"
 BOT_USERNAME_KEY = "companion_bot_username"
 
 _rate_log: dict[int, deque[float]] = {}
@@ -686,9 +690,19 @@ async def _send_video_pose_picker(
     chat_id: int,
     user_data: dict,
     note: str = "",
+    page: int | None = None,
+    edit_message_id: int | None = None,
 ) -> None:
     if not video_enabled():
         await bot.send_message(chat_id=chat_id, text="Video reveals aren't available right now.")
+        return
+    video_ok, video_block = await check_video_submit_allowed()
+    if not video_ok:
+        from app.services.companion_access import affiliate_undress_url
+
+        topup = affiliate_undress_url()
+        extra = f"\n\nTop up: {topup}" if topup else ""
+        await bot.send_message(chat_id=chat_id, text=f"{video_block}{extra}", parse_mode="HTML")
         return
     poses: list[dict[str, str]] = []
     try:
@@ -699,12 +713,34 @@ async def _send_video_pose_picker(
     if not poses:
         await bot.send_message(chat_id=chat_id, text="No video poses available right now — try again later.")
         return
-    user_data[VIDEO_POSE_OPTIONS_KEY] = poses[:12]
+    user_data[VIDEO_POSE_OPTIONS_KEY] = poses
+    if page is None:
+        page = int(user_data.get(VIDEO_POSE_PAGE_KEY) or 0)
+    total_pages = video_pose_page_count(poses)
+    page = max(0, min(page, max(0, total_pages - 1)))
+    user_data[VIDEO_POSE_PAGE_KEY] = page
     selected = _selected_video_pose_from_data(user_data)
-    kb = video_pose_keyboard(poses, selected_id=selected.get("id") if selected else None)
+    kb = video_pose_keyboard(poses, page=page, selected_id=selected.get("id") if selected else None)
+    text = (
+        f"{note}<b>Pick a video pose</b> — <b>{len(poses)}</b> styles"
+        f" · page {page + 1}/{total_pages}\n"
+        f"<i>Video uses {video_credit_units()} reveal credits.</i>"
+    )
+    if edit_message_id is not None:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=edit_message_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=kb,
+            )
+            return
+        except Exception as e:
+            logger.debug("video pose page edit failed: %s", e)
     await bot.send_message(
         chat_id=chat_id,
-        text=f"{note}<b>Pick a video pose</b>\n<i>Video uses {video_credit_units()} reveal credits.</i>",
+        text=text,
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -840,7 +876,26 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if stars_enabled():
                 await send_photo_invoice(context.bot, chat_id=chat_id, user_id=user.id)
             return
-        await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
+        from app.services.companion_credit_checkout import companion_credit_pack_button_rows
+
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        for row in companion_credit_pack_button_rows():
+            kb_rows.append([InlineKeyboardButton(text=btn["text"], url=btn["url"]) for btn in row])
+        if stars_enabled():
+            kb_rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"⚡ 1 reveal — {stars_per_photo()}⭐",
+                        callback_data="comp_menu:buy",
+                    )
+                ]
+            )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(kb_rows) if kb_rows else None,
+        )
         return
 
     if action in ("buy", "reveal"):
@@ -959,6 +1014,20 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     op_line = operator_status_line(user.id)
     if op_line:
         lines.append(f"<i>{op_line}</i>")
+    if undress_configured():
+        try:
+            info = await get_me()
+            lines.append(
+                f"Undress API: <b>{info.balance}</b> credits · "
+                f"photos {'✅' if info.can_create_photos else '❌'} · "
+                f"video {'✅' if info.can_create_videos else '❌ (buy credits in last 3d)'}"
+            )
+            if not info.can_create_videos:
+                topup = affiliate_undress_url()
+                if topup:
+                    lines.append(f"Unlock video: {topup}")
+        except Exception as e:
+            lines.append(f"Undress API status: {e!s}"[:200])
     await msg.reply_text(
         "\n".join(lines),
         parse_mode="HTML",
@@ -1081,10 +1150,35 @@ async def on_vpose_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     pose = poses[idx]
     context.user_data[VIDEO_POSE_KEY] = {"id": str(pose.get("id")), "name": str(pose.get("name") or pose.get("id"))}
     context.user_data[MEDIA_MODE_KEY] = "video"
+    context.user_data[VIDEO_POSE_PAGE_KEY] = idx // VIDEO_POSES_PER_PAGE
     await query.edit_message_text(
         f"Video pose locked: <b>{pose.get('name')}</b>. Send a photo when ready.",
         parse_mode="HTML",
         reply_markup=_main_menu_keyboard(context),
+    )
+
+
+async def on_vpage_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.message:
+        return
+    if query.data == "comp_vpage:stay":
+        await query.answer()
+        return
+    if not query.data.startswith("comp_vpage:"):
+        return
+    try:
+        page = int(query.data.split(":", 1)[1])
+    except ValueError:
+        await query.answer()
+        return
+    await query.answer()
+    await _send_video_pose_picker(
+        bot=context.bot,
+        chat_id=query.message.chat_id,
+        user_data=context.user_data,
+        page=page,
+        edit_message_id=query.message.message_id,
     )
 
 
@@ -1259,6 +1353,7 @@ async def _queue_photo_for_user(
                 body_type=api.get("body_type"),
                 butt_size=api.get("butt_size"),
                 cloth=api.get("cloth"),
+                post_gen=api.get("post_gen"),
             )
     except Exception as e:
         refund_generation_allowance(user_id, units=credit_units)
@@ -1581,6 +1676,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_pose_callback, pattern=r"^comp_pose:"))
     app.add_handler(CallbackQueryHandler(on_preset_callback, pattern=r"^comp_preset:"))
     app.add_handler(CallbackQueryHandler(on_vpose_callback, pattern=r"^comp_vpose:"))
+    app.add_handler(CallbackQueryHandler(on_vpage_callback, pattern=r"^comp_vpage:"))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(CommandHandler("age", cmd_age))

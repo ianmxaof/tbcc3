@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from app.services.companion_body_prefs import apply_body_preset
-from app.services.companion_menu import body_preset_keyboard, main_menu_keyboard, pose_keyboard
+from app.services.companion_menu import (
+    VIDEO_POSES_PER_PAGE,
+    body_preset_keyboard,
+    main_menu_keyboard,
+    pose_keyboard,
+    video_pose_keyboard,
+    video_pose_page_count,
+)
 
 
 def test_main_menu_has_video_button():
@@ -62,3 +69,23 @@ def test_apply_natural_preset_api_kwargs():
     ud: dict = {}
     prefs = apply_body_preset(ud, "natural")
     assert prefs.to_api_kwargs()["body_type"] == "normal"
+
+
+def test_video_pose_keyboard_paginates():
+    poses = [{"id": f"id{i}", "name": f"Pose {i}"} for i in range(20)]
+    kb = video_pose_keyboard(poses, page=0)
+    assert kb is not None
+    pose_buttons = [
+        btn
+        for row in kb.inline_keyboard
+        for btn in row
+        if btn.callback_data
+        and btn.callback_data.startswith("comp_vpose:")
+        and btn.callback_data != "comp_vpose:clear"
+    ]
+    assert len(pose_buttons) == VIDEO_POSES_PER_PAGE
+    assert video_pose_page_count(poses) == 2
+    page2 = video_pose_keyboard(poses, page=1)
+    assert page2 is not None
+    nav = [btn.callback_data for row in page2.inline_keyboard for btn in row if btn.callback_data]
+    assert "comp_vpage:0" in nav

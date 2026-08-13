@@ -13,7 +13,7 @@ def test_reveal_paywall_lines_only_when_exhausted_context(monkeypatch):
     monkeypatch.setenv("TBCC_COMPANION_REFERRAL_ENABLED", "1")
     monkeypatch.setenv("TBCC_COMPANION_REFERRAL_BONUS_PHOTOS", "1")
     lines = paywall.reveal_paywall_lines()
-    assert any("Buy another reveal" in line for line in lines)
+    assert any("Buy one reveal" in line for line in lines)
     assert any("invite friends" in line.lower() for line in lines)
 
 

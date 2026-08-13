@@ -47,20 +47,29 @@ CLOTH_OPTIONS: tuple[str, ...] = (
     "Naked",
     "Bikini",
     "Lingerie",
+    "Sport wear",
+    "BDSM",
     "Latex",
-    "Maid",
-    "Schoolgirl",
     "Teacher",
+    "Schoolgirl",
+    "Bikini leopard",
+    "Naked cum",
+    "Naked tatoo",
+    "Witch",
+    "Sexy Witch",
+    "Maid",
+    "Christmas underwear",
+    "Pregnant",
     "Cheerleader",
     "Police",
     "Secretary",
-    "Sport wear",
-    "BDSM",
+    "Blooming Bouquet",
+    "Leather dress",
     "Corset",
     "Mini bikini",
-    "Witch",
-    "Pregnant",
 )
+
+POST_GEN_OPTIONS: tuple[str, ...] = ("upscale", "anime")
 
 GROUP_LABELS: dict[str, str] = {
     "age": "Age look",
@@ -68,6 +77,7 @@ GROUP_LABELS: dict[str, str] = {
     "breast_size": "Chest size",
     "butt_size": "Butt size",
     "cloth": "Outfit",
+    "post_gen": "Enhance",
 }
 
 GROUP_SHORT: dict[str, str] = {
@@ -76,6 +86,7 @@ GROUP_SHORT: dict[str, str] = {
     "breast_size": "Chest",
     "butt_size": "Butt",
     "cloth": "Outfit",
+    "post_gen": "FX",
 }
 
 # Human-readable button labels (API value → display).
@@ -98,6 +109,7 @@ OPTION_DISPLAY: dict[str, dict[str, str]] = {
         "big": "Large",
     },
     "cloth": {v: v for v in CLOTH_OPTIONS},
+    "post_gen": {"upscale": "Upscale", "anime": "Anime"},
 }
 
 # Legacy UI values from an earlier pass — map before API submit.
@@ -116,10 +128,11 @@ class BodyPrefs:
     breast_size: str | None = None
     butt_size: str | None = None
     cloth: str | None = None
+    post_gen: str | None = None
 
     def to_api_kwargs(self) -> dict[str, str]:
         out: dict[str, str] = {}
-        for key in ("age", "body_type", "breast_size", "butt_size", "cloth"):
+        for key in ("age", "body_type", "breast_size", "butt_size", "cloth", "post_gen"):
             val = _api_value(key, getattr(self, key, None))
             if val:
                 out[key] = val
@@ -130,7 +143,7 @@ class BodyPrefs:
 
     def summary(self) -> str:
         parts = []
-        for key in ("age", "body_type", "breast_size", "butt_size", "cloth"):
+        for key in ("age", "body_type", "breast_size", "butt_size", "cloth", "post_gen"):
             val = getattr(self, key, None)
             label = GROUP_LABELS.get(key, key)
             shown = display_value(key, val) if val else "default"
@@ -201,6 +214,11 @@ def _api_value(group: str, raw: str | None) -> str | None:
         if s in CLOTH_OPTIONS:
             return s
         return None
+    if group == "post_gen":
+        s = s.lower()
+        if s in POST_GEN_OPTIONS:
+            return s
+        return None
     s = s.lower()
     allowed = OPTION_GROUPS.get(group, ())
     if s in allowed:
@@ -221,12 +239,13 @@ def load_body_prefs(user_data: dict[str, Any]) -> BodyPrefs:
         breast_size=_api_value("breast_size", _clean(raw.get("breast_size"))),
         butt_size=_api_value("butt_size", _clean(raw.get("butt_size"))),
         cloth=_api_value("cloth", raw.get("cloth") if raw.get("cloth") is not None else None),
+        post_gen=_api_value("post_gen", _clean(raw.get("post_gen"))),
     )
 
 
 def save_body_pref(user_data: dict[str, Any], group: str, value: str | None) -> BodyPrefs:
     group = (group or "").strip().lower()
-    if group not in OPTION_GROUPS and group != "cloth":
+    if group not in OPTION_GROUPS and group not in ("cloth", "post_gen"):
         return load_body_prefs(user_data)
     raw = user_data.get(BODY_PREFS_KEY)
     if not isinstance(raw, dict):

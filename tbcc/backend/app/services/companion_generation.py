@@ -149,6 +149,7 @@ async def queue_photo_generation(
     body_type: str | None = None,
     butt_size: str | None = None,
     cloth: str | None = None,
+    post_gen: str | None = None,
 ) -> GenerationQueued:
     ok, reach_msg = await check_public_webhook_reachable()
     if not ok:
@@ -166,6 +167,7 @@ async def queue_photo_generation(
         "body_type": (body_type or "").strip() or None,
         "butt_size": (butt_size or "").strip() or None,
         "cloth": (cloth or "").strip() or None,
+        "post_gen": (post_gen or "").strip() or None,
     }
     if body_params.get("breast_size") == "big" and not body_params.get("body_type"):
         body_params["body_type"] = "curvy"
@@ -224,6 +226,7 @@ async def queue_photo_generation(
             body_type=body_params["body_type"],
             butt_size=body_params["butt_size"],
             cloth=body_params["cloth"],
+            post_gen=body_params["post_gen"],
         )
         refine_note = " + bimbo refine" if body_params.get("breast_size") == "big" else ""
         user_msg = f"Creating your character — body → pose{refine_note} (auto chain)…"
@@ -247,6 +250,7 @@ async def queue_photo_generation(
             body_type=body_params["body_type"],
             butt_size=body_params["butt_size"],
             cloth=body_params["cloth"],
+            post_gen=body_params["post_gen"],
         )
         user_msg = result.message or "Creating your character…"
     if not result.ok:
@@ -268,6 +272,12 @@ async def queue_video_generation(
         raise RuntimeError(reach_msg)
     if not undress_configured():
         raise RuntimeError("Undress API not configured — set TBCC_UNDRESS_TOOL_API_KEY")
+
+    from app.services.undress_tool_client import check_video_submit_allowed
+
+    video_ok, video_block = await check_video_submit_allowed()
+    if not video_ok:
+        raise RuntimeError(video_block)
 
     job_id = new_job_id(chat_id=chat_id, user_id=user_id)
     pose_id = (video_pose_id or "").strip() or None
