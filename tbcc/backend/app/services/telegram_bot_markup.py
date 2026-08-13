@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from app.services.telegram_content_protection import bot_protect_content_form_fields
+
 logger = logging.getLogger(__name__)
 
 
@@ -165,6 +167,7 @@ async def send_photo_with_inline_keyboard(
         "parse_mode": parse_mode,
         "reply_markup": json.dumps(markup),
         "disable_notification": disable_notification,
+        **bot_protect_content_form_fields(),
     }
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

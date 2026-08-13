@@ -233,12 +233,31 @@ def _load_pool_media_items(
         randomize = True
     else:
         randomize = bool(pool and getattr(pool, "randomize_queue", False))
+    from app.models.channel import Channel
+    from app.services.aof_vip_exclusive import filter_media_for_public_vip_exclusive
+
+    vip_channel = (
+        db.query(Channel).filter(Channel.id == int(post.channel_id)).first()
+        if post.channel_id
+        else None
+    )
+    from app.data.aof_network import AOF_VIP_IDENT
+
+    skip_exclusive = bool(
+        vip_channel and str(getattr(vip_channel, "identifier", "")) == AOF_VIP_IDENT
+    )
+
+    def _apply_public_exclusive(rows: list) -> list:
+        if skip_exclusive:
+            return rows
+        return filter_media_for_public_vip_exclusive(rows, pool=pool)
+
     q = db.query(Media).filter(Media.pool_id == effective_pool_id, Media.status == "approved")
     candidate_cap = min(500, max(album_size * 20, album_size))
     # Randomize means random *selection* from the full approved pool.
     # Album order mode (static/shuffle/carousel) is applied later to the selected batch.
     if randomize:
-        rows = filter_media_older_than_schedule_min_age(q.all())
+        rows = _apply_public_exclusive(filter_media_older_than_schedule_min_age(q.all()))
         return select_unique_pool_media(rows, album_size, randomize=True)
     try:
         from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
@@ -246,11 +265,14 @@ def _load_pool_media_items(
         if rank_picks_enabled():
             ranked = rank_pool_media(db, effective_pool_id, candidate_cap, randomize=False)
             if ranked:
+                ranked = _apply_public_exclusive(ranked)
                 return select_unique_pool_media(ranked, album_size, randomize=False)
     except Exception:
         pass
-    rows = filter_media_older_than_schedule_min_age(
-        q.order_by(Media.id.asc()).limit(candidate_cap).all()
+    rows = _apply_public_exclusive(
+        filter_media_older_than_schedule_min_age(
+            q.order_by(Media.id.asc()).limit(candidate_cap).all()
+        )
     )
     return select_unique_pool_media(rows, album_size, randomize=False)
 
@@ -767,16 +789,19 @@ async def send_scheduled_post(
     )
 
     try:
-        sent_result = await _execute_telegram_scheduled_send(
-            client,
-            peer,
-            caption=caption,
-            media_items=media_items,
-            promo_ordered=promo_ordered,
-            reply_markup=reply_markup,
-            silent_kw=silent_kw,
-            reply_to=reply_to,
-        )
+        from app.services.telegram_content_protection import telethon_protect_context
+
+        async with telethon_protect_context(client):
+            sent_result = await _execute_telegram_scheduled_send(
+                client,
+                peer,
+                caption=caption,
+                media_items=media_items,
+                promo_ordered=promo_ordered,
+                reply_markup=reply_markup,
+                silent_kw=silent_kw,
+                reply_to=reply_to,
+            )
     except ChatRestrictedError:
         _log_chat_restricted_help(str(channel_identifier))
         raise
@@ -949,16 +974,19 @@ async def send_scheduled_campaign(
                 peer_raw,
                 invite_fallback=getattr(channel, "invite_link", None),
             )
-            sent_result = await _execute_telegram_scheduled_send(
-                client,
-                peer,
-                caption=caption_p,
-                media_items=media_items_p,
-                promo_ordered=promo_p,
-                reply_markup=reply_markup_p,
-                silent_kw=silent_kw,
-                reply_to=reply_to,
-            )
+            from app.services.telegram_content_protection import telethon_protect_context
+
+            async with telethon_protect_context(client):
+                sent_result = await _execute_telegram_scheduled_send(
+                    client,
+                    peer,
+                    caption=caption_p,
+                    media_items=media_items_p,
+                    promo_ordered=promo_p,
+                    reply_markup=reply_markup_p,
+                    silent_kw=silent_kw,
+                    reply_to=reply_to,
+                )
             anchor_id = None
             if sent_result:
                 msg = sent_result[0] if isinstance(sent_result, list) else sent_result

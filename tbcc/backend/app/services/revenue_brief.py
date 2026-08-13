@@ -18,9 +18,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.services.growth_reaction import list_proposals, propose_funnel_signals
-from app.services.ops_picture_report import build_ops_picture_report
-from app.services.traffic_pulse import REDIS_DIGEST_COUNTS, REDIS_DIGEST_REFS
+from app.services.traffic_pulse import traffic_pulse_snapshot
 from app.services.undress_surge import spike_state
 
 logger = logging.getLogger(__name__)
@@ -71,30 +69,23 @@ def _redis():
     return _redis_client()
 
 
-def _traffic_pulse_snapshot() -> dict[str, Any]:
-    out: dict[str, Any] = {"counts": {}, "top_refs": []}
-    try:
-        r = _redis()
-        counts = r.hgetall(REDIS_DIGEST_COUNTS) or {}
-        refs = r.hgetall(REDIS_DIGEST_REFS) or {}
-        out["counts"] = {str(k): int(v) for k, v in counts.items()}
-        ranked = sorted(((str(k), int(v)) for k, v in refs.items()), key=lambda x: x[1], reverse=True)
-        out["top_refs"] = [{"source_ref": k, "count": v} for k, v in ranked[:8]]
-    except Exception:
-        pass
-    return out
-
-
 def build_revenue_brief_bundle(db: Session, *, days: int = 7) -> dict[str, Any]:
-    ops = build_ops_picture_report(db, days=days)
-    growth = list_proposals(db, days=days)
-    funnel_signals = propose_funnel_signals(ops, spike_state())
+    from app.services.analytics_direction import (
+        build_direction_evidence_bundle,
+        rank_directions,
+    )
+
+    evidence = build_direction_evidence_bundle(db, days=days)
+    ops = evidence.get("ops") or {}
+    directions = rank_directions(evidence)
+    growth = {"proposals": evidence.get("growth_proposals") or []}
+    funnel_signals = evidence.get("funnel_signals") or []
     proposals = (growth.get("proposals") or [])[:3]
     income = ops.get("income") or {}
     companion = ops.get("companion") or {}
     bot_funnel = ops.get("bot_funnel") or {}
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": evidence.get("generated_at"),
         "window_days": days,
         "income_usd": income.get("total_usd"),
         "income_stars": income.get("total_stars"),
@@ -108,9 +99,10 @@ def build_revenue_brief_bundle(db: Session, *, days: int = 7) -> dict[str, Any]:
         "blockers": (ops.get("blockers") or [])[:5],
         "gate_funnel_totals": (ops.get("gate_funnel") or {}).get("totals"),
         "undress_spike": spike_state(),
-        "traffic_pulse": _traffic_pulse_snapshot(),
+        "traffic_pulse": evidence.get("traffic_pulse") or traffic_pulse_snapshot(),
         "growth_proposals": proposals,
         "funnel_signals": funnel_signals,
+        "directions": directions,
         "growth_flywheel_note": (
             "Growth proposals are observe-only; export flywheel observe; ops flywheel for infra."
         ),
@@ -120,37 +112,46 @@ def build_revenue_brief_bundle(db: Session, *, days: int = 7) -> dict[str, Any]:
 def _heuristic_brief(bundle: dict[str, Any]) -> str:
     lines = ["<b>Daily revenue brief</b> (heuristic fallback)", ""]
     n = 1
-    spike = bundle.get("undress_spike") or {}
-    if spike.get("spike_active"):
-        lines.append(
-            f"{n}. <b>[now]</b> Undress spike active — run /surge or confirm auto-blast fired "
-            f"({spike.get('hits_in_window')}/{spike.get('threshold')} hits)."
-        )
-        n += 1
-    for b in bundle.get("blockers") or []:
-        if n > 5:
-            break
-        lines.append(
-            f"{n}. <b>[now]</b> {html_escape(str(b.get('what')))} — {html_escape(str(b.get('why')))[:120]}"
-        )
-        n += 1
-    sold = bundle.get("companion_photos_sold")
-    if sold == 0 and n <= 5:
-        lines.append(
-            f"{n}. <b>[week]</b> Companion Stars conversion is flat — loot/VIP CTAs on exhaustion path."
-        )
-        n += 1
-    for p in bundle.get("growth_proposals") or []:
-        if n > 5:
-            break
-        lines.append(
-            f"{n}. <b>[week]</b> {html_escape(str(p.get('recommendation') or p.get('action_kind')))[:140]}"
-        )
-        n += 1
-    if n == 1:
-        lines.append("1. <b>[now]</b> No critical blockers — keep loot/VIP checkout on schedulers.")
+    directions = bundle.get("directions") or []
+    if directions:
+        for d in directions[:5]:
+            horizon = {"ST": "now", "LT": "quarter", "OPS": "week"}.get(d.get("horizon") or "ST", "week")
+            lines.append(
+                f"{n}. <b>[{horizon}]</b> {html_escape(str(d.get('title')))[:140]}"
+            )
+            n += 1
+    else:
+        spike = bundle.get("undress_spike") or {}
+        if spike.get("spike_active"):
+            lines.append(
+                f"{n}. <b>[now]</b> Undress spike active — run /surge or confirm auto-blast fired "
+                f"({spike.get('hits_in_window')}/{spike.get('threshold')} hits)."
+            )
+            n += 1
+        for b in bundle.get("blockers") or []:
+            if n > 5:
+                break
+            lines.append(
+                f"{n}. <b>[now]</b> {html_escape(str(b.get('what')))} — {html_escape(str(b.get('why')))[:120]}"
+            )
+            n += 1
+        sold = bundle.get("companion_photos_sold")
+        if sold == 0 and n <= 5:
+            lines.append(
+                f"{n}. <b>[week]</b> Companion Stars conversion is flat — loot/VIP CTAs on exhaustion path."
+            )
+            n += 1
+        for p in bundle.get("growth_proposals") or []:
+            if n > 5:
+                break
+            lines.append(
+                f"{n}. <b>[week]</b> {html_escape(str(p.get('recommendation') or p.get('action_kind')))[:140]}"
+            )
+            n += 1
+        if n == 1:
+            lines.append("1. <b>[now]</b> No critical blockers — keep loot/VIP checkout on schedulers.")
     lines.append("")
-    lines.append("<i>Full bundle in inbox meta · /surge for undress blast</i>")
+    lines.append("<i>Full bundle in inbox meta · /surge for undress blast · /direction for analytics</i>")
     return "\n".join(lines)
 
 

@@ -326,7 +326,7 @@ def notify_composer_bot(
         "yes",
         "on",
     )
-    row = storage_map_by_key(nk)
+    row = storage_map_by_key().get(nk)
     topic_title = row.topic_title if row else nk
     refresh = refresh_storage_deposit_panel_http(
         chat_id=storage_hub_chat_id_int(),

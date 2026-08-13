@@ -29,11 +29,15 @@ async def delete_panel_message(
     if int(message_id) <= 0:
         return
     if hub_panel_pin_messages():
+        from app.utils.telegram_forum import bot_api_forum_thread_api_kwargs
+
         try:
             pin_kw: dict[str, Any] = {"chat_id": int(chat_id), "message_id": int(message_id)}
-            if message_thread_id:
-                pin_kw["message_thread_id"] = int(message_thread_id)
-            await bot.unpin_chat_message(**pin_kw)
+            forum_api = bot_api_forum_thread_api_kwargs(message_thread_id)
+            if forum_api:
+                await bot.unpin_chat_message(**pin_kw, api_kwargs=forum_api)
+            else:
+                await bot.unpin_chat_message(**pin_kw)
         except Exception:
             logger.debug("hub panel unpin failed chat=%s msg=%s", chat_id, message_id, exc_info=True)
     try:
@@ -67,7 +71,7 @@ async def ensure_singleton_panel_message(
         "reply_markup": reply_markup,
         "disable_web_page_preview": True,
     }
-    from app.utils.telegram_forum import bot_api_forum_thread_id
+    from app.utils.telegram_forum import bot_api_forum_thread_id, bot_api_forum_thread_api_kwargs
 
     api_thread = bot_api_forum_thread_id(message_thread_id)
     if api_thread:
@@ -110,9 +114,11 @@ async def ensure_singleton_panel_message(
                 "message_id": mid,
                 "disable_notification": True,
             }
-            if api_thread:
-                pin_kw["message_thread_id"] = api_thread
-            await bot.pin_chat_message(**pin_kw)
+            forum_api = bot_api_forum_thread_api_kwargs(message_thread_id)
+            if forum_api:
+                await bot.pin_chat_message(**pin_kw, api_kwargs=forum_api)
+            else:
+                await bot.pin_chat_message(**pin_kw)
         except Exception:
             logger.debug(
                 "hub panel pin failed panel=%s chat=%s thread=%s",

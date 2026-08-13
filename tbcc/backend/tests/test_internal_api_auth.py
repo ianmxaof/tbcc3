@@ -12,6 +12,7 @@ def test_path_is_public_health_and_webhooks() -> None:
     assert path_is_public("/docs", "GET")
     assert path_is_public("/media/foo.jpg", "GET")
     assert path_is_public("/r/promoSlug", "GET")
+    assert not path_is_public("/media/export", "GET")
     assert not path_is_public("/media/foo.jpg", "POST")
     assert not path_is_public("/import/zip-flywheel", "POST")
     assert not path_is_public("/channels", "GET")

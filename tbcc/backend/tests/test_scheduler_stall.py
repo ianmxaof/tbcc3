@@ -109,6 +109,7 @@ def _watchdog_env(
     enabled=True,
     sched=None,
     celery_len=0,
+    scrape_len=0,
     open_imports=0,
     enqueue_locks=0,
 ):
@@ -141,7 +142,13 @@ def _watchdog_env(
     p(
         patch(
             "app.services.celery_queue_ops.celery_queue_snapshot",
-            return_value={"ok": True, "queues": {"celery": {"length": celery_len}}},
+            return_value={
+                "ok": True,
+                "queues": {
+                    "celery": {"length": celery_len},
+                    "scrape": {"length": scrape_len},
+                },
+            },
         )
     )
     return stack, mark
@@ -159,6 +166,20 @@ def test_watchdog_dedupes_run_schedule_when_celery_deep():
     dedupe.assert_called_once_with(keep=1)
     mark.assert_any_call(["dedupe_run_schedule"])
     assert any(a["action"] == "dedupe_run_schedule" for a in out["actions"])
+
+
+def test_watchdog_dedupes_scrape_ticks_when_scrape_deep():
+    sh.reset_scheduler_watchdog_state()
+    stack, mark = _watchdog_env(overdue=0, post_len=0, scrape_len=40)
+    with stack:
+        with patch(
+            "app.services.celery_queue_ops.dedupe_scrape_tick_queue",
+            return_value={"ok": True, "removed": 39},
+        ) as dedupe:
+            out = sh.scheduler_watchdog_tick()
+    dedupe.assert_called_once_with(keep=1)
+    mark.assert_any_call(["dedupe_scrape_ticks"])
+    assert any(a["action"] == "dedupe_scrape_ticks" for a in out["actions"])
 
 
 def test_watchdog_purges_thumbnail_warm_when_imports_queued():
