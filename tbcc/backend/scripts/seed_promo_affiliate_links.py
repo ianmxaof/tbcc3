@@ -580,7 +580,8 @@ def main() -> None:
             row.payout_kind = str(item.get("payout_kind") or "other")[:16]
             detail = item.get("payout_detail")
             row.payout_detail = str(detail).strip()[:64] if detail else None
-            row.priority_tier = int(item.get("priority_tier") or 10)
+            raw_tier = item.get("priority_tier")
+            row.priority_tier = 10 if raw_tier is None else int(raw_tier)
             row.active = True
             row.placements_json = _encode_list(list(item.get("placements") or ["manual_only"]))
             row.network_keys_json = _encode_list(list(item.get("network_keys") or []))
