@@ -1104,7 +1104,9 @@ def _admin_commands_reference() -> str:
         "/deposit <code>N</code> — Storage Hub subtopic → pool (admin, in-topic)\n\n"
         "<b>Revenue</b>\n"
         "/menu → More → <b>Add sponsor link</b> — paste affiliate URL; auto-circulates\n"
-        "/addsponsor — same flow from command\n\n"
+        "/addsponsor — same flow from command\n"
+        "/sponsors — DM list of all affiliates (URL, clicks, attributed $)\n"
+        "/affiliates — alias for /sponsors\n\n"
         "<b>Configuration</b>\n"
         "/config — LLM API key + endpoint URL (button tree, live test)\n"
         "TBCC API URL: <code>TBCC_API_URL</code> in tbcc/.env\n"
@@ -2425,6 +2427,46 @@ async def cmd_addsponsor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def cmd_sponsors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin DM: list every affiliate sponsor with URL, clicks, attributed ledger $."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    if msg.chat.type != "private":
+        await _reply(msg, "Open a private chat with me and send <code>/sponsors</code>.", context, parse_mode="HTML")
+        return
+
+    days = 30
+    include_inactive = False
+    for arg in context.args or []:
+        a = (arg or "").strip().lower()
+        if a in ("all", "inactive", "+inactive"):
+            include_inactive = True
+        elif a.isdigit():
+            days = max(1, min(366, int(a)))
+
+    def _load() -> dict:
+        from app.services.affiliate_sponsor_report import build_affiliate_sponsor_report
+
+        db = SessionLocal()
+        try:
+            return build_affiliate_sponsor_report(
+                db, include_inactive=include_inactive, revenue_days=days
+            )
+        finally:
+            db.close()
+
+    report = await asyncio.to_thread(_load)
+    messages = report.get("messages") or ["No affiliate sponsors found."]
+    for i, chunk in enumerate(messages):
+        await _reply(msg, chunk, context, parse_mode="HTML")
+        if i + 1 < len(messages):
+            await asyncio.sleep(0.35)
+
+
+
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     user = update.effective_user
@@ -3068,6 +3110,8 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("clear_sysprompt", cmd_clear_sysprompt))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("addsponsor", cmd_addsponsor))
+    app.add_handler(CommandHandler("sponsors", cmd_sponsors))
+    app.add_handler(CommandHandler("affiliates", cmd_sponsors))
     app.add_handler(CommandHandler("approve", cmd_approve))
     app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(CommandHandler("drafts", cmd_drafts))
