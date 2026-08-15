@@ -137,9 +137,12 @@ def test_build_redo_suffix_unknown_style_falls_back_to_pro():
     assert REDO_STYLE_HINTS["pro"] in suffix
 
 
-def test_build_redo_suffix_without_stored_context_is_hint_only():
+def test_build_redo_suffix_without_stored_context_still_asks_json_triad():
     suffix = build_redo_suffix("", "casual")
-    assert suffix == REDO_STYLE_HINTS["casual"]
+    assert REDO_STYLE_HINTS["casual"] in suffix
+    from app.services.secretary_drafts import TRIAGE_JSON_INSTRUCTION
+
+    assert TRIAGE_JSON_INSTRUCTION in suffix
 
 
 def test_redo_suffix_reaches_llm_system_message(monkeypatch):
@@ -197,3 +200,32 @@ def test_suggest_customer_lines_falls_back_to_db_when_memory_empty():
 
 def test_suggest_customer_lines_empty_both():
     assert suggest_customer_lines([], []) == []
+
+
+def test_clamp_and_parse_triage_json():
+    from app.services.secretary_drafts import clamp_candidate, parse_triage_candidates, pick_candidate
+
+    long = "First sentence. Second sentence. Third should drop."
+    assert clamp_candidate(long) == "First sentence. Second sentence."
+    huge = "A" * 400
+    assert len(clamp_candidate(huge)) <= 280
+
+    raw = '{"natural":"hey what are you looking for?","clear":"VIP is in the payment bot.","close":"Open the payment bot and tap /subscribe."}'
+    cands = parse_triage_candidates(raw)
+    assert cands["natural"].startswith("hey")
+    assert "payment bot" in cands["clear"]
+    item = {"reply": cands["natural"], "candidates": cands}
+    assert pick_candidate(item, "x") == cands["close"]
+    assert pick_candidate(item, "n") == cands["natural"]
+
+
+def test_save_draft_persists_candidates(db):
+    from app.services.secretary_drafts import parse_triage_candidates
+
+    cands = parse_triage_candidates(
+        '{"natural":"hey","clear":"facts here.","close":"tap /subscribe in the payment bot."}'
+    )
+    save_draft(db, **_draft_kwargs(candidates=cands, reply=cands["natural"]))
+    loaded = get_draft(db, "ABC123")
+    assert loaded is not None
+    assert loaded["candidates"]["close"].startswith("tap")

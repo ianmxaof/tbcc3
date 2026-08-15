@@ -20,7 +20,7 @@ py -3.13 -m pytest <path> -x -q
 | **Telegram** | `tests/test_telegram_*.py`, `tests/test_tbcc_telegram_admin.py` | |
 | **Storage / Mega** | `tests/test_mega_*.py`, `tests/test_storage_*.py` | |
 | **Link gate** | `tests/test_link_gate.py` | |
-| **Format engine / secretary sales-rep** | `tests/test_format_engine.py`, `tests/test_secretary_reply_mode.py`, `tests/test_secretary_sales_coach.py`, `tests/test_secretary_new_lead.py`, `tests/test_secretary_drafts.py` | Pilot/Auto, sales coach, new-lead flag; DB-backed HITL draft queue (round-trip, redo suffix preserve, suggest-mode FE history fallback) |
+| **Format engine / secretary sales-rep** | `tests/test_format_engine.py`, `tests/test_secretary_reply_mode.py`, `tests/test_secretary_sales_coach.py`, `tests/test_secretary_new_lead.py`, `tests/test_secretary_drafts.py` | Pilot/Auto, sales coach, new-lead flag; DB drafts; N/C/X short candidates |
 | **Secretary operator reports** | `tests/test_secretary_report_copy.py`, `tests/test_traffic_inbox_copy.py`, `tests/test_revenue_brief.py`, `tests/test_admin_inbox_html.py` | Inbox / pulse / heuristic Telegram HTML; no double-escaped tags |
 | **Growth** | `tests/test_growth_reaction.py`, `tests/test_content_signals.py`, `tests/test_analytics_direction.py`, `tests/test_reddit_circuit.py`, `tests/test_reddit_surface_caption.py` | Growth signals + on-demand direction ranking; Reddit global cap, beacons, ledger |
 | **Env secrets / capture** | `tests/test_tbcc_env_secret_store.py` | Clipboard/.env key suggest + write |

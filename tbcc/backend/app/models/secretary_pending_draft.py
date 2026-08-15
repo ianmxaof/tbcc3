@@ -25,6 +25,8 @@ class SecretaryPendingDraft(Base):
     # Full system suffix (FE + sales coach + RAG + catalog + pilot note) used on the first
     # complete_secretary_chat call — redo reuses this instead of a style-only rewrite.
     extra_system_suffix = Column(Text, nullable=True)
+    # JSON {"natural","clear","close"} — Pilot triage set; reply_text is the default (natural).
+    candidates_json = Column(Text, nullable=True)
     coach_hint = Column(String(256), nullable=True)
     reply_mode = Column(String(16), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
