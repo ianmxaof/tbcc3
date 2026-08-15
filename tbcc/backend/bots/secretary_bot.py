@@ -83,6 +83,16 @@ from app.services.format_engine import (
 from app.services.secretary_rag import build_rag_context_suffix
 from app.services.secretary_reply_mode import get_reply_mode, mode_label, set_reply_mode
 from app.services.secretary_sales_coach import build_sales_coach_suffix
+from app.services.secretary_drafts import (
+    build_redo_suffix,
+    count_drafts,
+    delete_draft,
+    get_draft,
+    list_drafts,
+    save_draft,
+    suggest_customer_lines,
+    update_draft_reply,
+)
 from app.database.session import SessionLocal
 from app.models.secretary_knowledge import SecretaryKnowledgeEntry
 from app.models.secretary_user_context import SecretaryUserContext
@@ -116,7 +126,6 @@ from app.services.secretary_llm_config import (
     probe_secretary_llm,
 )
 from app.services.secretary_llm import (
-    REDO_STYLE_HINTS,
     complete_secretary_chat,
     default_system_prompt,
     fetch_subscription_catalog_snippet,
@@ -139,8 +148,32 @@ API_BASE = (os.getenv("TBCC_SECRETARY_API_URL") or os.getenv("TBCC_API_URL") or 
 
 # (user_id, deque of monotonic timestamps)
 _rate_log: dict[int, deque[float]] = {}
-_pending_drafts: dict[str, dict[str, object]] = {}
 _business_msg_seen: dict[str, float] = {}
+
+
+def _save_draft(**kwargs: object) -> dict:
+    with SessionLocal() as db:
+        return save_draft(db, **kwargs)  # type: ignore[arg-type]
+
+
+def _load_draft(draft_id: str) -> dict | None:
+    with SessionLocal() as db:
+        return get_draft(db, draft_id)
+
+
+def _update_draft_reply(draft_id: str, reply: str) -> dict | None:
+    with SessionLocal() as db:
+        return update_draft_reply(db, draft_id, reply)
+
+
+def _drop_draft(draft_id: str) -> bool:
+    with SessionLocal() as db:
+        return delete_draft(db, draft_id)
+
+
+def _list_pending_drafts(limit: int = 20) -> list[dict]:
+    with SessionLocal() as db:
+        return list_drafts(db, limit=limit)
 
 
 def _secretary_token() -> str:
@@ -498,7 +531,7 @@ async def _send_draft_to_admin(
 
 
 async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_id: str) -> tuple[bool, str]:
-    item = _pending_drafts.get(draft_id)
+    item = await asyncio.to_thread(_load_draft, draft_id)
     if not item:
         return False, f"Draft {draft_id} not found."
     chat_id = int(item["chat_id"])
@@ -522,7 +555,7 @@ async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_i
             finalize_assistant_turn_for_user(user_id, text)
         except Exception as e:
             logger.warning("format_engine draft finalize uid=%s: %s", user_id, e)
-    _pending_drafts.pop(draft_id, None)
+    await asyncio.to_thread(_drop_draft, draft_id)
     return True, f"Sent {draft_id}."
 
 
@@ -552,8 +585,8 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("Usage: /reject <draft_id>")
         return
     draft_id = str(context.args[0]).strip().upper()
-    if draft_id in _pending_drafts:
-        _pending_drafts.pop(draft_id, None)
+    removed = await asyncio.to_thread(_drop_draft, draft_id)
+    if removed:
         await msg.reply_text(f"Rejected draft {draft_id}.")
     else:
         await msg.reply_text(f"Draft {draft_id} not found.")
@@ -573,27 +606,23 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("OpenAI not configured.")
         return
     draft_id = str(context.args[0]).strip().upper()
-    item = _pending_drafts.get(draft_id)
+    item = await asyncio.to_thread(_load_draft, draft_id)
     if not item:
         await msg.reply_text(f"Draft {draft_id} not found.")
         return
     style = (context.args[1].strip().lower() if len(context.args) > 1 else "pro")
     custom = " ".join(context.args[2:]).strip() if len(context.args) > 2 else ""
     llm_messages = item.get("llm_messages")
-    if not isinstance(llm_messages, list):
+    if not isinstance(llm_messages, list) or not llm_messages:
         await msg.reply_text("No LLM context stored for this draft — reject and wait for a new customer message.")
         return
-    suffix = REDO_STYLE_HINTS.get(style, "")
-    if style == "custom" and custom:
-        suffix = f"Rewrite the assistant reply with this instruction: {custom}"
-    elif not suffix:
-        suffix = REDO_STYLE_HINTS["pro"]
+    suffix = build_redo_suffix(str(item.get("extra_system_suffix") or ""), style, custom)
     try:
         reply = await complete_secretary_chat(llm_messages, extra_system_suffix=suffix)
     except Exception as e:
         await msg.reply_text(f"Redo failed: {e}")
         return
-    item["reply"] = reply[:3500]
+    await asyncio.to_thread(_update_draft_reply, draft_id, reply[:3500])
     who = str(item.get("who") or "no_username")
     uid = int(item.get("user_id") or 0)
     cust = str(item.get("customer_preview") or "")
@@ -662,24 +691,23 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.message.reply_text(detail)
         return
     if action == "rj":
-        if draft_id in _pending_drafts:
-            _pending_drafts.pop(draft_id, None)
-            if query.message:
-                await query.message.reply_text(f"Dropped {draft_id}.")
+        removed = await asyncio.to_thread(_drop_draft, draft_id)
+        if removed and query.message:
+            await query.message.reply_text(f"Dropped {draft_id}.")
         return
     if action == "rd" and len(parts) >= 4:
         style = parts[3].lower()
-        item = _pending_drafts.get(draft_id)
-        if not item or not isinstance(item.get("llm_messages"), list):
+        item = await asyncio.to_thread(_load_draft, draft_id)
+        if not item or not isinstance(item.get("llm_messages"), list) or not item.get("llm_messages"):
             await query.answer("Draft expired.", show_alert=True)
             return
-        suffix = REDO_STYLE_HINTS.get(style, REDO_STYLE_HINTS["pro"])
+        suffix = build_redo_suffix(str(item.get("extra_system_suffix") or ""), style, "")
         try:
             reply = await complete_secretary_chat(item["llm_messages"], extra_system_suffix=suffix)
         except Exception as e:
             await query.answer(f"Redo failed: {e}", show_alert=True)
             return
-        item["reply"] = reply[:3500]
+        await asyncio.to_thread(_update_draft_reply, draft_id, reply[:3500])
         who = str(item.get("who") or "no_username")
         uid = int(item.get("user_id") or 0)
         cust = str(item.get("customer_preview") or "")
@@ -706,11 +734,13 @@ async def cmd_drafts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _can_manage_drafts(update):
         await msg.reply_text("Only the configured admin can view pending drafts here.")
         return
-    if not _pending_drafts:
+    items = await asyncio.to_thread(_list_pending_drafts, 20)
+    if not items:
         await msg.reply_text("No pending drafts.")
         return
     lines = ["<b>Pending drafts</b>"]
-    for did, item in list(_pending_drafts.items())[-20:]:
+    for item in items:
+        did = html.escape(str(item.get("draft_id") or ""))
         who = html.escape(str(item.get("who") or "unknown"))
         uid = html.escape(str(item.get("user_id") or ""))
         lines.append(f"• <code>{did}</code> — @{who} id <code>{uid}</code>")
@@ -1435,7 +1465,7 @@ async def cmd_fe_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "contexts": ctx_n,
                 "knowledge": know_n,
                 "phases": phases,
-                "drafts": len(_pending_drafts),
+                "drafts": count_drafts(db),
             }
         finally:
             db.close()
@@ -1484,7 +1514,16 @@ async def _send_inbox_digest(
         unread_only=unread_only,
     )
     text = format_inbox_digest(events, title=title, empty_hint=empty_hint)
-    await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True)
+    try:
+        await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True)
+    except TelegramError as exc:
+        logger.warning("inbox digest HTML rejected (%s); sending plain fallback", exc)
+        plain = re.sub(r"<[^>]+>", "", text)
+        plain = (
+            f"{title}\n\n{plain.strip()[:3500]}\n\n"
+            "(HTML send failed — this is the plain fallback.)"
+        )
+        await _reply(msg, plain[:4096], context, disable_web_page_preview=True)
 
 
 async def cmd_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2776,9 +2815,14 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         extra = extra + suggest_suffix
         prev_lines: list[str] = context.user_data.get(BIZ_LINES_KEY) or []
-        prev_lines = [str(x).strip() for x in prev_lines if str(x).strip()]
-        if prev_lines:
-            joined = "\n".join(f"- {line[:900]}" for line in prev_lines[-8:])
+        db_hist_for_suggest: list[dict[str, str]] = []
+        if not prev_lines and format_engine_enabled():
+            db_hist_for_suggest = await asyncio.to_thread(load_recent_messages_for_llm, user.id)
+            if db_hist_for_suggest and db_hist_for_suggest[-1].get("content") == user_text:
+                db_hist_for_suggest = db_hist_for_suggest[:-1]
+        thread_lines = suggest_customer_lines(prev_lines, db_hist_for_suggest)
+        if thread_lines:
+            joined = "\n".join(f"- {line[:900]}" for line in thread_lines[-8:])
             user_block = (
                 "Earlier customer messages (same thread, no bot replies shown to them):\n"
                 f"{joined}\n\nLatest message:\n{user_text}"
@@ -2843,18 +2887,20 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             draft_id = secrets.token_hex(3).upper()
             who = (user.username or "").strip() or "no_username"
             safe_reply = reply[:3500]
-            _pending_drafts[draft_id] = {
-                "chat_id": msg.chat_id,
-                "business_connection_id": str(bc_id) if bc_id else None,
-                "reply": safe_reply,
-                "user_id": user.id,
-                "who": who,
-                "customer_preview": user_text[:500],
-                "llm_messages": [dict(m) for m in messages],
-                "coach_hint": coach_hint,
-                "reply_mode": customer_mode,
-                "created_at": int(time.time()),
-            }
+            await asyncio.to_thread(
+                _save_draft,
+                draft_id=draft_id,
+                chat_id=msg.chat_id,
+                business_connection_id=str(bc_id) if bc_id else None,
+                user_id=user.id,
+                who=who,
+                customer_preview=user_text[:500],
+                reply=safe_reply,
+                llm_messages=[dict(m) for m in messages],
+                extra_system_suffix=extra,
+                coach_hint=coach_hint,
+                reply_mode=customer_mode,
+            )
             try:
                 await _send_draft_to_admin(
                     context,

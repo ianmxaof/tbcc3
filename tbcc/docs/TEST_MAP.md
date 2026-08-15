@@ -20,7 +20,8 @@ py -3.13 -m pytest <path> -x -q
 | **Telegram** | `tests/test_telegram_*.py`, `tests/test_tbcc_telegram_admin.py` | |
 | **Storage / Mega** | `tests/test_mega_*.py`, `tests/test_storage_*.py` | |
 | **Link gate** | `tests/test_link_gate.py` | |
-| **Format engine / secretary sales-rep** | `tests/test_format_engine.py`, `tests/test_secretary_reply_mode.py`, `tests/test_secretary_sales_coach.py`, `tests/test_secretary_new_lead.py` | Pilot/Auto, sales coach, new-lead flag |
+| **Format engine / secretary sales-rep** | `tests/test_format_engine.py`, `tests/test_secretary_reply_mode.py`, `tests/test_secretary_sales_coach.py`, `tests/test_secretary_new_lead.py`, `tests/test_secretary_drafts.py` | Pilot/Auto, sales coach, new-lead flag; DB-backed HITL draft queue (round-trip, redo suffix preserve, suggest-mode FE history fallback) |
+| **Secretary operator reports** | `tests/test_secretary_report_copy.py`, `tests/test_traffic_inbox_copy.py`, `tests/test_revenue_brief.py`, `tests/test_admin_inbox_html.py` | Inbox / pulse / heuristic Telegram HTML; no double-escaped tags |
 | **Growth** | `tests/test_growth_reaction.py`, `tests/test_content_signals.py`, `tests/test_analytics_direction.py`, `tests/test_reddit_circuit.py`, `tests/test_reddit_surface_caption.py` | Growth signals + on-demand direction ranking; Reddit global cap, beacons, ledger |
 | **Env secrets / capture** | `tests/test_tbcc_env_secret_store.py` | Clipboard/.env key suggest + write |
 | **Zeus / secretary menu** | `tests/test_zeus_menu.py` | Phase 1 hub callbacks, stack HTML, deep-link keyboards |
@@ -37,7 +38,7 @@ py -3.13 -m pytest <path> -x -q
 | **TBCC caption stamps (#tbcc:)** | `tests/test_tbcc_caption_stamp.py`, `tests/test_storage_sent_cache.py` | AyuGram lane tags on hub intake, SENT VAULT, quarantine cards |
 | **Buffer X link order** | `tests/test_buffer_x_link_order.py` | Spicy-first then affiliate-first preview pin; optional cycle when `AFFILIATE_FIRST=0` |
 | **Telegram Stars balance** | `tests/test_telegram_stars_balance.py` | Bot API getMyStarBalance / getStarTransactions reconcile helpers |
-| **Checkout List SFW silo** | `tests/test_affiliate_content_lane.py`, `tests/test_checkout_list_hub.py`, `tests/test_secretary_affiliate_intake.py`, `tests/test_affiliate_sponsor_report.py` | SFW/NSFW affiliate routing; @thecheckoutlist bulletin; secretary `/sponsors` report |
+| **Checkout List SFW silo** | `tests/test_affiliate_content_lane.py`, `tests/test_checkout_list_hub.py`, `tests/test_secretary_affiliate_intake.py`, `tests/test_affiliate_sponsor_report.py`, `tests/test_affiliate_sponsor_packs.py` | SFW/NSFW affiliate routing; @thecheckoutlist bulletin; secretary `/sponsors` report; sequenced sponsor packs A/B/C |
 | **Sale FOMO announce** | `tests/test_sale_public_announce.py` | Anonymous network + Buffer/X on fulfilled sales (no buyer PII) |
 | **Gumroad Ping fulfill** | `tests/test_gumroad_ping.py`, `tests/test_aof_vip_membership.py` | EPO `tbcc_ref` → fulfill; VIP ladder ↔ ynnulc recurrences / price cents |
 | **VIP intro month** | `tests/test_vip_intro_eligibility.py` | First-time main-section gate; loot subs ignored |
