@@ -385,6 +385,15 @@ def _format_instant(event: dict[str, Any]) -> str:
         from app.services.traffic_inbox_copy import format_traffic_compact_line
 
         return format_traffic_compact_line(event, ago="now")
+    if str(meta.get("code") or "") in (
+        "revenue_brief",
+        "secretary_draft_fail",
+        "secretary_new_lead",
+        "secretary_draft",
+    ):
+        body = _format_event_body_html(event)
+        if body:
+            return body
     icon = _CATEGORY_ICON.get(cat, "📬")
     sev = str(event.get("severity") or "info")
     if cat == "payment":
@@ -433,7 +442,7 @@ def push_admin_inbox_event(
         "category": category,
         "severity": severity,
         "title": title_s,
-        "body": (body or "").strip()[:1200],
+        "body": (body or "").strip()[:3500],
         "meta": meta or {},
     }
     _store_event(event)
@@ -592,9 +601,9 @@ def format_inbox_digest(
         return f"📬 <b>{html.escape(title)}</b>\n\n{html.escape(empty_hint)}"
     unread_cutoff = get_last_read_ts()
     unread_count = sum(1 for e in events if float(e.get("ts_unix") or 0) > unread_cutoff)
-    header = f"📬 <b>{html.escape(title)}</b>"
-    if unread_count:
-        header += f" · <b>{unread_count}</b> unread"
+    from app.services.secretary_report_copy import format_inbox_header
+
+    header = format_inbox_header(title=title, unread_count=unread_count)
     blocks: list[str] = [header, ""]
 
     traffic_events = [e for e in events if str(e.get("category") or "") == "traffic"]
@@ -633,6 +642,8 @@ def format_inbox_digest(
         blocks.append(line)
 
     blocks.append("")
-    blocks.append("<i>/read marks all as seen · filters: /payment /loot /ops /critical</i>")
+    blocks.append(
+        "<i>/read marks all as seen · filters: /payment /loot /ops /critical</i>"
+    )
     text = "\n".join(blocks).strip()
     return text[:4096]

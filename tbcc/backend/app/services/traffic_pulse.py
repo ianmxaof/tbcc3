@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import logging
 import os
 import time
@@ -312,19 +311,9 @@ def build_digest_telegram_html() -> str | None:
     if not counts:
         return None
 
-    lines = ["📡 <b>Traffic Pulse digest</b>"]
-    for key, val in sorted(counts.items(), key=lambda x: -int(x[1] or 0)):
-        k = html.escape(str(key))
-        lines.append(f"• {k}: {int(val or 0)}")
-    if refs:
-        top = sorted(refs.items(), key=lambda x: -int(x[1] or 0))[:8]
-        lines.append("")
-        lines.append("<b>Top source_ref</b>")
-        for ref, val in top:
-            lines.append(f"• <code>{html.escape(str(ref))}</code>: {int(val or 0)}")
-    lines.append("")
-    lines.append("<i>/inbox · tune TBCC_TRAFFIC_PULSE_INSTANT</i>")
-    return "\n".join(lines)
+    from app.services.secretary_report_copy import format_pulse_digest_html
+
+    return format_pulse_digest_html(counts, refs)
 
 
 def clear_digest_buffer() -> None:

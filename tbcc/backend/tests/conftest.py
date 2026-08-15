@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.models.base import Base
 from app.models.promo_affiliate_link import PromoAffiliateLink  # noqa: F401
 from app.models.promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor  # noqa: F401
+from app.models.secretary_pending_draft import SecretaryPendingDraft  # noqa: F401
 
 
 @pytest.fixture

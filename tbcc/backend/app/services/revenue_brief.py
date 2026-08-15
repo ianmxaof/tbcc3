@@ -110,49 +110,9 @@ def build_revenue_brief_bundle(db: Session, *, days: int = 7) -> dict[str, Any]:
 
 
 def _heuristic_brief(bundle: dict[str, Any]) -> str:
-    lines = ["<b>Daily revenue brief</b> (heuristic fallback)", ""]
-    n = 1
-    directions = bundle.get("directions") or []
-    if directions:
-        for d in directions[:5]:
-            horizon = {"ST": "now", "LT": "quarter", "OPS": "week"}.get(d.get("horizon") or "ST", "week")
-            lines.append(
-                f"{n}. <b>[{horizon}]</b> {html_escape(str(d.get('title')))[:140]}"
-            )
-            n += 1
-    else:
-        spike = bundle.get("undress_spike") or {}
-        if spike.get("spike_active"):
-            lines.append(
-                f"{n}. <b>[now]</b> Undress spike active — run /surge or confirm auto-blast fired "
-                f"({spike.get('hits_in_window')}/{spike.get('threshold')} hits)."
-            )
-            n += 1
-        for b in bundle.get("blockers") or []:
-            if n > 5:
-                break
-            lines.append(
-                f"{n}. <b>[now]</b> {html_escape(str(b.get('what')))} — {html_escape(str(b.get('why')))[:120]}"
-            )
-            n += 1
-        sold = bundle.get("companion_photos_sold")
-        if sold == 0 and n <= 5:
-            lines.append(
-                f"{n}. <b>[week]</b> Companion Stars conversion is flat — loot/VIP CTAs on exhaustion path."
-            )
-            n += 1
-        for p in bundle.get("growth_proposals") or []:
-            if n > 5:
-                break
-            lines.append(
-                f"{n}. <b>[week]</b> {html_escape(str(p.get('recommendation') or p.get('action_kind')))[:140]}"
-            )
-            n += 1
-        if n == 1:
-            lines.append("1. <b>[now]</b> No critical blockers — keep loot/VIP checkout on schedulers.")
-    lines.append("")
-    lines.append("<i>Full bundle in inbox meta · /surge for undress blast · /direction for analytics</i>")
-    return "\n".join(lines)
+    from app.services.secretary_report_copy import format_heuristic_brief_html
+
+    return format_heuristic_brief_html(bundle)
 
 
 def html_escape(s: str) -> str:
@@ -171,12 +131,17 @@ def draft_revenue_brief_html(bundle: dict[str, Any], *, use_llm: bool = True) ->
         if not runtime.api_key:
             return _heuristic_brief(bundle)
         system = (
-            "You are TBCC operator revenue advisor. Output HTML for Telegram (parse_mode=HTML). "
-            "Exactly 5 numbered actions ranked by $ impact (short-term revenue first). "
-            "Each line: N. <b>[horizon]</b> action — $ rationale — evidence — reversibility. "
-            "Horizon tags: now (<48h), week (sprint), quarter (structural). "
+            "You are the AOF operator secretary. Output Telegram HTML (parse_mode=HTML) only — "
+            "tags allowed: <b> <i> <u> <code> <blockquote>. No markdown. "
+            "Start with: 💰 <b>Daily revenue brief</b> · <u>operator read</u> "
+            "then a <b>Snapshot</b> of the real numbers (ledger, companion photos, pulse). "
+            "Then exactly 5 numbered moves ranked by short-term $ first. "
+            "Each move: N. <u>now|this week|this quarter</u> — <b>title</b> "
+            "then a <blockquote> with one charitable plain-language explanation of the number "
+            "AND one action the operator can do in the next hour "
+            "(named command like /surge /sponsors /loot or a specific CTA). "
             "Include at least one week or quarter item when evidence supports compounding bets. "
-            "Max 12 lines total. No markdown. Be specific to the JSON evidence."
+            "Max 24 lines. Be specific to the JSON. Never invent revenue that is not in the bundle."
         )
         user = json.dumps(bundle, default=str)[:12000]
         text = complete_chat_text_sync(

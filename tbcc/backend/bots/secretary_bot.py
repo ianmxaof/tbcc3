@@ -83,6 +83,20 @@ from app.services.format_engine import (
 from app.services.secretary_rag import build_rag_context_suffix
 from app.services.secretary_reply_mode import get_reply_mode, mode_label, set_reply_mode
 from app.services.secretary_sales_coach import build_sales_coach_suffix
+from app.services.secretary_drafts import (
+    append_triage_instruction,
+    build_redo_suffix,
+    count_drafts,
+    delete_draft,
+    get_draft,
+    list_drafts,
+    parse_triage_candidates,
+    pick_candidate,
+    resolve_variant,
+    save_draft,
+    suggest_customer_lines,
+    update_draft_reply,
+)
 from app.database.session import SessionLocal
 from app.models.secretary_knowledge import SecretaryKnowledgeEntry
 from app.models.secretary_user_context import SecretaryUserContext
@@ -116,7 +130,6 @@ from app.services.secretary_llm_config import (
     probe_secretary_llm,
 )
 from app.services.secretary_llm import (
-    REDO_STYLE_HINTS,
     complete_secretary_chat,
     default_system_prompt,
     fetch_subscription_catalog_snippet,
@@ -139,8 +152,32 @@ API_BASE = (os.getenv("TBCC_SECRETARY_API_URL") or os.getenv("TBCC_API_URL") or 
 
 # (user_id, deque of monotonic timestamps)
 _rate_log: dict[int, deque[float]] = {}
-_pending_drafts: dict[str, dict[str, object]] = {}
 _business_msg_seen: dict[str, float] = {}
+
+
+def _save_draft(**kwargs: object) -> dict:
+    with SessionLocal() as db:
+        return save_draft(db, **kwargs)  # type: ignore[arg-type]
+
+
+def _load_draft(draft_id: str) -> dict | None:
+    with SessionLocal() as db:
+        return get_draft(db, draft_id)
+
+
+def _update_draft_reply(draft_id: str, reply: str, candidates: dict | None = None) -> dict | None:
+    with SessionLocal() as db:
+        return update_draft_reply(db, draft_id, reply, candidates=candidates)
+
+
+def _drop_draft(draft_id: str) -> bool:
+    with SessionLocal() as db:
+        return delete_draft(db, draft_id)
+
+
+def _list_pending_drafts(limit: int = 20) -> list[dict]:
+    with SessionLocal() as db:
+        return list_drafts(db, limit=limit)
 
 
 def _secretary_token() -> str:
@@ -402,16 +439,21 @@ def _draft_keyboard(
     *,
     user_id: int,
     reply_mode: str = "pilot",
+    candidates: dict | None = None,
 ) -> InlineKeyboardMarkup:
-    copy_text = reply_plain[:256] if len(reply_plain) > 256 else reply_plain
+    cands = candidates if isinstance(candidates, dict) else {}
+    copy_src = str(cands.get("natural") or reply_plain)
+    copy_text = copy_src[:256] if len(copy_src) > 256 else copy_src
     row0: list[InlineKeyboardButton] = [
-        InlineKeyboardButton("✓ Send", callback_data=f"sec:ap:{draft_id}"),
-        InlineKeyboardButton("✗ Drop", callback_data=f"sec:rj:{draft_id}"),
+        InlineKeyboardButton("Send N", callback_data=f"sec:ap:{draft_id}:n"),
+        InlineKeyboardButton("Send C", callback_data=f"sec:ap:{draft_id}:k"),
+        InlineKeyboardButton("Send X", callback_data=f"sec:ap:{draft_id}:x"),
+        InlineKeyboardButton("Drop", callback_data=f"sec:rj:{draft_id}"),
     ]
     try:
         row0.insert(
             0,
-            InlineKeyboardButton("📋 Copy", copy_text=CopyTextButton(text=copy_text)),
+            InlineKeyboardButton("Copy N", copy_text=CopyTextButton(text=copy_text)),
         )
     except TypeError:
         pass
@@ -444,20 +486,31 @@ def _format_draft_card(
     reply_plain: str,
     reply_mode: str = "pilot",
     coach_hint: str = "",
+    candidates: dict | None = None,
 ) -> str:
     who_disp = f"@{html.escape(who)}" if who and who != "no_username" else "no @"
     cust = html.escape(customer_line[:400])
-    reply = html.escape(reply_plain[:2800])
     mode = html.escape(mode_label(reply_mode))
     coach_line = ""
     if coach_hint:
-        coach_line = f"🧭 Coach: <i>{html.escape(coach_hint[:120])}</i>\n"
+        coach_line = f"Coach: <i>{html.escape(coach_hint[:120])}</i>\n"
+    cands = candidates if isinstance(candidates, dict) else {}
+    n = html.escape(str(cands.get("natural") or reply_plain)[:400])
+    k = html.escape(str(cands.get("clear") or "")[:400])
+    x = html.escape(str(cands.get("close") or "")[:400])
+    body_replies = f"<b>N</b> natural\n<pre>{n}</pre>\n"
+    if k:
+        body_replies += f"<b>C</b> clear\n<pre>{k}</pre>\n"
+    if x:
+        body_replies += f"<b>X</b> close\n<pre>{x}</pre>"
+    if not k and not x:
+        body_replies = f"<pre>{html.escape(reply_plain[:2800])}</pre>"
     return (
         f"<b>{draft_id}</b> · {who_disp} · <code>{user_id}</code>\n"
         f"Mode: <b>{mode}</b> · next turns use this until you toggle\n"
         f"{coach_line}"
-        f"📩 {cust}\n\n"
-        f"<pre>{reply}</pre>"
+        f"In: {cust}\n\n"
+        f"{body_replies}"
     )
 
 
@@ -471,6 +524,7 @@ async def _send_draft_to_admin(
     reply_plain: str,
     reply_mode: str = "pilot",
     coach_hint: str = "",
+    candidates: dict | None = None,
 ) -> None:
     targets = _draft_notify_chat_ids()
     if not targets:
@@ -483,8 +537,11 @@ async def _send_draft_to_admin(
         reply_plain=reply_plain,
         reply_mode=reply_mode,
         coach_hint=coach_hint,
+        candidates=candidates,
     )
-    markup = _draft_keyboard(draft_id, reply_plain, user_id=user_id, reply_mode=reply_mode)
+    markup = _draft_keyboard(
+        draft_id, reply_plain, user_id=user_id, reply_mode=reply_mode, candidates=candidates
+    )
     for admin_id in targets:
         try:
             await context.bot.send_message(
@@ -497,13 +554,17 @@ async def _send_draft_to_admin(
             logger.warning("secretary: could not DM admin %s draft %s: %s", admin_id, draft_id, e)
 
 
-async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_id: str) -> tuple[bool, str]:
-    item = _pending_drafts.get(draft_id)
+async def _deliver_draft_to_customer(
+    context: ContextTypes.DEFAULT_TYPE, draft_id: str, *, variant: str | None = None
+) -> tuple[bool, str]:
+    item = await asyncio.to_thread(_load_draft, draft_id)
     if not item:
         return False, f"Draft {draft_id} not found."
     chat_id = int(item["chat_id"])
     bc_id = item.get("business_connection_id")
-    text = str(item["reply"])
+    text = pick_candidate(item, variant)
+    if not text:
+        text = str(item.get("reply") or "")[:4096]
     try:
         if bc_id:
             await context.bot.send_message(
@@ -522,8 +583,9 @@ async def _deliver_draft_to_customer(context: ContextTypes.DEFAULT_TYPE, draft_i
             finalize_assistant_turn_for_user(user_id, text)
         except Exception as e:
             logger.warning("format_engine draft finalize uid=%s: %s", user_id, e)
-    _pending_drafts.pop(draft_id, None)
-    return True, f"Sent {draft_id}."
+    await asyncio.to_thread(_drop_draft, draft_id)
+    label = resolve_variant(variant)
+    return True, f"Sent {draft_id} ({label})."
 
 
 async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -534,10 +596,11 @@ async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.reply_text("Only the configured admin can approve drafts here.")
         return
     if not context.args:
-        await msg.reply_text("Usage: /approve <draft_id>")
+        await msg.reply_text("Usage: /approve <draft_id> [n|c|x]")
         return
     draft_id = str(context.args[0]).strip().upper()
-    ok, detail = await _deliver_draft_to_customer(context, draft_id)
+    variant = str(context.args[1]).strip() if len(context.args) > 1 else "n"
+    ok, detail = await _deliver_draft_to_customer(context, draft_id, variant=variant)
     await msg.reply_text(detail)
 
 
@@ -552,8 +615,8 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("Usage: /reject <draft_id>")
         return
     draft_id = str(context.args[0]).strip().upper()
-    if draft_id in _pending_drafts:
-        _pending_drafts.pop(draft_id, None)
+    removed = await asyncio.to_thread(_drop_draft, draft_id)
+    if removed:
         await msg.reply_text(f"Rejected draft {draft_id}.")
     else:
         await msg.reply_text(f"Draft {draft_id} not found.")
@@ -573,27 +636,25 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("OpenAI not configured.")
         return
     draft_id = str(context.args[0]).strip().upper()
-    item = _pending_drafts.get(draft_id)
+    item = await asyncio.to_thread(_load_draft, draft_id)
     if not item:
         await msg.reply_text(f"Draft {draft_id} not found.")
         return
     style = (context.args[1].strip().lower() if len(context.args) > 1 else "pro")
     custom = " ".join(context.args[2:]).strip() if len(context.args) > 2 else ""
     llm_messages = item.get("llm_messages")
-    if not isinstance(llm_messages, list):
+    if not isinstance(llm_messages, list) or not llm_messages:
         await msg.reply_text("No LLM context stored for this draft — reject and wait for a new customer message.")
         return
-    suffix = REDO_STYLE_HINTS.get(style, "")
-    if style == "custom" and custom:
-        suffix = f"Rewrite the assistant reply with this instruction: {custom}"
-    elif not suffix:
-        suffix = REDO_STYLE_HINTS["pro"]
+    suffix = build_redo_suffix(str(item.get("extra_system_suffix") or ""), style, custom)
     try:
         reply = await complete_secretary_chat(llm_messages, extra_system_suffix=suffix)
     except Exception as e:
         await msg.reply_text(f"Redo failed: {e}")
         return
-    item["reply"] = reply[:3500]
+    cands = parse_triage_candidates(reply)
+    natural = cands["natural"]
+    await asyncio.to_thread(_update_draft_reply, draft_id, natural, cands)
     who = str(item.get("who") or "no_username")
     uid = int(item.get("user_id") or 0)
     cust = str(item.get("customer_preview") or "")
@@ -605,9 +666,10 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         who=who,
         user_id=uid,
         customer_line=cust,
-        reply_plain=reply[:3500],
+        reply_plain=natural,
         reply_mode=rmode,
         coach_hint=str(item.get("coach_hint") or ""),
+        candidates=cands,
     )
     await msg.reply_text(f"↻ {draft_id} — new suggestion above.")
 
@@ -657,29 +719,31 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     draft_id = parts[2].upper()
     await query.answer()
     if action == "ap":
-        ok, detail = await _deliver_draft_to_customer(context, draft_id)
+        variant = parts[3] if len(parts) >= 4 else "n"
+        ok, detail = await _deliver_draft_to_customer(context, draft_id, variant=variant)
         if query.message:
             await query.message.reply_text(detail)
         return
     if action == "rj":
-        if draft_id in _pending_drafts:
-            _pending_drafts.pop(draft_id, None)
-            if query.message:
-                await query.message.reply_text(f"Dropped {draft_id}.")
+        removed = await asyncio.to_thread(_drop_draft, draft_id)
+        if removed and query.message:
+            await query.message.reply_text(f"Dropped {draft_id}.")
         return
     if action == "rd" and len(parts) >= 4:
         style = parts[3].lower()
-        item = _pending_drafts.get(draft_id)
-        if not item or not isinstance(item.get("llm_messages"), list):
+        item = await asyncio.to_thread(_load_draft, draft_id)
+        if not item or not isinstance(item.get("llm_messages"), list) or not item.get("llm_messages"):
             await query.answer("Draft expired.", show_alert=True)
             return
-        suffix = REDO_STYLE_HINTS.get(style, REDO_STYLE_HINTS["pro"])
+        suffix = build_redo_suffix(str(item.get("extra_system_suffix") or ""), style, "")
         try:
             reply = await complete_secretary_chat(item["llm_messages"], extra_system_suffix=suffix)
         except Exception as e:
             await query.answer(f"Redo failed: {e}", show_alert=True)
             return
-        item["reply"] = reply[:3500]
+        cands = parse_triage_candidates(reply)
+        natural = cands["natural"]
+        await asyncio.to_thread(_update_draft_reply, draft_id, natural, cands)
         who = str(item.get("who") or "no_username")
         uid = int(item.get("user_id") or 0)
         cust = str(item.get("customer_preview") or "")
@@ -691,9 +755,10 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             who=who,
             user_id=uid,
             customer_line=cust,
-            reply_plain=reply[:3500],
+            reply_plain=natural,
             reply_mode=rmode,
             coach_hint=str(item.get("coach_hint") or ""),
+            candidates=cands,
         )
         if query.message:
             await query.message.reply_text(f"↻ {draft_id} ({style})")
@@ -706,11 +771,13 @@ async def cmd_drafts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _can_manage_drafts(update):
         await msg.reply_text("Only the configured admin can view pending drafts here.")
         return
-    if not _pending_drafts:
+    items = await asyncio.to_thread(_list_pending_drafts, 20)
+    if not items:
         await msg.reply_text("No pending drafts.")
         return
     lines = ["<b>Pending drafts</b>"]
-    for did, item in list(_pending_drafts.items())[-20:]:
+    for item in items:
+        did = html.escape(str(item.get("draft_id") or ""))
         who = html.escape(str(item.get("who") or "unknown"))
         uid = html.escape(str(item.get("user_id") or ""))
         lines.append(f"• <code>{did}</code> — @{who} id <code>{uid}</code>")
@@ -1052,7 +1119,7 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 def _public_commands_reference() -> str:
     return (
-        "<b>Public commands</b> (@aof_secretary_bot)\n\n"
+        "<b>Public commands</b> · <u>@aof_secretary_bot</u>\n\n"
         "<b>FAQ</b>\n"
         "/start · /help — intro & menu\n"
         "/menu — inline shortcuts\n"
@@ -1065,7 +1132,7 @@ def _public_commands_reference() -> str:
 
 def _admin_commands_reference() -> str:
     return (
-        "<b>Admin commands</b>\n"
+        "<b>Admin commands</b> · <u>operator</u>\n"
         "<i>Your Telegram user id must match </i><code>ADMIN_TELEGRAM_ID</code><i>.</i>\n\n"
         "<b>Navigation</b>\n"
         "/menu — main inline menu\n"
@@ -1435,7 +1502,7 @@ async def cmd_fe_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "contexts": ctx_n,
                 "knowledge": know_n,
                 "phases": phases,
-                "drafts": len(_pending_drafts),
+                "drafts": count_drafts(db),
             }
         finally:
             db.close()
@@ -1484,7 +1551,16 @@ async def _send_inbox_digest(
         unread_only=unread_only,
     )
     text = format_inbox_digest(events, title=title, empty_hint=empty_hint)
-    await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True)
+    try:
+        await _reply(msg, text, context, parse_mode="HTML", disable_web_page_preview=True)
+    except TelegramError as exc:
+        logger.warning("inbox digest HTML rejected (%s); sending plain fallback", exc)
+        plain = re.sub(r"<[^>]+>", "", text)
+        plain = (
+            f"{title}\n\n{plain.strip()[:3500]}\n\n"
+            "(HTML send failed — this is the plain fallback.)"
+        )
+        await _reply(msg, plain[:4096], context, disable_web_page_preview=True)
 
 
 async def cmd_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1549,17 +1625,21 @@ async def cmd_inbox_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     total = list_inbox_events(limit=100)
     focus = get_focus_state()
     usage = triage_usage_today()
+    from app.services.secretary_report_copy import format_inbox_status_html
+
     await _reply(
         msg,
-        "📊 <b>Inbox status</b>\n\n"
-        f"Capture: <code>{'on' if inbox_enabled() else 'off'}</code>\n"
-        f"Stored (recent): <code>{len(total)}</code>\n"
-        f"Unread: <code>{len(unread)}</code>\n"
-        f"Last /read: <code>{'never' if last_read <= 0 else 'set'}</code>\n"
-        f"Focus: <code>{html.escape(str(focus.get('profile') or 'off'))}</code>\n"
-        f"Lock events: <code>{lock_events_recent_count()}</code>\n"
-        f"Cursor triage: <code>{'on' if triage_enabled() else 'off'}</code> "
-        f"({usage.get('used', 0)}/{usage.get('cap', 0)} today)",
+        format_inbox_status_html(
+            capture_on=inbox_enabled(),
+            stored=len(total),
+            unread=len(unread),
+            last_read_set=last_read > 0,
+            focus=str(focus.get("profile") or "off"),
+            lock_events=lock_events_recent_count(),
+            triage_on=triage_enabled(),
+            triage_used=int(usage.get("used") or 0),
+            triage_cap=int(usage.get("cap") or 0),
+        ),
         context,
         parse_mode="HTML",
     )
@@ -1943,21 +2023,14 @@ async def cmd_flywheel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     data = await asyncio.to_thread(_load)
     st = data["status"]
     pending = data["pending"]
-    lines = [
-        "🔄 <b>Ops flywheel</b>",
-        f"Enabled: <code>{st.get('enabled')}</code> · Approval: <code>{st.get('approval')}</code>",
-        f"Pending: <code>{len(pending)}</code> · Registry: <code>{len(st.get('registry_codes') or [])}</code> codes",
-        "",
-        "Flywheel tick: <code>tbcc/scripts/run-tbcc-flywheel-tick.ps1</code>\n"
-        "OpenClaw (external): <code>tbcc/docs/OPENCLAW_TBCC_INTEGRATION.md</code>",
-        "API: <code>POST /ops/flywheel/tick</code>",
-    ]
-    for p in pending[:5]:
-        lines.append(
-            f"· <code>{html.escape(str(p.get('id')))}</code> "
-            f"{html.escape(str(p.get('code')))} — {html.escape(str(p.get('label') or '')[:60])}"
-        )
-    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
+    from app.services.secretary_report_copy import format_flywheel_card_html
+
+    await _reply(
+        msg,
+        format_flywheel_card_html(status=st, pending=pending),
+        context,
+        parse_mode="HTML",
+    )
 
 
 async def cmd_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1989,18 +2062,14 @@ async def cmd_direction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     report = await asyncio.to_thread(_run)
     directions = report.get("directions") or []
     narrative = report.get("narrative")
-    from app.services.analytics_direction import format_direction_html
+    from app.services.secretary_report_copy import format_direction_report_html
 
-    body = format_direction_html(directions, narrative=narrative)
-    summary = report.get("evidence_summary") or {}
-    if summary:
-        body += (
-            "\n\n<i>income_usd="
-            + html.escape(str(summary.get("income_usd")))
-            + " · pool_approved="
-            + html.escape(str(summary.get("pool_approved")))
-            + f" · {days}d</i>"
-        )
+    body = format_direction_report_html(
+        directions,
+        narrative=narrative,
+        evidence_summary=report.get("evidence_summary") or {},
+        days=days,
+    )
     await _reply(msg, body, context, parse_mode="HTML")
 
 
@@ -2027,19 +2096,9 @@ async def cmd_surge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = await asyncio.to_thread(_run)
     st = data.get("state") or {}
     result = data.get("result") or {}
-    lines = [
-        "🔥 <b>Undress surge</b>",
-        f"Hits: <code>{st.get('hits_in_window')}</code> / threshold <code>{st.get('threshold')}</code>",
-        f"Spike active: <code>{st.get('spike_active')}</code>",
-        f"Blast: <code>{result.get('ok')}</code>",
-    ]
-    if result.get("skipped"):
-        lines.append(f"Skipped: <code>{html.escape(str(result.get('reason')))}</code>")
-    if result.get("queued"):
-        lines.append(f"Queued: <code>{len(result.get('queued') or [])}</code> scheduler(s)")
-    if result.get("error"):
-        lines.append(f"Error: <code>{html.escape(str(result.get('error')))}</code>")
-    await _reply(msg, "\n".join(lines), context, parse_mode="HTML")
+    from app.services.secretary_report_copy import format_surge_card_html
+
+    await _reply(msg, format_surge_card_html(state=st, result=result), context, parse_mode="HTML")
 
 
 async def cmd_stack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2751,6 +2810,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if is_new_lead:
         try:
+            from app.services.secretary_report_copy import format_new_lead_html
+
             who_lead = (user.username or "").strip() or str(user.id)
             surface = "business" if is_business else "direct"
             phase = "introduction"
@@ -2765,10 +2826,12 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 category="system",
                 severity="important",
                 title=f"New lead · {who_lead}",
-                body=(
-                    f"Surface: <b>{html.escape(surface)}</b> · Mode: <b>{html.escape(mode_label(customer_mode))}</b>\n"
-                    f"Phase: <code>{html.escape(phase)}</code> · uid <code>{user.id}</code>\n\n"
-                    f"📩 {html.escape(user_text[:400])}"
+                body=format_new_lead_html(
+                    surface=surface,
+                    mode_label=mode_label(customer_mode),
+                    phase=phase,
+                    user_id=user.id,
+                    customer_text=user_text,
                 ),
                 meta={
                     "code": "secretary_new_lead",
@@ -2789,9 +2852,14 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         extra = extra + suggest_suffix
         prev_lines: list[str] = context.user_data.get(BIZ_LINES_KEY) or []
-        prev_lines = [str(x).strip() for x in prev_lines if str(x).strip()]
-        if prev_lines:
-            joined = "\n".join(f"- {line[:900]}" for line in prev_lines[-8:])
+        db_hist_for_suggest: list[dict[str, str]] = []
+        if not prev_lines and format_engine_enabled():
+            db_hist_for_suggest = await asyncio.to_thread(load_recent_messages_for_llm, user.id)
+            if db_hist_for_suggest and db_hist_for_suggest[-1].get("content") == user_text:
+                db_hist_for_suggest = db_hist_for_suggest[:-1]
+        thread_lines = suggest_customer_lines(prev_lines, db_hist_for_suggest)
+        if thread_lines:
+            joined = "\n".join(f"- {line[:900]}" for line in thread_lines[-8:])
             user_block = (
                 "Earlier customer messages (same thread, no bot replies shown to them):\n"
                 f"{joined}\n\nLatest message:\n{user_text}"
@@ -2817,6 +2885,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         messages.extend(hist[-(_history_max_messages()) :])
         messages.append({"role": "user", "content": user_text})
 
+    extra = append_triage_instruction(extra)
     try:
         reply = await complete_secretary_chat(messages, extra_system_suffix=extra)
     except Exception as e:
@@ -2824,6 +2893,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if suggest_mode:
             try:
                 from app.services.admin_inbox import push_admin_inbox_event
+                from app.services.secretary_report_copy import format_draft_fail_html
 
                 who = (user.username or "").strip() or str(user.id)
                 await asyncio.to_thread(
@@ -2831,11 +2901,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     category="system",
                     severity="important",
                     title=f"Secretary draft failed · {who}",
-                    body=(
-                        f"Customer said: {html.escape(user_text[:300])}\n\n"
-                        "LLM error — <b>no reply was sent</b> to the customer. "
-                        "Fix LLM config or reply manually."
-                    ),
+                    body=format_draft_fail_html(who=who, customer_text=user_text),
                     meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
                     instant=True,
                 )
@@ -2849,6 +2915,9 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
+    cands = parse_triage_candidates(reply)
+    natural = cands["natural"]
+
     if suggest_mode:
         lines = context.user_data.get(BIZ_LINES_KEY) or []
         lines.append(user_text)
@@ -2858,19 +2927,21 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if admin_ids:
             draft_id = secrets.token_hex(3).upper()
             who = (user.username or "").strip() or "no_username"
-            safe_reply = reply[:3500]
-            _pending_drafts[draft_id] = {
-                "chat_id": msg.chat_id,
-                "business_connection_id": str(bc_id) if bc_id else None,
-                "reply": safe_reply,
-                "user_id": user.id,
-                "who": who,
-                "customer_preview": user_text[:500],
-                "llm_messages": [dict(m) for m in messages],
-                "coach_hint": coach_hint,
-                "reply_mode": customer_mode,
-                "created_at": int(time.time()),
-            }
+            await asyncio.to_thread(
+                _save_draft,
+                draft_id=draft_id,
+                chat_id=msg.chat_id,
+                business_connection_id=str(bc_id) if bc_id else None,
+                user_id=user.id,
+                who=who,
+                customer_preview=user_text[:500],
+                reply=natural,
+                llm_messages=[dict(m) for m in messages],
+                extra_system_suffix=extra,
+                coach_hint=coach_hint,
+                reply_mode=customer_mode,
+                candidates=cands,
+            )
             try:
                 await _send_draft_to_admin(
                     context,
@@ -2878,9 +2949,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     who=who,
                     user_id=user.id,
                     customer_line=user_text,
-                    reply_plain=safe_reply,
+                    reply_plain=natural,
                     reply_mode=customer_mode,
                     coach_hint=coach_hint,
+                    candidates=cands,
                 )
                 try:
                     from app.services.admin_inbox import push_admin_inbox_event
@@ -2891,9 +2963,11 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         severity="important",
                         title=f"Draft ready · {who}",
                         body=(
-                            f"📩 {html.escape(user_text[:280])}\n\n"
-                            f"<pre>{html.escape(safe_reply[:600])}</pre>\n\n"
-                            f"<i>Draft <code>{draft_id}</code> — tap buttons in DM or /approve {draft_id}</i>"
+                            f"In: {html.escape(user_text[:280])}\n\n"
+                            f"<b>N</b> <pre>{html.escape(cands.get('natural', '')[:400])}</pre>\n"
+                            f"<b>C</b> <pre>{html.escape(cands.get('clear', '')[:400])}</pre>\n"
+                            f"<b>X</b> <pre>{html.escape(cands.get('close', '')[:400])}</pre>\n\n"
+                            f"<i>Draft <code>{draft_id}</code> — Send N/C/X or /approve {draft_id} n</i>"
                         ),
                         meta={"code": "secretary_draft", "draft_id": draft_id, "telegram_user_id": user.id},
                         instant=True,
@@ -2908,10 +2982,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "TBCC_SECRETARY_SUGGEST_NOTIFY_CHAT_ID — cannot deliver FAQ draft"
             )
     else:
-        await _reply(msg, reply[:4096], context)
+        await _reply(msg, natural[:4096], context)
         if format_ctx_id is not None:
             try:
-                await asyncio.to_thread(finalize_assistant_turn, format_ctx_id, reply[:4096])
+                await asyncio.to_thread(finalize_assistant_turn, format_ctx_id, natural[:4096])
             except Exception as e:
                 logger.warning("format_engine finalize failed ctx=%s: %s", format_ctx_id, e)
         hist2: list[dict[str, str]] = context.user_data.get(HISTORY_KEY) or []
@@ -2920,7 +2994,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             for m in hist2
             if m.get("role") in ("user", "assistant", "system")
         ]
-        next_hist = hist2 + [{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}]
+        next_hist = hist2 + [{"role": "user", "content": user_text}, {"role": "assistant", "content": natural}]
         max_keep = _history_max_messages()
         context.user_data[HISTORY_KEY] = next_hist[-max_keep:]
 

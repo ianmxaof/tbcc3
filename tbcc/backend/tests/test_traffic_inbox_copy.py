@@ -136,3 +136,36 @@ def test_compact_line_one_block():
     assert "Beacon click" in line
     assert "DrawAI" in line
     assert "49m" in line
+
+
+def test_system_revenue_brief_not_escaped():
+    ev = {
+        "category": "system",
+        "title": "Daily revenue brief",
+        "body": "<b>Daily revenue brief</b>\n1. <u>now</u> — <b>Ship loot CTAs</b>",
+        "meta": {"code": "revenue_brief"},
+    }
+    from app.services.traffic_inbox_copy import format_system_compact_line
+
+    line = format_system_compact_line(ev, ago="1h")
+    assert "<b>Daily revenue brief</b>" in line
+    assert "&lt;b&gt;" not in line
+    assert "1h" in line
+
+
+def test_inbox_digest_keeps_revenue_brief_html(monkeypatch):
+    monkeypatch.setenv("TBCC_INBOX_ENABLED", "1")
+    monkeypatch.setattr("app.services.admin_inbox.get_last_read_ts", lambda: 0)
+    events = [
+        {
+            "category": "system",
+            "title": "Daily revenue brief",
+            "body": "<b>Daily revenue brief</b>\n<blockquote>Ship loot</blockquote>",
+            "ts_unix": 9000,
+            "meta": {"code": "revenue_brief"},
+        }
+    ]
+    text = format_inbox_digest(events, title="TBCC Inbox")
+    assert "<blockquote>Ship loot</blockquote>" in text
+    assert "&lt;blockquote&gt;" not in text
+    assert "operator feed" in text
