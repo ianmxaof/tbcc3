@@ -329,6 +329,16 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
                         for row in (clip_meta.get("labels") or [])
                         if isinstance(row, dict) and row.get("slug")
                     ]
+                    # Raw embedding for the gatekeeper prototype bank (record_label /
+                    # inbox-split blending) — separate sidecar call from classify above.
+                    try:
+                        from app.services.clip_classifier import embed_image_bytes
+
+                        embed_res = embed_image_bytes(img_for_clip)
+                        if embed_res.ok and embed_res.embedding:
+                            out["clip_embedding"] = embed_res.embedding
+                    except Exception:
+                        logger.debug("clip embed skipped media_id=%s", media_id, exc_info=True)
                     try:
                         raw_cj = m.classification_json
                         extras = json.loads(raw_cj) if raw_cj else {}

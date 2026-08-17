@@ -280,8 +280,9 @@ def apply_gatekeeper_after_ingest(
     verdict = evaluate_media(inp)
     apply_verdict_to_media(db, media, verdict)
 
+    expected_lane_key = (inp.expected_lane or "").strip().lower()
     split_out: dict[str, Any] | None = None
-    if (inp.expected_lane or "").strip().lower() == "inbox":
+    if expected_lane_key == "inbox":
         # Runs regardless of verdict — an untagged trusted-hub inbox deposit
         # already reaches approve on quality alone (no lane assigned), which
         # is the majority mixed-dump case. Split must not skip approved rows
@@ -296,6 +297,28 @@ def apply_gatekeeper_after_ingest(
             split_out = maybe_auto_split_inbox(db, int(media_id), caption=inp.caption, enrich=enrich)
         except Exception:
             logger.debug("inbox split skipped media_id=%s", media_id, exc_info=True)
+    else:
+        from app.data.clip_slug_lane_map import SPLIT_LANE_KEYS
+
+        if expected_lane_key in SPLIT_LANE_KEYS:
+            # Named-topic deposit -> expected_lane is gold (locked design C).
+            # Caption-only here (no embedding); auto_tag_enrich adds an
+            # embedding-bearing row once/if CLIP is available.
+            try:
+                from app.services.gatekeeper_prototypes import media_is_hard_blocked, record_label
+
+                embedding = (enrich or {}).get("clip_embedding")
+                record_label(
+                    db,
+                    media_id=int(media_id),
+                    file_unique_id=str(getattr(media, "file_unique_id", "") or ""),
+                    lanes=[expected_lane_key],
+                    source="hub_topic",
+                    embedding=embedding if isinstance(embedding, list) else None,
+                    hard_block=media_is_hard_blocked(media),
+                )
+            except Exception:
+                logger.debug("gold label record skipped media_id=%s", media_id, exc_info=True)
 
     split_routed = bool(split_out) and (
         split_out.get("action") == "auto_route" or split_out.get("reason") == "already_routed"

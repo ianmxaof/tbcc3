@@ -234,6 +234,23 @@ def classify_pil(image: Image.Image, *, top_k: int = 5) -> dict[str, Any]:
     }
 
 
+def embed_pil(image: Image.Image) -> list[float]:
+    """L2-normalized CLIP image embedding — same encode_image path as classify_pil,
+    no catalog required (gatekeeper prototype bank consumes this, not the 1260-slug
+    catalog scores)."""
+    import torch
+
+    _ensure_model()
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    tensor = _preprocess(image).unsqueeze(0).to(_device)
+    with torch.no_grad():
+        img_feat = _model.encode_image(tensor)
+        img_feat = img_feat / img_feat.norm(dim=-1, keepdim=True)
+        img_np = img_feat.cpu().numpy()[0]
+    return [float(v) for v in img_np]
+
+
 @app.on_event("startup")
 def _startup():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -286,4 +303,39 @@ def classify_path(body: dict):
         return classify_pil(image, top_k=min(top_k, 20))
     except Exception as e:
         logger.exception("classify-path failed")
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/embed")
+async def embed_upload(file: UploadFile = File(...)):
+    """Raw CLIP image embedding for the gatekeeper prototype bank — no catalog needed."""
+    try:
+        raw = await file.read()
+        if not raw or len(raw) < 32:
+            raise HTTPException(status_code=400, detail="empty file")
+        image = Image.open(BytesIO(raw))
+        vec = embed_pil(image)
+        return {"ok": True, "dim": len(vec), "embedding": vec}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("embed failed")
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@app.post("/embed-path")
+def embed_path(body: dict):
+    """Embed image at local path (same machine as sidecar)."""
+    p = str(body.get("path") or "").strip()
+    if not p:
+        raise HTTPException(status_code=400, detail="path required")
+    path = Path(p)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    try:
+        image = Image.open(path)
+        vec = embed_pil(image)
+        return {"ok": True, "dim": len(vec), "embedding": vec}
+    except Exception as e:
+        logger.exception("embed-path failed")
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})

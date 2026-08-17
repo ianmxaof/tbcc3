@@ -372,6 +372,13 @@ def operator_approve_media(
         if fallback and fallback not in ("inbox", "packs"):
             selected = [fallback]
 
+    try:
+        from app.services.gatekeeper_prototypes import media_is_hard_blocked
+
+        hard_blocked = media_is_hard_blocked(media)
+    except Exception:
+        hard_blocked = False
+
     media.status = "approved"
     extra: dict[str, Any] = {}
     if selected:
@@ -384,6 +391,23 @@ def operator_approve_media(
     db.commit()
     record_operator_approve(db, media)
     clear_picked_lanes(media_id)
+
+    if selected:
+        # No synchronous CLIP call on an operator's Telegram tap — embedding
+        # arrives later via the hub_topic hook if/when auto_tag_enrich runs.
+        try:
+            from app.services.gatekeeper_prototypes import record_label
+
+            record_label(
+                db,
+                media_id=int(media_id),
+                file_unique_id=str(getattr(media, "file_unique_id", "") or ""),
+                lanes=selected,
+                source="operator_approve",
+                hard_block=hard_blocked,
+            )
+        except Exception:
+            logger.debug("gold label record skipped media_id=%s", media_id, exc_info=True)
 
     routed_lanes: list[str] = []
     if selected and lane_picker_enabled():
@@ -669,6 +693,13 @@ def operator_reject_media(
     if not media:
         return {"ok": False, "reason": "not_found"}
 
+    try:
+        from app.services.gatekeeper_prototypes import media_is_hard_blocked
+
+        hard_blocked = media_is_hard_blocked(media)
+    except Exception:
+        hard_blocked = False
+
     media.status = "rejected"
     from app.services.gatekeeper_lane_picker import clear_picked_lanes
 
@@ -681,6 +712,22 @@ def operator_reject_media(
         extra=demote_info,
     )
     db.commit()
+
+    # Negative label — do not add to any lane centroid (lanes=[], no embedding).
+    try:
+        from app.services.gatekeeper_prototypes import record_label
+
+        record_label(
+            db,
+            media_id=int(media_id),
+            file_unique_id=str(getattr(media, "file_unique_id", "") or ""),
+            lanes=[],
+            source="operator_reject",
+            hard_block=hard_blocked,
+        )
+    except Exception:
+        logger.debug("reject label record skipped media_id=%s", media_id, exc_info=True)
+
     logger.info(
         "gatekeeper operator reject media_id=%s operator=%s streak=%s demoted=%s",
         media_id,

@@ -113,6 +113,39 @@ def classify_image_bytes(image_bytes: bytes, *, top_k: int = 5, timeout: float =
     )
 
 
+@dataclass
+class ClipEmbedResult:
+    ok: bool
+    dim: int
+    embedding: list[float]
+    error: str | None = None
+
+
+def embed_image_bytes(image_bytes: bytes, *, timeout: float = 90.0) -> ClipEmbedResult:
+    """Raw CLIP image embedding for the gatekeeper prototype bank — no catalog required."""
+    base = _base_url()
+    if not base or not image_bytes or len(image_bytes) < 32:
+        return ClipEmbedResult(False, 0, [], "clip_disabled_or_empty")
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            r = client.post(
+                f"{base}/embed",
+                files={"file": ("image.jpg", image_bytes, "application/octet-stream")},
+            )
+            data = r.json() if r.content else {}
+    except Exception as e:
+        logger.warning("clip embed bytes failed: %s", e)
+        return ClipEmbedResult(False, 0, [], str(e))
+    if not data.get("ok"):
+        return ClipEmbedResult(False, 0, [], str(data.get("error") or "clip_error"))
+    embedding = data.get("embedding") if isinstance(data.get("embedding"), list) else []
+    return ClipEmbedResult(
+        ok=True,
+        dim=int(data.get("dim") or len(embedding)),
+        embedding=[float(v) for v in embedding],
+    )
+
+
 def clip_label_slugs(result: ClipClassifyResult, *, max_labels: int = 3) -> list[str]:
     if not result.ok:
         return []

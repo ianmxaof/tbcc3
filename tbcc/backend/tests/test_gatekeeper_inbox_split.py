@@ -277,6 +277,41 @@ def test_already_approved_untagged_inbox_still_enters_split(monkeypatch):
     assert routed == {"lanes": ["blowjob"]}
 
 
+def test_clip_and_prototype_disagree_no_auto_route(monkeypatch):
+    """Phase 3 rule E: disagreement between CLIP's top pick and the prototype
+    bank's top pick forces quarantine with both preselected, even though each
+    individually would have cleared the auto-route threshold."""
+    _patch_hub_origin(monkeypatch)
+    _patch_split_redis(monkeypatch)
+    _patch_lane_picker_redis(monkeypatch)
+    routed = {"called": False}
+    monkeypatch.setattr(
+        "app.services.gatekeeper_review.enqueue_lane_route_for_media",
+        lambda mid, lanes: routed.__setitem__("called", True),
+    )
+    monkeypatch.setattr(
+        "app.services.gatekeeper_prototypes.score_embedding",
+        lambda db, vec: [("milf", 0.55), ("ass", 0.30)],
+    )
+
+    media = _media("")  # no caption signal — isolates the CLIP-vs-prototype conflict
+    db = _db(media)
+    out = maybe_auto_split_inbox(
+        db,
+        101,
+        caption="",
+        enrich={
+            "clip_labels": [{"slug": "thick-booty", "score": 0.6}],  # CLIP says ass
+            "clip_embedding": [0.1, 0.2, 0.3],
+        },
+    )
+
+    assert out["action"] == "quarantine_preselect"
+    assert out["prototype_disagrees"] is True
+    assert set(out["lanes"]) == {"ass", "milf"}
+    assert routed["called"] is False
+
+
 def test_scrape_origin_never_auto_splits(monkeypatch):
     _patch_scrape_origin(monkeypatch)
     _patch_split_redis(monkeypatch)
