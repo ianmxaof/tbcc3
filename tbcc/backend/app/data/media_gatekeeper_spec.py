@@ -384,9 +384,7 @@ def glob_lane_fit(inp: MediaGatekeeperInput) -> GlobResult:
     extra: dict[str, Any] = {"expected": expected, "detected": detected, "proposed_lanes": proposed_lanes}
     score_delta = 0
 
-    # Mixed-bulk inbox: never fail lane_fit on untagged/ambiguous inbox media —
-    # proposed_lanes carries the split signal for the inbox split helper instead.
-    if not expected or expected == "inbox":
+    if not expected:
         return GlobResult(name="lane_fit", pass_=True, flags=flags, score_delta=0, extra=extra)
 
     if not detected:

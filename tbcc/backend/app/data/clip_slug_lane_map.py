@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 
 from app.data.aof_storage_hub_map import CONTENT_LANE_NETWORK_KEYS
-from app.services.aof_lane_tag_map import LANE_TAG_MAP, suggest_lane_keys_from_tags
+from app.services.aof_lane_tag_map import LANE_TAG_MAP
 
 # Mixed-bulk split targets — hub content lanes minus inbox (the source) and
 # packs (mega/link parcels, not visually classifiable feed media).
@@ -130,6 +130,30 @@ CLIP_SLUG_TO_LANE: dict[str, tuple[str, ...]] = {
 
 _TOKEN_RE = re.compile(r"#?(\w+)", re.UNICODE)
 
+# LANE_TAG_MAP has 2-3 letter fragments ("ai", "bj", "bop", "ass") that are
+# plain English substrings ("waiting", "abject", "captain"...). A bare
+# `fragment in text` check false-positives on ordinary captions — guard
+# short fragments with a word boundary; longer fragments keep substring
+# matching (e.g. "curvy" should still hit "curvyness").
+_SHORT_FRAGMENT_LEN = 4
+
+
+def _fragment_pattern(fragment: str) -> re.Pattern[str]:
+    escaped = re.escape(fragment)
+    if len(fragment) < _SHORT_FRAGMENT_LEN:
+        return re.compile(rf"(?<!\w){escaped}(?!\w)", re.UNICODE)
+    return re.compile(escaped, re.UNICODE)
+
+
+_FRAGMENT_PATTERNS: dict[str, re.Pattern[str]] = {
+    fragment: _fragment_pattern(fragment) for fragment in LANE_TAG_MAP
+}
+
+
+def _fragment_hit(fragment: str, text: str) -> bool:
+    pattern = _FRAGMENT_PATTERNS.get(fragment) or _fragment_pattern(fragment)
+    return bool(pattern.search(text))
+
 
 def _normalize_slug(slug: str) -> str:
     return (slug or "").strip().lower().replace(" ", "-")
@@ -157,7 +181,7 @@ def map_clip_slugs_to_lanes(
             text = key.replace("-", " ")
             hit: set[str] = set()
             for fragment, mapped in LANE_TAG_MAP.items():
-                if fragment in text:
+                if _fragment_hit(fragment, text):
                     hit.update(mapped)
             lanes = tuple(hit)
         for lane in lanes:
@@ -169,34 +193,43 @@ def map_clip_slugs_to_lanes(
 
 
 def map_text_to_lanes(caption: str, filename: str = "") -> list[str]:
-    """All plausible AOF split lanes from caption/filename hashtags — ranked, not just top-1."""
+    """All plausible AOF split lanes from caption/filename hashtags — ranked, not just top-1.
+
+    Uses a word-boundary-guarded scan of ``LANE_TAG_MAP`` directly rather than
+    ``suggest_lane_keys_from_tags`` — that helper's ``token in fragment``
+    fallback (built for short scrape hashtags) false-positives on ordinary
+    caption sentences (e.g. "i think this is great" -> "abg").
+    """
     text = f"{caption or ''}\n{filename or ''}".strip().lower()
     if not text:
         return []
     scores: dict[str, int] = {}
     for fragment, keys in LANE_TAG_MAP.items():
-        if fragment in text or f"#{fragment}" in text:
+        if _fragment_hit(fragment, text):
             for k in keys:
                 if k in SPLIT_LANE_KEYS:
                     scores[k] = scores.get(k, 0) + 1
-    for key in suggest_lane_keys_from_tags(text, limit=6):
-        if key in SPLIT_LANE_KEYS:
-            scores[key] = scores.get(key, 0) + 1
     if not scores:
         return []
     return sorted(scores, key=lambda k: scores[k], reverse=True)
 
 
 def caption_confidence(caption: str, filename: str = "") -> float:
-    """1.0 exact hashtag/token in LANE_TAG_MAP, 0.55 fragment/contains match, 0.0 no match."""
+    """1.0 exact hashtag/token in LANE_TAG_MAP, 0.55 fragment/contains match, 0.0 no match.
+
+    Only counts a hit whose mapped lane(s) are actual split targets — a tag
+    like ``#amateur`` or ``#packs`` resolves in ``LANE_TAG_MAP`` but has no
+    AOF split lane, so it must not score as a confident (or any) proposal.
+    """
     text = f"{caption or ''}\n{filename or ''}".strip().lower()
     if not text:
         return 0.0
     tokens = {m.group(1) for m in _TOKEN_RE.finditer(text)}
     for tok in tokens:
-        if tok in LANE_TAG_MAP:
+        keys = LANE_TAG_MAP.get(tok)
+        if keys and any(k in SPLIT_LANE_KEYS for k in keys):
             return 1.0
-    for fragment in LANE_TAG_MAP:
-        if fragment in text:
+    for fragment, keys in LANE_TAG_MAP.items():
+        if any(k in SPLIT_LANE_KEYS for k in keys) and _fragment_hit(fragment, text):
             return 0.55
     return 0.0
