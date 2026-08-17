@@ -361,17 +361,32 @@ def glob_trash(inp: MediaGatekeeperInput) -> GlobResult:
 
 
 def glob_lane_fit(inp: MediaGatekeeperInput) -> GlobResult:
+    from app.data.clip_slug_lane_map import map_clip_slugs_to_lanes, map_text_to_lanes
+
     expected = (inp.expected_lane or "").strip().lower() or None
     detected = detect_lane_from_text(inp.caption, inp.filename)
     if inp.clip_confident and inp.clip_slug:
         clip_lane = inp.clip_slug.strip().lower().replace(" ", "_")
         detected = clip_lane if not detected else detected
 
-    extra: dict[str, Any] = {"expected": expected, "detected": detected}
+    caption_lanes = map_text_to_lanes(inp.caption, inp.filename)
+    clip_lanes = [lane for lane, _score in map_clip_slugs_to_lanes([inp.clip_slug])] if inp.clip_slug else []
+
+    proposed_lanes: list[str] = []
+    for lane in caption_lanes + clip_lanes:
+        if lane not in proposed_lanes:
+            proposed_lanes.append(lane)
+
     flags: list[str] = []
+    if caption_lanes and clip_lanes and caption_lanes[0] != clip_lanes[0]:
+        flags.append("lane_ambiguous")
+
+    extra: dict[str, Any] = {"expected": expected, "detected": detected, "proposed_lanes": proposed_lanes}
     score_delta = 0
 
-    if not expected:
+    # Mixed-bulk inbox: never fail lane_fit on untagged/ambiguous inbox media —
+    # proposed_lanes carries the split signal for the inbox split helper instead.
+    if not expected or expected == "inbox":
         return GlobResult(name="lane_fit", pass_=True, flags=flags, score_delta=0, extra=extra)
 
     if not detected:
