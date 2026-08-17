@@ -175,6 +175,7 @@ def _default_format() -> dict[str, Any]:
             "distress_events": 0,
             "positive_signals": 0,
             "investment_score": 0.0,
+            "dropped_turns": 0,
         },
     }
 
@@ -261,6 +262,20 @@ def _infer_phase(
         distress_events = int(metrics.get("distress_events") or 0)
     except (TypeError, ValueError):
         distress_events = 0
+    try:
+        user_msgs = int(metrics.get("user_messages") or 0)
+    except (TypeError, ValueError):
+        user_msgs = 0
+    try:
+        asst_msgs = int(metrics.get("assistant_messages") or 0)
+    except (TypeError, ValueError):
+        asst_msgs = 0
+    try:
+        dropped_turns = int(metrics.get("dropped_turns") or 0)
+    except (TypeError, ValueError):
+        dropped_turns = 0
+    orphan_users = user_msgs - asst_msgs
+    drop_covers_orphans = orphan_users > 0 and dropped_turns >= orphan_users
 
     if state == "attached" and intensity >= 0.7 and user_message_count >= 3:
         return "engagement"
@@ -268,7 +283,7 @@ def _infer_phase(
     transactional = state == "transactional"
     dismissive = state == "dismissive" or analysis.disengagement_detected
 
-    if dismissive and user_message_count > 2:
+    if dismissive and user_message_count > 2 and not drop_covers_orphans:
         return "recovery"
     wants_support = bool(analysis.distress_detected or distress_events > 0)
     if wants_support and not transactional:
@@ -715,6 +730,25 @@ def record_external_assistant_turn(
     except Exception as e:
         db.rollback()
         logger.warning("format_engine record_external_assistant_turn failed uid=%s: %s", telegram_user_id, e)
+    finally:
+        db.close()
+
+
+def record_dropped_turn(telegram_user_id: int) -> None:
+    """Silent closure when a Pilot draft is dropped (Gap G7). No LLM, no message row."""
+    db = SessionLocal()
+    try:
+        ctx = get_or_create_context(db, int(telegram_user_id))
+        fmt = _load_format(ctx.interaction_format_json)
+        metrics = fmt.setdefault("metrics", {})
+        metrics["dropped_turns"] = int(metrics.get("dropped_turns") or 0) + 1
+        ctx.interaction_format_json = _save_format(fmt)
+        ctx.last_assistant_at = datetime.utcnow()
+        ctx.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning("format_engine record_dropped_turn failed uid=%s: %s", telegram_user_id, e)
     finally:
         db.close()
 

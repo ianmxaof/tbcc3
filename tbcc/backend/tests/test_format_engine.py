@@ -242,3 +242,77 @@ def test_transactional_prevents_support_phase():
     )
     assert out["phase"] != "support"
     assert out["phase"] == "engagement"
+
+
+def test_dropped_turn_increments_metric(db, monkeypatch):
+    from datetime import datetime
+
+    from app.models.secretary_user_context import SecretaryMessageRecord, SecretaryUserContext
+    from app.services.format_engine import (
+        _load_format,
+        _save_format,
+        _default_format,
+        record_dropped_turn,
+    )
+
+    monkeypatch.setattr("app.services.format_engine.SessionLocal", lambda: db)
+    monkeypatch.setattr(db, "close", lambda: None)
+
+    ctx = SecretaryUserContext(
+        telegram_user_id=7_007_001,
+        telegram_username="drop_user",
+        current_phase="engagement",
+        interaction_format_json=_save_format(_default_format()),
+    )
+    db.add(ctx)
+    db.commit()
+    before = ctx.last_assistant_at
+
+    record_dropped_turn(7_007_001)
+
+    row = db.query(SecretaryUserContext).filter(SecretaryUserContext.telegram_user_id == 7_007_001).one()
+    fmt = _load_format(row.interaction_format_json)
+    assert fmt["metrics"]["dropped_turns"] == 1
+    assert fmt["metrics"]["assistant_messages"] == 0
+    assert row.last_assistant_at is not None
+    assert before is None or row.last_assistant_at >= before
+    assert (datetime.utcnow() - row.last_assistant_at).total_seconds() < 10
+    asst_rows = (
+        db.query(SecretaryMessageRecord)
+        .filter(SecretaryMessageRecord.context_id == row.id, SecretaryMessageRecord.role == "assistant")
+        .count()
+    )
+    assert asst_rows == 0
+
+
+def test_dropped_turn_prevents_false_recovery(db, monkeypatch):
+    from app.models.secretary_user_context import SecretaryUserContext
+    from app.services.format_engine import _load_format, prepare_user_turn, record_dropped_turn
+
+    monkeypatch.setenv("TBCC_FORMAT_ENGINE_ENABLED", "1")
+    monkeypatch.setattr("app.services.format_engine.format_engine_enabled", lambda: True)
+    monkeypatch.setattr("app.services.format_engine.SessionLocal", lambda: db)
+    monkeypatch.setattr(db, "close", lambda: None)
+
+    def _no_refine(*, user_text, heuristic, prev_phase, new_phase, format_snapshot):
+        return heuristic, None
+
+    monkeypatch.setattr(
+        "app.services.format_engine_llm.refine_emotion_on_phase_change",
+        _no_refine,
+    )
+
+    uid = 7_007_007
+    prepare_user_turn(uid, "How do I subscribe?", username="g7")
+    prepare_user_turn(uid, "What is VIP access?", username="g7")
+    suffix, ctx_id, _ = prepare_user_turn(uid, "Can I see the catalog?", username="g7")
+    assert ctx_id is not None
+    row = db.query(SecretaryUserContext).filter(SecretaryUserContext.id == ctx_id).one()
+    assert row.current_phase == "engagement"
+
+    record_dropped_turn(uid)
+    prepare_user_turn(uid, "Can I still subscribe?", username="g7")
+    row = db.query(SecretaryUserContext).filter(SecretaryUserContext.telegram_user_id == uid).one()
+    fmt = _load_format(row.interaction_format_json)
+    assert fmt["metrics"]["dropped_turns"] == 1
+    assert row.current_phase == "engagement"

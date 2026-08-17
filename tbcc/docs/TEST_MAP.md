@@ -43,7 +43,7 @@ py -3.13 -m pytest <path> -x -q
 | **Gumroad Ping fulfill** | `tests/test_gumroad_ping.py`, `tests/test_aof_vip_membership.py` | EPO `tbcc_ref` → fulfill; VIP ladder ↔ ynnulc recurrences / price cents |
 | **VIP intro month** | `tests/test_vip_intro_eligibility.py` | First-time main-section gate; loot subs ignored |
 | **X promo / Gemini** | `tests/test_gemini_promo_prompt.py`, `tests/test_loot_tier_cards.py`, `tests/test_export_perchance_prompt_packs.py`, `tests/test_creative_orchestrator.py`, `tests/test_perchance_image_client.py`, `tests/test_aof_media_brand_naming.py`, `tests/test_r2_promo_upload.py` | Promo + loot builders; R2 `library/` + `sfw-x-promo/` key helpers; Perchance/watermark brand; API needs GEMINI_API_KEY |
-| **LLM completions** | `tests/test_llm_completions_providers.py`, `tests/test_llm_provider_fallback.py` | OpenRouter / Featherless / Venice / Groq / Cerebras / NVIDIA NIM / custom OpenAI-compatible runtime presets (`tbcc_uncensored_chat.py`); secretary fallback chain |
+| **LLM completions** | `tests/test_llm_completions_providers.py`, `tests/test_llm_provider_fallback.py` | OpenRouter / Featherless / Venice / Groq / Cerebras / NVIDIA NIM / Mistral / custom OpenAI-compatible runtime presets (`tbcc_uncensored_chat.py`); secretary fallback chain |
 | **ThisVid** | `tests/test_thisvid_upload_provision.py` | Playwright upload MVP (local + URL mode) |
 | **ThisVid ext infinite scroll** | `node --test tbcc/extension/tests/thisvid-infinite-scroll-stress.test.mjs` | n+1 HTML engine RAM caps (from repo root); shared `thisvid-infinite-scroll.js` |
 | **Extension ZIP naming** | `node extension/tests/tbcc-zip-naming.test.mjs` | OnlyFans/Erome/Motherless/Fapello/X heuristics + bundle templates |

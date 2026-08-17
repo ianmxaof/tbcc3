@@ -83,6 +83,7 @@ from app.services.format_engine import (
     load_recent_messages_for_llm,
     prepare_user_turn,
     record_external_assistant_turn,
+    record_dropped_turn,
 )
 from app.services.secretary_rag import build_rag_context_suffix
 from app.services.secretary_reply_mode import get_reply_mode, mode_label, set_reply_mode
@@ -190,6 +191,18 @@ def _update_draft_reply(draft_id: str, reply: str, candidates: dict | None = Non
 def _drop_draft(draft_id: str) -> bool:
     with SessionLocal() as db:
         return delete_draft(db, draft_id)
+
+
+async def _reject_draft_recording_drop(draft_id: str) -> bool:
+    """Drop a Pilot draft; count it as a silent FE closure before delete (Gap G7)."""
+    item = await asyncio.to_thread(_load_draft, draft_id)
+    uid = int((item or {}).get("user_id") or 0) if item else 0
+    if uid:
+        try:
+            await asyncio.to_thread(record_dropped_turn, uid)
+        except Exception:
+            logger.warning("format_engine record_dropped_turn failed uid=%s", uid, exc_info=True)
+    return await asyncio.to_thread(_drop_draft, draft_id)
 
 
 def _list_pending_drafts(limit: int = 20) -> list[dict]:
@@ -658,7 +671,7 @@ async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await msg.reply_text("Usage: /reject <draft_id>")
         return
     draft_id = str(context.args[0]).strip().upper()
-    removed = await asyncio.to_thread(_drop_draft, draft_id)
+    removed = await _reject_draft_recording_drop(draft_id)
     if removed:
         await msg.reply_text(f"Rejected draft {draft_id}.")
     else:
@@ -779,7 +792,7 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await query.message.reply_text(detail)
         return
     if action == "rj":
-        removed = await asyncio.to_thread(_drop_draft, draft_id)
+        removed = await _reject_draft_recording_drop(draft_id)
         if removed and query.message:
             await query.message.reply_text(f"Dropped {draft_id}.")
         return

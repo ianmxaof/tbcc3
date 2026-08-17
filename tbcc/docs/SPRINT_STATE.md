@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-17 ~12:55 PT — Cerebras/NVIDIA secretary LLM fallback hops
+**Last updated:** 2026-08-17 ~13:12 PT — Mistral added to secretary LLM fallback hops
 
 ## Sprint goal
 
@@ -13,7 +13,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Item | Owner | Notes |
 |------|-------|-------|
 | Module A revenue stack | agent + operator | **2026-08-13 sitrep:** plans 24–26 active (5/15/50 @ 110/300/900⭐) — **0 pack subscriptions yet**; analytics `companion_photos_sold=0` (30d). Paywall + pack CTAs live on island companion/payment. **Operator:** firehose A/B still open; scoreboard empty until first charge. |
-| Secretary sales-rep Phase 1 | agent | **2026-08-17:** Cerebras + NVIDIA NIM wired as secretary LLM fallback hops (home `.env` keys; island keys + deploy still needed). Prior: FE G3 ethical charter local/uncommitted; G9 coach; G11 Business turns; G4 LLM emotion. |
+| Secretary sales-rep Phase 1 | agent | **2026-08-17:** Cerebras + NVIDIA NIM + Mistral wired as secretary LLM fallback hops (home `.env` keys; island keys + deploy still needed). Prior: FE G3 ethical charter local/uncommitted; G9 coach; G11 Business turns; G4 LLM emotion. |
 | Loot album delivery + import starvation | agent | **2026-08-13 sitrep:** dry-run thin lanes ass/big_tits/goon/full_length (would_restore 118) → **`--apply-refill --unpause` executed on island**. Still need fresh imports + Storage Hub deposits long-term. |
 | Pool album duplicate tiles | agent | **2026-08-01 shipped:** sent-cache composer dedupe + per-item cache msg ids + hub fetch (`media_message_resolve`). Island `local-20260801-1911-fix`; `TBCC_SENT_CACHE_ALBUM_SIZE=3`; audit demoted **323** dup rows (voyeur 304, ASS 19). Watch next Loot Room albums for unique tiles. |
 | Remixer `/rebundle` any-admin | agent | **2026-08-05:** `/rebundle` + `/rebundle go` (partial + delete sources). Commit `ce5b684`. Island `local-20260805-2117` deployed (album_composer + workers). Operator smoke: `/rebundle` in any admin group or hub **✅ Rebundle (+partial)**. |
