@@ -279,7 +279,28 @@ def apply_gatekeeper_after_ingest(
     )
     verdict = evaluate_media(inp)
     apply_verdict_to_media(db, media, verdict)
-    if verdict.verdict == "quarantine":
+
+    split_out: dict[str, Any] | None = None
+    if (inp.expected_lane or "").strip().lower() == "inbox":
+        # Runs regardless of verdict — an untagged trusted-hub inbox deposit
+        # already reaches approve on quality alone (no lane assigned), which
+        # is the majority mixed-dump case. Split must not skip approved rows
+        # or most of the dump never splits. Runs BEFORE the quarantine-review
+        # enqueue below: auto-route already forwards + approves the item, so
+        # a review card must not also go out for it (operator approve on that
+        # card would re-forward since gatekeeper.verdict is untouched by the
+        # split's sibling classification_json key).
+        try:
+            from app.services.gatekeeper_inbox_split import maybe_auto_split_inbox
+
+            split_out = maybe_auto_split_inbox(db, int(media_id), caption=inp.caption, enrich=enrich)
+        except Exception:
+            logger.debug("inbox split skipped media_id=%s", media_id, exc_info=True)
+
+    split_routed = bool(split_out) and (
+        split_out.get("action") == "auto_route" or split_out.get("reason") == "already_routed"
+    )
+    if verdict.verdict == "quarantine" and not split_routed:
         try:
             from app.services.gatekeeper_review import enqueue_quarantine_review
 

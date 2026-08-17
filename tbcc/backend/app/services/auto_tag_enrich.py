@@ -321,6 +321,14 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
                         clip_tag_count = _apply_metadata_tags(db, media_id, slug_pairs)
                         out["clip_tags"] = clip_tag_count
                     out["clip_confident"] = clip_confident
+                    out["clip_slug"] = clip_meta.get("top_slug") or None
+                    # Real per-slug scores for the gatekeeper inbox-split lane mapper —
+                    # never a bare slug list, per the locked design's auto-route rule.
+                    out["clip_labels"] = [
+                        {"slug": row.get("slug"), "score": row.get("score")}
+                        for row in (clip_meta.get("labels") or [])
+                        if isinstance(row, dict) and row.get("slug")
+                    ]
                     try:
                         raw_cj = m.classification_json
                         extras = json.loads(raw_cj) if raw_cj else {}
