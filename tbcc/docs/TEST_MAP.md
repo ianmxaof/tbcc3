@@ -20,7 +20,7 @@ py -3.13 -m pytest <path> -x -q
 | **Telegram** | `tests/test_telegram_*.py`, `tests/test_tbcc_telegram_admin.py` | |
 | **Storage / Mega** | `tests/test_mega_*.py`, `tests/test_storage_*.py` | |
 | **Link gate** | `tests/test_link_gate.py` | |
-| **Format engine / secretary sales-rep** | `tests/test_format_engine.py`, `tests/test_secretary_reply_mode.py`, `tests/test_secretary_sales_coach.py`, `tests/test_secretary_new_lead.py`, `tests/test_secretary_drafts.py` | Pilot/Auto, sales coach, new-lead flag; DB drafts; N/C/X short candidates |
+| **Format engine / secretary sales-rep** | `tests/test_format_engine.py`, `tests/test_format_engine_external_turn.py`, `tests/test_secretary_reply_mode.py`, `tests/test_secretary_sales_coach.py`, `tests/test_secretary_new_lead.py`, `tests/test_secretary_drafts.py`, `tests/test_secretary_intent.py`, `tests/test_llm_provider_fallback.py`, `tests/test_secretary_report_copy.py` | Pilot/Auto, drafts, intent gate, symmetry, LLM fallback, Telegram format cards, G11 operator business turns |
 | **Secretary operator reports** | `tests/test_secretary_report_copy.py`, `tests/test_traffic_inbox_copy.py`, `tests/test_revenue_brief.py`, `tests/test_admin_inbox_html.py` | Inbox / pulse / heuristic Telegram HTML; no double-escaped tags |
 | **Growth** | `tests/test_growth_reaction.py`, `tests/test_content_signals.py`, `tests/test_analytics_direction.py`, `tests/test_reddit_circuit.py`, `tests/test_reddit_surface_caption.py` | Growth signals + on-demand direction ranking; Reddit global cap, beacons, ledger |
 | **Env secrets / capture** | `tests/test_tbcc_env_secret_store.py` | Clipboard/.env key suggest + write |
@@ -43,7 +43,7 @@ py -3.13 -m pytest <path> -x -q
 | **Gumroad Ping fulfill** | `tests/test_gumroad_ping.py`, `tests/test_aof_vip_membership.py` | EPO `tbcc_ref` → fulfill; VIP ladder ↔ ynnulc recurrences / price cents |
 | **VIP intro month** | `tests/test_vip_intro_eligibility.py` | First-time main-section gate; loot subs ignored |
 | **X promo / Gemini** | `tests/test_gemini_promo_prompt.py`, `tests/test_loot_tier_cards.py`, `tests/test_export_perchance_prompt_packs.py`, `tests/test_creative_orchestrator.py`, `tests/test_perchance_image_client.py`, `tests/test_aof_media_brand_naming.py`, `tests/test_r2_promo_upload.py` | Promo + loot builders; R2 `library/` + `sfw-x-promo/` key helpers; Perchance/watermark brand; API needs GEMINI_API_KEY |
-| **LLM completions** | `tests/test_llm_completions_providers.py` | OpenRouter / Featherless / Venice / custom OpenAI-compatible runtime presets (`tbcc_uncensored_chat.py`) |
+| **LLM completions** | `tests/test_llm_completions_providers.py`, `tests/test_llm_provider_fallback.py` | OpenRouter / Featherless / Venice / Groq / Cerebras / NVIDIA NIM / custom OpenAI-compatible runtime presets (`tbcc_uncensored_chat.py`); secretary fallback chain |
 | **ThisVid** | `tests/test_thisvid_upload_provision.py` | Playwright upload MVP (local + URL mode) |
 | **ThisVid ext infinite scroll** | `node --test tbcc/extension/tests/thisvid-infinite-scroll-stress.test.mjs` | n+1 HTML engine RAM caps (from repo root); shared `thisvid-infinite-scroll.js` |
 | **Extension ZIP naming** | `node extension/tests/tbcc-zip-naming.test.mjs` | OnlyFans/Erome/Motherless/Fapello/X heuristics + bundle templates |

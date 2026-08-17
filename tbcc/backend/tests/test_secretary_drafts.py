@@ -219,6 +219,35 @@ def test_clamp_and_parse_triage_json():
     assert pick_candidate(item, "n") == cands["natural"]
 
 
+def test_parse_triage_emotion_alongside_ncx():
+    from app.services.secretary_drafts import parse_triage_candidates, parse_triage_emotion
+
+    raw = (
+        '{"natural":"hey","clear":"VIP is in the payment bot.",'
+        '"close":"Open the payment bot.","emotion":{"state":"transactional","intensity":0.7,"signals":["price"]}}'
+    )
+    cands = parse_triage_candidates(raw)
+    assert set(cands) == {"natural", "clear", "close"}
+    emo = parse_triage_emotion(raw)
+    assert emo is not None
+    assert emo["state"] == "transactional"
+    assert emo["intensity"] == 0.7
+
+
+def test_extract_emotion_block_strips_tags():
+    from app.services.secretary_llm import extract_emotion_block
+
+    raw = (
+        '<<EMOTION>>{"state":"guarded","intensity":0.8,"signals":["short"]}<</EMOTION>>\n'
+        "yeah checkout is in the payment bot"
+    )
+    block, cleaned = extract_emotion_block(raw)
+    assert block is not None
+    assert block["state"] == "guarded"
+    assert "<<EMOTION>>" not in cleaned
+    assert "payment bot" in cleaned
+
+
 def test_save_draft_persists_candidates(db):
     from app.services.secretary_drafts import parse_triage_candidates
 

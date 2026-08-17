@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -28,12 +30,14 @@ def _max_tokens() -> int:
 
 def builtin_default_system_prompt() -> str:
     return (
-        "You are a concise customer support assistant for an adult content brand (AOF). "
-        "Answer FAQs about access, subscriptions, and how to buy. "
+        "You are a person DMing on Telegram for AOF — not a support desk, not a chatbot. "
+        "Match their energy. Short in, short out. No signatures, no 'AOF SECRETARY', "
+        "no quoting their message, no 'I'm here to help with subscriptions'. "
+        "Banned: 'How can I assist you', 'feel free to ask', 'I appreciate you reaching out'. "
         "Do not discuss minors, illegal activity, or non-consensual content. "
-        "If asked for specific purchases, packs, or payment links, say purchases are handled "
-        "by the official payment bot and give a short pointer to open it from the menu. "
-        "Keep replies under ~400 words unless the user asks for detail."
+        "Do not share other people's accounts. Do not buy SEO/homepage links. "
+        "Checkout only when they ask to buy — then one line to the payment bot. "
+        "Never dump the catalog."
     )
 
 
@@ -132,6 +136,44 @@ REDO_STYLE_HINTS: dict[str, str] = {
     "custom": "",  # filled from user instruction
 }
 
+AUTO_EMOTION_INSTRUCTION = (
+    "Before your response, emit a JSON block on its own line:\n"
+    '<<EMOTION>>{"state":"...","intensity":0.0,"signals":["...","..."]}<</EMOTION>>\n'
+    "Then your user-facing response."
+)
+
+_EMOTION_BLOCK_RE = re.compile(
+    r"<<EMOTION>>\s*(.*?)\s*<</EMOTION>>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def append_auto_emotion_instruction(suffix: str) -> str:
+    base = (suffix or "").strip()
+    if AUTO_EMOTION_INSTRUCTION in base or "<<EMOTION>>" in base:
+        return base or AUTO_EMOTION_INSTRUCTION
+    if base:
+        return base + "\n\n" + AUTO_EMOTION_INSTRUCTION
+    return AUTO_EMOTION_INSTRUCTION
+
+
+def extract_emotion_block(raw_llm_output: str) -> tuple[dict[str, Any] | None, str]:
+    """Pull <<EMOTION>>…<</EMOTION>> JSON out of an Auto completion; return (block, cleaned)."""
+    text = raw_llm_output or ""
+    match = _EMOTION_BLOCK_RE.search(text)
+    if not match:
+        return None, text.strip()
+    blob = (match.group(1) or "").strip()
+    cleaned = _EMOTION_BLOCK_RE.sub("", text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    try:
+        data = json.loads(blob)
+    except (TypeError, ValueError):
+        return None, cleaned
+    if not isinstance(data, dict):
+        return None, cleaned
+    return data, cleaned
+
 
 async def complete_secretary_chat(
     messages: list[dict[str, str]],
@@ -141,8 +183,8 @@ async def complete_secretary_chat(
     """
     messages: OpenAI-style chat messages (role + content), must include at least one user turn.
     """
-    from app.services.llm_completions import complete_chat_text_async
     from app.services.secretary_llm_config import resolve_secretary_text_llm_runtime
+    from app.services.system_prompts import prompt_text
 
     runtime = resolve_secretary_text_llm_runtime()
     if runtime is None:
@@ -154,21 +196,42 @@ async def complete_secretary_chat(
     if not messages:
         raise ValueError("messages empty")
 
+    extra_bits: list[str] = []
+    closer = prompt_text("aggressive_sales")
+    if closer:
+        extra_bits.append(closer)
+    spicy_on = (os.getenv("TBCC_SECRETARY_SPICY_PASSTHROUGH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if spicy_on:
+        spicy = prompt_text("spicy_passthrough")
+        if spicy:
+            extra_bits.append(spicy)
+
+    if extra_system_suffix.strip():
+        extra_bits.append(extra_system_suffix.strip())
+    extra = "\n\n".join(extra_bits)
+
     sys0 = messages[0] if messages[0].get("role") == "system" else None
     if sys0:
         body_msgs = [dict(sys0)]
-        if extra_system_suffix.strip():
-            body_msgs[0]["content"] = (body_msgs[0].get("content") or "") + "\n\n" + extra_system_suffix.strip()
+        if extra:
+            body_msgs[0]["content"] = (body_msgs[0].get("content") or "") + "\n\n" + extra
         body_msgs.extend(messages[1:])
     else:
-        body_msgs = [{"role": "system", "content": default_system_prompt() + (extra_system_suffix or "")}]
+        body_msgs = [{"role": "system", "content": default_system_prompt() + (("\n\n" + extra) if extra else "")}]
         body_msgs.extend(messages)
 
-    return await complete_chat_text_async(
+    from app.services.llm_provider_fallback import complete_chat_text_with_fallback
+
+    return await complete_chat_text_with_fallback(
         body_msgs,
+        primary=runtime,
         model=_model(),
         max_tokens=_max_tokens(),
         temperature=0.6,
         timeout=90.0,
-        runtime=runtime,
     )

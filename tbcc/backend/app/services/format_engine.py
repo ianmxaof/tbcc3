@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 FORMAT_VERSION = 4
 PHASES = ("introduction", "engagement", "support", "recovery")
+EMOTION_STATES = (
+    "anxious",
+    "resentful",
+    "dismissive",
+    "attached",
+    "transactional",
+    "guarded",
+)
 
 # Observable emotion signals — keyword/heuristic only; not diagnostic labels.
 _EMOTION_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -166,6 +174,7 @@ def _default_format() -> dict[str, Any]:
             "assistant_messages": 0,
             "distress_events": 0,
             "positive_signals": 0,
+            "investment_score": 0.0,
         },
     }
 
@@ -185,6 +194,9 @@ def _load_format(raw: str | None) -> dict[str, Any]:
             base["interaction_guidelines"].update(data["interaction_guidelines"])
         if "metrics" in data and isinstance(data["metrics"], dict):
             base["metrics"].update(data["metrics"])
+        for extra_key in ("last_intent", "llm_refinements", "llm_emotion", "dominant_emotion"):
+            if extra_key in data:
+                base[extra_key] = data[extra_key]
         return base
     except Exception:
         return _default_format()
@@ -200,6 +212,36 @@ def _hours_since(dt: datetime | None) -> float | None:
     return (datetime.utcnow() - dt).total_seconds() / 3600.0
 
 
+def _infer_emotion_from_text(text: str) -> EmotionAnalysis:
+    """Deprecated keyword path — kept as fallback. Always returns a neutral stub.
+
+    Main pipeline infers emotion from the same LLM completion via
+    ``apply_llm_derived_emotion``. ``analyze_message`` remains the importable
+    keyword heuristic for tests and callers that still want it.
+    """
+    return EmotionAnalysis()
+
+
+def _analysis_from_stored_emotion(fmt: dict[str, Any]) -> EmotionAnalysis:
+    """Map last LLM emotion block onto EmotionAnalysis for phase inference."""
+    llm = fmt.get("llm_emotion") if isinstance(fmt.get("llm_emotion"), dict) else {}
+    state = str(llm.get("state") or fmt.get("dominant_emotion") or "neutral").strip().lower()
+    try:
+        intensity = float(llm.get("intensity") or 0.0)
+    except (TypeError, ValueError):
+        intensity = 0.0
+    intensity = max(0.0, min(1.0, intensity))
+    raw_signals = llm.get("signals") if isinstance(llm.get("signals"), list) else []
+    triggers = [str(s).strip() for s in raw_signals if str(s).strip()][:12]
+    return EmotionAnalysis(
+        dominant=state if state in EMOTION_STATES or state == "neutral" else "neutral",
+        signals={state: intensity} if state and state != "neutral" else {},
+        triggers=triggers,
+        distress_detected=state in ("anxious", "guarded") and intensity >= 0.6,
+        disengagement_detected=state == "dismissive",
+    )
+
+
 def _infer_phase(
     fmt: dict[str, Any],
     *,
@@ -208,20 +250,138 @@ def _infer_phase(
     hours_since_last_user: float | None,
 ) -> str:
     current = str(fmt.get("phase") or "introduction")
+    llm = fmt.get("llm_emotion") if isinstance(fmt.get("llm_emotion"), dict) else {}
+    state = str(llm.get("state") or analysis.dominant or "").strip().lower()
+    try:
+        intensity = float(llm.get("intensity") or 0.0)
+    except (TypeError, ValueError):
+        intensity = 0.0
+    metrics = fmt.get("metrics") if isinstance(fmt.get("metrics"), dict) else {}
+    try:
+        distress_events = int(metrics.get("distress_events") or 0)
+    except (TypeError, ValueError):
+        distress_events = 0
 
-    if analysis.distress_detected:
-        return "support"
-    if analysis.disengagement_detected and user_message_count > 2:
-        return "recovery"
-    if current == "support" and not analysis.distress_detected and analysis.dominant in ("neutral", "positive", "confusion"):
+    if state == "attached" and intensity >= 0.7 and user_message_count >= 3:
         return "engagement"
-    if current == "recovery" and analysis.dominant not in ("disengagement",):
+
+    transactional = state == "transactional"
+    dismissive = state == "dismissive" or analysis.disengagement_detected
+
+    if dismissive and user_message_count > 2:
+        return "recovery"
+    wants_support = bool(analysis.distress_detected or distress_events > 0)
+    if wants_support and not transactional:
+        return "support"
+    if current == "support" and not analysis.distress_detected and analysis.dominant in (
+        "neutral",
+        "positive",
+        "confusion",
+        "transactional",
+        "attached",
+    ):
+        return "engagement"
+    if current == "recovery" and analysis.dominant not in ("disengagement", "dismissive"):
         return "engagement"
     if hours_since_last_user is not None and hours_since_last_user >= 48 and user_message_count > 1:
         return "recovery"
     if user_message_count <= 2:
         return "introduction"
     return "engagement"
+
+
+def apply_llm_derived_emotion(
+    context_state: dict[str, Any] | None,
+    emotion_block_json: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge one LLM emotion block into the living format document (Gap G4)."""
+    fmt = dict(context_state) if isinstance(context_state, dict) else _default_format()
+    block = emotion_block_json if isinstance(emotion_block_json, dict) else {}
+    state = str(block.get("state") or "neutral").strip().lower()
+    if state not in EMOTION_STATES:
+        state = "neutral"
+    try:
+        intensity = float(block.get("intensity") or 0.0)
+    except (TypeError, ValueError):
+        intensity = 0.0
+    intensity = max(0.0, min(1.0, intensity))
+    raw_signals = block.get("signals") if isinstance(block.get("signals"), list) else []
+    signals = [str(s).strip() for s in raw_signals if str(s).strip()][:8]
+
+    emotions = list(fmt.get("dominant_emotions") or [])
+    if state != "neutral":
+        emotions.append(state)
+    fmt["dominant_emotions"] = emotions[-12:]
+    last3 = [str(x) for x in (fmt["dominant_emotions"] or [])[-3:] if str(x).strip()]
+    if last3:
+        fmt["dominant_emotion"] = max(set(last3), key=last3.count)
+    else:
+        fmt["dominant_emotion"] = state
+
+    triggers = list(fmt.get("observed_triggers") or [])
+    for item in signals:
+        if item not in triggers:
+            triggers.append(item)
+    fmt["observed_triggers"] = triggers[-16:]
+
+    metrics = fmt.setdefault("metrics", {})
+    if state in ("anxious", "guarded") and intensity >= 0.6:
+        metrics["distress_events"] = int(metrics.get("distress_events") or 0) + 1
+
+    fmt["llm_emotion"] = {"state": state, "intensity": intensity, "signals": signals}
+
+    analysis = _analysis_from_stored_emotion(fmt)
+    try:
+        mc = int(metrics.get("user_messages") or 0)
+    except (TypeError, ValueError):
+        mc = 0
+    prev_phase = str(fmt.get("phase") or "introduction")
+    new_phase = _infer_phase(
+        fmt,
+        user_message_count=max(1, mc),
+        analysis=analysis,
+        hours_since_last_user=None,
+    )
+    if new_phase != prev_phase:
+        history = fmt.setdefault("phase_history", [])
+        if not isinstance(history, list):
+            history = []
+        history.append({"from": prev_phase, "to": new_phase, "at": datetime.utcnow().isoformat()})
+        fmt["phase_history"] = history[-20:]
+        fmt["phase"] = new_phase
+
+    prefs = fmt.setdefault("communication_preferences", {})
+    if isinstance(prefs, dict):
+        prefs["preferred_tone"] = state if state != "neutral" else prefs.get("preferred_tone", "clear")
+        prefs["distress_detected"] = bool(analysis.distress_detected)
+
+    return fmt
+
+
+def apply_llm_derived_emotion_for_user(telegram_user_id: int, emotion_block_json: dict[str, Any] | None) -> None:
+    """Persist ``apply_llm_derived_emotion`` onto the user's FE row."""
+    if not emotion_block_json or not format_engine_enabled():
+        return
+    db = SessionLocal()
+    try:
+        ctx = (
+            db.query(SecretaryUserContext)
+            .filter(SecretaryUserContext.telegram_user_id == int(telegram_user_id))
+            .one_or_none()
+        )
+        if not ctx:
+            return
+        fmt = apply_llm_derived_emotion(_load_format(ctx.interaction_format_json), emotion_block_json)
+        ctx.interaction_format_json = _save_format(fmt)
+        ctx.current_phase = str(fmt.get("phase") or ctx.current_phase or "introduction")
+        ctx.emotional_summary = _emotional_summary(fmt, _analysis_from_stored_emotion(fmt))
+        ctx.updated_at = datetime.utcnow()
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning("format_engine apply_llm_emotion failed uid=%s: %s", telegram_user_id, e)
+    finally:
+        db.close()
 
 
 def _update_format(
@@ -385,8 +545,14 @@ def prepare_user_turn(
     db = SessionLocal()
     try:
         ctx = get_or_create_context(db, telegram_user_id, username=username)
-        analysis = analyze_message(user_text)
+        from app.services.secretary_intent import classify_intent
+
+        intent = classify_intent(user_text)
         fmt = _load_format(ctx.interaction_format_json)
+        fmt["last_intent"] = intent
+        analysis = _analysis_from_stored_emotion(fmt)
+        if not fmt.get("llm_emotion"):
+            analysis = _infer_emotion_from_text(user_text)
         hours_gap = _hours_since(ctx.last_user_at)
         user_count = int((fmt.get("metrics") or {}).get("user_messages") or 0) + 1
         prev_phase = str(fmt.get("phase") or "introduction")
@@ -412,7 +578,15 @@ def prepare_user_turn(
                 if llm_notes.get("current_focus"):
                     guidelines["current_focus"] = llm_notes["current_focus"]
 
-        fmt = _update_format(fmt, analysis=analysis, user_text=user_text, new_phase=new_phase)
+        fmt = _update_format(
+            fmt,
+            analysis=_infer_emotion_from_text(user_text),
+            user_text=user_text,
+            new_phase=new_phase,
+        )
+        metrics = fmt.setdefault("metrics", {})
+        mc = int(metrics.get("user_messages") or 0)
+        metrics["investment_score"] = min(1.0, (mc * 0.1) + (len(user_text or "") / 100.0))
 
         ctx.current_phase = new_phase
         ctx.interaction_format_json = _save_format(fmt)
@@ -498,6 +672,130 @@ def _persist_assistant(db: Session, ctx: SecretaryUserContext, assistant_text: s
     _prune_old_messages(db, ctx.id)
 
 
+def record_external_assistant_turn(
+    telegram_user_id: int,
+    text: str,
+    business_connection_id: str | None = None,
+) -> None:
+    """Silent FE write for operator-typed Telegram Business messages (Gap G11).
+
+    No phase inference, no LLM, no outbound send. ``business_connection_id`` is
+    accepted for the call site and ignored — we do not infer intent or emotion.
+    """
+    _ = business_connection_id
+    db = SessionLocal()
+    try:
+        ctx = get_or_create_context(db, int(telegram_user_id))
+        now = datetime.utcnow()
+        iso_now = now.isoformat()
+        phase = str(ctx.current_phase or "introduction")
+        fmt = _load_format(ctx.interaction_format_json)
+        metrics = fmt.setdefault("metrics", {})
+        metrics["assistant_messages"] = int(metrics.get("assistant_messages") or 0) + 1
+        history = fmt.get("phase_history")
+        if not isinstance(history, list):
+            history = []
+        history.append({"phase": phase, "marker": "manual_assistant", "ts": iso_now})
+        fmt["phase_history"] = history[-20:]
+        guidelines = fmt.setdefault("interaction_guidelines", {})
+        if isinstance(guidelines, dict):
+            guidelines["operator_intervened_at"] = iso_now
+        ctx.interaction_format_json = _save_format(fmt)
+        ctx.last_assistant_at = now
+        ctx.updated_at = now
+        db.add(
+            SecretaryMessageRecord(
+                context_id=ctx.id,
+                role="assistant",
+                content=(text or "")[:8000],
+                emotion_json=None,
+            )
+        )
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning("format_engine record_external_assistant_turn failed uid=%s: %s", telegram_user_id, e)
+    finally:
+        db.close()
+
+
+def _phase_charter(phase: str | None, verbosity: str) -> str:
+    """Phase-conditional ethical charter for the FE suffix (Gap G3).
+
+    Decoupled from the sales-coach allow-list: empty charter does not suppress
+    the coach, and a missing coach does not suppress this block.
+    """
+    key = (phase or "").strip().lower()
+    charters = {
+        "introduction": (
+            "Build rapport. Listen carefully to what the new user asks. "
+            "Do not dump FAQs or catalog. If they ask about checkout, point them to the payment bot. "
+            "No invented promotions."
+        ),
+        "engagement": (
+            "Help the user with what they asked. If they signal buying intent, hand them to the checkout bot. "
+            "Otherwise answer briefly. No help-desk tone. No fake scarcity. "
+            "Do not quote their own words back at them."
+        ),
+        "support": (
+            "Solve their problem first. Empathize. Do not pitch checkout while they are distressed. "
+            "Confirm resolution before mentioning product. No manipulation, no fake FOMO. Stay in support."
+        ),
+        "recovery": (
+            "Reach out warmly. Mention availability, not urgency. "
+            "No fake countdown timers or fake sold-out inventory. "
+            "If they re-engage, point them to the payment bot — do not dump the catalog."
+        ),
+    }
+    text = charters.get(key, "")
+    if not text:
+        return ""
+    if (verbosity or "").strip().lower() == "compact":
+        idx = text.find(".")
+        if idx >= 0:
+            return text[: idx + 1].strip()
+        return text.strip()
+    return text
+
+
+def build_behavioral_directive(context_state: dict[str, Any] | None) -> str:
+    """Phase/metric steering line injected into the FE LLM suffix (Gap G3).
+
+    Distress/support wins over early-rapport so we do not extract while
+    the thread is in support or has recorded distress events.
+    """
+    state = context_state if isinstance(context_state, dict) else {}
+    try:
+        message_count = int(state.get("message_count") or 0)
+    except (TypeError, ValueError):
+        message_count = 0
+    try:
+        distress_events = int(state.get("distress_events") or 0)
+    except (TypeError, ValueError):
+        distress_events = 0
+    phase = str(state.get("phase") or "").strip().lower()
+
+    if phase == "support" or distress_events > 0:
+        return "Hold space. Do not extract. Transition target from distress back to dependency."
+    if message_count < 3:
+        return "Build rapport. Establish emotional baseline. No transactional language."
+    if message_count >= 3 and phase == "engagement":
+        return "Introduce low-stakes logistical friction. Test compliance with minor requests."
+    return ""
+
+
+def _behavioral_state(ctx: SecretaryUserContext, fmt: dict[str, Any]) -> dict[str, Any]:
+    metrics = fmt.get("metrics") if isinstance(fmt.get("metrics"), dict) else {}
+    mc = int(ctx.message_count or 0)
+    if not mc:
+        mc = int(metrics.get("user_messages") or 0)
+    return {
+        "message_count": mc,
+        "phase": str(fmt.get("phase") or ctx.current_phase or "introduction"),
+        "distress_events": int(metrics.get("distress_events") or 0),
+    }
+
+
 def load_recent_messages_for_llm(telegram_user_id: int) -> list[dict[str, str]]:
     """DB-backed history for LLM when in-memory context is empty or after restart."""
     if not format_engine_enabled():
@@ -547,26 +845,39 @@ def build_context_suffix(
     phase = fmt.get("phase", ctx.current_phase)
     tone = guidelines.get("tone_directive", "clear and helpful")
     focus = guidelines.get("current_focus", "Answer the FAQ")
+    verb = "compact" if str(verbosity).strip().lower() == "compact" else "standard"
+    charter = _phase_charter(str(phase) if phase else None, verb)
 
     if verbosity == "compact":
+        intent = str(fmt.get("last_intent") or "")
         bits = [f"phase={phase}", f"signal={analysis.dominant}", f"tone={tone[:100]}"]
+        if intent:
+            bits.append(f"intent={intent}")
         if focus and focus != "Answer the FAQ":
             bits.append(f"focus={focus[:80]}")
         if analysis.triggers:
             bits.append(f"triggers={', '.join(analysis.triggers[:3])}")
         if guidelines.get("escalation_hint"):
             bits.append("escalate=human admin if needed")
-        return "FE context: " + "; ".join(bits) + ". Support only — no manipulation."
+        core = "FE context: " + "; ".join(bits)
+        if charter:
+            return core + ". " + charter
+        return core + "."
 
     lines = [
         "--- Format Engine (FE-LLMv4) context ---",
-        "Use this as observational context only. Do not manipulate, guilt, or create false intimacy.",
-        f"Interaction phase: {phase}",
-        f"Dominant signal (this message): {analysis.dominant}",
-        f"Tone directive: {tone}",
-        f"Current focus: {focus}",
-        f"Preferred response length: {prefs.get('response_length', 'medium')}",
     ]
+    if charter:
+        lines.append(charter)
+    lines.extend(
+        [
+            f"Interaction phase: {phase}",
+            f"Dominant signal (this message): {analysis.dominant}",
+            f"Tone directive: {tone}",
+            f"Current focus: {focus}",
+            f"Preferred response length: {prefs.get('response_length', 'medium')}",
+        ]
+    )
 
     if analysis.triggers:
         lines.append(f"Observed trigger phrases: {', '.join(analysis.triggers[:6])}")
@@ -597,6 +908,7 @@ def context_to_dict(ctx: SecretaryUserContext) -> dict[str, Any]:
         "telegram_username": ctx.telegram_username,
         "current_phase": ctx.current_phase,
         "emotional_summary": ctx.emotional_summary,
+        "reply_mode": (ctx.reply_mode or "").strip() or None,
         "message_count": ctx.message_count,
         "last_user_at": ctx.last_user_at.isoformat() if ctx.last_user_at else None,
         "last_assistant_at": ctx.last_assistant_at.isoformat() if ctx.last_assistant_at else None,
@@ -604,6 +916,62 @@ def context_to_dict(ctx: SecretaryUserContext) -> dict[str, Any]:
         "updated_at": ctx.updated_at.isoformat() if ctx.updated_at else None,
         "interaction_format": fmt,
     }
+
+
+def list_recent_contexts(
+    *,
+    q: str | None = None,
+    limit: int = 8,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Admin roster of Format Engine people, newest activity first."""
+    db = SessionLocal()
+    try:
+        query = db.query(SecretaryUserContext)
+        raw_q = (q or "").strip().lstrip("@")
+        if raw_q:
+            if raw_q.isdigit():
+                query = query.filter(SecretaryUserContext.telegram_user_id == int(raw_q))
+            else:
+                query = query.filter(SecretaryUserContext.telegram_username.ilike(f"%{raw_q}%"))
+        total = int(query.count() or 0)
+        rows = (
+            query.order_by(SecretaryUserContext.updated_at.desc())
+            .offset(max(0, int(offset)))
+            .limit(max(1, min(50, int(limit))))
+            .all()
+        )
+        return {"total": total, "items": [context_to_dict(r) for r in rows]}
+    finally:
+        db.close()
+
+
+def get_context_display(*, telegram_user_id: int | None = None, context_id: int | None = None) -> dict[str, Any] | None:
+    """Full format payload for an admin Telegram card (includes last customer line)."""
+    db = SessionLocal()
+    try:
+        query = db.query(SecretaryUserContext)
+        ctx = None
+        if context_id is not None:
+            ctx = query.filter(SecretaryUserContext.id == int(context_id)).one_or_none()
+        elif telegram_user_id is not None:
+            ctx = query.filter(SecretaryUserContext.telegram_user_id == int(telegram_user_id)).one_or_none()
+        if not ctx:
+            return None
+        out = context_to_dict(ctx)
+        last = (
+            db.query(SecretaryMessageRecord)
+            .filter(
+                SecretaryMessageRecord.context_id == ctx.id,
+                SecretaryMessageRecord.role == "user",
+            )
+            .order_by(SecretaryMessageRecord.created_at.desc())
+            .first()
+        )
+        out["last_user_text"] = (last.content or "").strip()[:400] if last else None
+        return out
+    finally:
+        db.close()
 
 
 def get_user_context_public_summary(telegram_user_id: int) -> dict[str, Any] | None:

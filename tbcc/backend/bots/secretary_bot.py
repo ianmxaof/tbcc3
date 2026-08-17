@@ -73,16 +73,26 @@ from bots.zeus_menu import (
 )
 
 from app.services.format_engine import (
+    apply_llm_derived_emotion_for_user,
     finalize_assistant_turn,
     finalize_assistant_turn_for_user,
     format_engine_enabled,
+    get_context_display,
     get_user_context_public_summary,
+    list_recent_contexts,
     load_recent_messages_for_llm,
     prepare_user_turn,
+    record_external_assistant_turn,
 )
 from app.services.secretary_rag import build_rag_context_suffix
 from app.services.secretary_reply_mode import get_reply_mode, mode_label, set_reply_mode
 from app.services.secretary_sales_coach import build_sales_coach_suffix
+from app.services.secretary_intent import classify_intent, intent_label
+from app.services.secretary_behavior import (
+    apply_symmetry,
+    behavior_suffix,
+    corpus_candidates,
+)
 from app.services.secretary_drafts import (
     append_triage_instruction,
     build_redo_suffix,
@@ -91,6 +101,8 @@ from app.services.secretary_drafts import (
     get_draft,
     list_drafts,
     parse_triage_candidates,
+    parse_triage_emotion,
+    apply_candidate_symmetry,
     pick_candidate,
     resolve_variant,
     save_draft,
@@ -130,8 +142,10 @@ from app.services.secretary_llm_config import (
     probe_secretary_llm,
 )
 from app.services.secretary_llm import (
+    append_auto_emotion_instruction,
     complete_secretary_chat,
     default_system_prompt,
+    extract_emotion_block,
     fetch_subscription_catalog_snippet,
     persist_system_prompt,
     resolve_system_prompt,
@@ -153,6 +167,9 @@ API_BASE = (os.getenv("TBCC_SECRETARY_API_URL") or os.getenv("TBCC_API_URL") or 
 # (user_id, deque of monotonic timestamps)
 _rate_log: dict[int, deque[float]] = {}
 _business_msg_seen: dict[str, float] = {}
+# message_id → unix time of our own business send (Pilot approve / Auto _reply echo-dedupe)
+_sent_business_msg_ids: dict[int, float] = {}
+_SENT_BUSINESS_MSG_TTL_S = 120.0
 
 
 def _save_draft(**kwargs: object) -> dict:
@@ -233,13 +250,14 @@ async def _reply(
     """Business chats need bot.send_message — Message.reply_text rejects business_connection_id."""
     bc = getattr(message, "business_connection_id", None)
     if bc is not None:
-        await context.bot.send_message(
+        sent = await context.bot.send_message(
             chat_id=message.chat_id,
             text=text,
             business_connection_id=str(bc),
             reply_to_message_id=message.message_id,
             **kwargs,
         )
+        _remember_sent_business_msg(getattr(sent, "message_id", None))
         return
     await message.reply_text(text, **kwargs)
 
@@ -428,6 +446,26 @@ def _already_processed_business_msg(bc_id: str, user_id: int, message_id: int) -
     return False
 
 
+def _prune_sent_business_msg_ids(now: float | None = None) -> None:
+    stamp = now if now is not None else time.time()
+    cutoff = stamp - _SENT_BUSINESS_MSG_TTL_S
+    for mid, ts in list(_sent_business_msg_ids.items()):
+        if ts < cutoff:
+            _sent_business_msg_ids.pop(mid, None)
+
+
+def _remember_sent_business_msg(message_id: int | None) -> None:
+    if message_id is None:
+        return
+    now = time.time()
+    _sent_business_msg_ids[int(message_id)] = now
+    _prune_sent_business_msg_ids(now)
+
+
+async def _prune_sent_business_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    _prune_sent_business_msg_ids()
+
+
 def _customer_reply_mode(user_id: int, *, is_business: bool) -> str:
     with SessionLocal() as db:
         return get_reply_mode(db, int(user_id), is_business=is_business)
@@ -567,9 +605,10 @@ async def _deliver_draft_to_customer(
         text = str(item.get("reply") or "")[:4096]
     try:
         if bc_id:
-            await context.bot.send_message(
+            sent = await context.bot.send_message(
                 chat_id=chat_id, text=text[:4096], business_connection_id=str(bc_id)
             )
+            _remember_sent_business_msg(getattr(sent, "message_id", None))
         else:
             await context.bot.send_message(chat_id=chat_id, text=text[:4096])
     except TypeError:
@@ -583,6 +622,10 @@ async def _deliver_draft_to_customer(
             finalize_assistant_turn_for_user(user_id, text)
         except Exception as e:
             logger.warning("format_engine draft finalize uid=%s: %s", user_id, e)
+        try:
+            _schedule_format_live(context, user_id)
+        except Exception:
+            logger.debug("format live refresh after draft send failed", exc_info=True)
     await asyncio.to_thread(_drop_draft, draft_id)
     label = resolve_variant(variant)
     return True, f"Sent {draft_id} ({label})."
@@ -652,6 +695,13 @@ async def cmd_redo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         await msg.reply_text(f"Redo failed: {e}")
         return
+    emotion_block = parse_triage_emotion(reply)
+    uid = int(item.get("user_id") or 0)
+    if emotion_block and uid:
+        try:
+            await asyncio.to_thread(apply_llm_derived_emotion_for_user, uid, emotion_block)
+        except Exception:
+            logger.debug("secretary redo emotion ingest failed uid=%s", uid, exc_info=True)
     cands = parse_triage_candidates(reply)
     natural = cands["natural"]
     await asyncio.to_thread(_update_draft_reply, draft_id, natural, cands)
@@ -704,6 +754,10 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
         label = mode_label(mode)
         await query.answer(f"Mode → {label}")
+        try:
+            _schedule_format_live(context, uid)
+        except Exception:
+            logger.debug("format live refresh after mode toggle failed", exc_info=True)
         if query.message:
             note = (
                 f"Mode for <code>{uid}</code> set to <b>{html.escape(label)}</b>. "
@@ -741,6 +795,13 @@ async def on_draft_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             await query.answer(f"Redo failed: {e}", show_alert=True)
             return
+        emotion_block = parse_triage_emotion(reply)
+        uid = int(item.get("user_id") or 0)
+        if emotion_block and uid:
+            try:
+                await asyncio.to_thread(apply_llm_derived_emotion_for_user, uid, emotion_block)
+            except Exception:
+                logger.debug("secretary redo emotion ingest failed uid=%s", uid, exc_info=True)
         cands = parse_triage_candidates(reply)
         natural = cands["natural"]
         await asyncio.to_thread(_update_draft_reply, draft_id, natural, cands)
@@ -1155,6 +1216,7 @@ def _admin_commands_reference() -> str:
         "/redo <code>draft_id</code> pro|casual|short\n"
         "<i>Draft cards: Send, Drop, Regenerate</i>\n\n"
         "<b>Format Engine and prompt</b>\n"
+        "/formats — people cards (live in this DM)\n"
         "/fe_stats — contexts, RAG, phases\n"
         "/sysprompt — view system prompt\n"
         "/set_sysprompt — set via next message, inline text, or reply\n"
@@ -1523,9 +1585,395 @@ async def cmd_fe_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"FAQ chunks: <b>{stats['knowledge']}</b>\n"
         f"Phases: {html.escape(phase_lines)}\n"
         f"Pending business drafts: <b>{stats['drafts']}</b>\n"
-        "\nDashboard: Automation → Bots &amp; workers, or System → Secretary / FAQ."
+        "\nPeople formats: <code>/formats</code> (live cards in this DM).\n"
+        "Dashboard: Automation → Bots &amp; workers, or System → Secretary / FAQ."
     )
     await _reply(msg, text, context, parse_mode="HTML")
+
+
+_FE_WATCH_KEY = "fe_format_watch"
+_FE_ROSTER_PAGE = 8
+_FE_LIVE_MAX = 6
+
+
+def _fe_watch(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    data = context.application.bot_data.get(_FE_WATCH_KEY)
+    if not isinstance(data, dict):
+        data = {
+            "enabled": False,
+            "chat_id": None,
+            "roster_message_id": None,
+            "roster_page": 0,
+            "roster_q": "",
+            "cards": {},
+            "order": [],
+        }
+        context.application.bot_data[_FE_WATCH_KEY] = data
+    data.setdefault("cards", {})
+    data.setdefault("order", [])
+    data.setdefault("roster_q", "")
+    data.setdefault("roster_page", 0)
+    return data
+
+
+def _fe_roster_keyboard(*, page: int, total: int, live: bool, query: str = "") -> InlineKeyboardMarkup:
+    pages = max(1, (max(0, int(total)) + _FE_ROSTER_PAGE - 1) // _FE_ROSTER_PAGE)
+    page = max(0, min(int(page), pages - 1))
+    prev_p = max(0, page - 1)
+    next_p = min(pages - 1, page + 1)
+    live_label = "⏸ Pause live" if live else "▶ Live on"
+    live_data = "sec:fe:live:0" if live else "sec:fe:live:1"
+    nav = [
+        InlineKeyboardButton("◀", callback_data=f"sec:fe:p:{prev_p}"),
+        InlineKeyboardButton(f"{page + 1}/{pages}", callback_data="sec:fe:r"),
+        InlineKeyboardButton("▶", callback_data=f"sec:fe:p:{next_p}"),
+    ]
+    return InlineKeyboardMarkup(
+        [
+            nav,
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="sec:fe:r"),
+                InlineKeyboardButton(live_label, callback_data=live_data),
+            ],
+        ]
+    )
+
+
+def _fe_people_keyboard(items: list[dict]) -> list[list[InlineKeyboardButton]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in items:
+        uid = int(item.get("telegram_user_id") or 0)
+        if not uid:
+            continue
+        from app.services.secretary_report_copy import format_who_label
+
+        who = format_who_label(item)
+        phase = str(item.get("current_phase") or "introduction")
+        mark = {"introduction": "👋", "engagement": "💬", "support": "🛟", "recovery": "🔁"}.get(phase, "•")
+        label = f"{mark} {who}"[:32]
+        rows.append([InlineKeyboardButton(label, callback_data=f"sec:fe:v:{uid}")])
+    return rows
+
+
+def _fe_card_keyboard(uid: int, *, live: bool) -> InlineKeyboardMarkup:
+    pin_label = "📌 Keep live" if live else "📌 Pin live"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data=f"sec:fe:v:{uid}"),
+                InlineKeyboardButton(pin_label, callback_data=f"sec:fe:pin:{uid}"),
+            ],
+            [InlineKeyboardButton("◀ Roster", callback_data="sec:fe:r")],
+        ]
+    )
+
+
+def _fe_not_modified(err: Exception) -> bool:
+    return "not modified" in str(err).lower()
+
+
+async def _fe_safe_edit(
+    bot,
+    *,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None,
+) -> bool:
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+            disable_web_page_preview=True,
+        )
+        return True
+    except TelegramError as e:
+        if _fe_not_modified(e):
+            return True
+        logger.debug("format card edit failed chat=%s mid=%s: %s", chat_id, message_id, e)
+        return False
+
+
+async def _fe_send_or_edit(
+    bot,
+    *,
+    chat_id: int,
+    message_id: int | None,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None,
+):
+    if message_id:
+        ok = await _fe_safe_edit(
+            bot, chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup
+        )
+        if ok:
+            return message_id
+    sent = await bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=reply_markup,
+        disable_web_page_preview=True,
+    )
+    return int(sent.message_id)
+
+
+async def _fe_load_roster(page: int, query: str) -> dict:
+    offset = max(0, int(page)) * _FE_ROSTER_PAGE
+    return await asyncio.to_thread(
+        list_recent_contexts, q=query or None, limit=_FE_ROSTER_PAGE, offset=offset
+    )
+
+
+async def _fe_render_roster(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    chat_id: int,
+    page: int | None = None,
+    query: str | None = None,
+    live: bool | None = None,
+) -> None:
+    from app.services.secretary_report_copy import format_formats_roster_html
+
+    watch = _fe_watch(context)
+    if page is not None:
+        watch["roster_page"] = max(0, int(page))
+    if query is not None:
+        watch["roster_q"] = query.strip().lstrip("@")
+    if live is not None:
+        watch["enabled"] = bool(live)
+    watch["chat_id"] = int(chat_id)
+    page_n = int(watch.get("roster_page") or 0)
+    q = str(watch.get("roster_q") or "")
+    data = await _fe_load_roster(page_n, q)
+    total = int(data.get("total") or 0)
+    items = list(data.get("items") or [])
+    pages = max(1, (total + _FE_ROSTER_PAGE - 1) // _FE_ROSTER_PAGE)
+    if page_n >= pages:
+        page_n = pages - 1
+        watch["roster_page"] = page_n
+        data = await _fe_load_roster(page_n, q)
+        total = int(data.get("total") or 0)
+        items = list(data.get("items") or [])
+    html_body = format_formats_roster_html(
+        items=items,
+        total=total,
+        page=page_n,
+        page_size=_FE_ROSTER_PAGE,
+        live=bool(watch.get("enabled")),
+        query=q,
+    )
+    kb_rows = _fe_people_keyboard(items)
+    kb_rows.extend(
+        _fe_roster_keyboard(page=page_n, total=total, live=bool(watch.get("enabled")), query=q).inline_keyboard
+    )
+    kb = InlineKeyboardMarkup(kb_rows)
+    mid = await _fe_send_or_edit(
+        context.bot,
+        chat_id=chat_id,
+        message_id=watch.get("roster_message_id"),
+        text=html_body,
+        reply_markup=kb,
+    )
+    watch["roster_message_id"] = mid
+
+
+async def _fe_render_card(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    chat_id: int,
+    uid: int,
+    pin: bool = False,
+    snapshot: bool = False,
+) -> None:
+    from app.services.secretary_report_copy import format_interaction_format_html
+
+    payload = await asyncio.to_thread(get_context_display, telegram_user_id=int(uid))
+    if not payload:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="No Format Engine card for that person yet.",
+        )
+        return
+    watch = _fe_watch(context)
+    watch["chat_id"] = int(chat_id)
+    live = bool(watch.get("enabled")) or pin
+    if pin:
+        watch["enabled"] = True
+    html_body = format_interaction_format_html(payload, live=live and not snapshot, snapshot=snapshot)
+    kb = _fe_card_keyboard(int(uid), live=live)
+    cards: dict = watch.setdefault("cards", {})
+    order: list = watch.setdefault("order", [])
+    existing = cards.get(int(uid))
+    mid = await _fe_send_or_edit(
+        context.bot,
+        chat_id=chat_id,
+        message_id=int(existing) if existing else None,
+        text=html_body,
+        reply_markup=kb,
+    )
+    cards[int(uid)] = mid
+    if int(uid) in order:
+        order.remove(int(uid))
+    order.append(int(uid))
+    while len(order) > _FE_LIVE_MAX:
+        evict = int(order.pop(0))
+        if evict == int(uid):
+            continue
+        evict_mid = cards.pop(evict, None)
+        if evict_mid:
+            stale = await asyncio.to_thread(get_context_display, telegram_user_id=evict)
+            if stale:
+                stale_html = format_interaction_format_html(stale, live=False, snapshot=True)
+                await _fe_safe_edit(
+                    context.bot,
+                    chat_id=chat_id,
+                    message_id=int(evict_mid),
+                    text=stale_html,
+                    reply_markup=_fe_card_keyboard(evict, live=False),
+                )
+
+
+async def _fe_open_live_board(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    chat_id: int,
+    query: str = "",
+    enable_live: bool = True,
+) -> None:
+    watch = _fe_watch(context)
+    watch["enabled"] = bool(enable_live)
+    watch["chat_id"] = int(chat_id)
+    watch["roster_page"] = 0
+    watch["roster_q"] = (query or "").strip().lstrip("@")
+    await _fe_render_roster(context, chat_id=chat_id)
+    if not enable_live:
+        return
+    data = await _fe_load_roster(0, watch.get("roster_q") or "")
+    for item in list(data.get("items") or [])[:_FE_LIVE_MAX]:
+        uid = int(item.get("telegram_user_id") or 0)
+        if uid:
+            await _fe_render_card(context, chat_id=chat_id, uid=uid, pin=True)
+
+
+async def _touch_format_live(context: ContextTypes.DEFAULT_TYPE, uid: int | None) -> None:
+    """Edit the operator's live format card (and roster) after a customer turn."""
+    if not uid:
+        return
+    watch = _fe_watch(context)
+    chat_id = watch.get("chat_id")
+    if not watch.get("enabled") or not chat_id:
+        return
+    chat_id = int(chat_id)
+    await _fe_render_card(context, chat_id=chat_id, uid=int(uid), pin=True)
+    await _fe_render_roster(context, chat_id=chat_id)
+
+
+async def _touch_format_live_safe(context: ContextTypes.DEFAULT_TYPE, uid: int | None) -> None:
+    try:
+        await asyncio.sleep(0.4)
+        await _touch_format_live(context, uid)
+    except Exception:
+        logger.debug("format live refresh failed uid=%s", uid, exc_info=True)
+
+
+def _schedule_format_live(context: ContextTypes.DEFAULT_TYPE, uid: int | None) -> None:
+    if not uid:
+        return
+    try:
+        context.application.create_task(_touch_format_live_safe(context, int(uid)))
+    except Exception:
+        logger.debug("format live schedule failed uid=%s", uid, exc_info=True)
+
+
+async def cmd_formats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin: Format Engine people cards, with live in-place updates in this DM."""
+    msg = update.effective_message
+    if not msg or not _can_manage_drafts(update):
+        if msg:
+            await _reply_inbox_denied(msg, context)
+        return
+    chat_id = int(msg.chat_id)
+    args = [str(a).strip() for a in (context.args or []) if str(a).strip()]
+    joined = " ".join(args).strip()
+    lower = joined.lower()
+    if lower in {"off", "stop", "pause"}:
+        watch = _fe_watch(context)
+        watch["enabled"] = False
+        watch["chat_id"] = chat_id
+        await _fe_render_roster(context, chat_id=chat_id, live=False)
+        await _reply(msg, "Format live updates <b>paused</b>. Send <code>/formats</code> to resume.", context, parse_mode="HTML")
+        return
+    if lower in {"live", "on"}:
+        await _fe_open_live_board(context, chat_id=chat_id, enable_live=True)
+        return
+    lookup = joined.lstrip("@")
+    if lookup and lookup.lower() not in {"live", "on"}:
+        payload = None
+        if lookup.isdigit():
+            payload = await asyncio.to_thread(get_context_display, telegram_user_id=int(lookup))
+        if payload is None:
+            found = await asyncio.to_thread(list_recent_contexts, q=lookup, limit=1, offset=0)
+            items = list(found.get("items") or [])
+            if items:
+                payload = await asyncio.to_thread(
+                    get_context_display, telegram_user_id=int(items[0]["telegram_user_id"])
+                )
+        if payload is None:
+            await _reply(
+                msg,
+                f"No format for <code>{html.escape(lookup)}</code>. Try <code>/formats</code> for the roster.",
+                context,
+                parse_mode="HTML",
+            )
+            return
+        watch = _fe_watch(context)
+        watch["enabled"] = True
+        watch["chat_id"] = chat_id
+        await _fe_render_card(context, chat_id=chat_id, uid=int(payload["telegram_user_id"]), pin=True)
+        return
+    await _fe_open_live_board(context, chat_id=chat_id, enable_live=True)
+
+
+async def on_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("sec:fe:"):
+        return
+    if not _can_manage_drafts(update):
+        await query.answer("Admin only.", show_alert=True)
+        return
+    await query.answer()
+    chat = query.message.chat if query.message else update.effective_chat
+    if not chat:
+        return
+    chat_id = int(chat.id)
+    parts = query.data.split(":")
+    # sec:fe:<action>[:arg]
+    action = parts[2] if len(parts) > 2 else ""
+    arg = parts[3] if len(parts) > 3 else ""
+    watch = _fe_watch(context)
+    watch["chat_id"] = chat_id
+    if action == "r":
+        await _fe_render_roster(context, chat_id=chat_id)
+        return
+    if action == "p" and arg.isdigit():
+        await _fe_render_roster(context, chat_id=chat_id, page=int(arg))
+        return
+    if action == "live":
+        enable = arg != "0"
+        watch["enabled"] = enable
+        if enable:
+            await _fe_open_live_board(context, chat_id=chat_id, query=str(watch.get("roster_q") or ""), enable_live=True)
+        else:
+            await _fe_render_roster(context, chat_id=chat_id, live=False)
+        return
+    if action in {"v", "pin"} and arg.lstrip("-").isdigit():
+        await _fe_render_card(context, chat_id=chat_id, uid=int(arg), pin=True)
+        return
+    await query.answer("Unknown formats action.", show_alert=True)
 
 
 async def _send_inbox_digest(
@@ -1564,6 +2012,23 @@ async def _send_inbox_digest(
 
 
 async def cmd_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = [a.lower() for a in (context.args or [])]
+    if args and args[0] in ("issues", "recurring", "stuck"):
+        msg = update.effective_message
+        if not msg or not _can_manage_drafts(update):
+            if msg:
+                await _reply_inbox_denied(msg, context)
+            return
+        from app.services.admin_inbox import format_recurring_issues_html, list_recurring_issues
+
+        await _reply(
+            msg,
+            format_recurring_issues_html(list_recurring_issues(min_count=1, limit=15)),
+            context,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return
     await _send_inbox_digest(update, context, title="TBCC Inbox", limit=20)
 
 
@@ -2262,7 +2727,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             if query.message:
                 await query.message.reply_text(
                     "⋯ <b>More</b>\n\n"
-                    "FAQ previews, payment link hints, sponsor intake, LLM config, and the full command list.",
+                    "FAQ previews, payment link hints, <b>Formats</b> (live people cards), sponsor intake, LLM config, and the full command list.",
                     parse_mode="HTML",
                     reply_markup=_admin_more_submenu_keyboard(),
                 )
@@ -2362,6 +2827,7 @@ async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             "skipbacklog": cmd_skip_backlog,
             "toasts": cmd_toasts,
             "stack": cmd_stack,
+            "formats": cmd_formats,
         }
         fn = runners.get(arg)
         if fn:
@@ -2524,6 +2990,36 @@ async def cmd_sponsors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if i + 1 < len(messages):
             await asyncio.sleep(0.35)
 
+
+
+async def on_business_outbound(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Capture operator-typed Telegram Business messages as silent FE assistant turns (G11)."""
+    msg = getattr(update, "business_message", None) or update.message
+    if not msg or not getattr(msg, "business_connection_id", None) or not msg.from_user or not msg.text:
+        return
+    customer_uid = msg.chat_id
+    if msg.from_user.id == customer_uid:
+        return
+    mid = getattr(msg, "message_id", None)
+    if mid is not None and int(mid) in _sent_business_msg_ids:
+        _sent_business_msg_ids.pop(int(mid), None)
+        return
+    body = msg.text.strip()
+    if not body:
+        return
+    try:
+        await asyncio.to_thread(
+            record_external_assistant_turn,
+            int(customer_uid),
+            body,
+            str(msg.business_connection_id),
+        )
+        try:
+            _schedule_format_live(context, int(customer_uid))
+        except Exception:
+            logger.debug("format live refresh after operator business turn failed", exc_info=True)
+    except Exception:
+        logger.warning("format_engine record_external_assistant_turn failed uid=%s", customer_uid, exc_info=True)
 
 
 async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2768,15 +3264,11 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     pay = _payment_bot_username()
     extra = ""
-    if pay:
-        extra = f"\n\nPayment bot for checkout (tell the user to open @{pay} for /subscribe, /packs, /shop)."
-
-    catalog = await fetch_subscription_catalog_snippet(API_BASE)
-    if catalog:
-        extra = extra + "\n\n" + catalog
-
+    intent = classify_intent(user_text)
     format_ctx_id: int | None = None
     is_new_lead = False
+    fe_phase = "introduction"
+    fe_count = 0
     if format_engine_enabled():
         who = (user.username or "").strip() or None
         try:
@@ -2787,26 +3279,65 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 extra = extra + "\n\n" + fe_suffix
         except Exception as e:
             logger.warning("format_engine prepare failed uid=%s: %s", user.id, e)
+        try:
+            summary = await asyncio.to_thread(get_user_context_public_summary, user.id)
+            if summary:
+                fe_phase = str(summary.get("phase") or fe_phase)
+                fe_count = int(summary.get("message_count") or 0)
+        except Exception:
+            pass
+        try:
+            _schedule_format_live(context, user.id)
+        except Exception:
+            logger.debug("format live refresh after user turn failed", exc_info=True)
 
-    coach_hint = ""
-    try:
-        coach_suffix, coach_hint = await asyncio.to_thread(build_sales_coach_suffix, user_text)
-        if coach_suffix:
-            extra = extra + "\n\n" + coach_suffix
-    except Exception as e:
-        logger.warning("secretary sales coach failed uid=%s: %s", user.id, e)
+    extra = extra + "\n\n" + behavior_suffix(
+        intent=intent,
+        phase=fe_phase,
+        message_count=fe_count,
+        payment_bot=pay or "aofsubscriptions_bot",
+    )
 
-    try:
-        sec_eff = await asyncio.to_thread(get_effective_secretary_settings)
-        if sec_eff.get("rag_enabled"):
-            rag_suffix = await asyncio.to_thread(build_rag_context_suffix, user_text)
-            if rag_suffix:
-                extra = extra + "\n\n" + rag_suffix
-        prompt_extra = (sec_eff.get("system_prompt_extra") or "").strip()
-        if prompt_extra:
-            extra = extra + "\n\n" + prompt_extra
-    except Exception as e:
-        logger.warning("secretary RAG/settings suffix failed uid=%s: %s", user.id, e)
+    coach_hint = intent_label(intent)
+    if intent != "noise":
+        if pay:
+            extra = extra + f"\n\nPayment bot username: @{pay}."
+        catalog = await fetch_subscription_catalog_snippet(API_BASE)
+        if catalog and intent == "buyer":
+            extra = extra + "\n\n" + catalog
+        try:
+            coach_suffix, coach_from_playbook = await asyncio.to_thread(
+                build_sales_coach_suffix,
+                user_text,
+                current_phase=(fe_phase if format_engine_enabled() else None),
+            )
+            if coach_suffix:
+                extra = extra + "\n\n" + coach_suffix
+            if coach_from_playbook:
+                coach_hint = coach_from_playbook
+        except Exception as e:
+            logger.warning("secretary sales coach failed uid=%s: %s", user.id, e)
+        try:
+            sec_eff = await asyncio.to_thread(get_effective_secretary_settings)
+            if sec_eff.get("rag_enabled"):
+                rag_suffix = await asyncio.to_thread(build_rag_context_suffix, user_text)
+                if rag_suffix:
+                    extra = extra + "\n\n" + rag_suffix
+            prompt_extra = (sec_eff.get("system_prompt_extra") or "").strip()
+            if prompt_extra:
+                extra = extra + "\n\n" + prompt_extra
+        except Exception as e:
+            logger.warning("secretary RAG/settings suffix failed uid=%s: %s", user.id, e)
+    else:
+        coach_hint = intent_label(intent)
+
+    scripted = corpus_candidates(
+        user_text,
+        intent=intent,
+        phase=fe_phase,
+        message_count=fe_count,
+        payment_bot=pay or "aofsubscriptions_bot",
+    )
 
     if is_new_lead:
         try:
@@ -2846,9 +3377,8 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if suggest_mode:
         suggest_suffix = (
-            "\n\nYou are drafting a **suggested** reply for the business owner. "
-            "The customer has **not** seen any prior bot messages in this thread. "
-            "Be helpful and concise; the owner may copy, edit, or ignore your text."
+            "\n\nDrafting for the owner. Customer has not seen bot replies. "
+            "Stay dry. Do not pitch checkout unless they asked to buy."
         )
         extra = extra + suggest_suffix
         prev_lines: list[str] = context.user_data.get(BIZ_LINES_KEY) or []
@@ -2885,37 +3415,56 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         messages.extend(hist[-(_history_max_messages()) :])
         messages.append({"role": "user", "content": user_text})
 
-    extra = append_triage_instruction(extra)
-    try:
-        reply = await complete_secretary_chat(messages, extra_system_suffix=extra)
-    except Exception as e:
-        logger.warning("secretary LLM failed: %s", e)
-        if suggest_mode:
-            try:
-                from app.services.admin_inbox import push_admin_inbox_event
-                from app.services.secretary_report_copy import format_draft_fail_html
+        extra = append_auto_emotion_instruction(extra)
+    if suggest_mode:
+        extra = append_triage_instruction(extra)
+    if scripted:
+        cands = apply_candidate_symmetry(user_text, scripted)
+        reply = cands["natural"]
+        emotion_block = None
+    else:
+        try:
+            reply = await complete_secretary_chat(messages, extra_system_suffix=extra)
+        except Exception as e:
+            logger.warning("secretary LLM failed: %s", e)
+            if suggest_mode:
+                try:
+                    from app.services.admin_inbox import push_admin_inbox_event
+                    from app.services.secretary_report_copy import format_draft_fail_html
 
-                who = (user.username or "").strip() or str(user.id)
-                await asyncio.to_thread(
-                    push_admin_inbox_event,
-                    category="system",
-                    severity="important",
-                    title=f"Secretary draft failed · {who}",
-                    body=format_draft_fail_html(who=who, customer_text=user_text),
-                    meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
-                    instant=True,
-                )
-            except Exception:
-                logger.debug("secretary draft-fail inbox notify failed", exc_info=True)
+                    who = (user.username or "").strip() or str(user.id)
+                    await asyncio.to_thread(
+                        push_admin_inbox_event,
+                        category="system",
+                        severity="important",
+                        title=f"Secretary draft failed · {who}",
+                        body=format_draft_fail_html(who=who, customer_text=user_text),
+                        meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
+                        instant=True,
+                    )
+                except Exception:
+                    logger.debug("secretary draft-fail inbox notify failed", exc_info=True)
+                return
+            await _reply(
+                msg,
+                "Can't reply right now — try again in a minute.",
+                context,
+            )
             return
-        await _reply(
-            msg,
-            "I couldn't generate a reply right now. Try again in a moment, or open the payment bot for checkout.",
-            context,
-        )
-        return
-
-    cands = parse_triage_candidates(reply)
+        if suggest_mode:
+            emotion_block = parse_triage_emotion(reply)
+            cands = apply_candidate_symmetry(user_text, parse_triage_candidates(reply))
+            reply = cands["natural"]
+        else:
+            emotion_block, cleaned = extract_emotion_block(reply)
+            cleaned = apply_symmetry(user_text, cleaned, variant="natural")
+            cands = {"natural": cleaned, "clear": cleaned, "close": cleaned}
+            reply = cleaned
+        if emotion_block:
+            try:
+                await asyncio.to_thread(apply_llm_derived_emotion_for_user, user.id, emotion_block)
+            except Exception:
+                logger.debug("secretary llm emotion ingest failed uid=%s", user.id, exc_info=True)
     natural = cands["natural"]
 
     if suggest_mode:
@@ -2988,6 +3537,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await asyncio.to_thread(finalize_assistant_turn, format_ctx_id, natural[:4096])
             except Exception as e:
                 logger.warning("format_engine finalize failed ctx=%s: %s", format_ctx_id, e)
+            try:
+                _schedule_format_live(context, user.id)
+            except Exception:
+                logger.debug("format live refresh after assistant turn failed", exc_info=True)
         hist2: list[dict[str, str]] = context.user_data.get(HISTORY_KEY) or []
         hist2 = [
             {"role": m["role"], "content": m["content"]}
@@ -3073,6 +3626,7 @@ async def post_init(app: Application) -> None:
         BotCommand("read", "Admin: mark inbox seen"),
         BotCommand("status", "Admin: inbox stats"),
         BotCommand("fe_stats", "Format Engine + RAG stats (admin)"),
+        BotCommand("formats", "People formats (live in this DM)"),
         BotCommand("sysprompt", "Admin: view system prompt"),
         BotCommand("set_sysprompt", "Admin: set system prompt"),
         BotCommand("clear_sysprompt", "Admin: clear prompt override"),
@@ -3179,6 +3733,7 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("mystatus", cmd_mystatus))
     app.add_handler(CommandHandler("fe_stats", cmd_fe_stats))
+    app.add_handler(CommandHandler("formats", cmd_formats))
     app.add_handler(CommandHandler("sysprompt", cmd_sysprompt))
     app.add_handler(CommandHandler("set_sysprompt", cmd_set_sysprompt))
     app.add_handler(CommandHandler("clear_sysprompt", cmd_clear_sysprompt))
@@ -3216,12 +3771,22 @@ def build_application(token: str | None = None) -> Application | None:
 
     app.add_handler(CommandHandler("deposit", _cmd_deposit))
     app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^(sec:menu:|zeus:)"))
+    app.add_handler(CallbackQueryHandler(on_format_callback, pattern=r"^sec:fe:"))
     app.add_handler(CallbackQueryHandler(on_llm_config_callback, pattern=r"^sec:llm:"))
     app.add_handler(CallbackQueryHandler(on_draft_callback, pattern=r"^sec:(ap|rj|rd|mode):"))
     app.add_handler(CallbackQueryHandler(on_ops_inbox_callback, pattern=r"^ops:"))
     app.add_handler(CallbackQueryHandler(on_invoice_inbox_callback, pattern=r"^inv:"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & (~filters.COMMAND), on_private_text))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.TEXT), on_unsupported_private))
+    # PTB 21 has UpdateType.BUSINESS_MESSAGE (no filters.BusinessMessage). group=11 runs after
+    # the default group=0 private-text pipeline so customer inbound is handled first.
+    app.add_handler(
+        MessageHandler(
+            filters.UpdateType.BUSINESS_MESSAGE & filters.TEXT & (~filters.COMMAND),
+            on_business_outbound,
+        ),
+        group=11,
+    )
     app.add_handler(
         MessageHandler(
             filters.StatusUpdate.LEFT_CHAT_MEMBER,
@@ -3231,6 +3796,12 @@ def build_application(token: str | None = None) -> Application | None:
     app.add_error_handler(_on_app_error)
     # Stash bootstrap retries for callers that still use run_polling().
     app.bot_data["_telegram_bootstrap_retries"] = br
+    try:
+        jq = app.job_queue
+        if jq is not None:
+            jq.run_repeating(_prune_sent_business_job, interval=60.0, first=60.0)
+    except Exception:
+        logger.debug("secretary sent-business prune job not registered", exc_info=True)
     return app
 
 

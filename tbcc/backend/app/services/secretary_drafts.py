@@ -37,12 +37,13 @@ VARIANT_ALIASES = {
 
 TRIAGE_JSON_INSTRUCTION = (
     "Reply with JSON only (no markdown): "
-    '{"natural":"...","clear":"...","close":"..."}. '
-    "natural = warm human DM, like a real person typing. "
-    "clear = plain facts, no fluff. "
-    "close = one next step toward checkout (payment bot) without pressure. "
-    "Each value: at most two short sentences and at most 280 characters. "
-    "No bullet lists, no numbered steps, no 'I'd be happy to help'."
+    '{"natural":"...","clear":"...","close":"...","emotion":{"state":"...","intensity":0.0,"signals":["..."]}}. '
+    "natural = same length as their message, dry human DM, never a greeting script. "
+    "clear = one fact, no help-desk closer. "
+    "close = only if they asked to buy; otherwise same as natural. "
+    "emotion.state must be one of: anxious, resentful, dismissive, attached, transactional, guarded. "
+    "No signatures, no quoting them, no 'assist you', no catalog dump. "
+    "Each reply value: at most two short sentences and at most 280 characters."
 )
 
 
@@ -83,6 +84,36 @@ def parse_triage_candidates(raw: str) -> dict[str, str]:
         if not out.get(key):
             out[key] = out.get("natural") or next((out[k] for k in CANDIDATE_KEYS if out.get(k)), "")
     return out
+
+
+def parse_triage_emotion(raw: str) -> dict[str, Any] | None:
+    """Extract the optional emotion object from a Pilot JSON triad payload."""
+    blob = (raw or "").strip()
+    parsed: dict[str, Any] | None = None
+    if blob:
+        try:
+            parsed = json.loads(blob)
+        except (TypeError, ValueError):
+            m = re.search(r"\{.*\}", blob, flags=re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(0))
+                except (TypeError, ValueError):
+                    parsed = None
+    if not isinstance(parsed, dict):
+        return None
+    emotion = parsed.get("emotion")
+    if isinstance(emotion, dict):
+        return emotion
+    if isinstance(emotion, str) and emotion.strip():
+        return {"state": emotion.strip(), "intensity": 0.5, "signals": []}
+    return None
+
+
+def apply_candidate_symmetry(user_text: str, cands: dict[str, str]) -> dict[str, str]:
+    from app.services.secretary_behavior import apply_symmetry
+
+    return {k: apply_symmetry(user_text, cands.get(k) or "", variant=k) for k in CANDIDATE_KEYS}
 
 
 def resolve_variant(token: str | None) -> str:

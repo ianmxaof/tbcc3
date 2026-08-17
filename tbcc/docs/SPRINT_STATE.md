@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-14 ~23:15 PT — Secretary HITL N/C/X triad + alembic 113
+**Last updated:** 2026-08-17 ~12:55 PT — Cerebras/NVIDIA secretary LLM fallback hops
 
 ## Sprint goal
 
@@ -13,7 +13,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Item | Owner | Notes |
 |------|-------|-------|
 | Module A revenue stack | agent + operator | **2026-08-13 sitrep:** plans 24–26 active (5/15/50 @ 110/300/900⭐) — **0 pack subscriptions yet**; analytics `companion_photos_sold=0` (30d). Paywall + pack CTAs live on island companion/payment. **Operator:** firehose A/B still open; scoreboard empty until first charge. |
-| Secretary sales-rep Phase 1 | agent | **2026-08-14:** HITL drafts DB (`112`) + N/C/X short triad (`113`). OpenRouter `gpt-4o-mini`. Alicia_rios Pilot. Smoke after island alembic 113. |
+| Secretary sales-rep Phase 1 | agent | **2026-08-17:** Cerebras + NVIDIA NIM wired as secretary LLM fallback hops (home `.env` keys; island keys + deploy still needed). Prior: FE G3 ethical charter local/uncommitted; G9 coach; G11 Business turns; G4 LLM emotion. |
 | Loot album delivery + import starvation | agent | **2026-08-13 sitrep:** dry-run thin lanes ass/big_tits/goon/full_length (would_restore 118) → **`--apply-refill --unpause` executed on island**. Still need fresh imports + Storage Hub deposits long-term. |
 | Pool album duplicate tiles | agent | **2026-08-01 shipped:** sent-cache composer dedupe + per-item cache msg ids + hub fetch (`media_message_resolve`). Island `local-20260801-1911-fix`; `TBCC_SENT_CACHE_ALBUM_SIZE=3`; audit demoted **323** dup rows (voyeur 304, ASS 19). Watch next Loot Room albums for unique tiles. |
 | Remixer `/rebundle` any-admin | agent | **2026-08-05:** `/rebundle` + `/rebundle go` (partial + delete sources). Commit `ce5b684`. Island `local-20260805-2117` deployed (album_composer + workers). Operator smoke: `/rebundle` in any admin group or hub **✅ Rebundle (+partial)**. |
@@ -51,7 +51,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Scrape transport (Ingest) | agent | JD-ish table: row select → master ▶/⏸/■/skip; columns + progress %; hide/show cols |
 | Site intel frontier prompts | agent | **2026-07-16:** Answered + wired — ext **1.40.8**: Motherless RSS→intel Push; ThisVid uploader+dur bands; Erome dur tags; FetLife thin opt-in Intel; backend multi-platform tag scores. Doc: `SITE_INTEL_FRONTIER_PROMPTS.md`. Tunnel for `:8000`. |
 | Scrape channel metrics (TGStat-lite) | agent | viewers/members on transport row; hashtag→pool map; hyperlinked t.me; migration 092 |
-| X affiliate-first cards | agent | `TBCC_BUFFER_X_AFFILIATE_FIRST=1` default — no bare t.me telegram-globe previews |
+| X affiliate-first cards | agent | **2026-08-15:** loot-first X cards (`TBCC_BUFFER_X_LOOT_FIRST=1` default) — `loot_free` beats spicy/affiliate preview. Flywheel captions inject `telegram.me/aof_lootgod_bot?start=loot_free`. Affiliates stay in caption, not the card. |
 | Username search overlay + history UX | agent | FAB modal on SC/CB/OF/IG/X; **gallery nav tab chips**; macrosearch Setup (approve host + template) → Search/Sources |
 
 ## Blocked on
@@ -93,3 +93,5 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 ## Deferred (do not ladder without "why now")
 
 See `tbcc/docs/TBCC_IMPROVEMENT_NOTES.md` — content distribution schedule, X.com scraper, album poster bot.
+
+**Week 2–4 hold (AOF three-track, 2026-08-15):** Named Vault un-list, Inner Circle copy, LV cookie files / dead-slug watchdog, topic pins, channel-story boosts — not until Week 1 scoreboard (LV paste + crate tease + flood-safe story oneshot).
