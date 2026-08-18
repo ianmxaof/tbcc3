@@ -47,10 +47,14 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
+    # requirepass + loopback-only bind — 2026-08-18: found reconfigured as an
+    # unauthenticated replica of an external host (185.241.208.112:443), the
+    # classic exposed-Redis takeover pattern. Never publish on 0.0.0.0 again.
+    command: ["redis-server", "--requirepass", "${TBCC_REDIS_PASSWORD:?Set TBCC_REDIS_PASSWORD in infra/.env.revenue-island}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${TBCC_REDIS_PASSWORD:?Set TBCC_REDIS_PASSWORD in infra/.env.revenue-island}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 6
