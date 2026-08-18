@@ -75,7 +75,12 @@ if ($UseGhcrPull) {
   Write-Host "`n[4/7] Rsync backend + docker build on island ($localTag)" -ForegroundColor Yellow
   Invoke-Remote "mkdir -p $RemoteDir/backend-src"
   $tgz = Join-Path $env:TEMP "tbcc-backend-deploy.tgz"
-  if (Get-Command tar -ErrorAction SilentlyContinue) {
+  # Prefer GNU tar (Git for Windows / Hermes MinGit). Windows bsdtar (C:\Windows\System32)
+  # lacks --force-local. Fall back to whatever `tar` resolves to otherwise.
+  $gitTar = @("$env:ProgramFiles\Git\usr\bin\tar.exe", "$env:LOCALAPPDATA\hermes\git\usr\bin\tar.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+  $tarExe = if ($gitTar) { $gitTar } else { (Get-Command tar -ErrorAction SilentlyContinue).Source -or "tar" }
+  if ($gitTar -or (Get-Command tar -ErrorAction SilentlyContinue)) {
     Push-Location $backend
     # Ship-log cache + improvement notes for weekly build log (island container has no git).
     $dataDir = Join-Path $backend "app\data"
@@ -90,7 +95,7 @@ if ($UseGhcrPull) {
     # --force-local: GNU tar (MSYS2, Git for Windows) otherwise parses the "C:" drive letter in
     # $tgz as a remote host spec (user@host:file) and tries to rsh/ssh into a host named "C".
     if (Test-Path $tgz) { Remove-Item $tgz -Force }
-    & tar -czf $tgz --force-local `
+    & $tarExe -czf $tgz --force-local `
       --exclude=__pycache__ `
       --exclude=.pytest_cache `
       --exclude=.tbcc-run `

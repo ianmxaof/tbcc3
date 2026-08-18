@@ -18,11 +18,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # WarmupState enum
-    op.execute(
-        "CREATE TYPE warmupstate AS ENUM ('cold', 'warming', 'warm')"
-    )
-
+    # WarmupState enum — the column below creates the named type once via the
+    # table's enum (Alembic op.create_table emits CREATE TYPE regardless of
+    # create_type=False, so an explicit CREATE TYPE here would double-create).
     op.create_table(
         "userbot_accounts",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -31,7 +29,7 @@ def upgrade() -> None:
         sa.Column("proxy_json", sa.Text(), nullable=True),
         sa.Column(
             "warmup_state",
-            sa.Enum("cold", "warming", "warm", name="warmupstate", create_type=False),
+            sa.Enum("cold", "warming", "warm", name="warmupstate"),
             nullable=False,
             server_default="cold",
         ),
@@ -56,11 +54,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("phone_number"),
     )
 
-    # TargetStatus enum
-    op.execute(
-        "CREATE TYPE targetstatus AS ENUM ('new', 'contacted', 'engaging', 'converted', 'dead')"
-    )
-
+    # TargetStatus enum — same pattern: single create via the column enum.
     op.create_table(
         "cold_targets",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -75,7 +69,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "status",
-            sa.Enum("new", "contacted", "engaging", "converted", "dead", name="targetstatus", create_type=False),
+            sa.Enum("new", "contacted", "engaging", "converted", "dead", name="targetstatus"),
             nullable=False,
             server_default="new",
         ),
