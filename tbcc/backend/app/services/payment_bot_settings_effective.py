@@ -11,9 +11,9 @@ from app.services.model_search_engine import get_macro_search_sites, merge_model
 ROW_ID = 1
 
 DEFAULT_MAIN_MENU: list[list[dict[str, str]]] = [
-    [{"label": "🗝 Loot Room (24h key)", "action": "menu_loot"}],
+    [{"label": "🔑 Join the Inner Circle", "action": "menu_subscribe"}],
     [
-        {"label": "💎 Premium (group)", "action": "menu_subscribe"},
+        {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
     ],
     [
@@ -182,7 +182,7 @@ def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
         ),
         "subscribe_title_main": _str_or_default(
             getattr(r, "subscribe_title_main", None) if r else None,
-            "💎 **Premium Access**",
+            "🔑 **Inner Circle Access**",
         ),
         "subscribe_title_loot": _str_or_default(
             getattr(r, "subscribe_title_loot", None) if r else None,

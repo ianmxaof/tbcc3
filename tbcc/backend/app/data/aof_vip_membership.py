@@ -7,6 +7,7 @@ override via ``TBCC_GUMROAD_VIP_OPTION_NAME``.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 
@@ -122,3 +123,27 @@ def is_vip_intro_plan_name(name: str | None) -> bool:
 def protected_main_vip_plan_names() -> frozenset[str]:
     """Rows that must survive legacy-main deactivation during seed."""
     return frozenset(sku.name for sku in VIP_MEMBERSHIP_SKUS) | frozenset({VIP_INTRO_PLAN_NAME})
+
+
+def vip_display_name() -> str:
+    """
+    Customer-facing brand name for the VIP tier.
+
+    "VIP" reads cheap; DB plan names, Gumroad recurrence, and matching logic (is_vip_intro_plan_name,
+    protected_main_vip_plan_names) all stay keyed on the literal "AOF VIP …" strings above — only what
+    the customer reads is renamed here. Override via TBCC_VIP_DISPLAY_NAME.
+    """
+    return (os.getenv("TBCC_VIP_DISPLAY_NAME") or "").strip() or "Inner Circle"
+
+
+def display_plan_name(name: str | None) -> str:
+    """Cosmetic rewrite of a DB plan name's "AOF VIP" / "VIP" prefix for user-facing copy."""
+    n = (name or "").strip()
+    if not n:
+        return n
+    disp = vip_display_name()
+    if n.startswith("AOF VIP"):
+        return disp + n[len("AOF VIP") :]
+    if n.startswith("VIP"):
+        return disp + n[len("VIP") :]
+    return n

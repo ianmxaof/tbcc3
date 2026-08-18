@@ -12,7 +12,12 @@ _DEFAULT_DISPLAY = "Card / USD"
 _DEFAULT_SHORT = "Card"
 _DEFAULT_OPEN_PAY = "Pay with card →"
 _DEFAULT_CHECKOUT_TITLE = "Card checkout"
-_DEFAULT_VIP_LINK = "AOF VIP — card / USD"
+
+
+def _default_vip_link() -> str:
+    from app.data.aof_vip_membership import vip_display_name
+
+    return f"AOF {vip_display_name()} — card / USD"
 
 
 def fiat_checkout_button_label(*, price_hint: str | None = None) -> str:
@@ -57,27 +62,28 @@ def fiat_vip_link_label() -> str:
     raw = (os.getenv("TBCC_FIAT_VIP_LINK_LABEL") or "").strip()
     if raw and not _GUMROAD_WORD.search(raw):
         return raw
-    return _DEFAULT_VIP_LINK
+    return _default_vip_link()
 
 
 def fiat_vip_ladder_intro_html(*, include_intro: bool = False) -> str:
     from app.data.telegram_stars_howto import stars_howto_html, vip_intro_stars
-    from app.data.aof_vip_membership import VIP_INTRO_SKU, VIP_MEMBERSHIP_SKUS
+    from app.data.aof_vip_membership import VIP_INTRO_SKU, VIP_MEMBERSHIP_SKUS, vip_display_name
 
     disp = fiat_checkout_display_name()
+    tier = vip_display_name()
     howto = stars_howto_html(compact=True)
     intro_usd = int(VIP_INTRO_SKU.price_usd)
     intro_stars = vip_intro_stars()
     monthly = int(VIP_MEMBERSHIP_SKUS[0].price_usd)
     if include_intro:
         return (
-            f"✨ <b>First VIP month ${intro_usd}</b> (~{intro_stars}⭐) — new members only.\n"
-            f"💎 Standard ladder from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
+            f"✨ <b>First {tier} month ${intro_usd}</b> (~{intro_stars}⭐) — new members only.\n"
+            f"🔑 Standard ladder from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
             f"{howto}\n\n"
             f"Pick a term:"
         )
     return (
-        f"💎 <b>AOF VIP</b> — from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
+        f"🔑 <b>AOF {tier}</b> — from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
         f"{howto}\n\n"
         f"Pick a term:"
     )
@@ -100,17 +106,23 @@ def fiat_checkout_pay_instructions_html(*, title: str, tier_hint: str | None = N
     tier_line = ""
     if tier_hint:
         tier_line = f"\n3) On checkout choose <b>{html_escape(tier_hint)}</b> for this term."
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = html_escape(vip_display_name())
     return (
         f"<b>{title_e}</b> — pay with <b>{disp}</b> (card / PayPal).\n\n"
         f"1) Tap <b>{html_escape(fiat_open_pay_button_label())}</b> and complete payment\n"
-        f"2) Keep this chat open — VIP invite DMs here after payment confirms"
+        f"2) Keep this chat open — {tier} invite DMs here after payment confirms"
         f"{tier_line}"
     )
 
 
 def fiat_checkout_confirm_footer_html() -> str:
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = html_escape(vip_display_name())
     return (
-        f"After payment confirms, your VIP invite lands here automatically. "
+        f"After payment confirms, your {tier} invite lands here automatically. "
         f"Need help? Reply in this chat."
     )
 

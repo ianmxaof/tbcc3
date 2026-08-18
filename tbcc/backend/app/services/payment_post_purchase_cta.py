@@ -6,6 +6,7 @@ from typing import Any
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.data.aof_vip_membership import vip_display_name
 from app.services.aof_social_links import (
     companion_bot_username,
     loot_free_start_url,
@@ -33,7 +34,7 @@ def post_purchase_inline_keyboard_rows(kind: str) -> list[list[dict[str, str]]]:
     if kind == "loot_key":
         rows: list[list[dict[str, str]]] = []
         if intro:
-            rows.append([{"text": "⭐ VIP Intro — skip gates", "url": intro}])
+            rows.append([{"text": f"⭐ {vip_display_name()} Intro — skip gates", "url": intro}])
         if companion:
             rows.append([{"text": "🔥 Free spicy reveal", "url": companion}])
         return rows
@@ -55,11 +56,12 @@ def post_purchase_inline_keyboard_rows(kind: str) -> list[list[dict[str, str]]]:
 
 
 def post_purchase_cross_sell_html(kind: str) -> str:
+    tier = vip_display_name()
     if kind == "loot_key":
-        return "<b>While your key is active</b> — VIP unlocks daily god rolls + all lanes."
+        return f"<b>While your key is active</b> — {tier} unlocks daily god rolls + all lanes."
     if kind == "bundle":
         return "<b>Your pack is ready.</b> Stack a free loot roll or spicy reveal next."
-    return "<b>Welcome to VIP.</b> Try a free loot roll or spicy reveal while you're here."
+    return f"<b>Welcome to the {tier}.</b> Try a free loot roll or spicy reveal while you're here."
 
 
 def post_purchase_inline_keyboard(kind: str) -> InlineKeyboardMarkup | None:

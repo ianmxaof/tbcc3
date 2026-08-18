@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-from app.data.aof_vip_membership import VIP_INTRO_SKU, VIP_MEMBERSHIP_SKUS
+from app.data.aof_vip_membership import VIP_INTRO_SKU, VIP_MEMBERSHIP_SKUS, vip_display_name
 
 STARS_HOWTO_SNIPPET_TITLE = "[AOF] How to buy Telegram Stars"
 
@@ -40,18 +40,19 @@ def stars_howto_html(*, compact: bool = False) -> str:
     """HTML block for payment-bot / VIP captions (Telegram HTML)."""
     intro_usd = int(VIP_INTRO_SKU.price_usd) if VIP_INTRO_SKU.price_usd == int(VIP_INTRO_SKU.price_usd) else VIP_INTRO_SKU.price_usd
     intro_stars = vip_intro_stars()
+    tier = vip_display_name()
     if compact:
         return (
             f"⚠️ <b>Need Stars?</b> Buy them in Telegram with a credit/debit card "
             f"(Settings → My Stars, or the ⭐ on any invoice) — then tap Pay.\n"
-            f"✨ VIP starts at <b>${intro_usd}</b> / <b>{intro_stars}⭐</b> (first month intro)."
+            f"✨ {tier} starts at <b>${intro_usd}</b> / <b>{intro_stars}⭐</b> (first month intro)."
         )
     return (
         f"⚠️ <b>Paying with Telegram Stars</b>\n"
         f"✅ Stars can be bought with a credit/debit card <b>inside Telegram</b>\n"
         f"✅ Settings → <b>My Stars</b> (or tap ⭐ on any invoice) → Buy Stars\n"
         f"✅ Come back here and tap <b>Pay ⭐</b>\n\n"
-        f"✨ <b>VIP from ${intro_usd}</b> — first month intro (~{intro_stars}⭐). "
+        f"✨ <b>{tier} from ${intro_usd}</b> — first month intro (~{intro_stars}⭐). "
         f"Standard renews from ${int(VIP_MEMBERSHIP_SKUS[0].price_usd)}."
     )
 
@@ -66,7 +67,7 @@ def stars_howto_plain() -> str:
         "✅ Buy Stars with a credit/debit card inside Telegram\n"
         "✅ Settings → My Stars (or tap ⭐ on any invoice) → Buy Stars\n"
         "✅ Return and tap Pay ⭐\n\n"
-        f"✨ AOF VIP starts at ${intro_usd} / ~{intro_stars}⭐ (first-month intro).\n"
+        f"✨ AOF {vip_display_name()} starts at ${intro_usd} / ~{intro_stars}⭐ (first-month intro).\n"
         f"Standard ladder from ${monthly}/mo.\n"
         "👉 /subscribe on @aofsubscriptions_bot"
     )
@@ -79,9 +80,10 @@ def stars_pay_entry_button_label(*, price_stars: int, plan_name: str | None = No
     stars = int(price_stars or 0)
     if is_vip_intro_plan_name(plan_name):
         usd = int(VIP_INTRO_SKU.price_usd)
+        tier = vip_display_name()
         if stars > 0:
-            return f"VIP ${usd} · {stars}⭐"[:64]
-        return f"VIP ${usd} intro"[:64]
+            return f"{tier} ${usd} · {stars}⭐"[:64]
+        return f"{tier} ${usd} intro"[:64]
     if stars > 0:
         return f"Pay ⭐ {stars}"[:64]
     return "Pay with Stars"

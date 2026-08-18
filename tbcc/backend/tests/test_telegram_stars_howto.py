@@ -30,7 +30,7 @@ def test_stars_howto_mentions_card_and_ten():
 
 
 def test_entry_button_intro_vs_standard():
-    assert stars_pay_entry_button_label(price_stars=834, plan_name=VIP_INTRO_PLAN_NAME) == "VIP $10 · 834⭐"
+    assert stars_pay_entry_button_label(price_stars=834, plan_name=VIP_INTRO_PLAN_NAME) == "Inner Circle $10 · 834⭐"
     assert stars_pay_entry_button_label(price_stars=1500, plan_name="AOF VIP — 1 Month") == "Pay ⭐ 1500"
 
 

@@ -100,9 +100,9 @@ _runtime_settings_loaded_at: float = 0.0
 _runtime_settings_ttl_s = 30.0
 
 _default_main_menu = [
-    [{"label": "🗝 Loot Room (24h key)", "action": "menu_loot"}],
+    [{"label": "🔑 Join the Inner Circle", "action": "menu_subscribe"}],
     [
-        {"label": "💎 Premium (group)", "action": "menu_subscribe"},
+        {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
     ],
     [
@@ -139,7 +139,7 @@ def _runtime_settings_defaults() -> dict:
         "main_menu": _default_main_menu,
         "welcome_html": "",
         "loot_intro_html": "",
-        "subscribe_title_main": "💎 **Premium Access**",
+        "subscribe_title_main": "🔑 **Inner Circle Access**",
         "subscribe_title_loot": "🗝 **Loot Room Access**",
         "subscription_catalog_columns": 2,
         "min_subscription_stars": _bot_min_subscription_stars(),
@@ -948,20 +948,23 @@ def welcome_html(settings: dict | None = None) -> str:
             "💳 <b>Payments:</b> <b>Telegram Stars</b> (in-app, live now) + <b>Wallet / crypto</b>.\n"
             "⚡ <i>Crypto may use auto checkout when NOWPayments + public HTTPS API are configured; otherwise use order code flow.</i>\n\n"
         )
+    from app.data.aof_vip_membership import vip_display_name
+
+    disp = html.escape(vip_display_name())
     body = (
-        "👋 <b>Welcome to AOF Access Bot</b>\n\n"
+        "👋 <b>Welcome to AOF Access</b>\n\n"
         + pay_line
-        + "🔥 <b>Main actions</b>\n"
-        "• /shop — Full storefront (premium + packs + featured offers)\n"
-        "• /loot — Loot Room section (24-hour key + private group run)\n"
-        "• /subscribe — Premium memberships\n"
+        + f"🔑 <b>{disp}</b> — full group access, daily drops, first look at everything.\n"
+        "🗝 <b>Loot Room</b> — 24-hour key, private pull room.\n"
+        "📦 <b>Digital packs</b> — curated one-time bundles.\n\n"
+        f"• /subscribe — {disp} membership\n"
+        "• /loot — Loot Room key\n"
         "• /packs — Digital packs\n"
-        "• /resolve — Unwrap supported ad/short links (needs API bypass key + Celery worker)\n"
-        "• /macrosearch — Macro model search (TBCC extension sources) + video URLs\n"
-        "• /videofind — Same as /macrosearch\n\n"
+        "• /shop — Full storefront, everything in one place\n\n"
         "📌 <b>Account</b>\n"
         "• /status — Purchases &amp; active access\n"
         "• /referral — Your invite link + rewards\n\n"
+        "<i>Also: /resolve (link unwrap) · /macrosearch (model search)</i>\n\n"
     )
     from app.services.aof_social_links import donation_link_html
 
@@ -1714,6 +1717,9 @@ async def reply_referral(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         ref_link = f"https://t.me/{bot_username}?start=ref_{user.id}"
 
+    from app.data.aof_vip_membership import vip_display_name
+
+    disp = vip_display_name()
     rc = referral_cfg()
     group_link = rc["group_link"]
     reward_days = str(rc["reward_days"])
@@ -1728,32 +1734,32 @@ async def reply_referral(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"🔥 Join {group_name}!\n\n"
                 f"👇 {group_link}\n\n"
                 f"Invited by me: {ref_link}\n\n"
-                f"✨ Top referrers get early access when we launch premium!"
+                f"✨ Top referrers get early access when {disp} launches!"
             )
         else:
             forward_text = (
                 f"🔥 Join {group_name}!\n\n"
                 f"{ref_link}\n\n"
-                f"✨ Top referrers get early access when we launch premium!"
+                f"✨ Top referrers get early access when {disp} launches!"
             )
         code_block = f"**Your code:** `{ref_code}`\n" if ref_code else ""
         confirm_text = (
             f"{code_block}"
             f"✅ **Your link:** `{ref_link}`\n\n"
-            f"Share it! Top referrers get early access when premium launches."
+            f"Share it! Top referrers get early access when {disp} launches."
         )
     else:
         if group_link:
             forward_text = (
                 f"🔥 Join {group_name}!\n\n"
                 f"👇 Free group: {group_link}\n\n"
-                f"💎 Premium: {ref_link}\n\n"
+                f"🔑 {disp}: {ref_link}\n\n"
                 f"✨ Earn {reward_days} days free when friends subscribe via your link!"
             )
         else:
             forward_text = (
                 f"🔥 Join {group_name}!\n\n"
-                f"💎 Premium access: {ref_link}\n\n"
+                f"🔑 {disp} access: {ref_link}\n\n"
                 f"✨ Earn {reward_days} days free when friends subscribe via your link!"
             )
         code_block = f"**Your code:** `{ref_code}`\n" if ref_code else ""
@@ -1819,13 +1825,14 @@ def _inline_buttons_in_rows(buttons: list[InlineKeyboardButton], columns: int) -
 
 
 def _subscription_stars_row_label(p: dict) -> str:
-    from app.data.aof_vip_membership import is_vip_intro_plan_name
+    from app.data.aof_vip_membership import display_plan_name, is_vip_intro_plan_name
     from app.data.telegram_stars_howto import stars_pay_entry_button_label
 
-    name = str(p.get("name") or "Plan").strip()
+    raw_name = str(p.get("name") or "Plan").strip()
     stars = int(p.get("price_stars") or 0)
-    if is_vip_intro_plan_name(name):
-        return stars_pay_entry_button_label(price_stars=stars, plan_name=name)
+    if is_vip_intro_plan_name(raw_name):
+        return stars_pay_entry_button_label(price_stars=stars, plan_name=raw_name)
+    name = display_plan_name(raw_name)
     bad = f"{name} · {_subscription_duration_badge(p.get('duration_days', 30))} · {stars}⭐"
     if len(bad) <= 64:
         return bad
@@ -1958,7 +1965,9 @@ async def send_simple_plan_checkout(
         return
     kb = InlineKeyboardMarkup(rows)
     if len(plans) == 1:
-        text = str(plans[0].get("name") or "").strip() or "·"
+        from app.data.aof_vip_membership import display_plan_name
+
+        text = display_plan_name(str(plans[0].get("name") or "")) or "·"
     elif multi_term:
         from app.services.fiat_checkout_labels import fiat_vip_ladder_intro_html
 
@@ -2051,7 +2060,7 @@ async def send_subscription_catalog_message(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     section: str = "main",
-    title: str = "💎 **Premium Access**",
+    title: str = "🔑 **Inner Circle Access**",
 ) -> None:
     """Subscription checkout — price on each button, no instructional catalog prose."""
     if not msg:
@@ -2191,7 +2200,7 @@ async def send_bundle_catalog_message(msg, context: ContextTypes.DEFAULT_TYPE) -
         await msg.reply_text(
             "📦 **Digital packs**\n\n"
             "No **bundle** products yet — this list is **only** for product type **Bundle** (digital zip packs).\n\n"
-            "**Premium subscriptions** (AOF tiers, etc.) appear under **/subscribe** or **Premium**, not here.\n\n"
+            "**Inner Circle subscriptions** (AOF tiers, etc.) appear under **/subscribe**, not here.\n\n"
             "In the **dashboard → Shop products**, create a **new** product and set type to **Bundle (digital pack)** "
             "with a **Stars price** set and **active** checked.",
             parse_mode="Markdown",
@@ -2263,7 +2272,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await send_shop_promo(update, context)
     elif query.data == "menu_subscribe":
         await send_subscription_catalog_message(
-            msg, context, section="main", title=str(st.get("subscribe_title_main") or "💎 **Premium Access**")
+            msg, context, section="main", title=str(st.get("subscribe_title_main") or "🔑 **Inner Circle Access**")
         )
     elif query.data == "menu_loot":
         await send_loot_room_message(msg, context)
@@ -2360,7 +2369,9 @@ async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.
     rec = recurrence_for_plan(plan)
     if rec:
         pay_url = append_vip_checkout_hints(pay_url, recurrence=rec)
-    title = fiat_html_escape(str(plan.get("name") or "AOF VIP"))
+    from app.data.aof_vip_membership import display_plan_name
+
+    title = fiat_html_escape(display_plan_name(str(plan.get("name") or "")) or "Checkout")
     rec_hint = rec.replace("_", " ") if rec else None
     kb = InlineKeyboardMarkup(
         [[InlineKeyboardButton(_truncate_btn(fiat_open_pay_button_label(), 64), url=str(pay_url)[:512])]]
@@ -2685,6 +2696,8 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    from app.data.aof_vip_membership import display_plan_name
+
     lines = ["📋 **Your subscription status**\n"]
     if vip_lines:
         lines.extend(vip_lines)
@@ -2692,7 +2705,7 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     if active:
         lines.append("✅ **Active:**")
         for s in active:
-            plan = s.get("plan", "—")
+            plan = display_plan_name(str(s.get("plan") or "")) or "—"
             exp = s.get("expires_at", "—")
             if isinstance(exp, str) and len(exp) > 19:
                 exp = exp[:19].replace("T", " ")
@@ -2700,7 +2713,7 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     if expired:
         lines.append("\n⏳ **Expired:**")
         for s in expired[:3]:
-            lines.append(f"  • {s.get('plan', '—')}")
+            lines.append(f"  • {display_plan_name(str(s.get('plan') or '')) or '—'}")
         if len(expired) > 3:
             lines.append(f"  … and {len(expired) - 3} more")
 
@@ -3017,7 +3030,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("help", "Commands & what this bot does"),
         BotCommand("shop", "Open the store"),
         BotCommand("loot", "Loot Room 24h key + private group"),
-        BotCommand("subscribe", "Premium — Stars, crypto & fiat"),
+        BotCommand("subscribe", "Inner Circle — Stars, crypto & fiat"),
         BotCommand("packs", "Digital packs"),
         BotCommand("referral", "Your code, link & rewards"),
         BotCommand("status", "Your subscription & purchases"),

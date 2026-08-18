@@ -5,9 +5,9 @@ import { QueryErrorBanner } from "../components/QueryErrorBanner";
 
 const MENU_TEMPLATE = JSON.stringify(
   [
-    [{ label: "🗝 Loot Room (24h key)", action: "menu_loot" }],
+    [{ label: "🔑 Join the Inner Circle", action: "menu_subscribe" }],
     [
-      { label: "💎 Premium (group)", action: "menu_subscribe" },
+      { label: "🗝 Loot Room (24h key)", action: "menu_loot" },
       { label: "📦 Digital packs", action: "menu_packs" },
     ],
     [

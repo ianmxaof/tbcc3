@@ -10,6 +10,8 @@ from typing import Any
 import httpx
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.data.aof_vip_membership import vip_display_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ def _api_base() -> str:
 DEFAULT_HERO_CAPTION = (
     "🔥 **You’re one tap from the good stuff.**\n\n"
     "⏳ **Limited spots** — we don’t keep the door open forever.\n"
-    "💎 **Premium** = full group / channel access.\n"
+    f"🔑 **{vip_display_name()}** = full group / channel access.\n"
     "📦 **Packs** = exclusive drops — grab them before they rotate out.\n\n"
     "_**Telegram Stars** in-app (live). **Crypto** & **card (fiat)** — same catalog, rails rolling out._"
 )
@@ -106,14 +108,12 @@ async def _safe_send_photo(bot: Any, chat_id: int, photo_url: str, caption: str,
 def _shop_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
+            [InlineKeyboardButton(f"🔑 {vip_display_name()} — unlock access", callback_data="menu_subscribe")],
             [
-                InlineKeyboardButton("💎 Premium — unlock access", callback_data="menu_subscribe"),
                 InlineKeyboardButton("📦 Digital packs", callback_data="menu_packs"),
-            ],
-            [
                 InlineKeyboardButton("🔗 Referral rewards", callback_data="menu_referral"),
-                InlineKeyboardButton("📋 My status", callback_data="menu_status"),
             ],
+            [InlineKeyboardButton("📋 My status", callback_data="menu_status")],
         ]
     )
 
@@ -182,10 +182,11 @@ async def send_shop_promo(update: Any, context: Any) -> None:
                 pack_img_url = u
                 break
 
+    disp = vip_display_name()
     sub_caption = (
         (os.getenv("SHOP_SUBSCRIPTION_CAPTION") or "").strip()
-        or "**Premium access** — stay inside the group, new drops first.\n"
-        "Tap **Premium — unlock access** below before the next price bump."
+        or f"**{disp} access** — stay inside the group, new drops first.\n"
+        f"Tap **{disp} — unlock access** below before the next price bump."
     )
     pack_caption = (
         (os.getenv("SHOP_PACKS_CAPTION") or "").strip()
@@ -207,7 +208,7 @@ async def send_shop_promo(update: Any, context: Any) -> None:
         # No images: short text teasers
         lines = []
         if subs:
-            lines.append("💎 **Premium** — subscription to the private channel / group.")
+            lines.append(f"🔑 **{disp}** — subscription to the private channel / group.")
         if bundles:
             lines.append("📦 **Packs** — one-time bundles; grab them in the next step.")
         if lines:
