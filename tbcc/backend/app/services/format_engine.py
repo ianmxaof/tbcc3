@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 FORMAT_VERSION = 4
 PHASES = ("introduction", "engagement", "support", "recovery")
+# Purchase-funnel classification of engagement_score (0.0-1.0) — separate from PHASES,
+# which tracks conversation state, not buying intent.
+FUNNEL_STAGES = ("cold", "warming", "engaged", "converted")
 EMOTION_STATES = (
     "anxious",
     "resentful",
@@ -582,6 +585,16 @@ def extract_psych_markers(text: str, current_phase: str, message_count: int) -> 
     }
 
 
+def _funnel_stage_for_score(score: float) -> str:
+    if score >= 0.75:
+        return "converted"
+    if score >= 0.5:
+        return "engaged"
+    if score >= 0.25:
+        return "warming"
+    return "cold"
+
+
 def prepare_user_turn(
     telegram_user_id: int,
     user_text: str,
@@ -649,6 +662,8 @@ def prepare_user_turn(
         ctx.current_phase = new_phase
         ctx.interaction_format_json = _save_format(fmt)
         ctx.emotional_summary = _emotional_summary(fmt, analysis)
+        ctx.engagement_score = metrics["investment_score"]
+        ctx.funnel_stage = _funnel_stage_for_score(ctx.engagement_score)
         ctx.message_count = (ctx.message_count or 0) + 1
         ctx.last_user_at = datetime.utcnow()
         ctx.updated_at = datetime.utcnow()
@@ -985,6 +1000,8 @@ def context_to_dict(ctx: SecretaryUserContext) -> dict[str, Any]:
         "telegram_username": ctx.telegram_username,
         "current_phase": ctx.current_phase,
         "emotional_summary": ctx.emotional_summary,
+        "engagement_score": ctx.engagement_score,
+        "funnel_stage": ctx.funnel_stage,
         "reply_mode": (ctx.reply_mode or "").strip() or None,
         "message_count": ctx.message_count,
         "last_user_at": ctx.last_user_at.isoformat() if ctx.last_user_at else None,
@@ -1102,6 +1119,8 @@ def reset_user_context(db: Session, context_id: int) -> bool:
     ctx.current_phase = "introduction"
     ctx.interaction_format_json = _save_format(_default_format())
     ctx.emotional_summary = None
+    ctx.engagement_score = 0.0
+    ctx.funnel_stage = "cold"
     ctx.message_count = 0
     ctx.last_user_at = None
     ctx.last_assistant_at = None

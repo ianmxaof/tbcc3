@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 from .base import Base
@@ -20,6 +20,11 @@ class SecretaryUserContext(Base):
     interaction_format_json = Column(Text, nullable=True)
     psych_markers = Column(Text, nullable=True)
     emotional_summary = Column(String(512), nullable=True)
+    # Queryable engagement score/stage — derived from metrics.investment_score each turn
+    # (see format_engine.prepare_user_turn); distinct from current_phase, which tracks
+    # conversation phase (introduction/engagement/support/recovery), not purchase intent.
+    engagement_score = Column(Float, nullable=False, default=0.0)
+    funnel_stage = Column(String(16), nullable=False, default="cold")
     # Per-customer Pilot/Auto override; NULL = inherit TBCC_SECRETARY_* env defaults.
     reply_mode = Column(String(16), nullable=True)
     message_count = Column(Integer, nullable=False, default=0)
