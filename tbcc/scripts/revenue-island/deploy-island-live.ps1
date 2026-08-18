@@ -87,7 +87,10 @@ if ($UseGhcrPull) {
     }
     # Raw frame-*.png (~100MB+) are never selected at runtime (clean/ pool only).
     # Omit them so scp + island docker build stay fast and SSH-stable.
-    & tar -czf $tgz `
+    # --force-local: GNU tar (MSYS2, Git for Windows) otherwise parses the "C:" drive letter in
+    # $tgz as a remote host spec (user@host:file) and tries to rsh/ssh into a host named "C".
+    if (Test-Path $tgz) { Remove-Item $tgz -Force }
+    & tar -czf $tgz --force-local `
       --exclude=__pycache__ `
       --exclude=.pytest_cache `
       --exclude=.tbcc-run `
@@ -100,7 +103,9 @@ if ($UseGhcrPull) {
       --exclude="app/data/loot_tier_cards/_import_bgclean" `
       --exclude="app/data/loot_tier_cards/_preview" `
       .
+    $tarExit = $LASTEXITCODE
     Pop-Location
+    if ($tarExit -ne 0 -or -not (Test-Path $tgz)) { throw "local tar packaging failed (exit $tarExit) - nothing valid to ship" }
     & scp $tgz "${HostName}:/tmp/tbcc-backend-deploy.tgz"
     if ($LASTEXITCODE -ne 0) { throw "scp backend tarball failed" }
     Invoke-Remote "rm -rf $RemoteDir/backend-src/* && tar xzf /tmp/tbcc-backend-deploy.tgz -C $RemoteDir/backend-src && rm -f /tmp/tbcc-backend-deploy.tgz"
