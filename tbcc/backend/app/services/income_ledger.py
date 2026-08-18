@@ -29,6 +29,7 @@ SOURCE_COMPANION_STARS = "companion_stars"
 SOURCE_LINKVERTISE = "linkvertise"
 SOURCE_ADMAVEN = "admaven"
 SOURCE_WORKINK = "workink"
+SOURCE_LOOTLABS = "lootlabs"
 SOURCE_BMC = "bmc"
 SOURCE_AFFILIATE = "affiliate"
 SOURCE_DIGITAL_PRODUCT = "digital_product"
@@ -42,6 +43,7 @@ SOURCE_LABELS: dict[str, str] = {
     SOURCE_LINKVERTISE: "Linkvertise",
     SOURCE_ADMAVEN: "AdMaven",
     SOURCE_WORKINK: "Work.ink",
+    SOURCE_LOOTLABS: "LootLabs",
     SOURCE_BMC: "Buy Me a Coffee",
     SOURCE_AFFILIATE: "Affiliate program",
     SOURCE_DIGITAL_PRODUCT: "Digital product",
@@ -59,6 +61,7 @@ EXTERNAL_SOURCES = (
     SOURCE_LINKVERTISE,
     SOURCE_ADMAVEN,
     SOURCE_WORKINK,
+    SOURCE_LOOTLABS,
     SOURCE_BMC,
     SOURCE_AFFILIATE,
     SOURCE_DIGITAL_PRODUCT,

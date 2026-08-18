@@ -31,7 +31,18 @@ Buffer X DB: **500** templates (`seed_social_copy_templates --execute --replace-
 | PACKS (14) | 9 sends in window — watch Planet Express motif |
 | Checkout List (21) | 1 send — bulletin refreshed island deploy |
 
-Status: **watch active** — no resync needed unless hook padding regresses.
+## Sitrep pulse (2026-08-13 ~09:10 PT)
+
+| Metric | Value |
+|--------|-------|
+| Outbound (MCP days=2 rollup) | **354** (348 ok, 6 failed) |
+| By day | Aug 11: 56 · Aug 12: 185 · Aug 13: 113 |
+| Top lanes | Loot Room 65, ABG 38, Goon 36, AI 30 |
+| PACKS | 9 · Checkout List 1 |
+| Flavor dry-run unique_hooks | main 103 · ai 152 · lanes 95–109 · **PACKS 101** (no change) |
+| Buffer X sample | **skipped** — Buffer API 429 (Retry-After ~2.6h) |
+
+Status: **watch active** — hook banks healthy; no resync. Re-check Buffer openers after rate-limit clears.
 
 
 1. **Network lane** — 2–3 posts: opening hook text changes; footer block (`Join the full AOF stack` …) identical.

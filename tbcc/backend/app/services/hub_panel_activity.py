@@ -12,9 +12,11 @@ logger = logging.getLogger(__name__)
 
 
 def is_qa_intake_thread(message_thread_id: int | None) -> bool:
+    qa = int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
     if message_thread_id is None:
-        return False
-    return int(message_thread_id) == int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
+        # Bot API omits thread id only for General (topic 1 / renamed Q&A).
+        return qa <= 1
+    return int(message_thread_id) == qa
 
 
 async def repost_panels_after_deposit(

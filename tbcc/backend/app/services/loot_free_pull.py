@@ -107,7 +107,7 @@ def build_free_pull_preview(
     summary = preview_summary_fields(rarity)
     summary["tier_flavor"] = pick_tier_flavor(rarity, rng)
     pull_number = max(1, min(FREE_PULL_LIMIT, allowance - remaining_before + 1))
-    tease = pick_tease_lines(rng, 3, step=pull_number)
+    tease = pick_tease_lines(rng, 4, step=pull_number)
     return {
         "ok": True,
         "roll_kind": "free",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -137,6 +138,12 @@ def configured_gate_providers() -> list[str]:
     return out
 
 
+def _stable_provider_index(seed: str, n: int) -> int:
+    """Process-stable index (Python hash() is salted per process)."""
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % max(1, int(n))
+
+
 def pick_gate_provider(*, seed: str | None = None) -> str:
     """
     Select gate provider per TBCC_LINK_GATE_ROTATION:
@@ -154,12 +161,12 @@ def pick_gate_provider(*, seed: str | None = None) -> str:
         return providers[0]
     if mode == "random":
         if seed:
-            return providers[hash(seed) % len(providers)]
+            return providers[_stable_provider_index(seed, len(providers))]
         return providers[int(random() * len(providers)) % len(providers)]
 
     global _rotation_index
     if seed:
-        return providers[hash(seed) % len(providers)]
+        return providers[_stable_provider_index(seed, len(providers))]
     idx = _rotation_index % len(providers)
     _rotation_index += 1
     return providers[idx]

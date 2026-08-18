@@ -69,3 +69,24 @@ def test_row_null_inherits(db, monkeypatch):
     db.commit()
     assert get_stored_reply_mode(db, uid) is None
     assert get_reply_mode(db, uid, is_business=True) == "pilot"
+
+
+def test_brevity_truncates_long_paragraph():
+    from bots.secretary_bot import enforce_brevity
+
+    out = enforce_brevity("Sentence one. Sentence two. Sentence three. Sentence four.")
+    assert out == "Sentence one. Sentence two."
+
+
+def test_brevity_hard_char_limit():
+    from bots.secretary_bot import enforce_brevity
+
+    out = enforce_brevity("A" * 500)
+    assert out == ("A" * 350) + "…"
+    assert len(out) == 351
+
+
+def test_brevity_keeps_short_text():
+    from bots.secretary_bot import enforce_brevity
+
+    assert enforce_brevity("Short reply.") == "Short reply."

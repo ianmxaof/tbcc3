@@ -33,10 +33,10 @@ def _forum_context_from_message(msg) -> tuple[bool, int | None]:
         return False, None
     if int(msg.chat.id) != storage_hub_chat_id_int():
         return False, None
-    tid = getattr(msg, "message_thread_id", None)
-    if tid is None:
-        return False, None
-    return True, int(tid)
+    from app.utils.telegram_forum import bot_api_incoming_forum_thread_id
+
+    # Q&A is forum topic 1 (renamed General): Bot API omits message_thread_id.
+    return True, bot_api_incoming_forum_thread_id(getattr(msg, "message_thread_id", None))
 
 
 def _storage_hub_forum_context(update: Update) -> tuple[bool, int | None]:

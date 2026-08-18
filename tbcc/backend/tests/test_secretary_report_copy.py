@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from app.services.secretary_report_copy import (
+    clip_telegram_html,
     format_draft_fail_html,
     format_flywheel_card_html,
+    format_formats_roster_html,
     format_heuristic_brief_html,
+    format_interaction_format_html,
     format_pulse_digest_html,
     format_surge_card_html,
     humanize_pulse_kind,
@@ -107,3 +110,93 @@ def test_flywheel_card_pending_asks_approve():
     assert "restart_worker" in html
     assert "Approve" in html
     assert "<blockquote>" in html
+
+
+def test_format_card_uses_telegram_html_and_quotes():
+    html = format_interaction_format_html(
+        {
+            "telegram_user_id": 7787282561,
+            "telegram_username": "alice",
+            "current_phase": "engagement",
+            "reply_mode": "pilot",
+            "emotional_summary": "phase=engagement; recent_signals=confusion; dominant_now=positive",
+            "last_user_at": "2026-08-17T17:00:00",
+            "last_user_text": "how do I <subscribe>?",
+            "message_count": 4,
+            "interaction_format": {
+                "name": "support-adaptive",
+                "phase": "engagement",
+                "last_intent": "buyer",
+                "dominant_emotions": ["confusion", "positive"],
+                "observed_triggers": ["how do i"],
+                "communication_preferences": {
+                    "preferred_tone": "confusion",
+                    "response_length": "medium",
+                    "distress_detected": False,
+                },
+                "interaction_guidelines": {
+                    "current_focus": "Clarify step-by-step: how do I subscribe?",
+                    "tone_directive": "patient, step-by-step — one action at a time",
+                    "recovery_note": None,
+                    "escalation_hint": None,
+                },
+                "metrics": {
+                    "user_messages": 4,
+                    "assistant_messages": 3,
+                    "distress_events": 0,
+                    "positive_signals": 1,
+                },
+                "phase_history": [
+                    {"from": "introduction", "to": "engagement", "at": "2026-08-17T16:50:00"},
+                ],
+            },
+        },
+        live=True,
+    )
+    assert "<blockquote>" in html
+    assert "<b>Format</b>" in html
+    assert "<u>engaged</u>" in html
+    assert "<i>" in html
+    assert "@alice" in html
+    assert "how do I subscribe?" in html or "how do I &lt;subscribe&gt;?" in html
+    assert "&lt;subscribe&gt;" in html
+    assert "<u>live</u>" in html
+    assert "patient, step-by-step" in html
+    assert len(html) < 4096
+    assert "&lt;b&gt;" not in html
+
+
+def test_formats_roster_fits_dm():
+    html = format_formats_roster_html(
+        items=[
+            {
+                "telegram_user_id": 1,
+                "telegram_username": "bob",
+                "current_phase": "introduction",
+                "updated_at": "2026-08-17T17:01:00",
+            },
+            {
+                "telegram_user_id": 2,
+                "telegram_username": None,
+                "current_phase": "support",
+                "updated_at": "2026-08-17T16:00:00",
+            },
+        ],
+        total=2,
+        page=0,
+        page_size=8,
+        live=True,
+    )
+    assert "<blockquote>" in html
+    assert "@bob" in html
+    assert "uid 2" in html
+    assert "<u>live</u>" in html
+    assert len(html) < 4096
+
+
+def test_clip_telegram_html_keeps_short_cards():
+    assert clip_telegram_html("hello") == "hello"
+    long = "x" * 5000
+    clipped = clip_telegram_html(long, max_len=100)
+    assert len(clipped) < 140
+    assert "trimmed" in clipped

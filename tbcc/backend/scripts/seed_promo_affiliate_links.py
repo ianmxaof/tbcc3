@@ -61,6 +61,20 @@ SEED_ITEMS: list[dict] = [
         "copy_template": "🎨 {link} — AI creative playground",
     },
     {
+        "label": "AI affiliate (aftrk3)",
+        "url": (
+            "https://track.aftrk3.com/38df6f12-f103-452f-9386-22bba88ec8ef"
+            "?ats=eyJhIjoxMTUwNDY3LCJjIjo2MzE0NzY4MCwibiI6MzcsInMiOjczNSwiZSI6MTEwNTIsInAiOjMxN30="
+            "&aff_token=IDAgLBMhJS8NJSE6Jw"
+        ),
+        "payout_kind": "pps",
+        "payout_detail": "usd_cash",
+        "priority_tier": 5,
+        "placements": ["x_buffer", "telegram_footer", "links_hub_ai", "loot_roll"],
+        "network_keys": ["ai", "main"],
+        "copy_template": "🤖 {link} — AI sponsor · tap while it's live",
+    },
+    {
         "label": "Lucid Dreams video bot",
         "url": "https://ndfy.store/tg/bot?username=Luciddreamstobot&ref_id=7787282561",
         "payout_kind": "revshare",
@@ -279,6 +293,16 @@ SEED_ITEMS: list[dict] = [
         "placements": ["manual_only", "links_hub_sfw"],
         "network_keys": [],
         "copy_template": "🛠 {link} — Claude AI assistant",
+    },
+    {
+        "label": "Abliteration.ai",
+        "url": "https://abliteration.ai/sign-up?referral_code=ref_5zTlwMOPEFFe",
+        "payout_kind": "referral",
+        "payout_detail": "referral_credits",
+        "priority_tier": 52,
+        "placements": ["manual_only", "links_hub_sfw", "links_hub_ai"],
+        "network_keys": ["ai"],
+        "copy_template": "⚕ {link} — uncensored open-weight API · Hermdog / agent stack",
     },
     # --- The Checkout List (@thecheckoutlist) — SFW silo only ---
     {

@@ -67,7 +67,7 @@ def x_outbound_url() -> str:
     overflow = (os.getenv("TBCC_BUFFER_X_OVERFLOW_URL") or "").strip()
     if overflow and not is_linkvertise_host(overflow):
         return overflow
-    return aof_hub_invite_url()
+    return loot_free_start_url() or aof_hub_invite_url()
 
 
 def aof_gate_url_alt() -> str:

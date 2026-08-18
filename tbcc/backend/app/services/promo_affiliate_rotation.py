@@ -210,40 +210,59 @@ def pick_affiliate(
     network_key: str | None = None,
     advance: bool = True,
 ) -> AffiliatePick | None:
-    candidates = list_candidates(db, placement, network_key=network_key)
-    if not candidates:
-        return None
-    cur = _get_cursor(db, placement, network_key)
-    idx = int(cur.cursor_index or 0) % len(candidates)
     placement_norm = (placement or "").strip().lower()
-    every = spicy_bias_every()
-    if (
-        placement_norm == "x_buffer"
-        and every > 0
-        and advance
-        and idx % every == 0
-    ):
-        for i, row in enumerate(candidates):
-            if is_spicy_companion_row(row):
-                idx = i
-                break
-    pick = AffiliatePick(row=candidates[idx], placement=placement, network_key=network_key, slot_index=idx)
-    if advance:
-        # Advance from the natural cursor slot, not the forced spicy index,
-        # so bias injects without collapsing the rest of the rotation.
-        natural = int(cur.cursor_index or 0) % len(candidates)
-        cur.cursor_index = (natural + 1) % len(candidates)
-        cur.updated_at = datetime.utcnow()
+    pack_pick: AffiliatePick | None = None
+    try:
+        from app.services.affiliate_sponsor_pack_pick import pick_from_sponsor_pack
+
+        pack_pick = pick_from_sponsor_pack(
+            db, placement_norm, network_key=network_key, advance=advance
+        )
+    except Exception:
+        logger.debug("sponsor pack pick skipped", exc_info=True)
+        pack_pick = None
+
+    if pack_pick is not None:
+        pick = pack_pick
+    else:
+        candidates = list_candidates(db, placement, network_key=network_key)
+        if not candidates:
+            return None
+        cur = _get_cursor(db, placement, network_key)
+        idx = int(cur.cursor_index or 0) % len(candidates)
+        every = spicy_bias_every()
+        # Spicy bias only on legacy (non-pack) x_buffer rotation — Pack B owns Companion closes.
+        if (
+            placement_norm == "x_buffer"
+            and every > 0
+            and advance
+            and idx % every == 0
+        ):
+            for i, row in enumerate(candidates):
+                if is_spicy_companion_row(row):
+                    idx = i
+                    break
+        pick = AffiliatePick(
+            row=candidates[idx], placement=placement, network_key=network_key, slot_index=idx
+        )
+        if advance:
+            # Advance from the natural cursor slot, not the forced spicy index,
+            # so bias injects without collapsing the rest of the rotation.
+            natural = int(cur.cursor_index or 0) % len(candidates)
+            cur.cursor_index = (natural + 1) % len(candidates)
+            cur.updated_at = datetime.utcnow()
+
+    if advance and pick is not None:
         try:
             from app.services.affiliate_beacon_wrap import _source_ref_for_affiliate
             from app.services.traffic_pulse import pulse_affiliate_served
 
-            out_url = affiliate_outbound_url(pick.row, db=db, placement=placement)
+            out_url = affiliate_outbound_url(pick.row, db=db, placement=placement_norm)
             pulse_affiliate_served(
-                placement=placement,
+                placement=placement_norm,
                 label=(pick.row.label or "affiliate").strip(),
                 url=out_url,
-                source_ref=_source_ref_for_affiliate(pick.row.label or "aff", placement),
+                source_ref=_source_ref_for_affiliate(pick.row.label or "aff", placement_norm),
             )
         except Exception:
             logger.debug("affiliate served pulse skipped", exc_info=True)
@@ -373,15 +392,16 @@ def build_loot_roll_affiliate_footer_html(
     db: Session,
     *,
     advance: bool = True,
+    network_key: str | None = None,
 ) -> str | None:
     """
     Small italic footer for paid roll album captions.
     Prefers placement=loot_roll, falls back to telegram_footer.
     Hyperlink sits inside a short sentence (or uses copy_template when set).
     """
-    pick = pick_affiliate(db, "loot_roll", advance=advance)
+    pick = pick_affiliate(db, "loot_roll", network_key=network_key, advance=advance)
     if not pick:
-        pick = pick_affiliate(db, "telegram_footer", advance=advance)
+        pick = pick_affiliate(db, "telegram_footer", network_key=network_key, advance=advance)
     if not pick:
         return None
     row = pick.row

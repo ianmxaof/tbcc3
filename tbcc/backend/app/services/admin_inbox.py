@@ -36,7 +36,9 @@ Severity = Literal["critical", "important", "info"]
 REDIS_KEY_EVENTS = "tbcc:admin_inbox:events"
 REDIS_KEY_LAST_READ = "tbcc:admin_inbox:last_read"
 REDIS_KEY_SECRETARY_ONLINE = "tbcc:admin_inbox:last_secretary_online"
+REDIS_KEY_RECURRING_ISSUES = "tbcc:admin_inbox:recurring_issues"
 MAX_EVENTS = 200
+RECURRING_ISSUE_TTL_SEC = 14 * 86400  # drop stale rows after 14d idle
 SECRETARY_ONLINE_DEDUP_SEC = 1200  # 20 min — deploy restarts should not flood inbox
 
 _CATEGORY_ICON: dict[str, str] = {
@@ -177,7 +179,7 @@ def _format_event_body_html(event: dict[str, Any], *, truncate: int | None = Non
         text = html.escape(raw_body) if raw_body else ""
 
     if truncate is not None and len(text) > truncate:
-        return text[: truncate - 1] + "…"
+        return _truncate_html_fragment(text, truncate)
     return text
 
 
@@ -538,6 +540,124 @@ def mark_inbox_read() -> float:
     return ts
 
 
+def bump_recurring_issue(
+    issue_id: str,
+    *,
+    title: str,
+    action: str = "",
+    fingerprint: str = "",
+) -> dict[str, Any]:
+    """
+    Increment an open recurring ops issue (Traffic Pulse digest playbook stuck on repeat).
+    Stored in Redis — surfaced at top of /inbox and /inbox issues.
+    """
+    key = (issue_id or "").strip()
+    if not key:
+        return {}
+    now = _now_ts()
+    row: dict[str, Any] = {
+        "issue_id": key,
+        "count": 1,
+        "title": (title or "").strip()[:400],
+        "action": (action or "").strip()[:400],
+        "fingerprint": (fingerprint or "").strip()[:512],
+        "first_ts": now,
+        "last_ts": now,
+    }
+    try:
+        r = _redis_client()
+        raw = r.hget(REDIS_KEY_RECURRING_ISSUES, key)
+        if raw:
+            try:
+                prev = json.loads(raw)
+                if isinstance(prev, dict):
+                    row["count"] = int(prev.get("count") or 0) + 1
+                    row["first_ts"] = float(prev.get("first_ts") or now)
+            except (TypeError, json.JSONDecodeError, ValueError):
+                pass
+        r.hset(REDIS_KEY_RECURRING_ISSUES, key, json.dumps(row, separators=(",", ":")))
+        # Prune idle rows
+        all_raw = r.hgetall(REDIS_KEY_RECURRING_ISSUES) or {}
+        for field, blob in all_raw.items():
+            try:
+                item = json.loads(blob)
+                last = float(item.get("last_ts") or 0)
+                if last and (now - last) > RECURRING_ISSUE_TTL_SEC:
+                    r.hdel(REDIS_KEY_RECURRING_ISSUES, field)
+            except (TypeError, json.JSONDecodeError, ValueError):
+                r.hdel(REDIS_KEY_RECURRING_ISSUES, field)
+    except Exception:
+        logger.debug("recurring issue bump failed", exc_info=True)
+    return row
+
+
+def list_recurring_issues(*, min_count: int = 1, limit: int = 12) -> list[dict[str, Any]]:
+    limit = max(1, min(30, int(limit)))
+    min_count = max(1, int(min_count))
+    try:
+        r = _redis_client()
+        raw = r.hgetall(REDIS_KEY_RECURRING_ISSUES) or {}
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for blob in raw.values():
+        try:
+            item = json.loads(blob)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("count") or 0) < min_count:
+            continue
+        rows.append(item)
+    rows.sort(key=lambda x: (-int(x.get("count") or 0), -float(x.get("last_ts") or 0)))
+    return rows[:limit]
+
+
+def clear_recurring_issue(issue_id: str) -> bool:
+    key = (issue_id or "").strip()
+    if not key:
+        return False
+    try:
+        r = _redis_client()
+        return bool(r.hdel(REDIS_KEY_RECURRING_ISSUES, key))
+    except Exception:
+        return False
+
+
+def format_recurring_issues_html(
+    issues: list[dict[str, Any]] | None = None,
+    *,
+    title: str = "Recurring issues",
+    empty_hint: str = "No stuck playbooks — Traffic Pulse is not repeating the same advice.",
+) -> str:
+    from app.services.secretary_report_copy import humanize_pulse_issue
+
+    rows = issues if issues is not None else list_recurring_issues()
+    if not rows:
+        return f"🔁 <b>{html.escape(title)}</b>\n\n{html.escape(empty_hint)}"
+
+    lines = [
+        f"🔁 <b>{html.escape(title)}</b>",
+        "<i>Same Traffic Pulse advice on repeat — count ticks each digest window.</i>",
+        "",
+    ]
+    for item in rows:
+        iid = str(item.get("issue_id") or "")
+        n = int(item.get("count") or 0)
+        label = html.escape(humanize_pulse_issue(iid))
+        action = html.escape(str(item.get("action") or "").strip())
+        ago = _ago_label(float(item.get("last_ts") or 0))
+        first = _ago_label(float(item.get("first_ts") or 0))
+        lines.append(f"☑ <b>×{n}</b> · {label}")
+        if action:
+            lines.append(f"   {action}")
+        lines.append(f"   <i>last {html.escape(ago)} · since {html.escape(first)}</i>")
+        lines.append("")
+    lines.append("<i>/inbox issues · digest DMs suppress when advice unchanged</i>")
+    return clip_telegram_html("\n".join(lines).strip(), 4096)
+
+
 def list_inbox_events(
     *,
     limit: int = 25,
@@ -578,6 +698,65 @@ def list_inbox_events(
     return out
 
 
+_HTML_CLOSE_TAGS = ("blockquote", "pre", "a", "code", "b", "i", "u")
+
+
+def _truncate_html_fragment(text: str, max_len: int) -> str:
+    """Cut a fragment without leaving a dangling tag or entity (parent may wrap in <i>)."""
+    if max_len < 2 or len(text) <= max_len:
+        return text
+    cut = text[: max_len - 1]
+    cut = re.sub(r"<[^>]*$", "", cut)
+    cut = re.sub(r"&[a-zA-Z0-9#]*$", "", cut)
+    return cut + "…"
+
+
+def clip_telegram_html(text: str, max_len: int = 4096) -> str:
+    """Keep Telegram sendMessage HTML under max_len without slicing mid-tag."""
+    if len(text) <= max_len:
+        return text
+    reserve = 32
+    cut = text[: max(1, max_len - reserve)]
+    nl = cut.rfind("\n")
+    if nl >= max_len // 3:
+        cut = cut[:nl]
+    cut = re.sub(r"<[^>]*$", "", cut)
+    closers: list[str] = []
+    for tag in _HTML_CLOSE_TAGS:
+        opens = len(re.findall(rf"<{tag}(?:\s[^>]*)?>", cut, flags=re.I))
+        closes = len(re.findall(rf"</{tag}>", cut, flags=re.I))
+        for _ in range(max(0, opens - closes)):
+            closers.append(f"</{tag}>")
+    note = "\n<i>…truncated — use a tighter filter</i>"
+    out = cut.rstrip() + note + "".join(reversed(closers))
+    if len(out) <= max_len:
+        return out
+    return _truncate_html_fragment(cut, max_len)
+
+
+def _collapse_repeat_events(events: list[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
+    """Merge consecutive same category+title (hourly session-lock storms)."""
+    out: list[tuple[dict[str, Any], int]] = []
+    for ev in events:
+        key = (
+            str(ev.get("category") or ""),
+            str(ev.get("title") or ""),
+            str((ev.get("meta") or {}).get("code") or ""),
+        )
+        if out:
+            prev, n = out[-1]
+            pkey = (
+                str(prev.get("category") or ""),
+                str(prev.get("title") or ""),
+                str((prev.get("meta") or {}).get("code") or ""),
+            )
+            if pkey == key:
+                out[-1] = (prev, n + 1)
+                continue
+        out.append((ev, 1))
+    return out
+
+
 def _ago_label(ts_unix: float) -> str:
     if ts_unix <= 0:
         return "?"
@@ -606,6 +785,11 @@ def format_inbox_digest(
     header = format_inbox_header(title=title, unread_count=unread_count)
     blocks: list[str] = [header, ""]
 
+    recurring = list_recurring_issues(min_count=2, limit=5)
+    if recurring:
+        blocks.append(format_recurring_issues_html(recurring, title="Recurring"))
+        blocks.append("")
+
     traffic_events = [e for e in events if str(e.get("category") or "") == "traffic"]
     other_events = [e for e in events if str(e.get("category") or "") != "traffic"]
 
@@ -619,31 +803,46 @@ def format_inbox_digest(
     else:
         digest_events = events
 
-    for ev in digest_events:
+    footer = (
+        "\n\n<i>/read marks all as seen · /inbox issues · filters: /payment /loot /ops /critical</i>"
+    )
+    collapsed = _collapse_repeat_events(digest_events)
+    skipped = 0
+    for idx, (ev, repeats) in enumerate(collapsed):
         cat = str(ev.get("category") or "system")
         ago = _ago_label(float(ev.get("ts_unix") or 0))
         if cat == "traffic":
-            blocks.append(format_traffic_compact_line(ev, ago=ago))
-            continue
-        if cat == "system":
-            blocks.append(format_system_compact_line(ev, ago=ago))
-            continue
-        icon = _CATEGORY_ICON.get(cat, "📬")
-        sev = str(ev.get("severity") or "info")
-        sev_tag = {"critical": "🔴", "important": "🟠", "info": ""}.get(sev, "")
-        t = html.escape(str(ev.get("title") or ""))
-        b = _format_event_body_html(ev, truncate=140)
-        line = f"{icon} <b>{t}</b>"
-        if sev_tag:
-            line += f" {sev_tag}"
-        line += f" · <code>{html.escape(ago)}</code>"
-        if b:
-            line += f"\n  <i>{b}</i>"
+            line = format_traffic_compact_line(ev, ago=ago)
+        elif cat == "system":
+            line = format_system_compact_line(ev, ago=ago)
+        else:
+            icon = _CATEGORY_ICON.get(cat, "📬")
+            sev = str(ev.get("severity") or "info")
+            sev_tag = {"critical": "🔴", "important": "🟠", "info": ""}.get(sev, "")
+            t = html.escape(str(ev.get("title") or ""))
+            b = _format_event_body_html(ev, truncate=140)
+            line = f"{icon} <b>{t}</b>"
+            if sev_tag:
+                line += f" {sev_tag}"
+            line += f" · <code>{html.escape(ago)}</code>"
+            if repeats > 1:
+                line += f" · ×{repeats}"
+            if b:
+                line += f"\n  <i>{b}</i>"
+        if repeats > 1 and cat in ("traffic", "system") and "×" not in line:
+            line += f" · ×{repeats}"
+        candidate = "\n".join(blocks + ["", line]).strip() + footer
+        if len(candidate) > 4000:
+            skipped = sum(n for _, n in collapsed[idx:])
+            break
+        blocks.append("")
         blocks.append(line)
 
+    if skipped:
+        blocks.append("")
+        blocks.append(f"<i>…and {skipped} more (message cap) — try /ops or /now</i>")
     blocks.append("")
     blocks.append(
-        "<i>/read marks all as seen · filters: /payment /loot /ops /critical</i>"
+        "<i>/read marks all as seen · /inbox issues · filters: /payment /loot /ops /critical</i>"
     )
-    text = "\n".join(blocks).strip()
-    return text[:4096]
+    return clip_telegram_html("\n".join(blocks).strip(), 4096)

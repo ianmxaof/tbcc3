@@ -71,6 +71,7 @@ def test_list_candidates_filters_placement_and_network(db):
 
 def test_pick_affiliate_round_robin(db, monkeypatch):
     monkeypatch.setenv("TBCC_BUFFER_X_SPICY_BIAS_EVERY", "0")
+    monkeypatch.setenv("TBCC_SPONSOR_PACKS", "0")
     _add_row(db, label="A", url="https://a.test/1", placements=["x_buffer"], priority=1)
     _add_row(db, label="B", url="https://b.test/1", placements=["x_buffer"], priority=2)
     first = pick_affiliate(db, "x_buffer", advance=True)
@@ -84,6 +85,7 @@ def test_pick_affiliate_round_robin(db, monkeypatch):
 
 def test_pick_affiliate_spicy_bias_every_third(db, monkeypatch):
     monkeypatch.setenv("TBCC_BUFFER_X_SPICY_BIAS_EVERY", "3")
+    monkeypatch.setenv("TBCC_SPONSOR_PACKS", "0")
     _add_row(db, label="A", url="https://a.test/1", placements=["x_buffer"], priority=1)
     _add_row(db, label="B", url="https://b.test/1", placements=["x_buffer"], priority=2)
     _add_row(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import re
+from datetime import datetime
 from typing import Any
 
 # Longest placement suffix first so "links_hub_sfw" wins over "links_hub".
@@ -87,6 +88,242 @@ def code(s: Any) -> str:
 
 def quote(inner: str) -> str:
     return f"<blockquote>{inner}</blockquote>"
+
+
+def quote_expandable(inner: str) -> str:
+    return f"<blockquote expandable>{inner}</blockquote>"
+
+
+_PHASE_MARK = {
+    "introduction": "👋",
+    "engagement": "💬",
+    "support": "🛟",
+    "recovery": "🔁",
+}
+
+_PHASE_LABEL = {
+    "introduction": "intro",
+    "engagement": "engaged",
+    "support": "support",
+    "recovery": "recovery",
+}
+
+_TG_HTML_MAX = 3900
+
+
+def clip_telegram_html(text: str, *, max_len: int = _TG_HTML_MAX) -> str:
+    body = text or ""
+    if len(body) <= max_len:
+        return body
+    cut = body[: max_len - 28]
+    nl = cut.rfind("\n")
+    if nl > max_len // 2:
+        cut = cut[:nl]
+    return cut + "\n<i>…trimmed for Telegram</i>"
+
+
+def format_who_label(item: dict[str, Any] | None) -> str:
+    row = item or {}
+    un = str(row.get("telegram_username") or "").strip().lstrip("@")
+    if un:
+        return f"@{un}"
+    uid = row.get("telegram_user_id")
+    return f"uid {uid}" if uid is not None else "unknown"
+
+
+def _parse_iso_dt(raw: str | None) -> datetime | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", ""))
+    except ValueError:
+        return None
+
+
+def _ago_label(raw: str | None) -> str:
+    dt = _parse_iso_dt(raw)
+    if dt is None:
+        return "never"
+    sec = max(0, int((datetime.utcnow() - dt).total_seconds()))
+    if sec < 45:
+        return "just now"
+    if sec < 3600:
+        return f"{sec // 60}m ago"
+    if sec < 86400:
+        return f"{sec // 3600}h ago"
+    return f"{sec // 86400}d ago"
+
+
+def _short_clock(raw: str | None) -> str:
+    dt = _parse_iso_dt(raw)
+    if dt is None:
+        return ""
+    return dt.strftime("%m-%d %H:%M")
+
+
+def _phase_mark(phase: str | None) -> str:
+    key = str(phase or "introduction").strip().lower()
+    return _PHASE_MARK.get(key, "•")
+
+
+def _phase_label(phase: str | None) -> str:
+    key = str(phase or "introduction").strip().lower()
+    return _PHASE_LABEL.get(key, key or "intro")
+
+
+def _uniq_keep_order(values: list[str], *, limit: int = 6) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        item = str(raw or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def format_formats_roster_html(
+    *,
+    items: list[dict[str, Any]],
+    total: int,
+    page: int,
+    page_size: int,
+    live: bool,
+    query: str | None = None,
+) -> str:
+    page = max(0, int(page))
+    page_size = max(1, int(page_size))
+    pages = max(1, (max(0, int(total)) + page_size - 1) // page_size)
+    live_bit = "<u>live</u>" if live else "<i>paused</i>"
+    q = (query or "").strip().lstrip("@")
+    filter_bit = f" · match {code(q)}" if q else ""
+    lines = [
+        f"🧠 <b>Formats</b> · {live_bit}{filter_bit}",
+        f"<i>{int(total)} people · page {page + 1}/{pages}</i>",
+        "",
+    ]
+    if not items:
+        lines.append(quote("No Format Engine people yet. When a customer DMs, their card appears here."))
+        lines.append("")
+        lines.append(quote("Tap <b>Live on</b> and leave this chat open — cards edit in place as they talk."))
+        return clip_telegram_html("\n".join(lines))
+
+    rows: list[str] = []
+    for item in items:
+        phase = str(item.get("current_phase") or "introduction")
+        who = esc(format_who_label(item))
+        ago = _ago_label(str(item.get("updated_at") or item.get("last_user_at") or ""))
+        rows.append(f"{_phase_mark(phase)} {who} · <u>{esc(_phase_label(phase))}</u> · {esc(ago)}")
+    lines.append(quote("\n".join(rows)))
+    lines.append("")
+    if live:
+        lines.append(quote("Cards below <b>edit themselves</b> when that person talks. Tap a name for the full format."))
+    else:
+        lines.append(quote("Live is <i>paused</i>. Tap <b>Live on</b> (or send /formats) to resume in-place updates."))
+    return clip_telegram_html("\n".join(lines))
+
+
+def format_interaction_format_html(
+    item: dict[str, Any],
+    *,
+    live: bool = False,
+    snapshot: bool = False,
+) -> str:
+    fmt = item.get("interaction_format") if isinstance(item.get("interaction_format"), dict) else {}
+    fmt = fmt or {}
+    phase = str(item.get("current_phase") or fmt.get("phase") or "introduction")
+    who = esc(format_who_label(item))
+    uid = item.get("telegram_user_id")
+    mode_raw = str(item.get("reply_mode") or "").strip().lower()
+    mode = "Pilot" if mode_raw == "pilot" else ("Auto" if mode_raw == "auto" else "inherit")
+    status = "<u>live</u>" if live and not snapshot else ("<i>snapshot</i>" if snapshot else "<i>static</i>")
+    guidelines = fmt.get("interaction_guidelines") if isinstance(fmt.get("interaction_guidelines"), dict) else {}
+    prefs = fmt.get("communication_preferences") if isinstance(fmt.get("communication_preferences"), dict) else {}
+    metrics = fmt.get("metrics") if isinstance(fmt.get("metrics"), dict) else {}
+    focus = str(guidelines.get("current_focus") or "—").strip()
+    tone = str(guidelines.get("tone_directive") or "—").strip()
+    recovery = str(guidelines.get("recovery_note") or "").strip()
+    escalation = str(guidelines.get("escalation_hint") or "").strip()
+    preferred_tone = str(prefs.get("preferred_tone") or "clear").strip()
+    length = str(prefs.get("response_length") or "medium").strip()
+    distress = bool(prefs.get("distress_detected"))
+    emotions = _uniq_keep_order([str(x) for x in (fmt.get("dominant_emotions") or [])][-8:])
+    triggers = _uniq_keep_order([str(x) for x in (fmt.get("observed_triggers") or [])][-8:])
+    intent = str(fmt.get("last_intent") or "").strip()
+    summary = str(item.get("emotional_summary") or "").strip()
+    last_said = str(item.get("last_user_text") or "").strip()
+    history = fmt.get("phase_history") if isinstance(fmt.get("phase_history"), list) else []
+    user_n = int(metrics.get("user_messages") or item.get("message_count") or 0)
+    asst_n = int(metrics.get("assistant_messages") or 0)
+    distress_n = int(metrics.get("distress_events") or 0)
+    positive_n = int(metrics.get("positive_signals") or 0)
+    fmt_name = str(fmt.get("name") or "support-adaptive")
+
+    lines = [
+        f"🧠 <b>Format</b> · {who} · {status}",
+        f"{_phase_mark(phase)} Phase <u>{esc(_phase_label(phase))}</u> · mode <b>{esc(mode)}</b> · {code(fmt_name)}",
+        f"uid {code(uid)} · last seen <i>{esc(_ago_label(str(item.get('last_user_at') or item.get('updated_at') or '')))}</i>",
+        "",
+        "<b>Focus</b>",
+        quote(f"<i>{esc(focus[:280])}</i>"),
+        "",
+        "<b>Tone</b>",
+        quote(esc(tone[:280])),
+        "",
+        "<b>They prefer</b>",
+        quote(
+            f"tone <u>{esc(preferred_tone)}</u> · length <i>{esc(length)}</i> · "
+            f"distress <b>{'yes' if distress else 'no'}</b>"
+            + (f" · intent <code>{esc(intent)}</code>" if intent else "")
+        ),
+    ]
+    if summary:
+        lines.extend(["", "<b>Summary</b>", quote(esc(summary[:280]))])
+    if last_said:
+        lines.extend(["", "<b>Last they said</b>", quote(esc(last_said[:320]))])
+    if emotions or triggers:
+        emo = " · ".join(esc(x) for x in emotions) or "<i>none yet</i>"
+        trig = " · ".join(esc(x) for x in triggers)
+        block = f"<b>signals</b> {emo}"
+        if trig:
+            block += f"\n<b>triggers</b> {trig}"
+        lines.extend(["", "<b>Signals</b>", quote(block)])
+    path_bits: list[str] = []
+    for step in (history or [])[-6:]:
+        if not isinstance(step, dict):
+            continue
+        src = _phase_label(str(step.get("from") or ""))
+        dst = _phase_label(str(step.get("to") or ""))
+        when = _short_clock(str(step.get("at") or ""))
+        bit = f"{esc(src)} → <u>{esc(dst)}</u>"
+        if when:
+            bit += f" · <i>{esc(when)}</i>"
+        path_bits.append(bit)
+    if path_bits:
+        hist_fn = quote_expandable if len(path_bits) > 2 else quote
+        lines.extend(["", "<b>Phase path</b>", hist_fn("\n".join(path_bits))])
+    extra_notes: list[str] = []
+    if recovery:
+        extra_notes.append(f"<b>recovery</b> {esc(recovery[:180])}")
+    if escalation:
+        extra_notes.append(f"<b>escalate</b> {esc(escalation[:180])}")
+    if extra_notes:
+        lines.extend(["", quote("\n".join(extra_notes))])
+    lines.extend(
+        [
+            "",
+            "<b>Counts</b>",
+            quote(
+                f"user <b>{user_n}</b> · assistant <b>{asst_n}</b> · "
+                f"distress {code(distress_n)} · positive {code(positive_n)}"
+            ),
+        ]
+    )
+    return clip_telegram_html("\n".join(lines))
 
 
 def humanize_source_ref(ref: str | None) -> dict[str, str]:
@@ -252,6 +489,59 @@ def pulse_playbook(counts: dict[str, Any], refs: list[dict[str, Any]] | None = N
     return out
 
 
+_PULSE_ISSUE_LABEL: dict[str, str] = {
+    "scheduler_post_fail": "Scheduler sends failing",
+    "affiliate_zero_clicks": "Affiliate slots, zero clicks",
+    "cta_no_bot_start": "Posts ship — no bot /start",
+    "bot_start_no_loot": "Bot opens — no loot roll",
+    "beacon_converting": "Beacon clicks converting",
+    "posts_quiet_clicks": "Posts OK — clicks quiet",
+    "pulse_quiet": "Quiet traffic window",
+}
+
+
+def pulse_issue_id(counts: dict[str, Any], refs: list[dict[str, Any]] | None = None) -> str | None:
+    """Stable recurring-issue key from pulse_read / pulse_playbook branch (ignores post counts)."""
+    c = _count_map(counts)
+    served = c.get("affiliate_served", 0)
+    beacons = c.get("beacon", 0)
+    posts = c.get("post_ok", 0)
+    fails = c.get("post_fail", 0)
+    starts = c.get("start", 0)
+    rolls = c.get("loot_roll", 0)
+
+    if fails and fails >= max(posts, 1):
+        return "scheduler_post_fail"
+    if served and beacons == 0:
+        return "affiliate_zero_clicks"
+    if posts and starts == 0 and beacons == 0:
+        return "cta_no_bot_start"
+    if starts and rolls == 0 and beacons == 0:
+        return "bot_start_no_loot"
+    if beacons and served:
+        return "beacon_converting"
+    if posts:
+        return "posts_quiet_clicks"
+    if sum(c.values()) > 0:
+        return "pulse_quiet"
+    return None
+
+
+def pulse_digest_fingerprint(
+    counts: dict[str, Any],
+    refs: list[dict[str, Any]] | None = None,
+) -> str:
+    """Fingerprint read+playbook branch — same issue/action even when post counts differ."""
+    issue = pulse_issue_id(counts, refs) or "none"
+    steps = pulse_playbook(counts, refs)
+    return f"{issue}|" + "||".join(steps)
+
+
+def humanize_pulse_issue(issue_id: str | None) -> str:
+    key = (issue_id or "").strip()
+    return _PULSE_ISSUE_LABEL.get(key, key.replace("_", " ").title() or "Traffic issue")
+
+
 def format_pulse_digest_html(
     counts: dict[str, Any],
     refs: dict[str, Any] | list[tuple[Any, Any]] | None = None,
@@ -308,7 +598,7 @@ def format_pulse_digest_html(
     lines.append(quote(numbered))
     lines.append("")
     lines.append(
-        f"<i>Full feed: {code('/inbox')} · instant types: {code('TBCC_TRAFFIC_PULSE_INSTANT')}</i>"
+        f"<i>Full feed: {code('/inbox')} · recurring: {code('/inbox issues')} · instant: {code('TBCC_TRAFFIC_PULSE_INSTANT')}</i>"
     )
     return "\n".join(lines)
 

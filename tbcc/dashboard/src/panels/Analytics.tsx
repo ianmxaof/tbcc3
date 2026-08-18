@@ -22,16 +22,19 @@ export function Analytics() {
   const subQ = useQuery({
     queryKey: ["analytics", "subscriptions"],
     queryFn: () => api.analytics.subscriptions(),
+    refetchInterval: 120_000,
   });
 
   const summaryQ = useQuery({
     queryKey: ["analytics", "post-events-summary", rangeDays],
     queryFn: () => api.analytics.postEventsSummary(rangeDays),
+    refetchInterval: 120_000,
   });
 
   const eventsQ = useQuery({
     queryKey: ["analytics", "post-events", 40],
     queryFn: () => api.analytics.postEvents({ limit: 40, offset: 0 }),
+    refetchInterval: 120_000,
   });
 
   const eromeGovQ = useQuery({
@@ -46,6 +49,45 @@ export function Analytics() {
     refetchInterval: 120_000,
   });
 
+  const signalsStatusQ = useQuery({
+    queryKey: ["analytics", "signals-status"],
+    queryFn: () => api.analytics.signalsStatus(),
+    refetchInterval: 120_000,
+  });
+
+  const signalsEligQ = useQuery({
+    queryKey: ["analytics", "signals-eligibility"],
+    queryFn: () => api.analytics.signalsEligibility(),
+    refetchInterval: 120_000,
+  });
+
+  const signalsQ = useQuery({
+    queryKey: ["analytics", "signals", 14],
+    queryFn: () => api.analytics.signals(14),
+    refetchInterval: 120_000,
+  });
+
+  const directionQ = useQuery({
+    queryKey: ["analytics", "direction", rangeDays],
+    queryFn: () => api.analytics.direction({ days: rangeDays }),
+    refetchInterval: 300_000,
+  });
+
+  const sponsorPulseQ = useQuery({
+    queryKey: ["analytics", "sponsor-pulse", rangeDays],
+    queryFn: () => api.analytics.sponsorPulse(rangeDays),
+    refetchInterval: 120_000,
+  });
+
+  const tickMut = useMutation({
+    mutationFn: () => api.analytics.signalsTick({ refreshViews: true, pushInbox: false }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["analytics", "signals"] });
+      void qc.invalidateQueries({ queryKey: ["analytics", "signals-status"] });
+      void qc.invalidateQueries({ queryKey: ["analytics", "signals-eligibility"] });
+    },
+  });
+
   const markApproved = useMutation({
     mutationFn: (albumUrl: string) =>
       api.analytics.eromeGovernanceMark({ album_url: albumUrl, status: "approved_public" }),
@@ -53,6 +95,14 @@ export function Analytics() {
   });
 
   const chartData = summaryQ.data?.by_day ?? [];
+  const lastTickUnix = signalsStatusQ.data?.last_tick_unix ?? null;
+  const lastTickLabel = lastTickUnix
+    ? new Date(lastTickUnix * 1000).toLocaleString()
+    : "never";
+  const viewsN = signalsEligQ.data?.footprint?.deliveries_with_views ?? 0;
+  const tickFresh =
+    lastTickUnix != null && Date.now() / 1000 - lastTickUnix < 24 * 3600;
+  const signalsTone = lastTickUnix == null ? "text-red-400" : tickFresh ? "text-emerald-400" : "text-amber-400";
 
   return (
     <div className="max-w-5xl space-y-10">
@@ -67,6 +117,124 @@ export function Analytics() {
           can layer in later.
         </InfoDisclosure>
       </div>
+
+      <section className="bg-slate-800/60 rounded-lg border border-slate-700 p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide">Growth signals</h2>
+          <span className={`text-xs ${signalsTone}`}>last tick: {lastTickLabel}</span>
+        </div>
+        <p className="text-slate-500 text-xs">
+          Deliveries with views: {viewsN}
+          {signalsEligQ.data?.footprint?.refreshable_deliveries != null
+            ? ` · refreshable ${signalsEligQ.data.footprint.refreshable_deliveries}`
+            : ""}
+          {signalsEligQ.data?.footprint?.attribution_events != null
+            ? ` · attribution events ${signalsEligQ.data.footprint.attribution_events}`
+            : ""}
+        </p>
+        {(signalsQ.data?.signals ?? []).length > 0 ? (
+          <ul className="text-sm text-slate-300 space-y-1">
+            {(signalsQ.data?.signals ?? []).slice(0, 5).map((s, i) => (
+              <li key={`${s.signal_type}-${i}`}>
+                <span className="text-slate-500">[{s.confidence}]</span> {s.recommendation}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-slate-500 text-sm">
+            No ranked signals yet — usually means views were never refreshed (tick never ran).
+          </p>
+        )}
+        <button
+          type="button"
+          disabled={tickMut.isPending}
+          onClick={() => {
+            if (
+              window.confirm(
+                "Run growth signals tick? Refreshes Telethon views (costly). Inbox push is OFF for this button."
+              )
+            ) {
+              tickMut.mutate();
+            }
+          }}
+          className="px-3 py-1.5 rounded border border-slate-600 text-sm text-slate-300 hover:border-slate-500 disabled:opacity-50"
+        >
+          {tickMut.isPending ? "Ticking…" : "Run signals tick (no inbox)"}
+        </button>
+        {tickMut.isError && (
+          <p className="text-red-400 text-sm">{String((tickMut.error as Error).message)}</p>
+        )}
+      </section>
+
+      <section className="bg-slate-800/60 rounded-lg border border-slate-700 p-4 space-y-3">
+        <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide">
+          Direction (Top 5 · {rangeDays}d)
+        </h2>
+        {directionQ.isPending ? (
+          <p className="text-slate-500 text-sm">Loading…</p>
+        ) : (directionQ.data?.directions ?? []).length > 0 ? (
+          <ol className="list-decimal list-inside text-sm text-slate-300 space-y-2">
+            {(directionQ.data?.directions ?? []).slice(0, 5).map((d, i) => (
+              <li key={i}>
+                <span className="text-cyan-400/90">[{d.horizon ?? "?"}]</span> {d.title || d.rationale}
+                {d.mcp_followup ? (
+                  <span className="block text-xs text-slate-500 ml-5">→ {d.mcp_followup}</span>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-slate-500 text-sm whitespace-pre-wrap">
+            {(directionQ.data?.markdown || "").slice(0, 800) || "No direction payload."}
+          </p>
+        )}
+      </section>
+
+      <section className="bg-slate-800/60 rounded-lg border border-slate-700 p-4 space-y-3">
+        <h2 className="text-sm font-medium text-slate-300 uppercase tracking-wide">
+          Sponsor packs pulse ({rangeDays}d)
+        </h2>
+        {sponsorPulseQ.isPending ? (
+          <p className="text-slate-500 text-sm">Loading…</p>
+        ) : (
+          <div className="space-y-4">
+            {(sponsorPulseQ.data?.packs ?? []).map((pack) => (
+              <div key={pack.id}>
+                <p className="text-slate-200 text-sm font-medium">
+                  {pack.title}{" "}
+                  <span className="text-slate-500 font-normal">
+                    · {pack.clicks} clicks · ${pack.attributed_usd.toFixed(2)}
+                  </span>
+                </p>
+                <div className="overflow-x-auto mt-1">
+                  <table className="min-w-full text-xs text-left">
+                    <thead className="text-slate-500">
+                      <tr>
+                        <th className="pr-3 py-1">#</th>
+                        <th className="pr-3 py-1">Label</th>
+                        <th className="pr-3 py-1">Role</th>
+                        <th className="pr-3 py-1">Clicks</th>
+                        <th className="pr-3 py-1">$</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-slate-300">
+                      {pack.slots.map((s) => (
+                        <tr key={`${pack.id}-${s.index}-${s.label}`}>
+                          <td className="pr-3 py-0.5">{s.index}</td>
+                          <td className="pr-3 py-0.5">{s.label}</td>
+                          <td className="pr-3 py-0.5 text-slate-500">{s.role}</td>
+                          <td className="pr-3 py-0.5">{s.clicks}</td>
+                          <td className="pr-3 py-0.5">${s.attributed_usd.toFixed(2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {subQ.isError && (
         <QueryErrorBanner

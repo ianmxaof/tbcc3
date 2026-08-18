@@ -1,0 +1,32 @@
+OUTPUT: ONE composite image. 2×2 grid of FOUR complete AOF MEGA PACKS posters.
+Each cell: 9:16 portrait. Overall composite: 9:16.
+NOT horizontal strips. Thin gutter OK.
+Quadrant map:
+  TOP-LEFT | TOP-RIGHT
+  BOTTOM-LEFT | BOTTOM-RIGHT
+
+LAYOUT LOCK identical in every cell (UI priority #1):
+TOP: distressed white "AOF" + red brush-stroke "MEGA PACKS"
+SUBHEAD: "MASSIVE COLLECTIONS • UNLIMITED POSSIBILITIES"
+CENTER: large QR code with Telegram paper-plane logo inside
+LEFT PILLS: NICHE LANES | FULL LENGTH | AI & DEEPFAKES | MEGA PACKS | DAILY DROPS
+RIGHT PILLS: LOOT ROOM | VIP ACCESS | VOYEUR & TABOO | ONE-TAP ADDLIST | 15+ CHANNELS
+BELOW QR: "DAILY DROPS • ARCHIVED LANES" / "UPDATED DAILY • 15+ CURATED LANES"
+LINK BAR: red bar, paper-plane icons, exact text "t.me/aofmainhub"
+BOTTOM: NO LIMITS | DIRECT DOWNLOADS | EXCLUSIVE CONTENT | SECURE & PRIVATE | ENDLESS LIBRARY
+
+TOP-LEFT — SUNROOM STATIC (straight-on):
+Sunroom, skylight, locked door, CRT three chairs, neon-yellow singlets flanking TV, powder tray between them, knight capes on hooks.
+
+TOP-RIGHT — TEA PARTY OVERHEAD:
+Overhead top-down teacups of neon powders, gauntleted reaching hands, helmets on carpet, sunroom door edge.
+
+BOTTOM-LEFT — MANIC BREACH (profile laugh):
+Dual profile manic laughing faces, sunglasses, knight helm, multicolor powder tray below.
+
+BOTTOM-RIGHT — PORTA SANCTUM QUEUE:
+Underpass porta-potty queue, padlocked warm glow unit, CRT oracle, shopping cart altar, armored degenerates waiting.
+
+STYLE all cells: gritty photoreal, hedonistic abandon + Knights of the Damned Edge, analog VHS grain, borderline transgressive promo, varied camera angles per cell.
+
+AVOID: wrong grid layout, bleeding scenes across borders, misspelled UI, missing pills/QR/link bar, duplicate identical scenes.

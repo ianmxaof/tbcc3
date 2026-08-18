@@ -7,17 +7,35 @@ Providers (same /v1/chat/completions shape):
   - featherless — api.featherless.ai (abliterated / Heretic-style HF models)
   - venice — api.venice.ai (venice-uncensored-*)
   - custom — TBCC_LLM_BASE_URL + TBCC_OPENAI_API_KEY (or TBCC_LLM_API_KEY)
+  - zlm / glm / zai — Zhipu / Z.ai GLM (OpenAI-compatible)
+  - deepinfra — api.deepinfra.com/v1/openai
+  - together — api.together.xyz/v1
+  - anythingllm — TBCC_ANYTHINGLLM_BASE_URL (OpenAI-compatible workspace)
+  - groq — api.groq.com/openai/v1 (TBCC_GROQ_API_KEY / TBCC_GROQ_API)
+  - cerebras — api.cerebras.ai/v1 (TBCC_CEREBRAS_API_KEY / TBCC_CEREBRAS_API)
+  - nvidia — integrate.api.nvidia.com/v1 NIM (TBCC_NVIDIA_API_KEY / TBCC_NVIDIA_API)
+  - mistral — api.mistral.ai/v1 (TBCC_MISTRAL_API_KEY / TBCC_MISTRAL_API)
 
 Env:
-  TBCC_LLM_PROVIDER — openai | openrouter | featherless | venice | custom
+  TBCC_LLM_PROVIDER — openai | openrouter | featherless | venice | custom | zlm | deepinfra | together | anythingllm | groq | cerebras | nvidia | mistral
   TBCC_OPENROUTER_API_KEY / OPENROUTER_API_KEY
   TBCC_OPENROUTER_BASE_URL — default https://openrouter.ai/api/v1
   TBCC_FEATHERLESS_API_KEY / FEATHERLESS_API_KEY
   TBCC_VENICE_API_KEY / VENICE_API_KEY
+  TBCC_ZLM_API_KEY / TBCC_ZAI_API_KEY / TBCC_GLM_API_KEY
+  TBCC_DEEPINFRA_API_KEY / DEEPINFRA_API_KEY
+  TBCC_TOGETHER_API_KEY / TOGETHER_API_KEY
+  TBCC_GROQ_API_KEY / TBCC_GROQ_API / GROQ_API_KEY
+  TBCC_CEREBRAS_API_KEY / TBCC_CEREBRAS_API / CEREBRAS_API_KEY
+  TBCC_NVIDIA_API_KEY / TBCC_NVIDIA_API / NVIDIA_API_KEY
+  TBCC_MISTRAL_API_KEY / TBCC_MISTRAL_API / MISTRAL_API_KEY
+  TBCC_ANYTHINGLLM_API_KEY / TBCC_ANYTHINGLLM_BASE_URL
   TBCC_OPENAI_API_KEY / OPENAI_API_KEY / TBCC_LLM_API_KEY
   TBCC_OPENAI_BASE_URL / TBCC_LLM_BASE_URL — custom or openai-compatible host
   TBCC_LLM_MODEL — model id for the active provider
   TBCC_OPENROUTER_MODEL / TBCC_FEATHERLESS_MODEL / TBCC_VENICE_MODEL — provider defaults
+  TBCC_ZLM_MODEL / TBCC_DEEPINFRA_MODEL / TBCC_TOGETHER_MODEL / TBCC_ANYTHINGLLM_MODEL
+  TBCC_CEREBRAS_MODEL / TBCC_NVIDIA_MODEL / TBCC_MISTRAL_MODEL
 """
 
 from __future__ import annotations
@@ -55,6 +73,21 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 VENICE_BASE = "https://api.venice.ai/api/v1"
 OPENAI_BASE = "https://api.openai.com/v1"
+ZLM_BASE = "https://open.bigmodel.cn/api/paas/v4"
+DEEPINFRA_BASE = "https://api.deepinfra.com/v1/openai"
+TOGETHER_BASE = "https://api.together.xyz/v1"
+GROQ_BASE = "https://api.groq.com/openai/v1"
+CEREBRAS_BASE = "https://api.cerebras.ai/v1"
+NVIDIA_BASE = "https://integrate.api.nvidia.com/v1"
+MISTRAL_BASE = "https://api.mistral.ai/v1"
+DEFAULT_ZLM_MODEL = "glm-4.5"
+DEFAULT_DEEPINFRA_MODEL = "cognitivecomputations/dolphin-2.9-llama3-8b"
+DEFAULT_TOGETHER_MODEL = "cognitivecomputations/dolphin-2.9-llama3-8b"
+DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+# Cerebras public catalog (2026-08): gpt-oss-120b (text) + gemma-4-31b (vision). Override with TBCC_CEREBRAS_MODEL.
+DEFAULT_CEREBRAS_MODEL = "gpt-oss-120b"
+DEFAULT_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct"
+DEFAULT_MISTRAL_MODEL = "mistral-small-latest"
 
 
 @dataclass(frozen=True)
@@ -121,6 +154,70 @@ def venice_api_key() -> str:
     return (os.getenv("TBCC_VENICE_API_KEY") or os.getenv("VENICE_API_KEY") or "").strip()
 
 
+def zlm_api_key() -> str:
+    return (
+        os.getenv("TBCC_ZLM_API_KEY")
+        or os.getenv("TBCC_ZAI_API_KEY")
+        or os.getenv("TBCC_GLM_API_KEY")
+        or os.getenv("ZHIPUAI_API_KEY")
+        or ""
+    ).strip()
+
+
+def deepinfra_api_key() -> str:
+    return (
+        os.getenv("TBCC_DEEPINFRA_API_KEY")
+        or os.getenv("DEEPINFRA_API_KEY")
+        or os.getenv("TBCC_DEEPINFRA_API")
+        or ""
+    ).strip()
+
+
+def together_api_key() -> str:
+    return (os.getenv("TBCC_TOGETHER_API_KEY") or os.getenv("TOGETHER_API_KEY") or "").strip()
+
+
+def groq_api_key() -> str:
+    return (
+        os.getenv("TBCC_GROQ_API_KEY")
+        or os.getenv("TBCC_GROQ_API")
+        or os.getenv("GROQ_API_KEY")
+        or ""
+    ).strip()
+
+
+def cerebras_api_key() -> str:
+    return (
+        os.getenv("TBCC_CEREBRAS_API_KEY")
+        or os.getenv("TBCC_CEREBRAS_API")
+        or os.getenv("CEREBRAS_API_KEY")
+        or ""
+    ).strip()
+
+
+def nvidia_api_key() -> str:
+    return (
+        os.getenv("TBCC_NVIDIA_API_KEY")
+        or os.getenv("TBCC_NVIDIA_API")
+        or os.getenv("NVIDIA_API_KEY")
+        or os.getenv("NIM_API_KEY")
+        or ""
+    ).strip()
+
+
+def mistral_api_key() -> str:
+    return (
+        os.getenv("TBCC_MISTRAL_API_KEY")
+        or os.getenv("TBCC_MISTRAL_API")
+        or os.getenv("MISTRAL_API_KEY")
+        or ""
+    ).strip()
+
+
+def anythingllm_api_key() -> str:
+    return (os.getenv("TBCC_ANYTHINGLLM_API_KEY") or os.getenv("ANYTHINGLLM_API_KEY") or "").strip()
+
+
 def text_llm_provider() -> str:
     return (os.getenv("TBCC_LLM_PROVIDER") or "openai").strip().lower()
 
@@ -148,6 +245,22 @@ def resolve_text_model(explicit: str | None = None, *, provider: str | None = No
         return (os.getenv("TBCC_FEATHERLESS_MODEL") or DEFAULT_FEATHERLESS_MODEL).strip()
     if p == "venice":
         return (os.getenv("TBCC_VENICE_MODEL") or DEFAULT_VENICE_MODEL).strip()
+    if p in ("zlm", "glm", "zai"):
+        return (os.getenv("TBCC_ZLM_MODEL") or os.getenv("TBCC_GLM_MODEL") or DEFAULT_ZLM_MODEL).strip()
+    if p == "deepinfra":
+        return (os.getenv("TBCC_DEEPINFRA_MODEL") or DEFAULT_DEEPINFRA_MODEL).strip()
+    if p == "together":
+        return (os.getenv("TBCC_TOGETHER_MODEL") or DEFAULT_TOGETHER_MODEL).strip()
+    if p == "groq":
+        return (os.getenv("TBCC_GROQ_MODEL") or DEFAULT_GROQ_MODEL).strip()
+    if p == "cerebras":
+        return (os.getenv("TBCC_CEREBRAS_MODEL") or DEFAULT_CEREBRAS_MODEL).strip()
+    if p in ("nvidia", "nim"):
+        return (os.getenv("TBCC_NVIDIA_MODEL") or os.getenv("TBCC_NIM_MODEL") or DEFAULT_NVIDIA_MODEL).strip()
+    if p == "mistral":
+        return (os.getenv("TBCC_MISTRAL_MODEL") or DEFAULT_MISTRAL_MODEL).strip()
+    if p == "anythingllm":
+        return (os.getenv("TBCC_ANYTHINGLLM_MODEL") or "anythingllm").strip()
     return "gpt-4o-mini"
 
 
@@ -205,6 +318,102 @@ def resolve_text_llm_runtime(
             base_url=base,
         )
 
+    if p in ("zlm", "glm", "zai"):
+        key = (api_key or zlm_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_ZLM_API_KEY (or TBCC_ZAI_API_KEY / TBCC_GLM_API_KEY)")
+        base = (base_url or os.getenv("TBCC_ZLM_BASE_URL") or os.getenv("TBCC_ZAI_BASE_URL") or ZLM_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="zlm",
+            api_key=key,
+            model=resolve_text_model(model, provider="zlm"),
+            base_url=base,
+        )
+
+    if p == "deepinfra":
+        key = (api_key or deepinfra_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_DEEPINFRA_API_KEY (or DEEPINFRA_API_KEY)")
+        base = (base_url or os.getenv("TBCC_DEEPINFRA_BASE_URL") or DEEPINFRA_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="deepinfra",
+            api_key=key,
+            model=resolve_text_model(model, provider="deepinfra"),
+            base_url=base,
+        )
+
+    if p == "together":
+        key = (api_key or together_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_TOGETHER_API_KEY (or TOGETHER_API_KEY)")
+        base = (base_url or os.getenv("TBCC_TOGETHER_BASE_URL") or TOGETHER_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="together",
+            api_key=key,
+            model=resolve_text_model(model, provider="together"),
+            base_url=base,
+        )
+
+    if p == "groq":
+        key = (api_key or groq_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_GROQ_API_KEY (or TBCC_GROQ_API / GROQ_API_KEY)")
+        base = (base_url or os.getenv("TBCC_GROQ_BASE_URL") or GROQ_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="groq",
+            api_key=key,
+            model=resolve_text_model(model, provider="groq"),
+            base_url=base,
+        )
+
+    if p == "cerebras":
+        key = (api_key or cerebras_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_CEREBRAS_API_KEY (or TBCC_CEREBRAS_API / CEREBRAS_API_KEY)")
+        base = (base_url or os.getenv("TBCC_CEREBRAS_BASE_URL") or CEREBRAS_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="cerebras",
+            api_key=key,
+            model=resolve_text_model(model, provider="cerebras"),
+            base_url=base,
+        )
+
+    if p in ("nvidia", "nim"):
+        key = (api_key or nvidia_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_NVIDIA_API_KEY (or TBCC_NVIDIA_API / NVIDIA_API_KEY)")
+        base = (base_url or os.getenv("TBCC_NVIDIA_BASE_URL") or os.getenv("TBCC_NIM_BASE_URL") or NVIDIA_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="nvidia",
+            api_key=key,
+            model=resolve_text_model(model, provider="nvidia"),
+            base_url=base,
+        )
+
+    if p == "mistral":
+        key = (api_key or mistral_api_key()).strip()
+        if not key:
+            raise RuntimeError("Set TBCC_MISTRAL_API_KEY (or TBCC_MISTRAL_API / MISTRAL_API_KEY)")
+        base = (base_url or os.getenv("TBCC_MISTRAL_BASE_URL") or MISTRAL_BASE).strip().rstrip("/")
+        return TextLlmRuntime(
+            provider="mistral",
+            api_key=key,
+            model=resolve_text_model(model, provider="mistral"),
+            base_url=base,
+        )
+
+    if p == "anythingllm":
+        key = (api_key or anythingllm_api_key() or "local").strip()
+        base = (base_url or os.getenv("TBCC_ANYTHINGLLM_BASE_URL") or "").strip().rstrip("/")
+        if not base:
+            raise RuntimeError("Set TBCC_ANYTHINGLLM_BASE_URL for AnythingLLM / custom inference")
+        return TextLlmRuntime(
+            provider="anythingllm",
+            api_key=key,
+            model=resolve_text_model(model, provider="anythingllm"),
+            base_url=base,
+        )
+
     if p in ("openai", "custom", ""):
         key = (api_key or openai_api_key()).strip()
         custom = (
@@ -228,7 +437,7 @@ def resolve_text_llm_runtime(
         )
 
     raise RuntimeError(
-        f"Unknown TBCC_LLM_PROVIDER={p!r}; use openai|openrouter|featherless|venice|custom"
+        f"Unknown TBCC_LLM_PROVIDER={p!r}; use openai|openrouter|featherless|venice|custom|zlm|deepinfra|together|groq|cerebras|nvidia|mistral|anythingllm"
     )
 
 

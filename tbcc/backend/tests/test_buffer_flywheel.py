@@ -51,6 +51,7 @@ def test_build_flywheel_x_caption_includes_erome(monkeypatch):
     )
     assert "preview on Erome" in text
     assert "erome.com/a/abc123" in text
+    assert "loot_free" in text
     assert "#erome" in text
     assert len(text) <= 280
 

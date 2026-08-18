@@ -54,4 +54,4 @@ grep -q '^AOF_FORUM_BUILD_CONTEXT=' $TbccRemote/infra/.env.revenue-island 2>/dev
 Write-Host "Synced. On VPS:" -ForegroundColor Green
 Write-Host "  nano $TbccRemote/infra/.env.revenue-island   # Supabase + bridge + public URLs" -ForegroundColor DarkGray
 Write-Host "  bash $TbccRemote/scripts/revenue-island/up-island-ui.sh" -ForegroundColor DarkGray
-Write-Host "  # route dash.* + forum.* via cloudflared — docs/ISLAND_UI_SURFACES.md" -ForegroundColor DarkGray
+Write-Host "  # route dash.* + forum.* via cloudflared - docs/ISLAND_UI_SURFACES.md" -ForegroundColor DarkGray

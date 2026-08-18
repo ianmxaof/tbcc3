@@ -133,7 +133,33 @@ if (-not $SkipSeeds) {
   Invoke-Compose "exec -T api python scripts/stock_buffer_armory.py --relay --scheduled"
   Invoke-Remote "mkdir -p /opt/tbcc/uploads/bundles /opt/tbcc/uploads/promo"
   Write-Host "Bootstrap Storage Hub panels (remixer on island)" -ForegroundColor Yellow
-  Invoke-Compose "exec -T api python scripts/bootstrap_storage_hub_panels.py"
+  $bootstrapAttempt = 0
+  $bootstrapMaxAttempts = 4
+  $bootstrapOk = $false
+  while (-not $bootstrapOk -and $bootstrapAttempt -lt $bootstrapMaxAttempts) {
+      $bootstrapAttempt++
+      try {
+          Invoke-Compose "exec -T api python scripts/bootstrap_storage_hub_panels.py"
+          $bootstrapOk = $true
+      } catch {
+          $errOut = $_.Exception.Message
+          Write-Host "WARN: Storage Hub panel bootstrap attempt $bootstrapAttempt failed: $errOut" -ForegroundColor Yellow
+          if ($bootstrapAttempt -ge $bootstrapMaxAttempts) { break }
+          $retrySeconds = 15
+          if ($errOut -match 'Retry in (\d+)') {
+              $retrySeconds = [int]$Matches[1]
+          } elseif ($errOut -match 'Flood control exceeded') {
+              $retrySeconds = 15
+          }
+          $sleepSeconds = $retrySeconds + 2
+          Write-Host "Flood-control backoff: sleeping $sleepSeconds seconds before retry..." -ForegroundColor Yellow
+          Start-Sleep -Seconds $sleepSeconds
+      }
+  }
+  if (-not $bootstrapOk) {
+      Write-Host 'WARN: Storage Hub panel bootstrap failed after 3 retries - run bootstrap_storage_hub_panels.py manually on island' -ForegroundColor Yellow
+      exit 0
+  }
 } else {
   Write-Host "`n[6/7] Skip seeds (-SkipSeeds)" -ForegroundColor DarkGray
 }

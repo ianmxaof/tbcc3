@@ -1,0 +1,12 @@
+OUTPUT: ONE image. Aspect ratio 9:16 portrait. Single complete AOF MEGA PACKS promo poster with full UI overlay.
+
+BACKGROUND SCENE — PORTA SANCTUM QUEUE (wide cinematic, locked-door DNA):
+Wide shot under concrete freeway overpass in cold blue fog. Row of blue chemical porta-potties — center unit padlocked, warm orange light bleeding through frosted vent slot, abstract shadow movement inside (implied only, not explicit). Queue of four degenerate knights in rusted mail over filthy hoodies — one kneeling in prayer, one pressing ear to door, one clutching plastic bag of "offerings," one adjusting crooked visor.
+Left: folding TV tray with CRT static oracle. Right: shopping cart altar piled with wrong relics. Wet cracked pavement reflections. Sunroom locked-door horror transplanted to public squalor — viewer realizes what "completion" the queue waits for.
+Camera: wide cinematic 24mm, eye-level, crushed blacks in corners.
+
+Apply full LAYOUT LOCK UI on top.
+
+STYLE: film still, Knights of the Damned Edge, voyeuristic dread, photoreal.
+
+AVOID: explicit acts visible, misspelled UI, missing link bar, cartoon fantasy knights.

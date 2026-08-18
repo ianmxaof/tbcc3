@@ -1109,8 +1109,13 @@ async def _send_loot_free_pull_to_chat_inner(
                 reply_markup=build_loot_roll_inline_markup(),
             )
 
-    from app.services.loot_free_tease import build_free_pull_tease_html, build_vip_daily_tease_html
+    from app.services.loot_free_tease import (
+        build_free_pull_tease_html,
+        build_vip_daily_tease_html,
+        crate_origin_key_markup,
+    )
 
+    tease_markup = None
     if preview.get("roll_kind") == "vip_daily":
         tease = build_vip_daily_tease_html(preview)
     else:
@@ -1119,11 +1124,13 @@ async def _send_loot_free_pull_to_chat_inner(
             free_pulls_remaining=int(free_pulls_remaining or 0),
             payment_bot_username=payment_bot_username,
         )
+        tease_markup = crate_origin_key_markup(payment_bot_username=payment_bot_username)
     await bot.send_message(
         chat_id=chat_id,
         text=tease,
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=tease_markup,
     )
     delivery["notes"].append("tease")
     return delivery

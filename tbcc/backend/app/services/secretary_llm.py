@@ -21,11 +21,11 @@ def _model() -> str:
 
 
 def _max_tokens() -> int:
-    raw = (os.getenv("TBCC_SECRETARY_LLM_MAX_TOKENS") or "800").strip()
+    raw = (os.getenv("TBCC_SECRETARY_LLM_MAX_TOKENS") or "400").strip()
     try:
         return max(64, min(4096, int(raw)))
     except ValueError:
-        return 800
+        return 400
 
 
 def builtin_default_system_prompt() -> str:
@@ -179,6 +179,7 @@ async def complete_secretary_chat(
     messages: list[dict[str, str]],
     *,
     extra_system_suffix: str = "",
+    max_tokens_override: int | None = None,
 ) -> str:
     """
     messages: OpenAI-style chat messages (role + content), must include at least one user turn.
@@ -225,13 +226,20 @@ async def complete_secretary_chat(
         body_msgs = [{"role": "system", "content": default_system_prompt() + (("\n\n" + extra) if extra else "")}]
         body_msgs.extend(messages)
 
+    cap = _max_tokens()
+    if max_tokens_override is not None:
+        try:
+            cap = max(64, min(4096, int(max_tokens_override)))
+        except (TypeError, ValueError):
+            cap = _max_tokens()
+
     from app.services.llm_provider_fallback import complete_chat_text_with_fallback
 
     return await complete_chat_text_with_fallback(
         body_msgs,
         primary=runtime,
         model=_model(),
-        max_tokens=_max_tokens(),
+        max_tokens=cap,
         temperature=0.6,
         timeout=90.0,
     )

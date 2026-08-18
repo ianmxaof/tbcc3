@@ -23,7 +23,7 @@ def build_flywheel_x_caption(
     Top-of-funnel X post: lane tease + optional Erome gallery + Telegram/hub exits.
     Never claims Erome unless erome_album_url is present.
     """
-    from app.services.aof_social_links import aof_hub_invite_url, x_outbound_url
+    from app.services.aof_social_links import aof_hub_invite_url, loot_free_start_url, x_outbound_url
     from app.services.utm_links import allmylinks_tracked_url, slug_utm_value
 
     name = (lane or "AOF").strip()
@@ -37,15 +37,19 @@ def build_flywheel_x_caption(
 
     lines: list[str] = [opener]
 
+    loot = (loot_free_start_url() or "").strip()
+    if loot.startswith("https://"):
+        lines.append(loot)
+
     if has_erome:
         lines.append(erome)
 
     viewer = (promo_viewer_url or "").strip()
-    if viewer.startswith("https://") and viewer != erome:
+    if viewer.startswith("https://") and viewer != erome and viewer != loot:
         lines.append(viewer)
 
     tg = (telegram_invite or "").strip()
-    if tg:
+    if tg and tg not in (loot,):
         lines.append(tg)
 
     hub = (hub_url or "").strip() or allmylinks_tracked_url(

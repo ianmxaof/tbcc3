@@ -149,6 +149,17 @@ def income_poll_status_route():
     return get_income_poll_status()
 
 
+@router.get("/sponsor-pulse")
+def sponsor_pulse_route(
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=366),
+):
+    """Pack A/B/C click + attributed-$ pulse (wraps affiliate_sponsor_report)."""
+    from app.services.affiliate_sponsor_pulse import build_sponsor_pulse
+
+    return build_sponsor_pulse(db, days=days)
+
+
 @router.post("/income/poll")
 def income_poll_trigger_route(db: Session = Depends(get_db)):
     """On-demand light poll (same as Celery Beat task)."""

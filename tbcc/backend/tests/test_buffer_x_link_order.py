@@ -11,7 +11,9 @@ from app.services.buffer_x_link_order import (
     classify_url,
     first_url,
     link_cycle_enabled,
+    loot_first_enabled,
     reorder_caption_urls,
+    rewrite_spicy_card_url,
     spicy_first_enabled,
 )
 from app.services.buffer_flywheel_copy import build_flywheel_x_caption
@@ -24,6 +26,7 @@ ALLMYLINKS = "https://allmylinks.com/aof69?utm_source=buffer"
 EROME = "https://www.erome.com/a/abc123"
 SPICY_BEACON = "https://api.powercore.app/r/aff-aof-spicy-comp-x-buffer"
 SPICY_DIRECT = "https://t.me/aof_spicybot?start=src_spicy_x"
+LOOT_FREE = "https://telegram.me/aof_lootgod_bot?start=loot_free"
 
 
 def test_classify_url_categories():
@@ -33,6 +36,8 @@ def test_classify_url_categories():
     assert classify_url(EROME) == "erome"
     assert classify_url(SPICY_BEACON) == "spicy"
     assert classify_url(SPICY_DIRECT) == "spicy"
+    assert classify_url(LOOT_FREE) == "loot"
+    assert classify_url("https://t.me/aof_lootgod_bot") == "loot"
 
 
 def test_reorder_puts_affiliate_first():
@@ -130,25 +135,24 @@ def test_build_native_queue_caption_affiliate_first(monkeypatch, db):
         db.commit()
 
 
-def test_build_flywheel_x_caption_cycles_erome_and_telegram(monkeypatch, db):
-    """No affiliate in flywheel caption — cycle still rotates erome/telegram."""
+def test_build_flywheel_x_caption_pins_loot_free(monkeypatch, db):
+    """Flywheel injects loot_free and loot-first wins the X card over Erome."""
+    monkeypatch.delenv("TBCC_BUFFER_X_LOOT_FIRST", raising=False)
     monkeypatch.setenv("TBCC_BUFFER_X_AFFILIATE_FIRST", "1")
     monkeypatch.setenv("TBCC_BUFFER_X_LINK_CYCLE", "1")
     monkeypatch.setenv("TBCC_X_USE_LINKVERTISE", "0")
     monkeypatch.setenv("TBCC_AOF_HUB_INVITE_URL", TELEGRAM)
-    firsts: set[str] = set()
-    for _ in range(2):
-        cap = build_flywheel_x_caption(
-            "AOF BIG TITS",
-            erome_album_url=EROME,
-            telegram_invite=TELEGRAM,
-            db=db,
-            advance_link_cycle=True,
-        )
-        firsts.add(first_url(cap) or "")
-        db.commit()
-    assert EROME in firsts
-    assert TELEGRAM in firsts
+    monkeypatch.delenv("TBCC_LOOT_PUBLIC_CTA_URL", raising=False)
+    cap = build_flywheel_x_caption(
+        "AOF BIG TITS",
+        erome_album_url=EROME,
+        telegram_invite=TELEGRAM,
+        db=db,
+        advance_link_cycle=True,
+    )
+    assert first_url(cap) == LOOT_FREE
+    assert EROME in cap
+    assert TELEGRAM in cap
 
 
 def test_link_cycle_enabled_default_on(monkeypatch):
@@ -161,13 +165,43 @@ def test_affiliate_first_enabled_default_on(monkeypatch):
     assert affiliate_first_enabled() is True
 
 
-def test_spicy_first_beats_affiliate(db, monkeypatch):
+def test_loot_first_beats_spicy_and_affiliate(db, monkeypatch):
+    monkeypatch.delenv("TBCC_BUFFER_X_LOOT_FIRST", raising=False)
+    monkeypatch.setenv("TBCC_BUFFER_X_SPICY_FIRST", "1")
+    monkeypatch.setenv("TBCC_BUFFER_X_AFFILIATE_FIRST", "1")
+    raw = f"try undress {AFFILIATE} · spicy {SPICY_BEACON} · free {LOOT_FREE}"
+    out = apply_buffer_x_link_cycle(raw, db=db, advance=True)
+    assert first_url(out) == LOOT_FREE
+    assert classify_url(first_url(out) or "") == "loot"
+
+
+def test_loot_first_can_disable(db, monkeypatch):
+    monkeypatch.setenv("TBCC_BUFFER_X_LOOT_FIRST", "0")
+    monkeypatch.setenv("TBCC_BUFFER_X_SPICY_FIRST", "1")
+    monkeypatch.setenv("TBCC_BUFFER_X_AFFILIATE_FIRST", "1")
+    raw = f"free {LOOT_FREE} · spicy {SPICY_BEACON} · undress {AFFILIATE}"
+    out = apply_buffer_x_link_cycle(raw, db=db, advance=True)
+    first = first_url(out) or ""
+    assert "start=src_spicy_x" in first
+    assert classify_url(first) == "spicy"
+
+
+def test_loot_first_enabled_default_on(monkeypatch):
+    monkeypatch.delenv("TBCC_BUFFER_X_LOOT_FIRST", raising=False)
+    assert loot_first_enabled() is True
+
+
+def test_spicy_beacon_rewritten_to_working_start(db, monkeypatch):
+    monkeypatch.setenv("TBCC_BUFFER_X_LOOT_FIRST", "0")
     monkeypatch.delenv("TBCC_BUFFER_X_SPICY_FIRST", raising=False)
     monkeypatch.setenv("TBCC_BUFFER_X_AFFILIATE_FIRST", "1")
+    monkeypatch.setenv("TBCC_COMPANION_BOT_USERNAME", "aof_spicybot_bot")
     raw = f"try undress {AFFILIATE} · spicy {SPICY_BEACON} · hub {TELEGRAM}"
     out = apply_buffer_x_link_cycle(raw, db=db, advance=True)
-    assert first_url(out) == SPICY_BEACON
-    assert classify_url(first_url(out) or "") == "spicy"
+    first = first_url(out) or ""
+    assert "start=src_spicy_x" in first
+    assert "aof_spicybot" in first
+    assert rewrite_spicy_card_url(SPICY_BEACON).endswith("start=src_spicy_x")
 
 
 def test_spicy_first_can_disable(db, monkeypatch):

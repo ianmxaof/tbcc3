@@ -102,24 +102,98 @@ def provider_configured() -> bool:
         from app.services.llm_completions import openrouter_api_key
 
         return bool(openrouter_api_key())
+    if p == "groq":
+        from app.services.llm_completions import groq_api_key
+
+        return bool(groq_api_key())
     if p in ("ollama", "local"):
         return True
     return False
+
+
+def _chat_fallback_enabled() -> bool:
+    return (os.getenv("TBCC_LLM_CHAT_USE_FALLBACK") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 async def complete_llm_chat(messages: list[dict[str, str]]) -> str:
     if not messages:
         raise ValueError("messages empty")
     p = _provider()
-    if p in ("ollama", "local"):
-        return await _complete_ollama(messages)
-    if p == "openai":
-        return await _complete_openai(messages)
-    if p == "custom":
-        return await _complete_custom(messages)
-    if p == "openrouter":
-        return await _complete_openrouter(messages)
-    raise RuntimeError(f"Unknown TBCC_LLM_CHAT_PROVIDER: {p}")
+    try:
+        if p in ("ollama", "local"):
+            return await _complete_ollama(messages)
+        if p == "openai":
+            return await _complete_openai(messages)
+        if p == "custom":
+            return await _complete_custom(messages)
+        if p == "openrouter":
+            return await _complete_openrouter(messages)
+        if p == "groq":
+            return await _complete_groq(messages)
+        raise RuntimeError(f"Unknown TBCC_LLM_CHAT_PROVIDER: {p}")
+    except ValueError:
+        raise
+    except Exception as exc:
+        if not _chat_fallback_enabled():
+            raise
+        if p in ("ollama", "local") and not groq_or_cloud_configured():
+            raise
+        logger.warning("llm_chat primary %s failed: %s — cycling fallback chain", p, exc)
+        from app.services.llm_completions import resolve_text_llm_runtime
+        from app.services.llm_provider_fallback import complete_chat_text_with_fallback
+
+        primary = None
+        try:
+            if p in ("custom", "openrouter", "openai", "groq"):
+                primary = resolve_text_llm_runtime(provider=p if p != "openai" else "openai")
+        except RuntimeError:
+            primary = None
+        return await complete_chat_text_with_fallback(
+            messages,
+            primary=primary,
+            max_tokens=_max_tokens(),
+            temperature=_temperature(),
+            timeout=120.0,
+        )
+
+
+def groq_or_cloud_configured() -> bool:
+    from app.services.llm_completions import (
+        cerebras_api_key,
+        groq_api_key,
+        mistral_api_key,
+        nvidia_api_key,
+        openai_api_key,
+        openrouter_api_key,
+    )
+
+    return bool(
+        groq_api_key()
+        or cerebras_api_key()
+        or nvidia_api_key()
+        or mistral_api_key()
+        or openrouter_api_key()
+        or openai_api_key()
+        or _custom_base_url()
+    )
+
+
+async def _complete_groq(messages: list[dict[str, str]]) -> str:
+    from app.services.llm_completions import complete_chat_text_async, resolve_text_llm_runtime
+
+    rt = resolve_text_llm_runtime(provider="groq")
+    return await complete_chat_text_async(
+        messages,
+        max_tokens=_max_tokens(),
+        temperature=_temperature(),
+        timeout=90.0,
+        runtime=rt,
+    )
 
 
 async def _complete_ollama(messages: list[dict[str, str]]) -> str:

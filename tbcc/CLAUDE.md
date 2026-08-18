@@ -2,4 +2,4 @@
 
 Start Claude Code from `telegram_bot2/` when possible so root settings + CLAUDE.md apply uniformly.
 
-Cloud-only: island API is runtime truth; no local bot spawns.
+**Cloud-only money:** the **island** (Linux VPS / `api.powercore.app`) is live payment+loot+API. Do not spawn those bots on this PC. Jargon lookup: `.cursor/rules/tbcc-plain-language.mdc`.

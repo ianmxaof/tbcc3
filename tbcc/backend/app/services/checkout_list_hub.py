@@ -84,11 +84,16 @@ def build_checkout_list_bulletin(db: Session) -> str:
             order.append(key)
         buckets[key].append(row)
 
+    from app.services.affiliate_sponsor_pack_pick import finance_sort_key
+
     for key in order:
         emoji, title = key.split(" ", 1)
         lines.append("")
         lines.append(f"{emoji} <b>{title}</b>")
-        for row in buckets[key]:
+        bucket_rows = buckets[key]
+        if "FINANCE" in title:
+            bucket_rows = sorted(bucket_rows, key=lambda r: finance_sort_key(r.label or ""))
+        for row in bucket_rows:
             lines.append(f"→ {build_sponsor_link_html(row, placement='links_hub_sfw')}")
 
     lines.extend(

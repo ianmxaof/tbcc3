@@ -60,11 +60,24 @@ def traffic_pulse_instant_hourly_cap() -> int:
 
 
 def traffic_pulse_digest_minutes() -> int:
-    raw = (os.getenv("TBCC_TRAFFIC_PULSE_DIGEST_MIN") or "15").strip()
+    raw = (os.getenv("TBCC_TRAFFIC_PULSE_DIGEST_MIN") or "60").strip()
     try:
-        return max(5, min(120, int(raw)))
+        return max(5, min(240, int(raw)))
     except ValueError:
-        return 15
+        return 60
+
+
+def traffic_pulse_digest_suppress_after() -> int:
+    """Skip Telegram digest DM when read+playbook fingerprint unchanged for this many windows in a row."""
+    raw = (os.getenv("TBCC_TRAFFIC_PULSE_DIGEST_SUPPRESS_AFTER") or "1").strip()
+    try:
+        return max(1, min(48, int(raw)))
+    except ValueError:
+        return 1
+
+
+REDIS_DIGEST_LAST_FINGERPRINT = "tbcc:traffic_pulse:digest:last_fp"
+REDIS_DIGEST_SUPPRESS_STREAK = "tbcc:traffic_pulse:digest:suppress_streak"
 
 
 def _redis():
@@ -324,16 +337,94 @@ def clear_digest_buffer() -> None:
         pass
 
 
+def _digest_counts_and_refs() -> tuple[dict[str, Any], dict[str, Any]] | None:
+    try:
+        r = _redis()
+        counts = r.hgetall(REDIS_DIGEST_COUNTS) or {}
+        refs = r.hgetall(REDIS_DIGEST_REFS) or {}
+    except Exception:
+        return None
+    if not counts:
+        return None
+    return counts, refs
+
+
 def send_traffic_pulse_digest() -> dict[str, Any]:
-    text = build_digest_telegram_html()
-    if not text:
+    packed = _digest_counts_and_refs()
+    if not packed:
         return {"ok": True, "skipped": True, "reason": "empty"}
+    counts, refs = packed
+
+    from app.services.admin_inbox import bump_recurring_issue
+    from app.services.secretary_report_copy import (
+        format_pulse_digest_html,
+        pulse_digest_fingerprint,
+        pulse_issue_id,
+        pulse_playbook,
+        pulse_read,
+    )
+
+    ref_pairs: list[dict[str, Any]] = []
+    for k, v in refs.items():
+        try:
+            ref_pairs.append({"source_ref": str(k), "count": int(v or 0)})
+        except (TypeError, ValueError):
+            continue
+    ref_pairs.sort(key=lambda x: -int(x.get("count") or 0))
+
+    issue_id = pulse_issue_id(counts, ref_pairs)
+    fingerprint = pulse_digest_fingerprint(counts, ref_pairs)
+    read = pulse_read(counts, ref_pairs)
+    playbook = pulse_playbook(counts, ref_pairs)
+
+    recurring: dict[str, Any] | None = None
+    if issue_id:
+        recurring = bump_recurring_issue(
+            issue_id,
+            title=read,
+            action=playbook[0] if playbook else "",
+            fingerprint=fingerprint,
+        )
+
+    suppress_after = traffic_pulse_digest_suppress_after()
+    streak = 1
+    try:
+        r = _redis()
+        last_fp = (r.get(REDIS_DIGEST_LAST_FINGERPRINT) or "").strip()
+        if last_fp == fingerprint:
+            streak = int(r.incr(REDIS_DIGEST_SUPPRESS_STREAK))
+        else:
+            r.set(REDIS_DIGEST_LAST_FINGERPRINT, fingerprint)
+            r.set(REDIS_DIGEST_SUPPRESS_STREAK, 1)
+            streak = 1
+    except Exception:
+        logger.debug("traffic pulse digest fingerprint failed", exc_info=True)
+
+    text = format_pulse_digest_html(counts, refs)
+    if not text:
+        clear_digest_buffer()
+        return {"ok": True, "skipped": True, "reason": "empty_html"}
+
+    if streak > suppress_after:
+        clear_digest_buffer()
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "unchanged_fingerprint",
+            "issue_id": issue_id,
+            "streak": streak,
+            "recurring_count": (recurring or {}).get("count"),
+        }
+
     try:
         from app.services.admin_inbox import _telegram_send_html
 
         _telegram_send_html(text)
         clear_digest_buffer()
-        return {"ok": True, "sent": True}
+        out: dict[str, Any] = {"ok": True, "sent": True, "issue_id": issue_id, "streak": streak}
+        if recurring:
+            out["recurring_count"] = recurring.get("count")
+        return out
     except Exception as e:
         logger.warning("traffic pulse digest send failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}

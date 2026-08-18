@@ -1,0 +1,14 @@
+OUTPUT: ONE image. Aspect ratio 9:16 portrait. Single complete AOF MEGA PACKS promo poster.
+
+FIRST render the EXACT UI chrome from LAYOUT LOCK (AOF MEGA PACKS header, QR with Telegram logo, 10 red pill buttons with exact labels, t.me/aofmainhub link bar, 5 footer icons). UI must match classic AOF reference flyers exactly.
+
+BACKGROUND SCENE (visible behind UI in header margins and around QR):
+Sterile beige sunroom, harsh rectangular skylight patch on carpet. Closed grey interior door with deadbolt, left of frame. Center background: old CRT television on low wooden stand — screen shows grainy black-and-white image of three empty metal chairs in a blank room (oracle motif).
+Two muscular bearded men flank the TV, cropped chest-up at frame edges — neon-yellow wrestling singlets, silver chains, tinted aviator sunglasses, neon sweatbands. Between them in mid-ground: metal rolling tray on low table with white powder lines, credit cards, rolled bill. Postures: hunched, focused, hedonistic abandon — suburban sanctum curdled into junkie chapel. Trash-bag knight capes and rusted pauldrons slung on wall hooks behind door (Knights of the Damned Edge hint).
+Camera: straight-on medium-wide, symmetrical, voyeuristic — viewer discovers the room like a locked-door secret. Analog horror, VHS grain, high contrast, morally bankrupt domestic dread. No explicit nudity.
+
+Apply EXACT LAYOUT LOCK UI on top. DO NOT replace pills or link bar with invented text.
+
+STYLE: gritty photoreal, sunroom-pervert lineage, borderline transgressive promo, reference-matching UI chrome.
+
+AVOID: invented UI (BUY NOW, AOFPACKS.COM), wrong pill labels, misspelled text, missing QR/link bar, watermark, cartoon.

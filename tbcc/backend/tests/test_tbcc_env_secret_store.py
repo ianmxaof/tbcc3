@@ -39,7 +39,9 @@ def test_normalize_s3_endpoint_strips_bucket_path():
 def test_normalize_env_key_aliases():
     assert store.normalize_env_key("TBCC GEMINI KEY") == "TBCC_GEMINI_API_KEY"
     assert store.normalize_env_key("tbcc-cloudflare-token") == "TBCC_CF_API_TOKEN"
-    assert store.normalize_env_key("Account ID") == "TBCC_R2_ACCOUNT_ID"
+    assert store.normalize_env_key("CEREBRAS_API_KEY") == "TBCC_CEREBRAS_API"
+    assert store.normalize_env_key("NVIDIA_API_KEY") == "TBCC_NVIDIA_API"
+    assert store.normalize_env_key("MISTRAL_API_KEY") == "TBCC_MISTRAL_API"
 
 
 def test_looks_like_api_key():
@@ -54,6 +56,20 @@ def test_looks_like_api_key():
 def test_suggest_env_key_tailscale_and_openrouter():
     assert store.suggest_env_key(value="tskey-auth-abcdefghijklmnopqrstuvwxyz") == "TBCC_TAILSCALE_AUTHKEY"
     assert store.suggest_env_key(value="sk-or-" + ("x" * 24)) == "OPENROUTER_API_KEY"
+
+
+def test_suggest_env_key_cerebras_and_nvidia():
+    assert store.suggest_env_key(value="csk-" + ("x" * 24)) == "TBCC_CEREBRAS_API"
+    assert store.suggest_env_key(value="nvapi-" + ("x" * 24)) == "TBCC_NVIDIA_API"
+    assert store.looks_like_api_key("csk-" + ("x" * 24))
+    assert store.looks_like_api_key("nvapi-" + ("x" * 24))
+
+
+def test_suggest_env_key_mistral_from_console_url():
+    assert (
+        store.suggest_env_key(value="abc123mistralkeyvalue", page_url="https://console.mistral.ai/api-keys")
+        == "TBCC_MISTRAL_API"
+    )
 
 
 def test_write_env_secret_roundtrip(tmp_path, monkeypatch):

@@ -45,6 +45,65 @@ def test_resolve_featherless_runtime(monkeypatch):
     assert chat_completions_url(rt) == f"{FEATHERLESS_BASE}/chat/completions"
 
 
+def test_resolve_groq_runtime(monkeypatch):
+    from app.services.llm_completions import DEFAULT_GROQ_MODEL, GROQ_BASE
+
+    monkeypatch.setenv("TBCC_GROQ_API_KEY", "gsk-test")
+    monkeypatch.delenv("TBCC_LLM_MODEL", raising=False)
+    monkeypatch.delenv("TBCC_GROQ_MODEL", raising=False)
+    rt = resolve_text_llm_runtime(provider="groq")
+    assert rt.provider == "groq"
+    assert rt.model == DEFAULT_GROQ_MODEL
+    assert chat_completions_url(rt) == f"{GROQ_BASE}/chat/completions"
+
+
+def test_resolve_cerebras_runtime(monkeypatch):
+    from app.services.llm_completions import CEREBRAS_BASE, DEFAULT_CEREBRAS_MODEL
+
+    monkeypatch.setenv("TBCC_CEREBRAS_API", "csk-test")
+    monkeypatch.delenv("TBCC_CEREBRAS_API_KEY", raising=False)
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    monkeypatch.delenv("TBCC_LLM_MODEL", raising=False)
+    monkeypatch.delenv("TBCC_CEREBRAS_MODEL", raising=False)
+    rt = resolve_text_llm_runtime(provider="cerebras")
+    assert rt.provider == "cerebras"
+    assert rt.api_key == "csk-test"
+    assert rt.model == DEFAULT_CEREBRAS_MODEL
+    assert chat_completions_url(rt) == f"{CEREBRAS_BASE}/chat/completions"
+
+
+def test_resolve_nvidia_runtime(monkeypatch):
+    from app.services.llm_completions import DEFAULT_NVIDIA_MODEL, NVIDIA_BASE
+
+    monkeypatch.setenv("TBCC_NVIDIA_API", "nvapi-test")
+    monkeypatch.delenv("TBCC_NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("TBCC_LLM_MODEL", raising=False)
+    monkeypatch.delenv("TBCC_NVIDIA_MODEL", raising=False)
+    rt = resolve_text_llm_runtime(provider="nvidia")
+    assert rt.provider == "nvidia"
+    assert rt.api_key == "nvapi-test"
+    assert rt.model == DEFAULT_NVIDIA_MODEL
+    assert chat_completions_url(rt) == f"{NVIDIA_BASE}/chat/completions"
+    nim = resolve_text_llm_runtime(provider="nim")
+    assert nim.provider == "nvidia"
+
+
+def test_resolve_mistral_runtime(monkeypatch):
+    from app.services.llm_completions import DEFAULT_MISTRAL_MODEL, MISTRAL_BASE
+
+    monkeypatch.setenv("TBCC_MISTRAL_API", "mistral-test")
+    monkeypatch.delenv("TBCC_MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("TBCC_LLM_MODEL", raising=False)
+    monkeypatch.delenv("TBCC_MISTRAL_MODEL", raising=False)
+    rt = resolve_text_llm_runtime(provider="mistral")
+    assert rt.provider == "mistral"
+    assert rt.api_key == "mistral-test"
+    assert rt.model == DEFAULT_MISTRAL_MODEL
+    assert chat_completions_url(rt) == f"{MISTRAL_BASE}/chat/completions"
+
+
 def test_resolve_venice_runtime(monkeypatch):
     monkeypatch.setenv("VENICE_API_KEY", "vv-test")
     monkeypatch.delenv("TBCC_LLM_MODEL", raising=False)

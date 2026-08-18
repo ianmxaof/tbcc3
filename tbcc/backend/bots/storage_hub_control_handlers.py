@@ -53,10 +53,10 @@ def _hub_context(update: Update) -> tuple[bool, int | None, str | None, str | No
         return True, None, "AOF INBOX #CHANNEL", "inbox"
     if cid != storage_hub_chat_id_int():
         return False, None, None, None
-    thread_id = getattr(msg, "message_thread_id", None)
-    if not thread_id:
-        return False, None, None, None
-    tid = int(thread_id)
+    from app.utils.telegram_forum import bot_api_incoming_forum_thread_id
+
+    # Q&A is forum topic 1 (renamed General): Bot API omits message_thread_id.
+    tid = bot_api_incoming_forum_thread_id(getattr(msg, "message_thread_id", None))
     if tid == int(GATEKEEPER_REVIEW_TOPIC_ID or 0):
         return True, tid, GATEKEEPER_REVIEW_TOPIC_TITLE, "qa_master"
     if tid == storage_sent_cache_topic_id():

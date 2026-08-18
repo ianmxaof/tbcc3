@@ -1496,10 +1496,85 @@ export const api = {
         interval_hours: number;
         last_poll_at: string | null;
         last_poll_ok: boolean | null;
-        last_results: Array<Record<string, unknown>>;
+        last_results: Array<{
+          ok?: boolean;
+          source?: string;
+          error?: string;
+          skipped?: boolean;
+          reason?: string;
+          [k: string]: unknown;
+        }>;
         beat_task: string;
         redis_error?: string;
       }>("/analytics/income/poll-status"),
+    sponsorPulse: (days?: number) => {
+      const q = days != null ? `?days=${days}` : "";
+      return fetchApi<{
+        ok: boolean;
+        days: number;
+        sponsor_count: number;
+        packs: Array<{
+          id: string;
+          title: string;
+          lane: string;
+          surfaces: string[];
+          clicks: number;
+          attributed_usd: number;
+          slots: Array<{
+            index: number;
+            label: string;
+            role: string;
+            active: boolean;
+            clicks: number;
+            attributed_usd: number;
+            priority_tier?: number | null;
+            placements: string[];
+          }>;
+        }>;
+        orphan_sponsors: Array<{
+          label: string;
+          clicks: number;
+          attributed_usd: number;
+          priority_tier?: number;
+        }>;
+      }>(`/analytics/sponsor-pulse${q}`);
+    },
+    direction: (opts?: { days?: number; useLlm?: boolean }) => {
+      const p = new URLSearchParams();
+      if (opts?.days != null) p.set("days", String(opts.days));
+      p.set("format", "json");
+      if (opts?.useLlm) p.set("use_llm", "true");
+      const q = p.toString();
+      return fetchApi<{
+        ok?: boolean;
+        days?: number;
+        directions?: Array<{
+          rank?: number;
+          horizon?: string;
+          title?: string;
+          rationale?: string;
+          confidence?: string;
+          mcp_followup?: string;
+          follow_up?: string;
+        }>;
+        evidence?: Record<string, unknown>;
+        markdown?: string;
+      }>(`/analytics/direction?${q}`);
+    },
+    signalsEligibility: () =>
+      fetchApi<{
+        eligible: boolean;
+        reason: string;
+        can_refresh_views: boolean;
+        can_rank_signals: boolean;
+        footprint?: {
+          lookback_days?: number;
+          total_deliveries?: number;
+          refreshable_deliveries?: number;
+          deliveries_with_views?: number;
+          attribution_events?: number;
+        };
+      }>("/analytics/signals/eligibility"),
     postEvents: (opts?: { limit?: number; offset?: number }) => {
       const p = new URLSearchParams();
       if (opts?.limit != null) p.set("limit", String(opts.limit));

@@ -1,8 +1,8 @@
 # System Blueprint — `@aof_secretary_bot` × Format Engine (FE-LLMv4)
 
 **Audience:** any LLM or engineer without repo access.  
-**Snapshot date:** 2026-08-14  
-**Stage:** Phase 1 sales-rep — **Pilot HITL drafts live**; Auto optional per customer; clone fleet (Phase 2) schema-only.  
+**Snapshot date:** 2026-08-15  
+**Stage:** Phase 2 behavioral gate — **intent → corpus/LLM → N/C/X**; Pilot HITL + Auto live; clone fleet still schema-only.  
 **Canonical username:** `aof_secretary_bot` (`TBCC_SECRETARY_BOT_USERNAME`). Checkout must **never** resolve here — Stars/packs live on the payment bot.
 
 Related in-repo doc: `tbcc/docs/FORMAT_ENGINE.md` (operator cheat sheet). This file is the full operational logic.
@@ -17,11 +17,13 @@ Related in-repo doc: `tbcc/docs/FORMAT_ENGINE.md` (operator cheat sheet). This f
 |--------|------|
 | **Consumer FAQ** | Direct DMs + Telegram Business Chat Automation. Answers access/subscription questions; **never collects payment**. |
 | **Format Engine (FE-LLMv4)** | Persistent per-user emotional/phase state; injects a context suffix into the LLM system prompt. |
-| **Sales coach** | Retrieves `sales_strategy` knowledge + DM funnel RAG; injects another suffix; shows a one-line Coach hint on draft cards. |
-| **HITL draft (Pilot)** | Customer sees silence; admin gets a draft card (Send / Drop / Pro·Casual·Short / Pilot·Auto). |
+| **Intent gate** | `noise` / `faq` / `buyer` before sales coach. Noise skips catalog + playbook. |
+| **Behavioral corpus** | Short N/C/X scripts for greetings and solicitors (no LLM). |
+| **Sales coach** | Tagged `sales_strategy` **only when intent is faq/buyer** and retrieval actually matches. |
+| **HITL draft (Pilot)** | Admin card: N / C / X, Copy N, Send, Drop, Pro·Casual·Short, Pilot·Auto. |
 | **Admin ops hub** | Inbox, stack, flywheel, Zeus menus, LLM `/config`, affiliates `/sponsors`, Storage Hub `/deposit`, leave-message cleanup. |
 
-**Product intent (not fully implemented):** become a **triage layer** that offers the admin a **curated set of organic replies** grounded in a conversion + psychology corpus. Today the bot generates **one** LLM draft, then optionally **rewrites tone** (pro / casual / short). It does **not** present a menu of alternatives, and it does **not** load a dedicated behavioral-psychology corpus.
+**Pilot drafts persist** in `secretary_pending_drafts` (alembic 112/113). Suggest history hydrates from FE DB after restart.
 
 ---
 
@@ -66,10 +68,27 @@ Dashboard overrides: FE on/off, verbosity `compact|standard`, public FAQ, RAG, L
 
 ### In-memory only (lost on restart)
 
-- `_pending_drafts[DRAFT_ID]` — full reply, `llm_messages`, `business_connection_id`, `chat_id`, coach hint
 - `_business_msg_seen` — 45s dedupe key `bc_id:user_id:message_id`
 - `_rate_log` — 12 msgs/min/user (admins uncapped)
 - PTB `user_data`: FAQ history (`secretary_history`), Business customer line buffer (`secretary_biz_customer_lines`)
+
+Draft queue is **DB**, not RAM.
+
+---
+
+## 3b. Intent → state → script (Phase 2)
+
+`classify_intent(text)` → `noise` | `faq` | `buyer`. Stored on FE format as `last_intent`.
+
+| Intent | Coach / catalog | Reply source |
+|--------|-----------------|--------------|
+| **noise** (Hi, solicitors, block/link-buy) | Off | Corpus N/C/X (`hey` / `not buying links`) |
+| **faq** | RAG only if tokens match | LLM + symmetry filter |
+| **buyer** | Sales coach + Stars SKUs | LLM close; payment lane `stars` vs `private` (Zelle/crypto after support/recovery or ≥5 msgs) |
+
+**Symmetry:** N word-count tracks the inbound (Hi → ≤6 words). Strip `AOF SECRETARY, HH:MM` and help-desk closers.
+
+If dashboard `system_prompt` is set it **overrides** the builtin dry-DM prompt — `/clear_sysprompt` to pick up the new builtin.
 
 ---
 

@@ -123,6 +123,17 @@ export function IncomePanel() {
   const lastPollLabel = pollStatus?.last_poll_at
     ? new Date(pollStatus.last_poll_at).toLocaleString()
     : null;
+  const latestEarned = summaryQ.data?.latest_earned_at
+    ? new Date(summaryQ.data.latest_earned_at).toLocaleString()
+    : null;
+  const pollResults = pollStatus?.last_results ?? [];
+  const pollHasError = pollResults.some((r) => r.ok === false);
+  const pollHasSkip = pollResults.some((r) => r.skipped || r.reason);
+  const freshnessTone = pollHasError
+    ? "text-red-400"
+    : pollHasSkip
+      ? "text-amber-400"
+      : "text-slate-500";
 
   return (
     <div className="max-w-6xl space-y-8">
@@ -133,11 +144,22 @@ export function IncomePanel() {
             Unified rollup across Stars, crypto, gates, affiliates, and donations.
           </p>
           {pollStatus?.enabled ? (
-            <p className="text-slate-500 text-xs mt-1">
-              Auto-sync every {pollStatus.interval_hours ?? 6}h via Celery Beat
-              {lastPollLabel ? ` · Last poll ${lastPollLabel}` : " · No poll yet"}
-              {pollStatus.last_poll_ok === false ? " · Last poll failed" : ""}
-            </p>
+            <div className={`text-xs mt-1 space-y-0.5 ${freshnessTone}`}>
+              <p>
+                Poll (beat ran): {lastPollLabel ?? "never"}
+                {pollStatus.last_poll_ok === false
+                  ? " · beat failed"
+                  : pollHasError
+                    ? " · sources errored (see below)"
+                    : ""}
+              </p>
+              <p className="text-slate-500">
+                Ledger quiet since: {latestEarned ?? "—"}
+                {latestEarned
+                  ? " — quiet ≠ broken if poll is green"
+                  : ""}
+              </p>
+            </div>
           ) : (
             <p className="text-amber-500/90 text-xs mt-1">Auto-sync off — set TBCC_INCOME_POLL_ENABLED=1</p>
           )}
@@ -303,6 +325,24 @@ export function IncomePanel() {
             Celery Beat runs a light poll every {pollStatus?.interval_hours ?? 6} hours (no browser popups).
             Manual sync below is optional.
           </p>
+          {pollResults.length > 0 && (
+            <ul className="text-sm space-y-1 border border-slate-700 rounded p-3 bg-slate-900/40">
+              {pollResults.map((r, i) => {
+                const src = String(r.source ?? `source_${i}`);
+                const errLine = String(r.error || r.reason || "").split("\n")[0].slice(0, 160);
+                const tone =
+                  r.ok === false ? "text-red-400" : r.skipped ? "text-amber-400" : "text-emerald-400/90";
+                const status =
+                  r.ok === false ? "error" : r.skipped ? "skipped" : "ok";
+                return (
+                  <li key={`${src}-${i}`} className={tone}>
+                    <span className="font-medium text-slate-200">{src}</span> · {status}
+                    {errLine ? ` — ${errLine}` : ""}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           <div className="flex flex-wrap gap-2">
             <button
               type="button"

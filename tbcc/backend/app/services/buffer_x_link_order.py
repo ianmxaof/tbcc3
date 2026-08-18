@@ -28,6 +28,12 @@ _SPICY_RE = re.compile(
     r"aof_spicybot|aff-aof-spicy|src_aff_aof_spicy|src_spicy_|/r/aff-aof-spicy",
     re.I,
 )
+# First-party loot/VIP bots — must win the X card over affiliate + spicy.
+_LOOT_RE = re.compile(
+    r"(?:telegram\.me|t\.me)/(?:aof_lootgod_bot|aofsubscriptions_bot)"
+    r"|start=loot_free|start=bait_loot|[?&]start=loot(?:&|$)",
+    re.I,
+)
 _TELEGRAM_RE = re.compile(r"t\.me/", re.I)
 _ALLMYLINKS_RE = re.compile(r"allmylinks\.com", re.I)
 _EROME_RE = re.compile(r"erome\.com", re.I)
@@ -35,6 +41,7 @@ _GRAVATAR_RE = re.compile(r"gravatar\.com", re.I)
 _PROMO_VIEWER_RE = re.compile(r"ibb\.co/(?!.+\.(jpg|jpeg|png|gif|webp)$)|imgbb\.com/album", re.I)
 
 CATEGORY_ORDER: tuple[str, ...] = (
+    "loot",
     "spicy",
     "affiliate",
     "gumroad_vip",
@@ -71,6 +78,21 @@ def affiliate_first_enabled() -> bool:
     )
 
 
+def loot_first_enabled() -> bool:
+    """
+    Pin loot_free / payment loot checkout first for X link previews.
+
+    Default ON — affiliate-first + spicy-first were sending Buffer clicks to
+    partners with 0 bot_clicks. Set TBCC_BUFFER_X_LOOT_FIRST=0 to restore
+    spicy/affiliate card priority.
+    """
+    return (os.getenv("TBCC_BUFFER_X_LOOT_FIRST") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
 def spicy_first_enabled() -> bool:
     """
     When a caption includes Spicy Companion (beacon or t.me), pin it first.
@@ -86,10 +108,30 @@ def spicy_first_enabled() -> bool:
     )
 
 
+def spicy_working_start_url() -> str:
+    """Companion deep link that actually starts the bot (not an LV/beacon card)."""
+    from app.services.aof_social_links import companion_bot_username
+
+    uname = companion_bot_username()
+    return f"https://telegram.me/{uname}?start=src_spicy_x" if uname else ""
+
+
+def rewrite_spicy_card_url(url: str) -> str:
+    """Beacons with expects_touch leak 39/0 on X — pin a real ?start= instead."""
+    u = (url or "").strip()
+    if classify_url(u) != "spicy":
+        return u
+    if re.search(r"[?&]start=", u, re.I) and re.search(r"(?:t|telegram)\.me/", u, re.I):
+        return u
+    return spicy_working_start_url() or u
+
+
 def classify_url(url: str) -> str:
     u = (url or "").strip()
     if not u:
         return "other"
+    if _LOOT_RE.search(u):
+        return "loot"
     if _SPICY_RE.search(u):
         return "spicy"
     if _GUMROAD_RE.search(u):
@@ -194,10 +236,10 @@ def apply_buffer_x_link_cycle(
     """
     Order URLs for X link previews.
 
-    Priority: spicy (owned companion) → affiliate → optional category cycle.
-    Default affiliate-first when no spicy URL (never bare t.me as the card).
+    Priority: loot (loot_free / payment) → spicy → affiliate → optional cycle.
+    Default loot-first so X cards convert to @aof_lootgod_bot, not affiliates.
     Optional cycle (TBCC_BUFFER_X_AFFILIATE_FIRST=0 + LINK_CYCLE=1) rotates
-    among present categories.
+    among present categories when loot/spicy/affiliate pins are off.
     """
     raw = (text or "").strip()
     if not raw:
@@ -209,9 +251,19 @@ def apply_buffer_x_link_cycle(
     urls = [_strip_url_trail(m.group(0)) for m in matches]
     categories = _ordered_categories(urls)
 
-    # Owned Spicy beats external affiliate preview (click→touch funnel).
+    # First-party loot beats spicy + affiliate (click→bot_clicks).
+    if loot_first_enabled() and "loot" in categories:
+        return reorder_caption_urls(raw, "loot")
+
+    # Owned Spicy: never pin a beacon card. Use working ?start= when spicy leads.
     if spicy_first_enabled() and "spicy" in categories:
-        return reorder_caption_urls(raw, "spicy")
+        ordered = reorder_caption_urls(raw, "spicy")
+        first = first_url(ordered)
+        if first:
+            fixed = rewrite_spicy_card_url(first)
+            if fixed != first:
+                ordered = ordered.replace(first, fixed, 1)
+        return ordered
 
     if affiliate_first_enabled() and "affiliate" in categories:
         return reorder_caption_urls(raw, "affiliate")

@@ -89,6 +89,10 @@ def suggest_env_key(*, value: str, page_url: str = "") -> str | None:
         return "TBCC_TAILSCALE_AUTHKEY"
     if re.match(r"^sk-or-", text, re.I):
         return "OPENROUTER_API_KEY"
+    if re.match(r"^csk-", text, re.I):
+        return "TBCC_CEREBRAS_API"
+    if re.match(r"^nvapi-", text, re.I):
+        return "TBCC_NVIDIA_API"
     if re.match(r"^r8_", text, re.I):
         return "REPLICATE_API_TOKEN"
     if re.match(r"^(ghp_|gho_|github_pat_)", text, re.I):
@@ -107,7 +111,7 @@ def looks_like_api_key(value: str) -> bool:
     if re.search(r"\s", t):
         return False
     if re.search(
-        r"^(sk-|pk_|r8_|ghp_|gho_|github_pat_|xox[baprs]-|AIza|tskey-|tskey-auth-)",
+        r"^(sk-|pk_|r8_|ghp_|gho_|github_pat_|xox[baprs]-|AIza|tskey-|tskey-auth-|csk-|nvapi-|gsk_)",
         t,
         re.I,
     ):
@@ -158,6 +162,13 @@ _KEY_ALIASES = {
     "PIXELDRAIN_API_KEY": "TBCC_PIXELDRAIN_API_KEY",
     "PIXELDRAIN_KEY": "TBCC_PIXELDRAIN_API_KEY",
     "PIXELDRAIN_API_KEY_071726": "TBCC_PIXELDRAIN_API_KEY",
+    "CEREBRAS_API_KEY": "TBCC_CEREBRAS_API",
+    "TBCC_CEREBRAS_API_KEY": "TBCC_CEREBRAS_API",
+    "NVIDIA_API_KEY": "TBCC_NVIDIA_API",
+    "TBCC_NVIDIA_API_KEY": "TBCC_NVIDIA_API",
+    "NIM_API_KEY": "TBCC_NVIDIA_API",
+    "MISTRAL_API_KEY": "TBCC_MISTRAL_API",
+    "TBCC_MISTRAL_API_KEY": "TBCC_MISTRAL_API",
 }
 
 

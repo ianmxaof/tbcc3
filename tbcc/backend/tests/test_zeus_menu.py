@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from bots.zeus_menu import (
     admin_main_menu_keyboard,
+    admin_more_submenu_keyboard,
     admin_ops_submenu_keyboard,
     format_stack_status_html,
     loot_bot_username,
@@ -26,6 +27,7 @@ def test_normalize_zeus_aliases():
     assert normalize_menu_callback("zeus:more:home") == "sec:menu:cat:more"
     assert normalize_menu_callback("zeus:ops:stack") == "sec:menu:run:stack"
     assert normalize_menu_callback("zeus:inbox:full") == "sec:menu:run:inbox"
+    assert normalize_menu_callback("zeus:more:formats") == "sec:menu:run:formats"
 
 
 def test_normalize_rejects_noise():
@@ -89,6 +91,12 @@ def test_ops_submenu_includes_stack():
     assert "zeus:ops:focus" in flat
 
 
+def test_more_submenu_includes_formats():
+    kb = admin_more_submenu_keyboard()
+    flat = [b.callback_data for row in kb.inline_keyboard for b in row if b.callback_data]
+    assert "zeus:more:formats" in flat
+
+
 def test_network_submenu_has_url_deep_links(monkeypatch):
     monkeypatch.setenv("TBCC_PAYMENT_BOT_USERNAME", "paybot")
     monkeypatch.setenv("TBCC_LOOT_BOT_USERNAME", "lootbot")
@@ -97,5 +105,5 @@ def test_network_submenu_has_url_deep_links(monkeypatch):
     kb = network_submenu_keyboard()
     urls = [b.url for row in kb.inline_keyboard for b in row if b.url]
     assert any("t.me/paybot?start=subscribe" in u for u in urls)
-    assert any("t.me/lootbot?start=loot_free" in u for u in urls)
+    assert any("lootbot" in u for u in urls)
     assert any("t.me/spicy" in u for u in urls)

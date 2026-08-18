@@ -92,6 +92,7 @@ LLM panel presets: **Hcnsec (env)** = funded gateway; OpenRouter/OpenAI/Comet ar
 
 ## Ops commands
 
+- `/formats` — live people cards in the secretary DM (quote-block format view)
 - `/fe_stats` — FE + RAG stats (admin)
 - `/mystatus` — user's thread phase (customer)
 - `/as_customer` — simulate customer DM (admin)

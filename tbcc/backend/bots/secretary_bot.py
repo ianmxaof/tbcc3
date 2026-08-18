@@ -239,6 +239,20 @@ def _admin_user_id_set() -> set[int]:
     return admin_telegram_ids()
 
 
+def enforce_brevity(text: str) -> str:
+    """Cap Auto-mode replies at two sentences / 350 chars. No outbound send."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
+    if not re.search(r"[.?!]", raw):
+        return raw[:350] + "…" if len(raw) > 350 else raw
+    parts = [p.strip() for p in re.split(r"(?<=[.?!])\s+", raw) if p.strip()]
+    joined = " ".join(parts[:2]).strip() if parts else raw
+    if len(joined) > 350:
+        return joined[:350] + "…"
+    return joined
+
+
 def _allow_rate_limit(user_id: int) -> bool:
     if user_id in _admin_user_id_set():
         return True
@@ -3437,7 +3451,13 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         emotion_block = None
     else:
         try:
-            reply = await complete_secretary_chat(messages, extra_system_suffix=extra)
+            chat_kw: dict = {"extra_system_suffix": extra}
+            if not suggest_mode:
+                phase_key = str(fe_phase or "").strip().lower()
+                chat_kw["max_tokens_override"] = (
+                    120 if phase_key in ("introduction", "engagement") else 250
+                )
+            reply = await complete_secretary_chat(messages, **chat_kw)
         except Exception as e:
             logger.warning("secretary LLM failed: %s", e)
             if suggest_mode:
@@ -3479,6 +3499,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception:
                 logger.debug("secretary llm emotion ingest failed uid=%s", user.id, exc_info=True)
     natural = cands["natural"]
+    if not suggest_mode:
+        natural = enforce_brevity(natural)
+        reply = natural
+        cands["natural"] = natural
 
     if suggest_mode:
         lines = context.user_data.get(BIZ_LINES_KEY) or []
@@ -3545,15 +3569,17 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
     else:
         await _reply(msg, natural[:4096], context)
-        if format_ctx_id is not None:
-            try:
+        try:
+            if format_ctx_id is not None:
                 await asyncio.to_thread(finalize_assistant_turn, format_ctx_id, natural[:4096])
-            except Exception as e:
-                logger.warning("format_engine finalize failed ctx=%s: %s", format_ctx_id, e)
-            try:
-                _schedule_format_live(context, user.id)
-            except Exception:
-                logger.debug("format live refresh after assistant turn failed", exc_info=True)
+            else:
+                await asyncio.to_thread(finalize_assistant_turn_for_user, user.id, natural[:4096])
+        except Exception as e:
+            logger.warning("format_engine finalize failed uid=%s ctx=%s: %s", user.id, format_ctx_id, e)
+        try:
+            _schedule_format_live(context, user.id)
+        except Exception:
+            logger.debug("format live refresh after assistant turn failed", exc_info=True)
         hist2: list[dict[str, str]] = context.user_data.get(HISTORY_KEY) or []
         hist2 = [
             {"role": m["role"], "content": m["content"]}

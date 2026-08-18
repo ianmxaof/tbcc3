@@ -6,6 +6,8 @@ import html
 import random
 from typing import Any
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
 from app.services.loot_free_tutorial import (
     STEP_AFTER_CARD,
     exhausted_hook_html,
@@ -33,7 +35,7 @@ _STEP_TEASE_KINDS: dict[int, list[str]] = {
 }
 
 
-def pick_tease_lines(rng: random.Random, count: int = 3, *, step: int = 1) -> list[dict[str, str]]:
+def pick_tease_lines(rng: random.Random, count: int = 4, *, step: int = 1) -> list[dict[str, str]]:
     by_kind = {k: label for k, label in FREE_PULL_TEASE_LINES}
     preferred = _STEP_TEASE_KINDS.get(step) or []
     out: list[dict[str, str]] = []
@@ -56,12 +58,12 @@ def build_free_pull_tease_html(
     payment_bot_username: str | None = None,
 ) -> str:
     step = pull_number_from_preview(preview)
-    lines = preview.get("tease_modifiers") or pick_tease_lines(random.Random(), count=3, step=step)
+    lines = preview.get("tease_modifiers") or pick_tease_lines(random.Random(), count=4, step=step)
     progress = html.escape(step_progress_label(preview))
-
+    face = lines[:4]
     bullet = "\n".join(
-        f"• <s>{html.escape(str(x.get('label') or 'modifier'))}</s>"
-        for x in lines
+        f"▣ <s>{html.escape(str(x.get('label') or 'modifier'))}</s>"
+        for x in face
     )
 
     rem = max(0, int(free_pulls_remaining))
@@ -77,13 +79,37 @@ def build_free_pull_tease_html(
     )
 
     return (
-        f"<b>{progress}</b> · <i>Paid-table preview (locked on free)</i>\n"
-        "These lines are <b>intentionally crossed out</b> — not broken rewards. "
-        "They show what a <b>24h room run</b> can attach after your album.\n\n"
-        f"{bullet}\n\n"
+        f"<b>{progress}</b> · <i>Incomplete crate — 4 of 5 face-up</i>\n"
+        "▣ ▣ ▣ ▣ 🔒\n"
+        "Four tiles are paid-table <b>examples</b> (crossed out on purpose). "
+        "The fifth tile is <b>not a hidden roll</b> — it stays face-down until a 24h Origin key.\n\n"
+        f"{bullet}\n"
+        "🔒 <b>Tile 5</b> — Origin key (full album + real modifiers)\n\n"
         f"{after}\n"
         f"{next_line}"
     )
+
+
+def crate_origin_key_markup(
+    *,
+    payment_bot_username: str | None = None,
+    loot_bot_username: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Origin key (Stars checkout) + loot_free deep link (src_loot_free)."""
+    import os
+
+    pay = (payment_bot_username or os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
+    loot = (loot_bot_username or os.getenv("TBCC_LOOT_BOT_USERNAME") or "aof_lootgod_bot").strip().lstrip("@")
+    rows: list[list[InlineKeyboardButton]] = []
+    if pay:
+        rows.append(
+            [InlineKeyboardButton("🗝 Origin key — unlock tile 5", url=f"https://t.me/{pay}?start=loot")]
+        )
+    if loot:
+        rows.append(
+            [InlineKeyboardButton("🎲 Open crate (loot_free)", url=f"https://t.me/{loot}?start=loot_free")]
+        )
+    return InlineKeyboardMarkup(rows)
 
 
 def build_vip_daily_tease_html(preview: dict[str, Any]) -> str:

@@ -44,6 +44,7 @@ _ZEUS_TO_SEC: dict[str, str] = {
     "zeus:more:affadd": "sec:menu:aff:add",
     "zeus:more:config": "sec:menu:run:config",
     "zeus:more:commands": "sec:menu:run:commands",
+    "zeus:more:formats": "sec:menu:run:formats",
     "zeus:net:mystatus": "sec:menu:mystatus",
     "zeus:net:reset": "sec:menu:reset",
 }
@@ -211,6 +212,7 @@ def admin_more_submenu_keyboard() -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton("📋 Copy hub tail", callback_data="zeus:more:hubcopy")],
             [InlineKeyboardButton("🔗 Add sponsor link", callback_data="zeus:more:affadd")],
+            [InlineKeyboardButton("🧠 Formats", callback_data="zeus:more:formats")],
             [
                 InlineKeyboardButton("🤖 LLM config", callback_data="zeus:more:config"),
                 InlineKeyboardButton("📖 All commands", callback_data="zeus:more:commands"),
