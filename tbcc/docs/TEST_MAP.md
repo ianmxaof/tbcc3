@@ -34,6 +34,7 @@ py -3.13 -m pytest <path> -x -q
 | **Lifecycle DM** | `tests/test_lifecycle_dm_outreach.py`, `tests/test_companion_activity_touch.py` | Subscription renewal + loot + companion re-engage segments |
 | **Scrape transport** | `tests/test_scrape_transport.py` | Cancel/skip/overview phases for Ingest transport |
 | **Scrape tag map / views** | `tests/test_scrape_tag_pool_map.py`, `tests/test_aof_lane_tag_map.py` | Hashtag→canonical `big_tits` lanes + emoji/disk folder helpers |
+| **Gatekeeper lane split** | `tests/test_media_gatekeeper_spec.py`, `tests/test_media_gatekeeper_service.py`, `tests/test_gatekeeper_clip_lane_map.py`, `tests/test_gatekeeper_inbox_split.py`, `tests/test_gatekeeper_prototypes.py`, `tests/test_aof_lane_tag_map.py` | Mixed AOF INBOX split: CLIP/caption lane mapper, auto-route + preselect, online prototype bank (`docs/MEDIA_GATEKEEPER.md` P5) |
 | **Watch folder AOF lanes** | `tests/test_watch_folder_aof_lanes.py` | Sidecar tag→`🍒 AOF BIG TITS` / disk `AOF BIG TITS`; preprocess skip when `aof_preprocessed` |
 | **TBCC caption stamps (#tbcc:)** | `tests/test_tbcc_caption_stamp.py`, `tests/test_storage_sent_cache.py` | AyuGram lane tags on hub intake, SENT VAULT, quarantine cards |
 | **Buffer X link order** | `tests/test_buffer_x_link_order.py` | Spicy-first then affiliate-first preview pin; optional cycle when `AFFILIATE_FIRST=0` |

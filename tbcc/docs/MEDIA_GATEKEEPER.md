@@ -260,3 +260,47 @@ CLI: `py -3.13 scripts/run_scrape_micro_pull.py --lane ass --execute`
 
 Buttons: **emoji lane row(s)** + **✅ Approve** / **🗑 Reject** (Payment bot default, admin-only). Tap lane emoji(s) to multi-select, then Approve — forwards into matching Storage Hub subtopics.
 | **P4** | Quality-ranked pool / loot picks | Next |
+| **P5** | Inbox mixed split + prototype bank | **Done** (`clip_slug_lane_map.py`, `gatekeeper_inbox_split.py`, `gatekeeper_prototypes.py`) |
+
+### P5 — Inbox mixed split + prototype bank
+
+Splits a mixed bulk dump into AOF INBOX (topic 22569) into the 11 AOF content lanes (`ass`, `big_tits`, `blowjob`, `bop`, `goon`, `ai`, `milf`, `voyeur`, `taboo`, `abg`, `full_length`), per-item, using caption tags + CLIP (when the sidecar is up) + a growing per-lane prototype bank trained from operator/hub gold labels. The `#CHANNEL` shortcut (`INBOX_CHANNEL_IDENT`) does **not** currently auto-split — see the deviation note below. See `docs/handoffs/2026-08-17_gatekeeper-lane-split-train.md` (locked design) and its reverse handoff reports for the full build history, self-caught bugs, and every ACK'd deviation.
+
+**Signal sources, ranked into the same 0–1 score space (rule E):**
+
+| Source | How | Confidence |
+|--------|-----|------------|
+| Caption | `caption_confidence()` — exact hashtag/token in `LANE_TAG_MAP` → `1.0`; fragment/contains match → `0.55`; no match → `0.0`. Tags that resolve in `LANE_TAG_MAP` but have no AOF split lane (`#amateur`, `#packs`, `#cosplay`, `#homemade`) score `0.0`, not a false `1.0`. | Always available, no sidecar needed |
+| CLIP (catalog) | `CLIP_SLUG_TO_LANE` (sampled high-volume slugs) + `LANE_TAG_MAP` word-boundary-guarded fragment fallback for the rest of the ~1260-slug catalog | Requires `TBCC_CLIP_CATEGORIZE_URL` |
+| Prototype bank | Cosine similarity to a per-lane running-sum/count centroid built from gold labels, once that lane has ≥ `TBCC_GATEKEEPER_PROTOTYPE_MIN` labeled embeddings | Requires CLIP sidecar `/embed` + enough gold labels |
+
+**Auto-route decision (`maybe_auto_split_inbox`, rule E):**
+
+- Top lane score ≥ `TBCC_GATEKEEPER_AUTO_SPLIT_MIN` **and** margin over the second lane ≥ `TBCC_GATEKEEPER_AUTO_SPLIT_MARGIN` **and** no hard_block **and** trusted Storage Hub inbox origin (never scrape) → approve + forward into the matching Storage Hub lane topic (`enqueue_lane_route_for_media` — the same Telethon reuse point an operator approve uses, not a call through `operator_approve_media` itself; see deviation note).
+- CLIP's top lane and the prototype bank's top lane agreeing boosts the blended score ×1.15 (cap 1.0); disagreeing **forces** the non-auto-route path regardless of score/margin — quarantine with both lanes preselected.
+- Otherwise → stays quarantine; `set_picked_lanes` preselects the top 1–2 lanes so the review card already shows selected emojis.
+- Runs on inbox-origin items **regardless of gatekeeper verdict** — an untagged trusted-hub inbox deposit already reaches `approve` on quality alone (no lane assigned), which is the majority mixed-dump shape; splitting only on `quarantine` would skip most of the dump.
+- Idempotent: a Redis marker guards the confident/auto-route path specifically, since the ingest hook runs twice per item (ingest-time caption-only, then again once/if `auto_tag_enrich`'s CLIP pass runs) and must not forward the same item twice.
+
+**Gold labels (`gatekeeper_lane_labels` table, `gatekeeper_prototypes.record_label`):**
+
+- Positive: named-topic deposit (`source=hub_topic`) or operator approve (`source=operator_approve`, the operator's selected lanes).
+- Negative: operator reject (`source=operator_reject`, empty lanes — never moves a centroid).
+- Age-adjacent / zoo / seller-proof hard-blocked items are **never** labeled under any source.
+- Centroid = running sum / count per lane, recomputed by exactly one full-table scan on a Redis cache miss, invalidated on every embedding-bearing write — never a periodic rebuild, never trimmed-mean/variance.
+
+**Known limitation (default config):** with `TBCC_CLIP_CATEGORIZE_URL` unset (the typical state) and an untagged caption, there is no signal at all — the item stays exactly where it lands today (often `approve` with no lane) rather than auto-splitting. This is deliberate — no threshold was lowered and no signal invented to manufacture split volume. The lever to improve coverage is turning the CLIP sidecar on, not loosening `AUTO_SPLIT_MIN`.
+
+**Deviations from the original locked design, ACK'd by Cursor + Hermes** (full detail in the four reverse handoff reports): dropped the `suggest_lane_keys_from_tags` fallback (false-positives on ordinary captions); confident auto-route does not call `operator_approve_media` directly (would fire N SCRP micro-pull Celery tasks against the single Telethon admin session on a bulk auto-split — same Telethon reuse point is used instead); the inbox shortcut channel (`INBOX_CHANNEL_IDENT`) does not currently auto-split (its `source_channel` isn't recognized as trusted Storage Hub origin — a trust-doctrine change, left out of scope); neither operator hook makes a synchronous CLIP embed call (avoids adding sidecar latency to an interactive Telegram tap).
+
+### Env (inbox split + prototype bank)
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `TBCC_GATEKEEPER_INBOX_SPLIT` | `1` | Master switch for the mixed-bulk inbox split hook |
+| `TBCC_GATEKEEPER_AUTO_SPLIT_MIN` | `0.28` | Minimum top-lane score to auto-route |
+| `TBCC_GATEKEEPER_AUTO_SPLIT_MARGIN` | `0.04` | Minimum margin over the second-ranked lane to auto-route |
+| `TBCC_GATEKEEPER_PROTOTYPE_MIN` | `8` | Minimum gold labels a lane needs before its centroid votes |
+| `TBCC_CLIP_CATEGORIZE_URL` | (unset) | CLIP sidecar base URL — classify + `/embed` both gated on this |
+
+Red lines from the top of this doc are unchanged by P5: CLIP/the prototype bank are signals into lane routing only, never a judge for age/zoo/illegal, and hard-blocked items are never labeled into the prototype bank under any source.
