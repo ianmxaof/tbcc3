@@ -66,22 +66,25 @@ def fulfillment_invite_link(db: Session, plan: SubscriptionPlan | None) -> str |
 
 
 def vip_welcome_message_html(*, invite_link: str | None = None, include_backup: bool = True) -> str:
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = vip_display_name()
     link = (invite_link or vip_primary_invite_url()).strip()
     bot = (os.getenv("TBCC_PAYMENT_BOT_USERNAME") or "aofsubscriptions_bot").strip().lstrip("@")
     link_line = (
-        f'👉 <a href="{link}">Join AOF VIP channel</a>\n' if link else ""
+        f'👉 <a href="{link}">Join AOF {tier} channel</a>\n' if link else ""
     )
     backup = vip_one_use_invite_url()
     backup_line = ""
     if include_backup and backup and backup != link:
         backup_line = f'Backup link: <a href="{backup}">one-time invite</a>\n'
     body = (
-        "✅ <b>AOF VIP unlocked</b>\n\n"
+        f"✅ <b>AOF {tier} unlocked</b>\n\n"
         f"{link_line}{backup_line}\n"
         "Your paid lane:\n"
         "• Rolled albums (3–10) · early drops · ad-free hosts\n"
         "• Daily god roll — @aof_lootgod_bot /viproll\n"
-        "• Weekly mega in VIP\n"
+        f"• Weekly mega in {tier}\n"
         f"• @{bot} — companion credits + perks\n\n"
         "<i>Auto-added when possible — keep the link as backup.</i>"
     )

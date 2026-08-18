@@ -26,4 +26,4 @@ def test_stars_pay_button_label_intro():
         price_stars = 834
         name = VIP_INTRO_PLAN_NAME
 
-    assert stars_pay_button_label(_Plan()) == "Inner Circle $10 · 834⭐"
+    assert stars_pay_button_label(_Plan()) == "Insiders $10 · 834⭐"

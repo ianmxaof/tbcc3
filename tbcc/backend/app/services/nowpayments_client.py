@@ -62,6 +62,13 @@ def plan_nowpayments_usd_quote(
     }
 
 
+def plan_usd_price_label(*, price_stars: int, nowpayments_price_usd: float | None = None) -> str:
+    """Formatted "$18" / "$9.60" checkout-button price hint (billed USD, catalog or NOWPayments-floor adjusted)."""
+    quote = plan_nowpayments_usd_quote(price_stars=price_stars, nowpayments_price_usd=nowpayments_price_usd)
+    billed = float(quote.get("billed_usd") or 0)
+    return f"${billed:.0f}" if billed >= 10 else f"${billed:.2f}"
+
+
 def plan_crypto_checkout_eligible(
     *,
     price_stars: int,

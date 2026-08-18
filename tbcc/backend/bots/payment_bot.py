@@ -100,7 +100,7 @@ _runtime_settings_loaded_at: float = 0.0
 _runtime_settings_ttl_s = 30.0
 
 _default_main_menu = [
-    [{"label": "🔑 Join the Inner Circle", "action": "menu_subscribe"}],
+    [{"label": "🎫 Join the Insiders", "action": "menu_subscribe"}],
     [
         {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
@@ -139,7 +139,7 @@ def _runtime_settings_defaults() -> dict:
         "main_menu": _default_main_menu,
         "welcome_html": "",
         "loot_intro_html": "",
-        "subscribe_title_main": "🔑 **Inner Circle Access**",
+        "subscribe_title_main": "🎫 **Insiders Access**",
         "subscribe_title_loot": "🗝 **Loot Room Access**",
         "subscription_catalog_columns": 2,
         "min_subscription_stars": _bot_min_subscription_stars(),
@@ -1515,7 +1515,7 @@ async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             [
-                [InlineKeyboardButton("Loot Room keys", callback_data="menu_loot_subscribe")],
+                [InlineKeyboardButton("🗝 Loot Room keys", callback_data="menu_loot_subscribe")],
                 [InlineKeyboardButton("🛍 Open Full Store", callback_data="menu_shop")],
             ]
         ),
@@ -1605,9 +1605,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     parse_mode="Markdown",
                 )
             else:
+                from app.data.aof_vip_membership import vip_display_name
+
                 await msg.reply_text(
                     "👋 **Welcome!** You were invited by a friend.\n\n"
-                    "Use /subscribe for premium access or /packs for digital packs.\n"
+                    f"Use /subscribe for {vip_display_name()} access or /packs for digital packs.\n"
                     "_Pay with Stars in Telegram; crypto & card paths are rolling out._",
                     parse_mode="Markdown",
                 )
@@ -1847,24 +1849,26 @@ def _simple_stars_btn_label(p: dict) -> str:
     stars = int(p.get("price_stars") or 0)
     if is_vip_intro_plan_name(name):
         return stars_pay_entry_button_label(price_stars=stars, plan_name=name)
-    return f"{stars} ⭐"
+    return f"⭐ Pay {stars}"
 
 
-def _simple_crypto_btn_label(p: dict) -> str:
-    from app.services.nowpayments_client import plan_nowpayments_usd_quote
+def _plan_usd_price_hint(p: dict) -> str:
+    """Formatted "$18" checkout price — same billed USD basis crypto and card checkout both use."""
+    from app.services.nowpayments_client import plan_usd_price_label
 
     override = p.get("nowpayments_price_usd")
     try:
         override_f = float(override) if override is not None else None
     except (TypeError, ValueError):
         override_f = None
-    quote = plan_nowpayments_usd_quote(
+    return plan_usd_price_label(
         price_stars=int(p.get("price_stars") or 0),
         nowpayments_price_usd=override_f if override_f and override_f > 0 else None,
     )
-    billed = float(quote.get("billed_usd") or 0)
-    usd = f"${billed:.0f}" if billed >= 10 else f"${billed:.2f}"
-    return f"{usd} crypto"
+
+
+def _simple_crypto_btn_label(p: dict) -> str:
+    return f"🪙 Pay {_plan_usd_price_hint(p)} crypto"
 
 
 def _plan_checkout_keyboard_rows(
@@ -1914,10 +1918,11 @@ def _plan_checkout_keyboard_rows(
                 fiat_checkout_plan_button_label,
             )
 
-            gr_label = fiat_checkout_button_label()
+            gr_label = fiat_checkout_button_label(price_hint=_plan_usd_price_hint(p))
             if multi_term:
                 gr_label = fiat_checkout_plan_button_label(
-                    _subscription_duration_badge(p.get("duration_days", 30))
+                    _subscription_duration_badge(p.get("duration_days", 30)),
+                    price_hint=_plan_usd_price_hint(p),
                 )
             rows.append(
                 [
@@ -2060,7 +2065,7 @@ async def send_subscription_catalog_message(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     section: str = "main",
-    title: str = "🔑 **Inner Circle Access**",
+    title: str = "🎫 **Insiders Access**",
 ) -> None:
     """Subscription checkout — price on each button, no instructional catalog prose."""
     if not msg:
@@ -2200,7 +2205,7 @@ async def send_bundle_catalog_message(msg, context: ContextTypes.DEFAULT_TYPE) -
         await msg.reply_text(
             "📦 **Digital packs**\n\n"
             "No **bundle** products yet — this list is **only** for product type **Bundle** (digital zip packs).\n\n"
-            "**Inner Circle subscriptions** (AOF tiers, etc.) appear under **/subscribe**, not here.\n\n"
+            "**Insiders subscriptions** (AOF tiers, etc.) appear under **/subscribe**, not here.\n\n"
             "In the **dashboard → Shop products**, create a **new** product and set type to **Bundle (digital pack)** "
             "with a **Stars price** set and **active** checked.",
             parse_mode="Markdown",
@@ -2272,7 +2277,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await send_shop_promo(update, context)
     elif query.data == "menu_subscribe":
         await send_subscription_catalog_message(
-            msg, context, section="main", title=str(st.get("subscribe_title_main") or "🔑 **Inner Circle Access**")
+            msg, context, section="main", title=str(st.get("subscribe_title_main") or "🎫 **Insiders Access**")
         )
     elif query.data == "menu_loot":
         await send_loot_room_message(msg, context)
@@ -2948,9 +2953,11 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
         else:
+            from app.data.aof_vip_membership import vip_display_name
+
             text = (
                 "✅ **Payment successful!**\n\n"
-                "You have been granted access to the premium channel. "
+                f"You have been granted access to the {vip_display_name()} channel. "
                 "Check your Telegram for an invite or access link."
                 f"{progress_line}"
             )
@@ -3030,7 +3037,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("help", "Commands & what this bot does"),
         BotCommand("shop", "Open the store"),
         BotCommand("loot", "Loot Room 24h key + private group"),
-        BotCommand("subscribe", "Inner Circle — Stars, crypto & fiat"),
+        BotCommand("subscribe", "Insiders — Stars, crypto & fiat"),
         BotCommand("packs", "Digital packs"),
         BotCommand("referral", "Your code, link & rewards"),
         BotCommand("status", "Your subscription & purchases"),
@@ -3043,21 +3050,27 @@ async def _post_init(app: Application) -> None:
     except Exception as e:
         logger.warning("set_my_commands failed: %s", e)
     try:
+        from app.data.aof_vip_membership import vip_display_name
+
+        tier = vip_display_name()
         short_desc = (
-            "AOF Access Bot: Loot Room keys, premium, and packs. Stars + crypto. Start with /start"
+            f"AOF Access Bot: Loot Room keys, {tier}, and packs. Stars + crypto. Start with /start"
             if _health_crypto_auto_checkout
-            else "AOF Access Bot: Loot Room keys, premium, and packs. Stars + Wallet/crypto. Start with /start"
+            else f"AOF Access Bot: Loot Room keys, {tier}, and packs. Stars + Wallet/crypto. Start with /start"
         )
         await app.bot.set_my_short_description(short_desc)
     except Exception as e:
         logger.warning("set_my_short_description failed: %s", e)
     # Long profile text (“What can this bot do?”) — max 512 chars for set_my_description
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = vip_display_name()
     long_desc = (
-        "AOF Access Bot — get Loot Room keys, premium access, and digital packs.\n\n"
+        f"AOF Access Bot — get Loot Room keys, {tier} access, and digital packs.\n\n"
         "Start with /start.\n\n"
         "• /shop — full storefront\n"
         "• /loot — Loot Room 24h key + private group flow\n"
-        "• /subscribe — premium memberships\n"
+        f"• /subscribe — {tier} membership\n"
         "• /packs — digital packs\n"
         "• /status — your purchases & access\n"
         "• /resolve — unwrap supported ad/short links\n"

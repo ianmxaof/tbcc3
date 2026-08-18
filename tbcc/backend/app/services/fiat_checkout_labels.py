@@ -33,7 +33,9 @@ def fiat_checkout_button_label(*, price_hint: str | None = None) -> str:
     return _DEFAULT_BUTTON[:64]
 
 
-def fiat_checkout_plan_button_label(duration_badge: str) -> str:
+def fiat_checkout_plan_button_label(duration_badge: str, *, price_hint: str | None = None) -> str:
+    if price_hint:
+        return f"💳 Pay {price_hint} · {duration_badge}"[:64]
     return f"💳 Card · {duration_badge}"[:64]
 
 
@@ -67,17 +69,23 @@ def fiat_vip_link_label() -> str:
 
 def fiat_vip_ladder_intro_html(*, include_intro: bool = False) -> str:
     from app.data.telegram_stars_howto import stars_howto_html, vip_intro_stars
-    from app.data.aof_vip_membership import VIP_INTRO_SKU, VIP_MEMBERSHIP_SKUS, vip_display_name
+    from app.data.aof_vip_membership import (
+        VIP_INTRO_SKU,
+        VIP_MEMBERSHIP_SKUS,
+        vip_display_name,
+        vip_intro_period_label,
+    )
 
     disp = fiat_checkout_display_name()
     tier = vip_display_name()
+    period = vip_intro_period_label()
     howto = stars_howto_html(compact=True)
     intro_usd = int(VIP_INTRO_SKU.price_usd)
     intro_stars = vip_intro_stars()
     monthly = int(VIP_MEMBERSHIP_SKUS[0].price_usd)
     if include_intro:
         return (
-            f"✨ <b>First {tier} month ${intro_usd}</b> (~{intro_stars}⭐) — new members only.\n"
+            f"✨ <b>First {period} ${intro_usd}</b> (~{intro_stars}⭐) — new members only.\n"
             f"🔑 Standard ladder from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
             f"{howto}\n\n"
             f"Pick a term:"

@@ -38,6 +38,9 @@ def _companion_trial_photos() -> int:
 
 def deal_stack_bullets_html() -> list[str]:
     """Permanent value stack (HTML lines)."""
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = vip_display_name()
     bot = html.escape(_companion_bot_username())
     trial = _companion_trial_photos()
     bonus = _vip_bonus_companion_credits()
@@ -47,26 +50,29 @@ def deal_stack_bullets_html() -> list[str]:
         f"More via Stars · /referral earns credits."
     )
     return [
-        "🚪 <b>Hall Pass</b> — direct hosts in VIP. Public lanes stay gated — that funds the network.",
+        f"🚪 <b>Hall Pass</b> — direct hosts in {tier}. Public lanes stay gated — that funds the network.",
         "🎰 <b>Daily God Roll</b> — 1 guaranteed high-tier pull/day on @aof_lootgod_bot (<code>/viproll</code>).",
-        "📦 <b>Weekly Mega Pack</b> — 1 direct MEGA/TeraBox folder/week in VIP (rotating lane).",
-        "⚡ <b>First Look</b> — drops hit VIP ~1h before public · bigger albums · one clean feed.",
+        f"📦 <b>Weekly Mega Pack</b> — 1 direct MEGA/TeraBox folder/week in {tier} (rotating lane).",
+        f"⚡ <b>First Look</b> — drops hit {tier} ~1h before public · bigger albums · one clean feed.",
         companion_line,
     ]
 
 
 def urgency_lines_pool(db: Session | None = None) -> list[str]:
     """Rotating scarcity lines — pick one at checkout; rotate infrequently via month slot."""
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = vip_display_name()
     now = datetime.now(timezone.utc)
     month = month_name[now.month]
     bot = _companion_bot_username()
     lines = [
-        f"🔥 <b>This week:</b> subscribe before Sunday → unlock this week's VIP mega pack retroactively.",
+        f"🔥 <b>This week:</b> subscribe before Sunday → unlock this week's {tier} mega pack retroactively.",
         f"⏳ Founding rate holds at current Stars price until the next network milestone — then it steps up.",
         f"🎰 <b>{month} perk:</b> +3 bonus god rolls on signup (limited window).",
-        f"📦 Next mega drop lands Friday in VIP only — public gets the gated version later.",
-        f"🚪 Hall Pass math: ~90 gate sessions/month if you're active. VIP is the skip button.",
-        f"🤖 @{bot} VIP bundle: skip the gate queue + { _vip_bonus_companion_credits() } bonus photo credits on join.",
+        f"📦 Next mega drop lands Friday in {tier} only — public gets the gated version later.",
+        f"🚪 Hall Pass math: ~90 gate sessions/month if you're active. {tier} is the skip button.",
+        f"🤖 @{bot} {tier} bundle: skip the gate queue + { _vip_bonus_companion_credits() } bonus photo credits on join.",
     ]
     if db is not None:
         try:
@@ -96,19 +102,22 @@ def pick_urgency_line(db: Session | None = None, *, seed: int | None = None) -> 
 
 
 def _build_vip_intro_deal_caption_html(bullets: list[str]) -> str:
-    """First-month intro SKU — same perk stack, discounted headline."""
+    """Intro-priced SKU — same perk stack, discounted headline."""
+    from app.data.aof_vip_membership import vip_display_name, vip_intro_period_label
     from app.data.telegram_stars_howto import stars_howto_html, vip_intro_stars
 
+    tier = vip_display_name()
+    period = vip_intro_period_label()
     stars = vip_intro_stars()
     body_lines = [
-        f"✨ <b>AOF VIP — FIRST MONTH, $10</b> · ~{stars}⭐ · one-time intro for new members only",
+        f"✨ <b>AOF {tier} — FIRST {period.upper()}, $10</b> · ~{stars}⭐ · one-time intro for new members only",
         "",
-        "Every regular VIP perk, first month discounted. After that: standard ladder, cancel anytime.",
+        f"Every regular {tier} perk, first {period} discounted. After that: standard ladder, cancel anytime.",
         "",
         "<b>What you get:</b>",
         *bullets,
         "",
-        "⏳ Intro pricing is one-time, first purchase only — locks in nothing beyond month one.",
+        f"⏳ Intro pricing is one-time, first purchase only — locks in nothing beyond the intro {period}.",
         "",
         stars_howto_html(compact=True),
         "",
@@ -139,27 +148,28 @@ def build_vip_deal_caption_html(
 
     plan = db.query(SubscriptionPlan).filter(SubscriptionPlan.id == pid).first()
     bullets = deal_stack_bullets_html()
-    from app.data.aof_vip_membership import is_vip_intro_plan_name
+    from app.data.aof_vip_membership import is_vip_intro_plan_name, vip_display_name
     from app.data.telegram_stars_howto import stars_howto_html
 
     if plan and is_vip_intro_plan_name(str(plan.name or "")):
         return _build_vip_intro_deal_caption_html(bullets)
 
+    tier = vip_display_name()
     stars = int(plan.price_stars or 0) if plan else 0
     days = int(plan.duration_days or 30) if plan else 30
     price_bit = f" · <b>{stars}⭐</b> / {days}d" if stars > 0 else ""
 
     body_lines = [
-        f"🎫 <b>AOF VIP — THE HALL PASS</b>{price_bit}",
+        f"🎫 <b>AOF {tier} — THE HALL PASS</b>{price_bit}",
         "",
-        "One tap from the paid lane. Public stays gated on purpose — VIP is your hassle-free bypass.",
+        f"One tap from the paid lane. Public stays gated on purpose — {tier} is your hassle-free bypass.",
         "",
         "<b>What you get:</b>",
         *bullets,
         "",
-        "<b>Public vs VIP</b>",
+        f"<b>Public vs {tier}</b>",
         "Public → wrapped links · slower cadence · scattered lanes",
-        "VIP → one channel · early · direct · daily roll · weekly mega · companion credits",
+        f"{tier} → one channel · early · direct · daily roll · weekly mega · companion credits",
     ]
     if include_urgency:
         urg = pick_urgency_line(db, seed=urgency_seed)
@@ -172,23 +182,29 @@ def build_vip_deal_caption_html(
 
 def plan_invoice_description_short(db: Session | None = None) -> str:
     """≤255 chars for Telegram Stars invoice description."""
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = vip_display_name()
     bot = _companion_bot_username()
     bonus = _vip_bonus_companion_credits()
     return (
-        f"AOF VIP Hall Pass — 30d: direct links in VIP, daily god roll, weekly mega pack, "
+        f"AOF {tier} Hall Pass — 30d: direct links in {tier}, daily god roll, weekly mega pack, "
         f"@{bot} early access + {bonus} credits. Public lanes stay gated."
     )[:255]
 
 
 def plan_description_variations() -> list[str]:
     """Dashboard seed / description_variations_json for invoice rotation."""
+    from app.data.aof_vip_membership import vip_display_name
+
+    tier = vip_display_name()
     bot = _companion_bot_username()
     bonus = _vip_bonus_companion_credits()
     return [
         plan_invoice_description_short(),
-        f"Hall Pass: skip gates in VIP · daily /viproll god roll · weekly direct mega · @{bot} + {bonus} credits.",
-        "VIP silo: early drops, unwrapped links, bigger albums — plus companion early access & bonus photo credits.",
-        "Public = gated lanes. VIP = bypass + recurring perks. One tap Stars or crypto checkout.",
+        f"Hall Pass: skip gates in {tier} · daily /viproll god roll · weekly direct mega · @{bot} + {bonus} credits.",
+        f"{tier} silo: early drops, unwrapped links, bigger albums — plus companion early access & bonus photo credits.",
+        f"Public = gated lanes. {tier} = bypass + recurring perks. One tap Stars or crypto checkout.",
     ]
 
 

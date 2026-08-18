@@ -37,28 +37,33 @@ def vip_monthly_stars() -> int:
 
 
 def stars_howto_html(*, compact: bool = False) -> str:
-    """HTML block for payment-bot / VIP captions (Telegram HTML)."""
+    """HTML block for payment-bot / Insiders captions (Telegram HTML)."""
+    from app.data.aof_vip_membership import vip_intro_period_label
+
     intro_usd = int(VIP_INTRO_SKU.price_usd) if VIP_INTRO_SKU.price_usd == int(VIP_INTRO_SKU.price_usd) else VIP_INTRO_SKU.price_usd
     intro_stars = vip_intro_stars()
     tier = vip_display_name()
+    period = vip_intro_period_label()
     if compact:
         return (
             f"⚠️ <b>Need Stars?</b> Buy them in Telegram with a credit/debit card "
             f"(Settings → My Stars, or the ⭐ on any invoice) — then tap Pay.\n"
-            f"✨ {tier} starts at <b>${intro_usd}</b> / <b>{intro_stars}⭐</b> (first month intro)."
+            f"✨ {tier} starts at <b>${intro_usd}</b> / <b>{intro_stars}⭐</b> (first {period} intro)."
         )
     return (
         f"⚠️ <b>Paying with Telegram Stars</b>\n"
         f"✅ Stars can be bought with a credit/debit card <b>inside Telegram</b>\n"
         f"✅ Settings → <b>My Stars</b> (or tap ⭐ on any invoice) → Buy Stars\n"
         f"✅ Come back here and tap <b>Pay ⭐</b>\n\n"
-        f"✨ <b>{tier} from ${intro_usd}</b> — first month intro (~{intro_stars}⭐). "
+        f"✨ <b>{tier} from ${intro_usd}</b> — first {period} intro (~{intro_stars}⭐). "
         f"Standard renews from ${int(VIP_MEMBERSHIP_SKUS[0].price_usd)}."
     )
 
 
 def stars_howto_plain() -> str:
     """Plain-text variant for caption_snippets / Buffer."""
+    from app.data.aof_vip_membership import vip_intro_period_label
+
     intro_usd = int(VIP_INTRO_SKU.price_usd)
     intro_stars = vip_intro_stars()
     monthly = int(VIP_MEMBERSHIP_SKUS[0].price_usd)
@@ -67,7 +72,7 @@ def stars_howto_plain() -> str:
         "✅ Buy Stars with a credit/debit card inside Telegram\n"
         "✅ Settings → My Stars (or tap ⭐ on any invoice) → Buy Stars\n"
         "✅ Return and tap Pay ⭐\n\n"
-        f"✨ AOF {vip_display_name()} starts at ${intro_usd} / ~{intro_stars}⭐ (first-month intro).\n"
+        f"✨ AOF {vip_display_name()} starts at ${intro_usd} / ~{intro_stars}⭐ (first {vip_intro_period_label()} intro).\n"
         f"Standard ladder from ${monthly}/mo.\n"
         "👉 /subscribe on @aofsubscriptions_bot"
     )

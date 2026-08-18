@@ -25,6 +25,7 @@ def minimal_checkout_caption_html(
     days: int = 30,
 ) -> str:
     """One dense paragraph for Pay ⭐ bot follow-up — no bullet walls."""
+    from app.data.aof_vip_membership import vip_display_name
     from app.models.subscription_plan import SubscriptionPlan
     from app.services.aof_growth_hub import resolve_group_access_plan_id
 
@@ -34,10 +35,11 @@ def minimal_checkout_caption_html(
         stars = int(plan.price_stars or 0) if plan else 0
         days = int(plan.duration_days or 30) if plan else 30
     bot = _bot()
+    tier = vip_display_name()
     price = f"<b>{stars}⭐</b>/{days}d · " if stars > 0 else ""
     return (
-        f"🎫 <b>AOF VIP</b> — {price}skip the gates, daily god roll, weekly mega dump, "
-        f"@{bot} credits. Unwrapped lanes, bigger drops, VIP-only perks — public stays on the wrapped feed. "
+        f"🎫 <b>AOF {tier}</b> — {price}skip the gates, daily god roll, weekly mega dump, "
+        f"@{bot} credits. Unwrapped lanes, bigger drops, {tier}-only perks — public stays on the wrapped feed. "
         f"<i>Tap Pay ⭐ — instant access.</i>"
     )
 

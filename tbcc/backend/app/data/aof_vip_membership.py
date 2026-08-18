@@ -26,13 +26,16 @@ class VipMembershipSku:
 # Operator: update Gumroad product tiers + TBCC_GUMROAD_PRODUCT_MAP price:* keys (see handoff).
 GUMROAD_VIP_PRODUCT_URL = "https://aof69.gumroad.com/l/ynnulc"
 
-# One-time intro month for first-time VIP buyers (2026-08-03). Standard ladder unchanged.
+# One-time intro price for first-time buyers (2026-08-03; extended to 90d 2026-08-17 — $10 holds for
+# the first 3 months, standard $18/mo ladder applies after). `name` kept as the original "Intro Month"
+# literal on purpose: it's a DB identity key (is_vip_intro_plan_name, protected_main_vip_plan_names) that
+# existing rows match on — renaming it would orphan the live row. Only display copy reflects the real length.
 VIP_INTRO_SKU = VipMembershipSku(
     name="AOF VIP — Intro Month",
-    duration_days=30,
+    duration_days=90,
     price_usd=10.0,
     gumroad_recurrence="monthly",
-    blurb="First VIP month at intro price · same daily roll + vault + all lanes.",
+    blurb="First 3 months at intro price · same daily roll + vault + all lanes.",
 )
 VIP_INTRO_PLAN_NAME = VIP_INTRO_SKU.name
 VIP_INTRO_PRICE_CENTS = 1000
@@ -116,6 +119,13 @@ def sku_for_price_cents(cents: int) -> VipMembershipSku | None:
     return sku_for_recurrence(rec) if rec else None
 
 
+def vip_intro_period_label() -> str:
+    """Human label for the intro SKU's length, e.g. "3 months" — derived from duration_days so copy
+    never drifts out of sync with the actual offer length again."""
+    months = max(1, round(VIP_INTRO_SKU.duration_days / 30))
+    return "1 month" if months == 1 else f"{months} months"
+
+
 def is_vip_intro_plan_name(name: str | None) -> bool:
     return (name or "").strip() == VIP_INTRO_PLAN_NAME
 
@@ -133,7 +143,7 @@ def vip_display_name() -> str:
     protected_main_vip_plan_names) all stay keyed on the literal "AOF VIP …" strings above — only what
     the customer reads is renamed here. Override via TBCC_VIP_DISPLAY_NAME.
     """
-    return (os.getenv("TBCC_VIP_DISPLAY_NAME") or "").strip() or "Inner Circle"
+    return (os.getenv("TBCC_VIP_DISPLAY_NAME") or "").strip() or "Insiders"
 
 
 def display_plan_name(name: str | None) -> str:

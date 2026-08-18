@@ -537,8 +537,13 @@ def merge_checkout_buttons(
                     )
                     if not gr_label or re.search(r"gumroad", gr_label, re.I):
                         from app.services.fiat_checkout_labels import fiat_checkout_button_label
+                        from app.services.nowpayments_client import plan_usd_price_label
 
-                        gr_label = fiat_checkout_button_label()
+                        price_hint = plan_usd_price_label(
+                            price_stars=int(plan.price_stars or 0),
+                            nowpayments_price_usd=float(plan.nowpayments_price_usd) if plan.nowpayments_price_usd else None,
+                        )
+                        gr_label = fiat_checkout_button_label(price_hint=price_hint)
                     out.append({"text": str(gr_label).strip()[:64], "url": gr_url[:512]})
     except Exception:
         logger.debug("checkout: gumroad button skipped", exc_info=True)

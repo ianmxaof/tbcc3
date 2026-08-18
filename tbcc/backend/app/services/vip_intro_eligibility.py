@@ -49,7 +49,9 @@ def user_eligible_for_vip_intro(db: Session, telegram_user_id: int) -> bool:
 
 
 def intro_purchase_error() -> str:
-    return "Intro month is for first-time VIP only. Use /subscribe for standard plans."
+    from app.data.aof_vip_membership import vip_display_name
+
+    return f"This intro price is for first-time {vip_display_name()} buyers only. Use /subscribe for standard plans."
 
 
 def assert_vip_intro_allowed(

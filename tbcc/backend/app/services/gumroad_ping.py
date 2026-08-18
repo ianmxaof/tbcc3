@@ -158,23 +158,31 @@ def append_vip_checkout_hints(
 
 
 def recurrence_for_plan(plan: dict | None) -> str | None:
-    """Map a subscription plan dict to Gumroad recurrence slug."""
+    """
+    Map a subscription plan dict to Gumroad recurrence slug.
+
+    Price is checked before duration: the intro SKU is a 90-day $10 offer, the same length as the
+    standard "3 Months" tier, so a duration-only lookup can't tell them apart (would mis-resolve the
+    intro plan to the $48 quarterly recurrence). Price is the unambiguous identifier — sku_for_price_cents
+    special-cases the intro price — so it goes first; duration is only a fallback when price is unknown.
+    """
     if not plan:
         return None
     from app.data.aof_vip_membership import sku_for_duration_days, sku_for_price_cents
 
-    days = plan.get("duration_days")
-    if days is not None:
-        sku = sku_for_duration_days(int(days))
-        if sku:
-            return sku.gumroad_recurrence
     usd = plan.get("nowpayments_price_usd")
     if usd is not None:
         try:
             cents = int(round(float(usd) * 100))
         except (TypeError, ValueError):
             cents = 0
-        sku = sku_for_price_cents(cents)
+        if cents > 0:
+            sku = sku_for_price_cents(cents)
+            if sku:
+                return sku.gumroad_recurrence
+    days = plan.get("duration_days")
+    if days is not None:
+        sku = sku_for_duration_days(int(days))
         if sku:
             return sku.gumroad_recurrence
     return None

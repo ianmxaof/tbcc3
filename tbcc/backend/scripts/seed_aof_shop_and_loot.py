@@ -33,6 +33,8 @@ from app.data.aof_vip_membership import (
     VIP_INTRO_SKU,
     VIP_MEMBERSHIP_SKUS,
     protected_main_vip_plan_names,
+    vip_display_name,
+    vip_intro_period_label,
 )
 from app.data.aof_network import AOF_VIP_IDENT
 from app.data.loot_lane_economy import LANE_PASS_SKU, MONTHLY_MEGA, PACK_DROP, usd_to_stars
@@ -137,6 +139,7 @@ def seed_vip_membership_skus(db, *, execute: bool, report: dict) -> None:
     """Idempotent: five AOF VIP terms matching Gumroad ynnulc (Stars + NOWPayments USD)."""
     vip_ch = _vip_channel_db_id(db)
     channel_id = vip_ch if vip_ch is not None else MAIN_HUB_CHANNEL_ID
+    tier = vip_display_name()
     vip_names = frozenset(sku.name for sku in VIP_MEMBERSHIP_SKUS)
     for sku in VIP_MEMBERSHIP_SKUS:
         stars = usd_to_stars(sku.price_usd, stars_per_usd=STARS_USD)
@@ -144,8 +147,8 @@ def seed_vip_membership_skus(db, *, execute: bool, report: dict) -> None:
         desc = (
             f"{sku.blurb}\n"
             f"${sku.price_usd:.0f} / {sku.duration_days}d · {stars}⭐\n"
-            "Card: same VIP term via card / USD checkout. Crypto: NOWPayments.\n"
-            "Fulfillment: @aofsubscriptions_bot → VIP invite DM."
+            f"Card: same {tier} term via card / USD checkout. Crypto: NOWPayments.\n"
+            f"Fulfillment: @aofsubscriptions_bot → {tier} invite DM."
         )
         if existing:
             report["plans"].append(
@@ -182,14 +185,14 @@ def seed_vip_membership_skus(db, *, execute: bool, report: dict) -> None:
             channel_id=channel_id,
             description=desc,
             variations=[
-                f"VIP {sku.gumroad_recurrence} · ${sku.price_usd:.0f}",
+                f"{tier} {sku.gumroad_recurrence} · ${sku.price_usd:.0f}",
                 "All lanes · loot priority · Telegram delivery",
             ],
         )
 
 
 def seed_vip_intro_month(db, *, execute: bool, report: dict) -> None:
-    """Idempotent: one-time intro VIP month for first-time main-section buyers."""
+    """Idempotent: one-time intro price for first-time main-section buyers."""
     from app.services.vip_intro_eligibility import vip_intro_usd
 
     sku = VIP_INTRO_SKU
@@ -197,11 +200,13 @@ def seed_vip_intro_month(db, *, execute: bool, report: dict) -> None:
     stars = usd_to_stars(usd, stars_per_usd=STARS_USD)
     vip_ch = _vip_channel_db_id(db)
     channel_id = vip_ch if vip_ch is not None else MAIN_HUB_CHANNEL_ID
+    tier = vip_display_name()
+    period = vip_intro_period_label()
     desc = (
         f"{sku.blurb}\n"
-        f"${usd:.0f} / {sku.duration_days}d · {stars}⭐ · <b>first VIP only</b>\n"
-        "Same perks as monthly VIP. Renew at standard rates after 30 days.\n"
-        "Card / crypto / Stars via @aofsubscriptions_bot → VIP invite DM."
+        f"${usd:.0f} / {sku.duration_days}d · {stars}⭐ · <b>first {tier} purchase only</b>\n"
+        f"Same perks as standard {tier}. Renews at standard rates after {sku.duration_days} days.\n"
+        f"Card / crypto / Stars via @aofsubscriptions_bot → {tier} invite DM."
     )
     existing = db.query(SubscriptionPlan).filter(SubscriptionPlan.name == VIP_INTRO_PLAN_NAME).first()
     if existing:
@@ -239,8 +244,8 @@ def seed_vip_intro_month(db, *, execute: bool, report: dict) -> None:
         channel_id=channel_id,
         description=desc,
         variations=[
-            f"Intro VIP · ${usd:.0f} first month",
-            "First-time VIP only · renew at standard rates",
+            f"Intro {tier} · ${usd:.0f} first {period}",
+            f"First-time {tier} only · renews at standard rates",
         ],
     )
 
