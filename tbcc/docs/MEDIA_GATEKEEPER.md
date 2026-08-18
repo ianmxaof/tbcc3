@@ -264,7 +264,7 @@ Buttons: **emoji lane row(s)** + **✅ Approve** / **🗑 Reject** (Payment bot 
 
 ### P5 — Inbox mixed split + prototype bank
 
-Splits a mixed bulk dump into AOF INBOX (topic 22569) into the 11 AOF content lanes (`ass`, `big_tits`, `blowjob`, `bop`, `goon`, `ai`, `milf`, `voyeur`, `taboo`, `abg`, `full_length`), per-item, using caption tags + CLIP (when the sidecar is up) + a growing per-lane prototype bank trained from operator/hub gold labels. The `#CHANNEL` shortcut (`INBOX_CHANNEL_IDENT`) does **not** currently auto-split — see the deviation note below. See `docs/handoffs/2026-08-17_gatekeeper-lane-split-train.md` (locked design) and its reverse handoff reports for the full build history, self-caught bugs, and every ACK'd deviation.
+Splits a mixed bulk dump into AOF INBOX (topic 22569) into the 11 AOF content lanes (`ass`, `big_tits`, `blowjob`, `bop`, `goon`, `ai`, `milf`, `voyeur`, `taboo`, `abg`, `full_length`), per-item, using caption tags + CLIP (when the sidecar is up) + a growing per-lane prototype bank trained from operator/hub gold labels. The standalone `#CHANNEL` shortcut (`INBOX_CHANNEL_IDENT`) was **decommissioned 2026-08-18** (`INBOX_CHANNEL_ACTIVE=false`) — that external chat no longer exists, so the inbox source is the `AOF INBOX` forum topic only (see `docs/STORAGE_HUB_PANEL_MANUAL.md` §5). It never auto-split anyway when it existed — see the deviation note below. See `docs/handoffs/2026-08-17_gatekeeper-lane-split-train.md` (locked design) and its reverse handoff reports for the full build history, self-caught bugs, and every ACK'd deviation.
 
 **Signal sources, ranked into the same 0–1 score space (rule E):**
 

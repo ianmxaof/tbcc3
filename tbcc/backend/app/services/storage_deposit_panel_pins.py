@@ -8,6 +8,7 @@ from typing import Any
 
 from app.data.aof_storage_hub_map import (
     AOF_STORAGE_TOPIC_MAP,
+    INBOX_CHANNEL_ACTIVE,
     INBOX_CHANNEL_IDENT,
     INBOX_CHANNEL_TITLE,
     INBOX_TOPIC_ID,
@@ -87,14 +88,17 @@ def storage_deposit_panel_targets() -> list[dict[str, Any]]:
             "network_key": "inbox",
         }
     )
-    out.append(
-        {
-            "chat_id": int(INBOX_CHANNEL_IDENT),
-            "message_thread_id": None,
-            "topic_title": INBOX_CHANNEL_TITLE,
-            "network_key": "inbox",
-        }
-    )
+    # Standalone external "AOF INBOX #CHANNEL" shortcut — decommissioned. Only
+    # pinned when still live; the inbox dump target is the forum topic above.
+    if INBOX_CHANNEL_ACTIVE and INBOX_CHANNEL_IDENT:
+        out.append(
+            {
+                "chat_id": int(INBOX_CHANNEL_IDENT),
+                "message_thread_id": None,
+                "topic_title": INBOX_CHANNEL_TITLE,
+                "network_key": "inbox",
+            }
+        )
     return out
 
 

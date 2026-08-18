@@ -22,6 +22,13 @@ STORAGE_HUB_INTERNAL_ID = "3812457581"
 # Manual intake — forum subtopic + optional shortcut channel (bulk forward target).
 INBOX_TOPIC_ID = 22569
 INBOX_TOPIC_TITLE = "AOF INBOX"
+# Decommissioned 2026-08-18: the standalone external "AOF INBOX #CHANNEL"
+# (chat -1003874330989) no longer exists. The inbox dump target is now ONLY the
+# Storage & Bot Hangar forum subtopic AOF INBOX (22569) above, so all active
+# ops (deposit panel pin, import queue) are gated off this flag. The ident/title
+# constants are kept (dead) so source-label matches and int(ident) comparisons
+# stay crash- and match-free — the dead source simply never arrives.
+INBOX_CHANNEL_ACTIVE = False
 INBOX_CHANNEL_IDENT = "-1003874330989"
 INBOX_CHANNEL_TITLE = "AOF INBOX #CHANNEL"
 

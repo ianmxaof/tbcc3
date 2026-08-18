@@ -134,7 +134,9 @@ Vault items beyond the preview cap stay in SENT VAULT + pool for **channel sched
 
 ## 5. Inbox intake panel
 
-**Topic:** `AOF INBOX` (forum) + optional `AOF INBOX #CHANNEL` shortcut.
+**Topic:** `AOF INBOX` (forum subtopic, 22569) is the inbox dump target.
+
+> **2026-08-18 — `AOF INBOX #CHANNEL` (`INBOX_CHANNEL_ACTIVE=false`) decommissioned.** The standalone external shortcut chat (-1003874330989) no longer exists. All inbox dumping goes through the `AOF INBOX` forum topic inside the Storage & Bot Hangar only; the deposit panel pin and import queue are gated off the decommissioned channel in `app/data/aof_storage_hub_map.py`.
 
 Controls **global** inbox batch cadence (not per-lane):
 

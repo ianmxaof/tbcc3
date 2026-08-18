@@ -12,9 +12,13 @@ def test_panel_redis_key_uses_thread():
 
 
 def test_storage_deposit_panel_targets_include_ass_and_inbox():
+    from app.data.aof_storage_hub_map import INBOX_CHANNEL_ACTIVE, INBOX_CHANNEL_IDENT
+
     targets = storage_deposit_panel_targets()
     threads = {int(t["message_thread_id"]) for t in targets if t.get("message_thread_id")}
     assert 3779 in threads  # ASS
     assert 22569 in threads  # inbox forum topic
     channels = {int(t["chat_id"]) for t in targets if t.get("message_thread_id") is None}
-    assert -1003874330989 in channels
+    # Decommissioned standalone shortcut channel must not be pinned as a target.
+    assert INBOX_CHANNEL_ACTIVE is False
+    assert int(INBOX_CHANNEL_IDENT) not in channels

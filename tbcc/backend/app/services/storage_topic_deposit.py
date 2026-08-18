@@ -816,13 +816,21 @@ def queue_inbox_channel_deposit(
 ) -> dict[str, Any]:
     """Import newest media from AOF INBOX #CHANNEL shortcut into inbox pool."""
     from app.data.aof_network import network_channel_by_key
-    from app.data.aof_storage_hub_map import INBOX_CHANNEL_IDENT
+    from app.data.aof_storage_hub_map import INBOX_CHANNEL_ACTIVE, INBOX_CHANNEL_IDENT
     from app.services.import_pipeline import (
         create_channel_import_job,
         enqueue_channel_import_job,
         job_to_public_dict,
         update_job,
     )
+
+    if not INBOX_CHANNEL_ACTIVE or not INBOX_CHANNEL_IDENT:
+        return {
+            "ok": False,
+            "error": "inbox_channel_decommissioned",
+            "network_key": "inbox",
+            "detail": "AOF INBOX #CHANNEL no longer exists; use the AOF INBOX forum topic.",
+        }
 
     net = network_channel_by_key("inbox")
     if not net:
