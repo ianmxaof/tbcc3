@@ -164,3 +164,48 @@ def test_max_chars_truncates_to_top_row(db, monkeypatch):
     assert "B" not in suffix
     assert "A" * 80 in suffix
     assert "A" * 81 not in suffix
+
+
+def test_playbook_suffix_appended_and_times_matched(db, monkeypatch):
+    import app.services.secretary_sales_coach as coach
+    from app.models.conversion_playbook import ConversionPlaybook
+
+    db.add(
+        ConversionPlaybook(
+            phase_trajectory='["introduction", "engagement"]',
+            psych_markers_at_conversion='{"financial_intent": "buyer", "trust_level": "medium"}',
+            message_count_at_conversion=8,
+            payment_lane_used="private",
+            behavioral_directive_at_conversion="Recovery then handoff.",
+            conversion_outcome="zelle_crypto",
+            format_summary="8 msgs to conversion",
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.services.secretary_sales_coach.search_sales_knowledge",
+        lambda *a, **k: _mock_hits(
+            {"title": "soft open", "body": "qualify interest first", "score": 0.9, "tags": "sales_strategy"},
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.secretary_sales_coach.search_funnel_strategies",
+        lambda *a, **k: [],
+    )
+
+    suffix, _hint = coach.build_sales_coach_suffix(
+        "hi can I get VIP", db=db, current_phase="engagement",
+        current_psych_markers={"financial_intent": "buyer", "trust_level": "medium"},
+        message_count=8,
+    )
+    assert "Sales coach" in suffix
+    assert "Similar converted clients showed:" in suffix
+    assert "Consider:" in suffix
+    assert "Recovery then handoff." in suffix
+    assert "qualify interest first" in suffix  # sales strategy still present (supplemental)
+
+    db.expire_all()
+    pb = db.query(ConversionPlaybook).one()
+    assert pb.times_matched == 1

@@ -34,6 +34,8 @@ from .promo_affiliate_link import PromoAffiliateLink
 from .promo_affiliate_rotation_cursor import PromoAffiliateRotationCursor
 from .capture_archive_entry import CaptureArchiveEntry
 from .import_job import ImportJob
+from .userbot_account import UserbotAccount, WarmupState
+from .cold_target import ColdTarget, TargetStatus
 from .secretary_user_context import SecretaryMessageRecord, SecretaryUserContext
 from .secretary_bot_instance import SecretaryBotInstance
 from .secretary_settings import SecretarySettings
@@ -48,6 +50,7 @@ from .funnel_strategy import FunnelStrategyEntry
 from .social_copy_template import SocialCopyTemplate
 from .creative_catalog import CreativeCatalogEntry
 from .click_link import ClickLink, ClickLinkHit
+from .conversion_playbook import ConversionPlaybook
 from .loot import (
     LootCreatorSubmission,
     LootDropEvent,
@@ -97,6 +100,7 @@ __all__ = [
     "LootPlayerModifierSeen",
     "LootPoolEligibility",
     "LootSession",
+    "ConversionPlaybook",
     "LootBotSettings",
     "CaptionSnippet",
     "CustomEmojiPreset",
@@ -119,6 +123,10 @@ __all__ = [
     "SecretaryKnowledgeEntry",
     "IndustryBenchmark",
     "IncomeEntry",
+    "UserbotAccount",
+    "WarmupState",
+    "ColdTarget",
+    "TargetStatus",
     "BuyerEntitlement",
     "LaneDrop",
     "PromptGate",

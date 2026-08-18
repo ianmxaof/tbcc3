@@ -195,7 +195,7 @@ def _load_format(raw: str | None) -> dict[str, Any]:
             base["interaction_guidelines"].update(data["interaction_guidelines"])
         if "metrics" in data and isinstance(data["metrics"], dict):
             base["metrics"].update(data["metrics"])
-        for extra_key in ("last_intent", "llm_refinements", "llm_emotion", "dominant_emotion"):
+        for extra_key in ("last_intent", "llm_refinements", "llm_emotion", "dominant_emotion", "psych_markers"):
             if extra_key in data:
                 base[extra_key] = data[extra_key]
         return base
@@ -541,6 +541,47 @@ def preview_user_turn(telegram_user_id: int, user_text: str) -> str:
         db.close()
 
 
+_PSYCH_COMMITTED_KEYWORDS = ("card", "zelle", "crypto", "cashapp", "venmo", "send money")
+_PSYCH_COMPARISON_KEYWORDS = ("cheaper", "compare", "vs", "better deal")
+_PSYCH_BUYER_KEYWORDS = ("pay", "price", "subscribe", "join", "how much", "cost")
+_PSYCH_URGENCY_KEYWORDS = (
+    "now", "today", "right now", "asap", "ready", "let me in", "how much", "when can",
+)
+
+
+def extract_psych_markers(text: str, current_phase: str, message_count: int) -> dict[str, Any]:
+    """Display-only lead signals for the admin /formats card — keyword scan, no phase
+    or coaching influence. current_phase is accepted for the display payload shape but
+    does not affect scoring (financial_intent/trust_level/urgency_score are text- and
+    message-count-driven only)."""
+    lowered = (text or "").lower()
+
+    if any(kw in lowered for kw in _PSYCH_COMMITTED_KEYWORDS):
+        financial_intent = "committed"
+    elif any(kw in lowered for kw in _PSYCH_COMPARISON_KEYWORDS):
+        financial_intent = "comparison"
+    elif any(kw in lowered for kw in _PSYCH_BUYER_KEYWORDS):
+        financial_intent = "buyer"
+    else:
+        financial_intent = "casual"
+
+    if message_count <= 2:
+        trust_level = "low"
+    elif message_count <= 8:
+        trust_level = "medium"
+    else:
+        trust_level = "high"
+
+    hits = sum(1 for kw in _PSYCH_URGENCY_KEYWORDS if kw in lowered)
+    urgency_score = min(1.0, hits * 0.3)
+
+    return {
+        "financial_intent": financial_intent,
+        "trust_level": trust_level,
+        "urgency_score": urgency_score,
+    }
+
+
 def prepare_user_turn(
     telegram_user_id: int,
     user_text: str,
@@ -602,6 +643,8 @@ def prepare_user_turn(
         metrics = fmt.setdefault("metrics", {})
         mc = int(metrics.get("user_messages") or 0)
         metrics["investment_score"] = min(1.0, (mc * 0.1) + (len(user_text or "") / 100.0))
+
+        fmt["psych_markers"] = extract_psych_markers(user_text, new_phase, mc)
 
         ctx.current_phase = new_phase
         ctx.interaction_format_json = _save_format(fmt)
@@ -949,6 +992,7 @@ def context_to_dict(ctx: SecretaryUserContext) -> dict[str, Any]:
         "created_at": ctx.created_at.isoformat() if ctx.created_at else None,
         "updated_at": ctx.updated_at.isoformat() if ctx.updated_at else None,
         "interaction_format": fmt,
+        "psych_markers": fmt.get("psych_markers") or {},
     }
 
 
@@ -1004,6 +1048,26 @@ def get_context_display(*, telegram_user_id: int | None = None, context_id: int 
         )
         out["last_user_text"] = (last.content or "").strip()[:400] if last else None
         return out
+    finally:
+        db.close()
+
+
+def get_psych_markers_for_user(telegram_user_id: int) -> dict[str, Any] | None:
+    """Internal-only lead-signal lookup for payment routing (secretary_behavior.payment_lane).
+
+    Deliberately separate from get_user_context_public_summary — that one is customer-facing
+    (/mystatus) and must never carry financial_intent/trust_level/urgency_score.
+    """
+    if not format_engine_enabled():
+        return None
+    db = SessionLocal()
+    try:
+        ctx = db.query(SecretaryUserContext).filter(SecretaryUserContext.telegram_user_id == telegram_user_id).one_or_none()
+        if not ctx:
+            return None
+        fmt = _load_format(ctx.interaction_format_json)
+        markers = fmt.get("psych_markers")
+        return markers if isinstance(markers, dict) else None
     finally:
         db.close()
 

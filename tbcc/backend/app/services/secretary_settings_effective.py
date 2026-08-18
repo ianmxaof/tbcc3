@@ -58,6 +58,7 @@ def get_effective_secretary_settings(db: Session | None = None) -> dict:
         public_faq = _env_bool("TBCC_SECRETARY_PUBLIC_FAQ", True)
         llm_refine = _env_bool("TBCC_FORMAT_ENGINE_LLM_REFINE", False)
         rag_on = _env_bool("TBCC_SECRETARY_RAG_ENABLED", True)
+        pilot_atomic_llm = _env_bool("TBCC_SECRETARY_PILOT_ATOMIC_LLM", False)
         rag_top_k = _env_int("TBCC_SECRETARY_RAG_TOP_K", 4, lo=1, hi=12)
         prompt_extra = (os.getenv("TBCC_SECRETARY_SYSTEM_PROMPT_EXTRA") or "").strip()
         llm_provider = (os.getenv("TBCC_LLM_PROVIDER") or "openai").strip().lower()
@@ -102,6 +103,7 @@ def get_effective_secretary_settings(db: Session | None = None) -> dict:
             "llm_refine_on_phase_change": llm_refine,
             "rag_enabled": rag_on,
             "rag_top_k": rag_top_k,
+            "pilot_atomic_llm": pilot_atomic_llm,
             "system_prompt": system_prompt,
             "system_prompt_source": system_prompt_source,
             "system_prompt_extra": prompt_extra,

@@ -29,9 +29,24 @@ _HELP_LOOP = (
 )
 
 
-def payment_lane(phase: str | None, *, message_count: int = 0) -> str:
-    """stars = initial qualification; private = Zelle/crypto after trust/recovery."""
+def payment_lane(phase: str | None, *, message_count: int = 0, psych_markers: dict | None = None) -> str:
+    """stars = initial qualification; private = Zelle/crypto after trust/recovery.
+
+    psych_markers (Format Engine keyword scan) can fast-track private routing ahead of
+    the phase/message_count gate below: an explicit alt-payment mention, a qualified
+    buyer signal, or high urgency in a support/recovery conversation.
+    """
     p = (phase or "introduction").lower()
+    if psych_markers is not None:
+        financial_intent = psych_markers.get("financial_intent")
+        trust_level = psych_markers.get("trust_level")
+        urgency_score = psych_markers.get("urgency_score", 0) or 0
+        if financial_intent == "committed":
+            return "private"
+        if financial_intent == "buyer" and trust_level in ("medium", "high"):
+            return "private"
+        if urgency_score >= 0.7 and p in ("support", "recovery"):
+            return "private"
     if p in ("support", "recovery") or message_count >= 5:
         return "private"
     return "stars"
@@ -112,8 +127,9 @@ def behavior_suffix(
     phase: str,
     message_count: int,
     payment_bot: str,
+    psych_markers: dict | None = None,
 ) -> str:
-    lane = payment_lane(phase, message_count=message_count)
+    lane = payment_lane(phase, message_count=message_count, psych_markers=psych_markers)
     pay = (payment_bot or "aofsubscriptions_bot").lstrip("@")
     lines = [
         f"Intent lane: {intent} (noise=dry/drop; faq=facts; buyer=close).",

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.api.subscriptions import subscription_create_from_payload
 from app.models.external_payment_order import ExternalPaymentOrder
+from app.services.playbook_engine import capture_conversion_for_user
 
 logger = logging.getLogger(__name__)
 
@@ -59,4 +60,12 @@ def fulfill_external_order(
 
     result["external_order_id"] = order.id
     result["reference_code"] = order.reference_code
+
+    # Conversion-learning hook: snapshot this converter's trajectory as a playbook.
+    # Never blocks or fails the order — external (wallet/crypto) lane, Zelle/crypto outcome.
+    try:
+        capture_conversion_for_user(db, order.telegram_user_id, "private", "zelle_crypto")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("playbook capture failed epo=%s: %s", order.id, e)
+
     return result

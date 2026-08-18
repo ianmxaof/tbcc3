@@ -78,6 +78,7 @@ from app.services.format_engine import (
     finalize_assistant_turn_for_user,
     format_engine_enabled,
     get_context_display,
+    get_psych_markers_for_user,
     get_user_context_public_summary,
     list_recent_contexts,
     load_recent_messages_for_llm,
@@ -145,6 +146,7 @@ from app.services.secretary_llm_config import (
 from app.services.secretary_llm import (
     append_auto_emotion_instruction,
     complete_secretary_chat,
+    complete_secretary_chat_atomic,
     default_system_prompt,
     extract_emotion_block,
     fetch_subscription_catalog_snippet,
@@ -3296,6 +3298,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     is_new_lead = False
     fe_phase = "introduction"
     fe_count = 0
+    fe_psych_markers: dict | None = None
     if format_engine_enabled():
         who = (user.username or "").strip() or None
         try:
@@ -3314,6 +3317,10 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception:
             pass
         try:
+            fe_psych_markers = await asyncio.to_thread(get_psych_markers_for_user, user.id)
+        except Exception:
+            fe_psych_markers = None
+        try:
             _schedule_format_live(context, user.id)
         except Exception:
             logger.debug("format live refresh after user turn failed", exc_info=True)
@@ -3323,6 +3330,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         phase=fe_phase,
         message_count=fe_count,
         payment_bot=pay or "aofsubscriptions_bot",
+        psych_markers=fe_psych_markers,
     )
 
     coach_hint = intent_label(intent)
@@ -3443,6 +3451,7 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         messages.append({"role": "user", "content": user_text})
 
         extra = append_auto_emotion_instruction(extra)
+    extra_atomic = extra
     if suggest_mode:
         extra = append_triage_instruction(extra)
     if scripted:
@@ -3450,49 +3459,68 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         reply = cands["natural"]
         emotion_block = None
     else:
-        try:
-            chat_kw: dict = {"extra_system_suffix": extra}
-            if not suggest_mode:
-                phase_key = str(fe_phase or "").strip().lower()
-                chat_kw["max_tokens_override"] = (
-                    120 if phase_key in ("introduction", "engagement") else 250
+        atomic_on = suggest_mode and (os.getenv("TBCC_SECRETARY_PILOT_ATOMIC_LLM") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        atomic_ok = False
+        if atomic_on:
+            try:
+                cands = apply_candidate_symmetry(
+                    user_text,
+                    await complete_secretary_chat_atomic(messages, extra_system_suffix=extra_atomic),
                 )
-            reply = await complete_secretary_chat(messages, **chat_kw)
-        except Exception as e:
-            logger.warning("secretary LLM failed: %s", e)
-            if suggest_mode:
-                try:
-                    from app.services.admin_inbox import push_admin_inbox_event
-                    from app.services.secretary_report_copy import format_draft_fail_html
-
-                    who = (user.username or "").strip() or str(user.id)
-                    await asyncio.to_thread(
-                        push_admin_inbox_event,
-                        category="system",
-                        severity="important",
-                        title=f"Secretary draft failed · {who}",
-                        body=format_draft_fail_html(who=who, customer_text=user_text),
-                        meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
-                        instant=True,
+                reply = cands["natural"]
+                emotion_block = None
+                atomic_ok = True
+            except Exception as e:
+                logger.warning("secretary atomic Pilot LLM failed, falling back to single-blob: %s", e)
+        if not atomic_ok:
+            try:
+                chat_kw: dict = {"extra_system_suffix": extra}
+                if not suggest_mode:
+                    phase_key = str(fe_phase or "").strip().lower()
+                    chat_kw["max_tokens_override"] = (
+                        120 if phase_key in ("introduction", "engagement") else 250
                     )
-                except Exception:
-                    logger.debug("secretary draft-fail inbox notify failed", exc_info=True)
+                reply = await complete_secretary_chat(messages, **chat_kw)
+            except Exception as e:
+                logger.warning("secretary LLM failed: %s", e)
+                if suggest_mode:
+                    try:
+                        from app.services.admin_inbox import push_admin_inbox_event
+                        from app.services.secretary_report_copy import format_draft_fail_html
+
+                        who = (user.username or "").strip() or str(user.id)
+                        await asyncio.to_thread(
+                            push_admin_inbox_event,
+                            category="system",
+                            severity="important",
+                            title=f"Secretary draft failed · {who}",
+                            body=format_draft_fail_html(who=who, customer_text=user_text),
+                            meta={"code": "secretary_draft_fail", "telegram_user_id": user.id},
+                            instant=True,
+                        )
+                    except Exception:
+                        logger.debug("secretary draft-fail inbox notify failed", exc_info=True)
+                    return
+                await _reply(
+                    msg,
+                    "Can't reply right now — try again in a minute.",
+                    context,
+                )
                 return
-            await _reply(
-                msg,
-                "Can't reply right now — try again in a minute.",
-                context,
-            )
-            return
-        if suggest_mode:
-            emotion_block = parse_triage_emotion(reply)
-            cands = apply_candidate_symmetry(user_text, parse_triage_candidates(reply))
-            reply = cands["natural"]
-        else:
-            emotion_block, cleaned = extract_emotion_block(reply)
-            cleaned = apply_symmetry(user_text, cleaned, variant="natural")
-            cands = {"natural": cleaned, "clear": cleaned, "close": cleaned}
-            reply = cleaned
+            if suggest_mode:
+                emotion_block = parse_triage_emotion(reply)
+                cands = apply_candidate_symmetry(user_text, parse_triage_candidates(reply))
+                reply = cands["natural"]
+            else:
+                emotion_block, cleaned = extract_emotion_block(reply)
+                cleaned = apply_symmetry(user_text, cleaned, variant="natural")
+                cands = {"natural": cleaned, "clear": cleaned, "close": cleaned}
+                reply = cleaned
         if emotion_block:
             try:
                 await asyncio.to_thread(apply_llm_derived_emotion_for_user, user.id, emotion_block)

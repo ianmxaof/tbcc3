@@ -18,6 +18,7 @@ class SecretaryUserContext(Base):
     telegram_username = Column(String(128), nullable=True)
     current_phase = Column(String(32), nullable=False, default="introduction")
     interaction_format_json = Column(Text, nullable=True)
+    psych_markers = Column(Text, nullable=True)
     emotional_summary = Column(String(512), nullable=True)
     # Per-customer Pilot/Auto override; NULL = inherit TBCC_SECRETARY_* env defaults.
     reply_mode = Column(String(16), nullable=True)

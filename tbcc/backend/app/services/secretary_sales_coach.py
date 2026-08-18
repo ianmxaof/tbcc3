@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -10,12 +11,15 @@ from sqlalchemy.orm import Session
 from app.database.session import SessionLocal
 from app.models.secretary_knowledge import SecretaryKnowledgeEntry
 from app.services.funnel_rag import search_funnel_strategies
+from app.services.playbook_engine import build_playbook_suffix, search_playbooks
 from app.services.secretary_rag import search_knowledge
 from app.services.secretary_settings_effective import get_effective_secretary_settings
 
 SALES_TAG = "sales_strategy"
 COACH_MIN_SCORE = float(os.getenv("TBCC_SECRETARY_COACH_MIN_SCORE", "0.55"))
 COACH_MAX_CHARS = int(os.getenv("TBCC_SECRETARY_COACH_MAX_CHARS", "600"))
+
+logger = logging.getLogger(__name__)
 
 
 def _tag_has_sales(tags: str | None) -> bool:
@@ -136,6 +140,8 @@ def build_sales_coach_suffix(
     db: Session | None = None,
     top_k: int = 3,
     current_phase: str | None = None,
+    current_psych_markers: dict | None = None,
+    message_count: int = 0,
 ) -> tuple[str, str]:
     """
     Build LLM system suffix + one-line coach hint for draft cards.
@@ -215,8 +221,23 @@ def build_sales_coach_suffix(
             "--- Sales coach (strategy; guide toward checkout, never invent prices) ---",
             "Steer gently to the payment bot for /subscribe /packs /shop. No fake scarcity or impersonation.",
             *blocks,
-            "--- end Sales coach ---",
         ]
+        if current_phase or current_psych_markers:
+            try:
+                matches = search_playbooks(
+                    current_psych_markers,
+                    current_phase,
+                    message_count,
+                    limit=3,
+                    db=db,
+                )
+                pb_text = build_playbook_suffix(matches, db=db)
+                if pb_text:
+                    lines.append(pb_text)
+            except Exception as e:  # noqa: BLE001 — playbooks are supplemental, never fatal.
+                db.rollback()
+                logger.warning("playbook coach suffix failed: %s", e)
+        lines.append("--- end Sales coach ---")
         return "\n".join(lines), hint
     finally:
         if own_db and db is not None:

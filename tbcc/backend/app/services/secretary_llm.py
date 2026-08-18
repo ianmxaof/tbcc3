@@ -243,3 +243,45 @@ async def complete_secretary_chat(
         temperature=0.6,
         timeout=90.0,
     )
+
+
+def _join_suffix(*parts: str) -> str:
+    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+
+
+async def complete_secretary_chat_atomic(
+    messages: list[dict[str, str]],
+    *,
+    extra_system_suffix: str = "",
+) -> dict[str, str]:
+    """Pilot triad via three sequential calls (natural -> clear -> close) instead of one
+    single-blob JSON completion — each call sees the prior draft(s) as precedent so the
+    three candidates read as distinct replies rather than JSON-mode variations on a theme.
+    """
+    natural = await complete_secretary_chat(
+        messages,
+        extra_system_suffix=_join_suffix(
+            extra_system_suffix,
+            "Reply casually. 1 sentence. No price.",
+        ),
+        max_tokens_override=120,
+    )
+    clear = await complete_secretary_chat(
+        messages,
+        extra_system_suffix=_join_suffix(
+            extra_system_suffix,
+            f'Earlier draft: "{natural.strip()}"',
+            "Reply directly and helpful. 1-2 sentences.",
+        ),
+        max_tokens_override=80,
+    )
+    close = await complete_secretary_chat(
+        messages,
+        extra_system_suffix=_join_suffix(
+            extra_system_suffix,
+            f'Earlier drafts: natural="{natural.strip()}" clear="{clear.strip()}"',
+            "Steer to payment bot for checkout. 1 sentence.",
+        ),
+        max_tokens_override=60,
+    )
+    return {"natural": natural, "clear": clear, "close": close}
