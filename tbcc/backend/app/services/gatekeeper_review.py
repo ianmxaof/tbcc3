@@ -198,6 +198,12 @@ def format_quarantine_review_html(db: Session, media: Any) -> str:
         f"<i>Quality score (not ML confidence): ≥70 may auto-approve on trusted hub ingest; "
         f"40–69 = your call.</i>"
     )
+    proposed_lanes = (meta.get("globs") or {}).get("lane_fit", {}).get("proposed_lanes") or []
+    if proposed_lanes:
+        from app.data.aof_storage_hub_map import category_emoji_for_network_key
+
+        stamps = ", ".join(f"{category_emoji_for_network_key(pl)} {pl}" for pl in proposed_lanes[:3])
+        body = f"{body}\n<i>Proposed: {html_escape(stamps)}</i>"
     lane_key = str(expected or lane or "").strip().lower() or None
     if lane_key == "?":
         lane_key = None

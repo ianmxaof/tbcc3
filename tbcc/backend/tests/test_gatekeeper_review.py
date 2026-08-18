@@ -40,6 +40,42 @@ def test_format_quarantine_includes_quality_score_hint():
     assert "#tbcc:voyeur" in html
 
 
+def test_format_quarantine_shows_proposed_lanes_when_present():
+    media = MagicMock()
+    media.id = 7235
+    media.pool_id = None
+    media.media_type = "photo"
+    media.source_channel = "telegram:-1003874330989"
+    media.classification_json = json.dumps(
+        {
+            "gatekeeper": {
+                "quality_score": 60,
+                "warnings": ["lane_fit:mismatch"],
+                "globs": {"lane_fit": {"expected": "inbox", "proposed_lanes": ["ass", "big_tits"]}},
+            }
+        }
+    )
+    db = MagicMock()
+    html = format_quarantine_review_html(db, media)
+    assert "Proposed:" in html
+    assert "ass" in html
+    assert "big_tits" in html
+
+
+def test_format_quarantine_omits_proposed_line_when_empty():
+    media = MagicMock()
+    media.id = 7236
+    media.pool_id = None
+    media.media_type = "photo"
+    media.source_channel = "telegram:-1003812457581#topic:9501"
+    media.classification_json = json.dumps(
+        {"gatekeeper": {"quality_score": 55, "warnings": [], "globs": {"lane_fit": {"expected": "voyeur"}}}}
+    )
+    db = MagicMock()
+    html = format_quarantine_review_html(db, media)
+    assert "Proposed:" not in html
+
+
 def test_resolve_preview_copy_target_topic_source():
     media = MagicMock()
     media.telegram_message_id = 8812
