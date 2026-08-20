@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TBCC Importer",
-  "version": "1.40.43",
+  "version": "1.40.44",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
@@ -49,7 +49,14 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["tbcc-module-gate.js", "tbcc-username-filter.js", "tbcc-clipboard-toast.js", "page-overlay.js"],
+      "js": [
+        "tbcc-module-gate.js",
+        "tbcc-username-filter.js",
+        "tbcc-clipboard-toast.js",
+        "page-overlay.js",
+        "tbcc-snippet-lib.js",
+        "tbcc-snippet-expander.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     },

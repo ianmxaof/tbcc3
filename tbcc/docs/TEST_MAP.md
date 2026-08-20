@@ -47,6 +47,7 @@ py -3.13 -m pytest <path> -x -q
 | **ThisVid** | `tests/test_thisvid_upload_policy.py` | Kill switch, rate limit, TOS scan, private-first ledger. Playwright leg (`thisvid_upload_provision.py`) is unmocked — verify manually via `scripts/thisvid_upload_local.py --status` / headed `--execute` |
 | **ThisVid ext infinite scroll** | `node --test tbcc/extension/tests/thisvid-infinite-scroll-stress.test.mjs` | n+1 HTML engine RAM caps (from repo root); shared `thisvid-infinite-scroll.js` |
 | **Extension ZIP naming** | `node extension/tests/tbcc-zip-naming.test.mjs` | OnlyFans/Erome/Motherless/Fapello/X heuristics + bundle templates |
+| **Extension snippet library** | `node extension/tests/tbcc-snippet-lib.test.mjs` | Trigger matching + `{{date}}`/`{{time}}`/`{{clipboard}}`/`{{cursor}}` token expansion |
 | **Keep2share** | `tests/test_keep2share_client.py` | |
 | **Import / mirror** | `tests/test_mirror_after_channel_import.py`, `tests/test_channel_import_timeout.py` | |
 | **Rules / docs only** | skip tests | Lint or file verify instead |

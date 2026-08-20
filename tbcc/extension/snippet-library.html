@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TBCC — Snippet library</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <style>
+    body.tbcc-options-page { max-width: 880px; }
+    .snip-row {
+      display: grid;
+      grid-template-columns: auto 110px 1fr auto auto;
+      align-items: start;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+    }
+    .snip-row:last-child { border-bottom: none; }
+    .snip-row input[type="checkbox"] { margin-top: 4px; }
+    .snip-trigger {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      color: var(--tbcc-accent, #89dceb);
+      background: var(--tbcc-bg-surface);
+      border-radius: 4px;
+      padding: 3px 6px;
+      word-break: break-all;
+    }
+    .snip-body { min-width: 0; }
+    .snip-label { font-weight: 500; color: var(--tbcc-text-primary); font-size: 13px; }
+    .snip-preview {
+      margin-top: 2px;
+      font-size: 11px;
+      color: var(--tbcc-text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .snip-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .snip-actions button {
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--tbcc-accent, #89dceb);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      padding: 0;
+    }
+    .snip-actions button.danger { color: var(--tbcc-error, #f38ba8); }
+    #snipEmpty { font-size: 12px; color: var(--tbcc-text-muted); padding: 8px 0; }
+    .token-chip {
+      display: inline-block;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      background: var(--tbcc-bg-surface);
+      color: var(--tbcc-text-secondary);
+      border-radius: 4px;
+      padding: 2px 6px;
+      margin: 2px 4px 2px 0;
+    }
+    .form-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .form-grid textarea {
+      min-height: 80px;
+      padding: 6px 8px;
+      background: var(--tbcc-bg-surface);
+      color: var(--tbcc-text-primary);
+      border: 1px solid var(--tbcc-bg-elevated);
+      border-radius: var(--tbcc-radius-sm);
+      font-size: 13px;
+      font-family: inherit;
+      resize: vertical;
+    }
+  </style>
+</head>
+<body class="tbcc-options-page">
+  <h1>Snippet &amp; prompt library</h1>
+  <p class="sub">Type a trigger (e.g. <code>/p3</code>) in any text field on any site to instantly expand it. Works in inputs, textareas, and most contenteditable fields (chat boxes, compose boxes).</p>
+
+  <section class="card">
+    <h1>Settings</h1>
+    <label class="row2"><input type="checkbox" id="snipEnabled" checked /> Enable snippet expansion everywhere</label>
+    <label style="display:flex;flex-direction:column;gap:4px;margin-top:8px">
+      <span style="font-size:12px;color:var(--tbcc-text-secondary)">Disabled on these domains (one per line — e.g. <code>mybank.com</code>)</span>
+      <textarea id="snipDisabledDomains" rows="3" class="tbcc-input" style="width:100%"></textarea>
+    </label>
+    <button type="button" id="snipSaveSettings" class="tbcc-btn-primary">Save settings</button>
+  </section>
+
+  <section class="card">
+    <h1>Dynamic tokens</h1>
+    <p class="sub" style="margin-bottom:8px">Use these anywhere inside a snippet body — they're expanded at insert time.</p>
+    <span class="token-chip">{{date}}</span>
+    <span class="token-chip">{{date:MM/DD/YYYY}}</span>
+    <span class="token-chip">{{time}}</span>
+    <span class="token-chip">{{datetime}}</span>
+    <span class="token-chip">{{clipboard}}</span>
+    <span class="token-chip">{{cursor}}</span>
+    <p class="sub" style="margin-top:8px">{{cursor}} places the caret there after expansion (plain inputs/textareas only — contenteditable fields land the caret at the end).</p>
+  </section>
+
+  <section class="card">
+    <h1>Add / edit snippet</h1>
+    <div class="form-grid">
+      <input type="hidden" id="snipEditId" value="" />
+      <label style="display:flex;flex-direction:column;gap:4px">
+        <span style="font-size:12px;color:var(--tbcc-text-secondary)">Trigger (must be unique, e.g. <code>/p3</code>)</span>
+        <input type="text" id="snipTrigger" class="tbcc-input" placeholder="/p3" spellcheck="false" style="width:100%" />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px">
+        <span style="font-size:12px;color:var(--tbcc-text-secondary)">Label (for your reference only)</span>
+        <input type="text" id="snipLabel" class="tbcc-input" placeholder="Prompt #3 — outline generator" style="width:100%" />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:4px">
+        <span style="font-size:12px;color:var(--tbcc-text-secondary)">Body</span>
+        <textarea id="snipBody" placeholder="Write a detailed outline for {{cursor}}..."></textarea>
+      </label>
+    </div>
+    <button type="button" id="snipSaveEntry" class="tbcc-btn-primary">Save snippet</button>
+    <button type="button" id="snipCancelEdit" class="tbcc-btn-secondary" style="display:none">Cancel edit</button>
+    <p id="snipFormStatus" class="sub" style="margin:8px 0 0"></p>
+  </section>
+
+  <section class="card">
+    <h1>Your snippets</h1>
+    <div id="snipList"></div>
+    <p id="snipEmpty" style="display:none">No snippets yet — add one above.</p>
+  </section>
+
+  <script src="tbcc-snippet-lib.js"></script>
+  <script src="snippet-library.js"></script>
+</body>
+</html>

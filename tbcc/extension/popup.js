@@ -112,6 +112,10 @@ document.getElementById("openExtensionOptions").addEventListener("click", (e) =>
   chrome.runtime.openOptionsPage();
 });
 
+document.getElementById("openSnippetLibrary").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("snippet-library.html") });
+});
+
 async function loadScreenshotUploadPages() {
   const r = await fetch(chrome.runtime.getURL("screenshot-upload-pages.json"));
   if (!r.ok) throw new Error("screenshot-upload-pages.json");
