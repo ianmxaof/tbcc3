@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TBCC — Download routing</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <style>
+    body.tbcc-options-page { max-width: 880px; }
+    .route-row {
+      display: grid;
+      grid-template-columns: 18px auto auto 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+      background: var(--tbcc-bg-card);
+      border-radius: 6px;
+      margin-bottom: 4px;
+    }
+    .route-row[draggable="true"] { cursor: grab; }
+    .route-row.dragging { opacity: 0.4; }
+    .route-row.drop-target { outline: 2px dashed var(--tbcc-accent, #89dceb); outline-offset: -2px; }
+    .route-handle { color: var(--tbcc-text-muted); font-size: 14px; user-select: none; text-align: center; }
+    .route-order-btns { display: flex; flex-direction: column; gap: 0; }
+    .route-order-btns button {
+      border: none; background: none; cursor: pointer; color: var(--tbcc-text-muted); font-size: 10px; line-height: 1; padding: 2px;
+    }
+    .route-order-btns button:hover { color: var(--tbcc-accent); }
+    .route-body { min-width: 0; }
+    .route-summary { font-size: 13px; color: var(--tbcc-text-primary); }
+    .route-summary code {
+      background: var(--tbcc-bg-surface);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 11px;
+      color: var(--tbcc-accent, #89dceb);
+    }
+    .route-folder { margin-top: 2px; font-size: 11px; color: var(--tbcc-text-muted); }
+    .route-actions { display: flex; gap: 8px; }
+    .route-actions button {
+      border: none; background: none; cursor: pointer; font-size: 12px; color: var(--tbcc-accent, #89dceb);
+      text-decoration: underline; text-underline-offset: 2px; padding: 0;
+    }
+    .route-actions button.danger { color: var(--tbcc-error, #f38ba8); }
+    #routeEmpty { font-size: 12px; color: var(--tbcc-text-muted); padding: 8px 0; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .form-grid > label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--tbcc-text-secondary); }
+    .form-grid select {
+      min-height: 32px; padding: 4px 8px; border-radius: var(--tbcc-radius-sm);
+      border: 1px solid var(--tbcc-bg-elevated); background: var(--tbcc-bg-surface); color: var(--tbcc-text-primary); font-size: 13px;
+    }
+    .token-chip {
+      display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+      background: var(--tbcc-bg-surface); color: var(--tbcc-text-secondary); border-radius: 4px; padding: 2px 6px; margin: 2px 4px 2px 0;
+    }
+  </style>
+</head>
+<body class="tbcc-options-page">
+  <h1>Download routing (circuit board)</h1>
+  <p class="sub">Route <strong>any</strong> browser download — not just TBCC's own — into a Downloads subfolder based on file type, source domain, MIME type, or a URL pattern. Rules run top to bottom; the first match wins. Chrome only allows routing inside your default Downloads folder (no absolute paths, no drives) — this always builds a subfolder under it.</p>
+
+  <section class="card">
+    <h1>Settings</h1>
+    <label class="row2"><input type="checkbox" id="routingEnabled" checked /> Enable download routing</label>
+  </section>
+
+  <section class="card">
+    <h1>Folder template tokens</h1>
+    <span class="token-chip">{ext}</span>
+    <span class="token-chip">{domain}</span>
+    <span class="token-chip">{filename}</span>
+    <span class="token-chip">{YYYY}</span>
+    <span class="token-chip">{MM}</span>
+    <span class="token-chip">{DD}</span>
+    <p class="sub" style="margin-top:8px">Example: <code>media/{domain}/{YYYY}-{MM}</code></p>
+  </section>
+
+  <section class="card">
+    <h1>Add / edit rule</h1>
+    <input type="hidden" id="routeEditId" value="" />
+    <div class="form-grid">
+      <label>Label (optional)
+        <input type="text" id="routeLabel" class="tbcc-input" placeholder="Images from OnlyFans" />
+      </label>
+      <label>Match on
+        <select id="routeMatchType">
+          <option value="extension">File extension</option>
+          <option value="domain">Source domain</option>
+          <option value="mimePrefix">MIME type prefix</option>
+          <option value="urlRegex">URL pattern (regex)</option>
+        </select>
+      </label>
+      <label>Match value
+        <input type="text" id="routeMatchValue" class="tbcc-input" placeholder="jpg,png,webp  ·  erome.com  ·  video/  ·  reddit\.com" />
+      </label>
+      <label>Destination subfolder
+        <input type="text" id="routeFolder" class="tbcc-input" placeholder="media/{domain}" />
+      </label>
+      <label>On name conflict
+        <select id="routeConflictAction">
+          <option value="uniquify">Keep both (add number)</option>
+          <option value="overwrite">Overwrite</option>
+          <option value="prompt">Ask every time</option>
+        </select>
+      </label>
+    </div>
+    <button type="button" id="routeSaveEntry" class="tbcc-btn-primary">Save rule</button>
+    <button type="button" id="routeCancelEdit" class="tbcc-btn-secondary" style="display:none">Cancel edit</button>
+    <p id="routeFormStatus" class="sub" style="margin:8px 0 0"></p>
+  </section>
+
+  <section class="card">
+    <h1>Rules (drag the handle, or use the arrows, to reorder)</h1>
+    <div id="routeList"></div>
+    <p id="routeEmpty" style="display:none">No rules yet — downloads keep their normal browser behavior until you add one.</p>
+  </section>
+
+  <script src="download-routing.js"></script>
+</body>
+</html>

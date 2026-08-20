@@ -12,7 +12,8 @@ importScripts(
   "launch-full-stack.js",
   "severity-toast-colors.js",
   "tbcc-zip-naming.js",
-  "tbcc-promo-watermark.js"
+  "tbcc-promo-watermark.js",
+  "tbcc-download-router.js"
 );
 
 const SAVED_ALBUM_CHUNK = 10;
@@ -89,6 +90,8 @@ const STORAGE_MODEL_SEARCH_LAST_SUMMARY = "tbccModelSearchLastSummary";
 const STORAGE_AUTO_TAG_ON_EXPORT = "tbccAutoTagOnExport";
 /** Saved from context menu — watch pages or direct media URLs (extension Options). */
 const STORAGE_SAVED_VIDEO_URLS = "tbccSavedVideoUrls";
+const STORAGE_DOWNLOAD_ROUTES = "tbccDownloadRoutes";
+const STORAGE_DOWNLOAD_ROUTING_SETTINGS = "tbccDownloadRoutingSettings";
 const TBCC_SAVED_VIDEO_URLS_CAP = 600;
 let tbccRedgifsTempToken = "";
 let tbccRedgifsTempTokenExpiresAt = 0;
@@ -3173,6 +3176,37 @@ function tbccChromeDownloadsDownload(opts) {
     }
   });
 }
+
+/** Download-routing "circuit board": skip downloads this extension itself already named. */
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  if (item && item.byExtensionId === chrome.runtime.id) {
+    suggest();
+    return;
+  }
+  void (async () => {
+    try {
+      const data = await chrome.storage.local.get([STORAGE_DOWNLOAD_ROUTES, STORAGE_DOWNLOAD_ROUTING_SETTINGS]);
+      const settings = data[STORAGE_DOWNLOAD_ROUTING_SETTINGS] || {};
+      const router = typeof TbccDownloadRouter !== "undefined" ? TbccDownloadRouter : null;
+      if (settings.enabled === false || !router) {
+        suggest();
+        return;
+      }
+      const routes = Array.isArray(data[STORAGE_DOWNLOAD_ROUTES]) ? data[STORAGE_DOWNLOAD_ROUTES] : [];
+      const route = router.matchRoute(routes, item);
+      const filename = route ? router.buildRoutedFilename(route, item) : null;
+      if (!filename) {
+        suggest();
+        return;
+      }
+      suggest({ filename, conflictAction: (route && route.conflictAction) || "uniquify" });
+    } catch (e) {
+      console.warn("TBCC download routing", e);
+      suggest();
+    }
+  })();
+  return true;
+});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "tbcc-get-sender-tab-id") {
