@@ -120,6 +120,10 @@ document.getElementById("openDownloadRouting").addEventListener("click", () => {
   chrome.tabs.create({ url: chrome.runtime.getURL("download-routing.html") });
 });
 
+document.getElementById("openContextMenuEditor").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("context-menu-editor.html") });
+});
+
 async function loadScreenshotUploadPages() {
   const r = await fetch(chrome.runtime.getURL("screenshot-upload-pages.json"));
   if (!r.ok) throw new Error("screenshot-upload-pages.json");

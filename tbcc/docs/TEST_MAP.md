@@ -49,6 +49,7 @@ py -3.13 -m pytest <path> -x -q
 | **Extension ZIP naming** | `node extension/tests/tbcc-zip-naming.test.mjs` | OnlyFans/Erome/Motherless/Fapello/X heuristics + bundle templates |
 | **Extension snippet library** | `node extension/tests/tbcc-snippet-lib.test.mjs` | Trigger matching + `{{date}}`/`{{time}}`/`{{clipboard}}`/`{{cursor}}` token expansion |
 | **Extension download routing** | `node extension/tests/tbcc-download-router.test.mjs` | Circuit-board rule matching (extension/domain/mime/regex) + folder template expansion, incl. path-traversal sanitizing |
+| **Extension context menu editor** | `node extension/tests/tbcc-context-menu-plan.test.mjs` | Order/enable plan builder + guards `TBCC_STATIC_MENU_ITEMS` (no dup ids, valid menuFamily/contexts) |
 | **Keep2share** | `tests/test_keep2share_client.py` | |
 | **Import / mirror** | `tests/test_mirror_after_channel_import.py`, `tests/test_channel_import_timeout.py` | |
 | **Rules / docs only** | skip tests | Lint or file verify instead |

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TBCC — Context menu editor</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <style>
+    body.tbcc-options-page { max-width: 780px; }
+    .menu-row {
+      display: grid;
+      grid-template-columns: 18px auto auto 1fr;
+      align-items: center;
+      gap: 10px;
+      padding: 8px;
+      border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+      background: var(--tbcc-bg-card);
+      border-radius: 6px;
+      margin-bottom: 4px;
+    }
+    .menu-row[draggable="true"] { cursor: grab; }
+    .menu-row.dragging { opacity: 0.4; }
+    .menu-row.drop-target { outline: 2px dashed var(--tbcc-accent, #89dceb); outline-offset: -2px; }
+    .menu-handle { color: var(--tbcc-text-muted); font-size: 14px; user-select: none; text-align: center; }
+    .menu-order-btns { display: flex; flex-direction: column; }
+    .menu-order-btns button {
+      border: none; background: none; cursor: pointer; color: var(--tbcc-text-muted); font-size: 10px; line-height: 1; padding: 2px;
+    }
+    .menu-order-btns button:hover { color: var(--tbcc-accent); }
+    .menu-order-btns button:disabled { opacity: 0.3; cursor: default; }
+    .menu-title { font-size: 13px; color: var(--tbcc-text-primary); }
+    .menu-title.disabled-item { color: var(--tbcc-text-muted); text-decoration: line-through; }
+    .menu-contexts { font-size: 10px; color: var(--tbcc-text-muted); margin-top: 2px; }
+    #cmeStatus { margin-top: 8px; font-size: 12px; color: var(--tbcc-success); min-height: 1.2em; }
+  </style>
+</head>
+<body class="tbcc-options-page">
+  <h1>Context menu editor</h1>
+  <p class="sub">Drag the handle, or use the arrows, to reorder TBCC's right-click menu. Uncheck an item to hide it. Changes apply immediately — no browser restart needed.</p>
+
+  <section class="card">
+    <h1>Media / page context menu</h1>
+    <p class="sub" style="margin-bottom:8px">Right-click on an image, video, link, page, or selected text. Pool / Storage Hub submenus and site-lookup entries are generated live and always appear after this list.</p>
+    <div id="mediaList"></div>
+  </section>
+
+  <section class="card">
+    <h1>Toolbar icon menu</h1>
+    <p class="sub" style="margin-bottom:8px">Right-click the TBCC icon in the toolbar.</p>
+    <div id="actionList"></div>
+  </section>
+
+  <p id="cmeStatus"></p>
+  <button type="button" id="cmeResetDefault" class="tbcc-btn-secondary">Reset to default order</button>
+
+  <script src="tbcc-context-menu-items.js"></script>
+  <script src="tbcc-context-menu-plan.js"></script>
+  <script src="context-menu-editor.js"></script>
+</body>
+</html>

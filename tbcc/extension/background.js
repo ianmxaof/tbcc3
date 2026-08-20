@@ -13,7 +13,9 @@ importScripts(
   "severity-toast-colors.js",
   "tbcc-zip-naming.js",
   "tbcc-promo-watermark.js",
-  "tbcc-download-router.js"
+  "tbcc-download-router.js",
+  "tbcc-context-menu-plan.js",
+  "tbcc-context-menu-items.js"
 );
 
 const SAVED_ALBUM_CHUNK = 10;
@@ -92,6 +94,7 @@ const STORAGE_AUTO_TAG_ON_EXPORT = "tbccAutoTagOnExport";
 const STORAGE_SAVED_VIDEO_URLS = "tbccSavedVideoUrls";
 const STORAGE_DOWNLOAD_ROUTES = "tbccDownloadRoutes";
 const STORAGE_DOWNLOAD_ROUTING_SETTINGS = "tbccDownloadRoutingSettings";
+const STORAGE_CONTEXT_MENU_CONFIG = "tbccContextMenuConfig";
 const TBCC_SAVED_VIDEO_URLS_CAP = 600;
 let tbccRedgifsTempToken = "";
 let tbccRedgifsTempTokenExpiresAt = 0;
@@ -4648,112 +4651,43 @@ function tbccEnsureContextMenuSyncAlarm() {
 
 function installContextMenus() {
   void tbccUpdateGalleryPanelOpenMode();
-  chrome.contextMenus.removeAll(() => {
-    const mac = (props) => {
-      chrome.contextMenus.create(props, () => {
-        const err = chrome.runtime.lastError;
-        if (err) console.warn("TBCC contextMenus.create", props && props.id, err.message);
-      });
-    };
-    mac({ id: "sendToTBCC", title: "TBCC: Save to pool (default)", contexts: ["image", "video", "link"] });
-    mac({
-      id: "saveAofWatch",
-      title: "TBCC: Save AOF (watermark + watch)",
-      contexts: ["image", "video", "link"],
-    });
-    mac({
-      id: "uploadR2Library",
-      title: "TBCC: Watermark → R2 aof-media (library)",
-      contexts: ["image", "video", "link"],
-    });
-    mac({
-      id: "uploadR2SfwXPromo",
-      title: "TBCC: Watermark → R2 SFW X promo",
-      contexts: ["image", "video", "link"],
-    });
-    tbccInstallAofPoolContextMenus(mac);
-    tbccInstallStorageHubContextMenus(mac);
-    mac({ id: "sendToSaved", title: "TBCC: Saved Messages", contexts: ["image", "video", "link"] });
-    mac({ id: "sendPageToTBCC", title: "TBCC: Save to pool (this tab URL)", contexts: ["page", "frame"] });
-    mac({ id: "sendPageToSaved", title: "TBCC: Saved Messages (this tab URL)", contexts: ["page", "frame"] });
-    mac({ id: "sendSelectionToTBCC", title: "TBCC: Save to pool (selected URL)", contexts: ["selection"] });
-    mac({ id: "sendSelectionToSaved", title: "TBCC: Saved Messages (selected URL)", contexts: ["selection"] });
-    mac({
-      id: "tbccCaptureSecretSelection",
-      title: "TBCC: Save selection as API key to .env (browser)",
-      contexts: ["selection"],
-    });
-    mac({
-      id: "tbccAddVideoUrlToList",
-      title: "TBCC: Save URL to master archive",
-      contexts: ["selection", "link", "page", "frame", "video"],
-    });
-    mac({
-      id: "tbccAddAllVideoUrlsToList",
-      title: "TBCC: Save all video URLs to master archive",
-      contexts: ["page", "frame", "video", "link"],
-    });
-    mac({
-      id: "tbccReverseImageFanout",
-      title: "TBCC: Reverse image search",
-      contexts: ["image"],
-    });
-    mac({
-      id: "tbccCaptureTabReverse",
-      title: "TBCC: Capture tab for reverse search",
-      contexts: ["page", "frame"],
-    });
-    mac({
-      id: "tbccMotherlessGalleryZip",
-      title: "TBCC: Motherless gallery → ZIP",
-      contexts: ["page", "frame", "link"],
-      documentUrlPatterns: [
-        "*://motherless.com/*",
-        "*://*.motherless.com/*",
-        "*://motherless.xxx/*",
-        "*://*.motherless.xxx/*",
-      ],
-    });
-    mac({
-      id: "tbccMotherlessGalleryDownload",
-      title: "TBCC: Motherless gallery → download files",
-      contexts: ["page", "frame", "link"],
-      documentUrlPatterns: [
-        "*://motherless.com/*",
-        "*://*.motherless.com/*",
-        "*://motherless.xxx/*",
-        "*://*.motherless.xxx/*",
-      ],
-    });
-    mac({
-      id: "tbccDockGallery",
-      title: "TBCC: Dock gallery to this tab",
-      contexts: ["page", "frame"],
-    });
-    mac({ id: "tbccActionOpenGallery", title: "TBCC: Open gallery", contexts: ["action"] });
-    mac({
-      id: "tbccActionDockGallery",
-      title: "TBCC: Open gallery (docked to this tab)",
-      contexts: ["action"],
-    });
-    mac({
-      id: "tbccActionStartApi",
-      title: "TBCC: Launch full stack (daemon/API)",
-      contexts: ["action"],
-    });
-    if (typeof TBCC_EXT_MODULES !== "undefined" && TBCC_EXT_MODULES.installActionMenus) {
-      TBCC_EXT_MODULES.installActionMenus(mac);
-      void TBCC_EXT_MODULES.refreshMenuLabels();
-    }
-    void (async () => {
-      try {
-        await addModelSearchContextMenus(mac);
-      } catch (e) {
-        console.warn("TBCC model search context menus", e);
+  chrome.storage.local.get([STORAGE_CONTEXT_MENU_CONFIG], (cfgData) => {
+    const config = (cfgData && cfgData[STORAGE_CONTEXT_MENU_CONFIG]) || {};
+    chrome.contextMenus.removeAll(() => {
+      const mac = (props) => {
+        chrome.contextMenus.create(props, () => {
+          const err = chrome.runtime.lastError;
+          if (err) console.warn("TBCC contextMenus.create", props && props.id, err.message);
+        });
+      };
+      const plan =
+        typeof TbccContextMenuPlan !== "undefined"
+          ? TbccContextMenuPlan.buildMenuPlan(TBCC_STATIC_MENU_ITEMS, config)
+          : TBCC_STATIC_MENU_ITEMS;
+      plan.forEach((props) => mac(props));
+      tbccInstallAofPoolContextMenus(mac);
+      tbccInstallStorageHubContextMenus(mac);
+      if (typeof TBCC_EXT_MODULES !== "undefined" && TBCC_EXT_MODULES.installActionMenus) {
+        TBCC_EXT_MODULES.installActionMenus(mac);
+        void TBCC_EXT_MODULES.refreshMenuLabels();
       }
-    })();
+      void (async () => {
+        try {
+          await addModelSearchContextMenus(mac);
+        } catch (e) {
+          console.warn("TBCC model search context menus", e);
+        }
+      })();
+    });
   });
 }
+
+/** Editor saves land here immediately — otherwise the menu only picks up changes on next browser start. */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes[STORAGE_CONTEXT_MENU_CONFIG]) {
+    installContextMenus();
+  }
+});
 
 async function addModelSearchContextMenus(mac) {
   const CTX_MS = ["selection", "link", "page", "frame", "video"];
