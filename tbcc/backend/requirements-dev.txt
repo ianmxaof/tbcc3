@@ -1,0 +1,7 @@
+# Operator-machine-only tools. Not read by the island's Docker build
+# (deploy-island-live.ps1 / infra/docker-compose.revenue-island.yml install
+# from requirements.txt only) — install manually with:
+#   py -3.13 -m pip install -r requirements-dev.txt
+
+# `tbcc_cli.py llm tui` — interactive model/provider index viewer
+textual>=0.60.0

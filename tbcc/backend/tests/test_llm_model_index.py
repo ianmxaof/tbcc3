@@ -145,6 +145,39 @@ def test_rank_providers_numeric_usage_sorts_first():
     assert ranked[1]["provider"] == "openrouter"
 
 
+def test_extract_context_length_variants():
+    assert idx._extract_context_length({"context_length": 131072}) == 131072
+    assert idx._extract_context_length({"context_window": 4096}) == 4096
+    assert idx._extract_context_length({"metadata": {"context_length": 8192}}) == 8192
+    assert idx._extract_context_length({"metadata": {"context_length": None}}) is None
+    assert idx._extract_context_length({}) is None
+
+
+def test_list_models_joins_provider_state(monkeypatch):
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider: TextLlmRuntime(
+        provider="openrouter", api_key="k", model="x", base_url="https://openrouter.ai/api/v1",
+    ))
+    monkeypatch.setattr(idx, "chat_completions_headers", lambda rt: {})
+    payload = {"data": [{"id": "some/model", "context_length": 32000, "owned_by": "some-org"}]}
+    monkeypatch.setattr(idx.httpx, "get", lambda *a, **k: _FakeResponse(200, payload))
+    idx.refresh_provider_models("openrouter")
+
+    with idx.closing(idx._connect()) as conn:
+        idx._upsert_provider_state(conn, "openrouter", usage_remaining=12.5, usage_limit=100.0)
+        conn.commit()
+
+    rows = idx.list_models()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["provider"] == "openrouter"
+    assert row["model_id"] == "some/model"
+    assert row["context_length"] == 32000
+    assert row["owned_by"] == "some-org"
+    assert row["usage_remaining"] == 12.5
+    assert row["stale"] is False
+    assert row["exhausted"] is False
+
+
 def test_sticky_roundtrip_and_advance():
     assert idx.get_sticky() is None
     idx.set_sticky("zlm", "glm-4.5")

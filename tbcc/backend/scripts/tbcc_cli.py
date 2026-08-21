@@ -21,6 +21,7 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py llm status
   py -3.13 scripts/tbcc_cli.py llm next
   py -3.13 scripts/tbcc_cli.py llm ask "what's the capital of France?"
+  py -3.13 scripts/tbcc_cli.py llm tui
 """
 from __future__ import annotations
 
@@ -458,6 +459,22 @@ def cmd_llm_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llm_tui(args: argparse.Namespace) -> int:
+    """Interactive terminal viewer over the local model/provider index. Needs
+    `textual` (tbcc/backend/requirements-dev.txt) — not shipped to the island,
+    operator-machine install only."""
+    try:
+        from scripts.llm_tui import main as tui_main
+    except ImportError:
+        print(
+            "textual is not installed. Run:\n"
+            "  py -3.13 -m pip install -r requirements-dev.txt",
+            file=sys.stderr,
+        )
+        return 1
+    return tui_main()
+
+
 def cmd_llm_ask(args: argparse.Namespace) -> int:
     """Like `ask`, but sticky: uses the last provider `llm next`/`llm ask` picked
     (or the chain default on first run), and on a quota-classified failure,
@@ -695,6 +712,9 @@ def main() -> int:
     lask.add_argument("--timeout", type=float, default=90.0)
     lask.add_argument("--json", action="store_true", help="JSON output instead of raw text")
     lask.set_defaults(func=cmd_llm_ask)
+
+    ltui = llm_sub.add_parser("tui", help="Interactive terminal viewer over the model/provider index (needs textual)")
+    ltui.set_defaults(func=cmd_llm_tui)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":

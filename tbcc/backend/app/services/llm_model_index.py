@@ -342,3 +342,52 @@ def advance_to_next() -> dict[str, Any] | None:
     nxt = ranked[0]
     set_sticky(nxt["provider"], None)
     return nxt
+
+
+def _extract_context_length(raw: dict[str, Any]) -> int | None:
+    """Best-effort — /v1/models shapes vary a lot per provider (confirmed via a
+    real refresh: OpenRouter/Groq put it at top level under two different key
+    names, DeepInfra nests it under metadata and is often null, NVIDIA/Cerebras
+    don't expose it at all)."""
+    for key in ("context_length", "context_window", "max_output_length"):
+        val = raw.get(key)
+        if isinstance(val, int) and val > 0:
+            return val
+    meta = raw.get("metadata")
+    if isinstance(meta, dict):
+        val = meta.get("context_length")
+        if isinstance(val, int) and val > 0:
+            return val
+    return None
+
+
+def list_models(provider: str | None = None) -> list[dict[str, Any]]:
+    """Master model list joined with provider exhaustion/usage state, for the TUI
+    and any future `llm models` listing. One row per (provider, model_id)."""
+    with closing(_connect()) as conn:
+        if provider:
+            rows = conn.execute(
+                "SELECT * FROM models WHERE provider = ? ORDER BY model_id", (provider,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM models ORDER BY provider, model_id").fetchall()
+        state_rows = {r["provider"]: dict(r) for r in conn.execute("SELECT * FROM provider_state")}
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        raw = json.loads(row["raw_json"] or "{}")
+        st = state_rows.get(row["provider"], {})
+        out.append(
+            {
+                "provider": row["provider"],
+                "model_id": row["model_id"],
+                "owned_by": raw.get("owned_by") or raw.get("root"),
+                "context_length": _extract_context_length(raw),
+                "stale": bool(row["stale"]),
+                "fetched_at": row["fetched_at"],
+                "exhausted": is_exhausted(row["provider"]),
+                "usage_remaining": st.get("usage_remaining"),
+                "usage_limit": st.get("usage_limit"),
+            }
+        )
+    return out
