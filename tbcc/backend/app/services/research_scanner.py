@@ -34,14 +34,18 @@ import feedparser
 import httpx
 
 _USER_AGENT = "Mozilla/5.0 (compatible; tbcc-research-scanner/0.1; +https://api.powercore.app)"
-# Reddit's r/<sub>/.rss rate-limits hard: a live 21-source run with a flat 3s
-# delay still 429'd 10 of 11 reddit.com sources (2026-08-21). A flat 20s delay
-# for every source would make the run ~7 minutes for no reason — GitHub/HN
-# never 429'd once. So the delay is domain-aware: short baseline for
-# everything, the hand-verified ~20s recovery gap specifically before a
-# reddit.com fetch. Not a guarantee against sustained-window limits across 15
-# subs in a row — a source that still 429s is a soft failure (see
-# fetch_source), retried automatically on the next scheduled run.
+# Reddit's r/<sub>/.rss rate-limits hard and it isn't just per-request spacing:
+# two live 21-source runs (2026-08-21) measured a flat 3s delay 429ing 10 of
+# 11 reddit.com sources, and a 20s delay still only cleared 6 of 15 — better,
+# but well short of reliable coverage for 15 subs in one run. GitHub/HN never
+# 429'd once at any delay, so the delay stays domain-aware (short baseline
+# everywhere, 20s before reddit.com) rather than punishing every source for
+# Reddit's limit. This is accepted as-is for v1: a source that still 429s is
+# a soft failure (see fetch_source), retried automatically on the next
+# scheduled run, so coverage self-heals across days even though any single
+# day's Reddit signal is partial. If reliable same-day Reddit coverage
+# matters later, that's a real case for routing reddit.com sources through
+# RSSHub specifically — deferred, not attempted here.
 _FETCH_DELAY_SECONDS = 2.0
 _REDDIT_FETCH_DELAY_SECONDS = 20.0
 _SOURCES_PATH = Path(__file__).resolve().parents[1] / "data" / "research_scanner_sources.json"
