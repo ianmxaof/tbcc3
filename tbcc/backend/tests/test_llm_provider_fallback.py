@@ -7,6 +7,7 @@ import pytest
 from app.services.llm_completions import (
     CEREBRAS_BASE,
     DEEPINFRA_BASE,
+    DEFAULT_GROQ_MODEL,
     GROQ_BASE,
     MISTRAL_BASE,
     NVIDIA_BASE,
@@ -53,7 +54,7 @@ def test_resolve_groq_accepts_alias_env(monkeypatch):
     assert g.provider == "groq"
     assert g.base_url == GROQ_BASE
     assert g.api_key == "gsk-test"
-    assert "llama" in g.model.lower()
+    assert g.model == DEFAULT_GROQ_MODEL
 
 
 def test_iter_fallback_includes_groq_when_keyed(monkeypatch):

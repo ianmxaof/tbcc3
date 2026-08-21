@@ -83,7 +83,10 @@ MISTRAL_BASE = "https://api.mistral.ai/v1"
 DEFAULT_ZLM_MODEL = "glm-4.5"
 DEFAULT_DEEPINFRA_MODEL = "cognitivecomputations/dolphin-2.9-llama3-8b"
 DEFAULT_TOGETHER_MODEL = "cognitivecomputations/dolphin-2.9-llama3-8b"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+# llama-3.3-70b-versatile retired by Groq; openai/gpt-oss-120b is their current
+# flagship (2026-08-21, confirmed via console.groq.com/docs/models). Override
+# with TBCC_GROQ_MODEL.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 # Cerebras public catalog (2026-08): gpt-oss-120b (text) + gemma-4-31b (vision). Override with TBCC_CEREBRAS_MODEL.
 DEFAULT_CEREBRAS_MODEL = "gpt-oss-120b"
 DEFAULT_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct"
