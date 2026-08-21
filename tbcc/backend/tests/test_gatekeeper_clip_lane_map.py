@@ -38,6 +38,24 @@ def test_unmapped_slug_falls_back_to_lane_tag_map_fragment():
     assert ranked[0][0] == "blowjob"
 
 
+def test_taboo_corpus_aliases_merged_into_clip_slug_map():
+    """tag_corpus.json's taboo subtree must flow into CLIP_SLUG_TO_LANE
+    (additive merge appended in clip_slug_lane_map.py) so the CLIP/caption
+    path and the vision-LLM prompt cues stay aligned to one source."""
+    from app.data.clip_slug_lane_map import CLIP_SLUG_TO_LANE
+
+    assert CLIP_SLUG_TO_LANE.get("step-mom") == ("taboo",)
+    assert CLIP_SLUG_TO_LANE.get("cheating-wife") == ("taboo",)
+    # Pre-existing hand-curated entry must stay exactly as it was.
+    assert CLIP_SLUG_TO_LANE.get("stepsis") == ("taboo",)
+
+
+def test_stepmom_slug_maps_to_taboo_lane_end_to_end():
+    ranked = map_clip_slugs_to_lanes(["step-mom"])
+    assert ranked
+    assert ranked[0][0] == "taboo"
+
+
 def test_slug_score_weighting_respected():
     ranked = map_clip_slugs_to_lanes(
         ["blowjobs", "just-boobs"], scores={"blowjobs": 0.3, "just-boobs": 0.9}

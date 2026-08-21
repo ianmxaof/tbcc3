@@ -107,13 +107,14 @@ def analyze_image_bytes(
     mime: str = "image/jpeg",
     allowed_slugs: list[str] | None = None,
     timeout: float = 120.0,
+    prompt_override: str | None = None,
 ) -> dict[str, Any]:
     if not vision_llm_enabled() or not image_bytes or len(image_bytes) < 32:
         return {}
     p = _provider()
     b64 = base64.standard_b64encode(image_bytes[:4_000_000]).decode("ascii")
     data_url = f"data:{mime};base64,{b64}"
-    prompt = _niche_prompt(allowed_slugs)
+    prompt = prompt_override or _niche_prompt(allowed_slugs)
     try:
         if p == "openai":
             return _vision_openai_compatible(
@@ -124,12 +125,12 @@ def analyze_image_bytes(
                 timeout=timeout,
             )
         if p == "openrouter":
-            from app.services.llm_completions import chat_completions_headers, chat_completions_url
+            from app.services.llm_completions import OPENROUTER_BASE
 
-            headers = dict(chat_completions_headers())
-            headers["X-Title"] = "TBCC Vision Tagging"
+            base = (os.getenv("TBCC_OPENROUTER_BASE_URL") or OPENROUTER_BASE).rstrip("/")
+            headers = {"HTTP-Referer": "https://tbcc.local", "X-Title": "TBCC Vision Tagging"}
             return _vision_openai_compatible(
-                chat_completions_url(),
+                f"{base}/chat/completions",
                 _openrouter_key(),
                 prompt,
                 data_url,

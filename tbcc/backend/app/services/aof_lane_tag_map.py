@@ -149,6 +149,44 @@ def lane_display_name(lane_key: str | None) -> str:
     return key.replace("_", " ").upper()
 
 
+# The real AOF network lanes — single source of truth for "what's a valid lane key."
+CANONICAL_LANE_KEYS: tuple[str, ...] = (
+    "abg",
+    "ai",
+    "ass",
+    "big_tits",
+    "blowjob",
+    "bop",
+    "goon",
+    "milf",
+    "packs",
+    "taboo",
+    "voyeur",
+    "full_length",
+    "erome",
+    "stim",
+)
+
+def _merge_corpus_lane_tag_aliases() -> None:
+    """Layer first-party tag_corpus.json aliases onto LANE_TAG_MAP (additive — never
+    overwrites an existing hand-curated entry). Single source of truth for cue
+    vocabulary; see app/services/tag_corpus.py.
+    """
+    try:
+        from app.services.tag_corpus import lane_tag_map_aliases_for_lane
+
+        for lane in CANONICAL_LANE_KEYS:
+            for alias, lanes in lane_tag_map_aliases_for_lane(lane).items():
+                LANE_TAG_MAP.setdefault(alias, lanes)
+    except Exception:
+        # Corpus is optional sugar for LANE_TAG_MAP — never break tag resolution
+        # if the data file is missing/malformed.
+        pass
+
+
+_merge_corpus_lane_tag_aliases()
+
+
 # Disk folder names under Downloads/tbcc/AOF NETWORK (operator tree — no emoji).
 LANE_DISK_FOLDERS: dict[str, str] = {
     "abg": "AOF ABGLBFM",

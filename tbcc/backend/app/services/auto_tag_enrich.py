@@ -168,7 +168,7 @@ async def _fetch_image_bytes_for_classify(media_id: int) -> bytes | None:
     finally:
         db.close()
 
-    data, mime = await _fetch_media_bytes_and_type_via_import(ctx)
+    data, mime = await _fetch_media_bytes_and_type(ctx)
     if not data:
         return None
     if mt == "video":
@@ -349,6 +349,11 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
                     extras["niche_classify"] = niche
                     m.classification_json = json.dumps(extras, ensure_ascii=False)
                     db.commit()
+
+        if img_for_clip:
+            from app.services.media_lane_vision_classify import classify_and_log_lane_vision
+
+            classify_and_log_lane_vision(db, media_id, img_for_clip)
 
         route = try_assign_pool_from_tags(db, media_id)
         if route.get("applied"):

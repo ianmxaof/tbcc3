@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0.0",
+  "notes": "First-party curated tag corpus — parent/child hierarchy + aliases + lane binding. Not a live scrape; hand-maintained. Refresh by editing this file (see reverse report for the process) and bumping schema_version on structural changes.",
+  "nodes": [
+    { "slug": "abg", "display_name": "ABG / LBFM", "parent_slug": null, "aliases": ["abg", "lbfm"], "lane_keys": ["abg"] },
+    { "slug": "ai", "display_name": "AI", "parent_slug": null, "aliases": ["ai", "deepfake"], "lane_keys": ["ai"] },
+    { "slug": "ass", "display_name": "Ass", "parent_slug": null, "aliases": ["ass", "booty"], "lane_keys": ["ass"] },
+    { "slug": "big_tits", "display_name": "Big Tits", "parent_slug": null, "aliases": ["big tits", "boobs"], "lane_keys": ["big_tits"] },
+    { "slug": "blowjob", "display_name": "Blowjob", "parent_slug": null, "aliases": ["blowjob", "oral"], "lane_keys": ["blowjob"] },
+    { "slug": "bop", "display_name": "Bop", "parent_slug": null, "aliases": ["bop", "tik tok"], "lane_keys": ["bop"] },
+    { "slug": "goon", "display_name": "Goon", "parent_slug": null, "aliases": ["goon", "edging"], "lane_keys": ["goon"] },
+    { "slug": "milf", "display_name": "MILF", "parent_slug": null, "aliases": ["milf", "gilf", "mature"], "lane_keys": ["milf"] },
+    { "slug": "packs", "display_name": "Packs", "parent_slug": null, "aliases": ["packs", "pack"], "lane_keys": ["packs"] },
+    { "slug": "voyeur", "display_name": "Voyeur / Public", "parent_slug": null, "aliases": ["voyeur", "public"], "lane_keys": ["voyeur"] },
+    { "slug": "full_length", "display_name": "Full Length", "parent_slug": null, "aliases": ["full length", "feature"], "lane_keys": ["full_length"] },
+    { "slug": "erome", "display_name": "Erome", "parent_slug": null, "aliases": ["erome"], "lane_keys": ["erome"] },
+    { "slug": "stim", "display_name": "Stim", "parent_slug": null, "aliases": ["stim"], "lane_keys": ["stim"] },
+
+    { "slug": "taboo", "display_name": "Taboo", "parent_slug": null, "aliases": ["taboo", "forbidden"], "lane_keys": ["taboo"] },
+    {
+      "slug": "taboo-stepfamily",
+      "display_name": "Stepfamily Roleplay",
+      "parent_slug": "taboo",
+      "aliases": [
+        "stepsis", "step sister", "stepsister",
+        "stepmom", "step mom", "stepmother",
+        "stepdad", "step dad", "stepfather",
+        "stepbro", "step brother", "stepson", "stepdaughter",
+        "step fantasy", "step-fantasy",
+        "fauxcest", "family roleplay",
+        "sisters and mothers roleplay"
+      ],
+      "lane_keys": ["taboo"]
+    },
+    {
+      "slug": "taboo-age-gap",
+      "display_name": "Age Gap / Old-Young",
+      "parent_slug": "taboo",
+      "aliases": ["age gap", "age-gap", "old young", "old/young"],
+      "lane_keys": ["taboo"]
+    },
+    {
+      "slug": "taboo-authority-roleplay",
+      "display_name": "Authority Figure Roleplay",
+      "parent_slug": "taboo",
+      "aliases": ["babysitter", "babysitters", "teacher roleplay", "boss roleplay", "authority figure"],
+      "lane_keys": ["taboo"]
+    },
+    {
+      "slug": "taboo-infidelity",
+      "display_name": "Cheating / Infidelity Roleplay",
+      "parent_slug": "taboo",
+      "aliases": ["cheating", "cheating wife", "affair", "sneaking around"],
+      "lane_keys": ["taboo"]
+    }
+  ]
+}

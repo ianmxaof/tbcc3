@@ -69,6 +69,18 @@ def test_compute_views_sample():
     assert empty["views_sampled"] == 0
 
 
+def test_taboo_corpus_aliases_merged_into_lane_tag_map():
+    """tag_corpus.json's taboo subtree must flow into LANE_TAG_MAP (additive
+    merge in aof_lane_tag_map.py) so caption/hashtag-fragment matching picks
+    up the expanded roleplay vocabulary, not just the bare 'taboo' token."""
+    from app.services.aof_lane_tag_map import LANE_TAG_MAP
+
+    assert LANE_TAG_MAP.get("stepmom") == ("taboo",)
+    assert LANE_TAG_MAP.get("cheating wife") == ("taboo",)
+    keys = suggest_lane_keys_from_tags("stepsis")
+    assert keys == ["taboo"]
+
+
 def test_public_telegram_url():
     assert public_telegram_url(username="foo") == "https://t.me/foo"
     assert public_telegram_url(identifier="@bar") == "https://t.me/bar"

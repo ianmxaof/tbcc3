@@ -128,6 +128,25 @@ CLIP_SLUG_TO_LANE: dict[str, tuple[str, ...]] = {
     "twerking-ass": ("bop",),
 }
 
+
+def _merge_corpus_clip_slug_aliases() -> None:
+    """Layer first-party tag_corpus.json aliases onto CLIP_SLUG_TO_LANE (additive —
+    never overwrites a hand-curated entry above). Keeps this map, LANE_TAG_MAP, and
+    the vision-LLM prompt cues aligned to one source instead of three divergent
+    hand-maintained lists. See app/services/tag_corpus.py.
+    """
+    try:
+        from app.services.tag_corpus import clip_slug_aliases_for_lane
+
+        for lane in SPLIT_LANE_KEYS:
+            for slug, lanes in clip_slug_aliases_for_lane(lane).items():
+                CLIP_SLUG_TO_LANE.setdefault(slug, lanes)
+    except Exception:
+        pass
+
+
+_merge_corpus_clip_slug_aliases()
+
 _TOKEN_RE = re.compile(r"#?(\w+)", re.UNICODE)
 
 # LANE_TAG_MAP has 2-3 letter fragments ("ai", "bj", "bop", "ass") that are
