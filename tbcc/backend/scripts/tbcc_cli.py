@@ -17,6 +17,10 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py ask "summarize this in one sentence: ..."
   py -3.13 scripts/tbcc_cli.py ask --list-providers
   echo "some text" | py -3.13 scripts/tbcc_cli.py ask
+  py -3.13 scripts/tbcc_cli.py llm refresh
+  py -3.13 scripts/tbcc_cli.py llm status
+  py -3.13 scripts/tbcc_cli.py llm next
+  py -3.13 scripts/tbcc_cli.py llm ask "what's the capital of France?"
 """
 from __future__ import annotations
 
@@ -340,7 +344,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
         _json(rows)
         return 0
 
-    prompt = args.prompt if args.prompt else sys.stdin.read()
+    if args.prompt:
+        prompt = args.prompt
+    elif not sys.stdin.isatty():
+        prompt = sys.stdin.read()
+    else:
+        prompt = ""
     prompt = (prompt or "").strip()
     if not prompt:
         print("No prompt given — pass text as an argument or pipe via stdin", file=sys.stderr)
@@ -389,6 +398,151 @@ def cmd_ask(args: argparse.Namespace) -> int:
     else:
         print(text)
     return 0
+
+
+def cmd_llm_refresh(args: argparse.Namespace) -> int:
+    """Refresh the local model/provider index (tbcc/.tbcc-run/llm_model_index.sqlite3)
+    by hitting each configured provider's /models endpoint, plus OpenRouter's real
+    usage endpoint. PC-local only — does not touch /zeus/v1/ask or the island."""
+    from app.services.llm_model_index import refresh_all_providers
+
+    rows = refresh_all_providers(timeout=args.timeout)
+    if args.json:
+        _json(rows)
+        return 0
+    for row in rows:
+        if not row.get("configured"):
+            print(f"{row['provider']:<12} not configured")
+        elif row.get("ok"):
+            print(f"{row['provider']:<12} ok  {row.get('model_count', 0)} models")
+        else:
+            print(f"{row['provider']:<12} FAIL  {row.get('error', '')}")
+    return 0
+
+
+def cmd_llm_status(args: argparse.Namespace) -> int:
+    """Show what the local index currently knows: configured/exhausted/model counts."""
+    from app.services.llm_model_index import all_provider_status, get_sticky
+
+    rows = all_provider_status()
+    if args.json:
+        _json({"providers": rows, "cursor": get_sticky()})
+        return 0
+    sticky = get_sticky()
+    if sticky and sticky.get("provider"):
+        print(f"sticky: {sticky['provider']} (set {sticky.get('updated_at', '?')})")
+    else:
+        print("sticky: (none — run `llm next` or `llm ask` to set one)")
+    for row in rows:
+        configured = row.get("configured")
+        state = "unconfigured" if configured == 0 else ("exhausted" if row.get("exhausted") else "ok")
+        usage = row.get("usage_remaining")
+        usage_s = f" usage_remaining={usage}" if usage is not None else ""
+        print(f"{row['provider']:<12} {state:<13} models={row.get('model_count', 0)}{usage_s}")
+    return 0
+
+
+def cmd_llm_next(args: argparse.Namespace) -> int:
+    """Advance the sticky cursor to whichever unexhausted provider ranks next
+    (known usage-remaining first, then DEFAULT_CHAIN order for the rest)."""
+    from app.services.llm_model_index import advance_to_next
+
+    nxt = advance_to_next()
+    if nxt is None:
+        print("No unexhausted configured provider available — run `llm refresh` first?", file=sys.stderr)
+        return 1
+    if args.json:
+        _json(nxt)
+    else:
+        print(nxt["provider"])
+    return 0
+
+
+def cmd_llm_ask(args: argparse.Namespace) -> int:
+    """Like `ask`, but sticky: uses the last provider `llm next`/`llm ask` picked
+    (or the chain default on first run), and on a quota-classified failure,
+    auto-cycles to the next unexhausted provider and retries once. CLI-local
+    devops convenience only — /zeus/v1/ask and the MCP ask_llm tool stay
+    stateless and never read this cursor."""
+    import asyncio
+
+    from app.services.llm_completions import TextLlmRuntime, resolve_text_llm_runtime
+    from app.services.llm_model_index import (
+        advance_to_next,
+        get_sticky,
+        rank_providers_for_cycle,
+        record_failure,
+        set_sticky,
+    )
+    from app.services.llm_provider_fallback import complete_chat_text_with_fallback
+
+    if args.prompt:
+        prompt = args.prompt
+    elif not sys.stdin.isatty():
+        prompt = sys.stdin.read()
+    else:
+        prompt = ""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        print("No prompt given — pass text as an argument or pipe via stdin", file=sys.stderr)
+        return 1
+
+    messages: list[dict[str, str]] = []
+    if args.system:
+        messages.append({"role": "system", "content": args.system})
+    messages.append({"role": "user", "content": prompt})
+
+    provider = args.provider or (get_sticky() or {}).get("provider")
+    if not provider:
+        ranked = rank_providers_for_cycle()
+        provider = ranked[0]["provider"] if ranked else None
+
+    def _resolve(pid: str | None) -> TextLlmRuntime | None:
+        if not pid:
+            return None
+        try:
+            return resolve_text_llm_runtime(provider=pid)
+        except RuntimeError:
+            return None
+
+    primary = _resolve(provider)
+    if provider and primary is None:
+        print(f"sticky provider {provider!r} no longer configured — falling back to chain", file=sys.stderr)
+
+    for attempt in range(2):
+        try:
+            text = asyncio.run(
+                complete_chat_text_with_fallback(
+                    messages,
+                    primary=primary,
+                    model=args.model or None,
+                    max_tokens=args.max_tokens,
+                    temperature=args.temperature,
+                    timeout=args.timeout,
+                )
+            )
+        except Exception as e:
+            used = primary.provider if primary else "auto"
+            kind = record_failure(used, primary.model if primary else None, e)
+            if kind == "quota" and attempt == 0:
+                print(f"{used}: quota exhausted, cycling to next provider…", file=sys.stderr)
+                nxt = advance_to_next()
+                if nxt is None:
+                    print("No unexhausted configured provider left.", file=sys.stderr)
+                    return 1
+                primary = _resolve(nxt["provider"])
+                continue
+            print(f"LLM call failed ({kind}): {e}", file=sys.stderr)
+            return 1
+        else:
+            if primary is not None:
+                set_sticky(primary.provider, primary.model)
+            if args.json:
+                _json({"ok": True, "provider": primary.provider if primary else "auto", "reply": text})
+            else:
+                print(text)
+            return 0
+    return 1
 
 
 def main() -> int:
@@ -514,6 +668,33 @@ def main() -> int:
     ask.add_argument("--list-providers", action="store_true", help="List configured providers and exit")
     ask.add_argument("--json", action="store_true", help="JSON output instead of raw text")
     ask.set_defaults(func=cmd_ask)
+
+    llm = sub.add_parser("llm", help="Local LLM provider/model index — devops CLI (see also: ask)")
+    llm_sub = llm.add_subparsers(dest="llm_cmd", required=True)
+
+    lr = llm_sub.add_parser("refresh", help="Refresh model lists + OpenRouter usage from every configured provider")
+    lr.add_argument("--timeout", type=float, default=20.0)
+    lr.add_argument("--json", action="store_true")
+    lr.set_defaults(func=cmd_llm_refresh)
+
+    lstatus = llm_sub.add_parser("status", help="Show what the local index knows: configured/exhausted/models")
+    lstatus.add_argument("--json", action="store_true")
+    lstatus.set_defaults(func=cmd_llm_status)
+
+    ln = llm_sub.add_parser("next", help="Advance the sticky cursor to the next unexhausted provider")
+    ln.add_argument("--json", action="store_true")
+    ln.set_defaults(func=cmd_llm_next)
+
+    lask = llm_sub.add_parser("ask", help="Like `ask`, but sticky + auto-cycles providers on quota exhaustion")
+    lask.add_argument("prompt", nargs="?", default="", help="Prompt text (omit to read stdin)")
+    lask.add_argument("--system", default="", help="Optional system prompt")
+    lask.add_argument("-p", "--provider", default="", help="Force a specific provider for this call")
+    lask.add_argument("-m", "--model", default="", help="Override model id")
+    lask.add_argument("--max-tokens", type=int, default=600)
+    lask.add_argument("--temperature", type=float, default=0.7)
+    lask.add_argument("--timeout", type=float, default=90.0)
+    lask.add_argument("--json", action="store_true", help="JSON output instead of raw text")
+    lask.set_defaults(func=cmd_llm_ask)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":
