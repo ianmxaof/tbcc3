@@ -18,7 +18,8 @@ Mechanical grinds: multi-file commits, pytest, island deploy, handoff reports.
 
 - Forward handoffs: `tbcc/docs/handoffs/YYYY-MM-DD_*.md`
 - Reverse reports: `tbcc/docs/handoffs/YYYY-MM-DD_*_report.md` — **stop after each phase** for Cursor ACK via `/cc-report`
-- Commit **one slice at a time**; push when handoff says so; never commit `.env`, `*.session*`, `.tbcc-run/`, `.tmp/`, generated promo art
+- Commit **one slice at a time**; **push after each slice when `TBCC_AUTO_PUSH=1`** in `tbcc/.env` (`git push -u origin HEAD`). Never commit `.env`, `*.session*`, `.tbcc-run/`, `.tmp/`, generated promo art.
+- **Social ≠ push:** Buffer/X only on milestones (operator says so, or ≥2 milestone criteria in `.cursor/rules/workflow-automation.mdc`). Routine pushes stay GitHub-only.
 
 ### Directive Generator (regular handoff packing)
 

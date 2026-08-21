@@ -4,7 +4,7 @@ Protocols conform to **Global Protocol Standard v2.1** (`.cursor/rules/global-pr
 
 **Sprint warm-start:** agents read `tbcc/docs/SPRINT_STATE.md` before substantive work (see `.cursor/rules/sprint-state.mdc`).
 
-**Always-apply rules:** `completion-gates.mdc`, `tbcc-dev-ops.mdc`, `bottom-line-next-steps.mdc`, `tbcc-agent-platform-routing.mdc`, `sprint-state.mdc`, `workflow-automation.mdc`, `global-protocol-standard.mdc`, `tbcc-daily-brief.mdc`.
+**Always-apply rules:** `completion-gates.mdc`, `tbcc-dev-ops.mdc`, `bottom-line-next-steps.mdc`, `tbcc-agent-platform-routing.mdc`, `sprint-state.mdc`, `workflow-automation.mdc`, `global-protocol-standard.mdc`, `tbcc-daily-brief.mdc`, `tbcc-entropy-scan.mdc`.
 
 **Lane calculus (v1.1):** execution → Auto (~80%); judgment gate (≥2 of revenue / multi-system / irreversible doctrine / leakage / critique / costly trade-offs) → Frontier Plan/Ask once, then Auto implement. Forbid Auto-stub on doctrine. Cloud remains rare (hard gate).
 
@@ -20,7 +20,9 @@ Protocols conform to **Global Protocol Standard v2.1** (`.cursor/rules/global-pr
 | Cursor Automation (optional cloud) | Same ship-log tick | `tbcc/docs/automations/tbcc-ship-log-weekly-prefill.json` |
 | Ops triage (separate) | Critical alerts | `tbcc/docs/automations/tbcc-ops-triage-prefill.json` |
 
-Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env`
+Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env` (default **idea** — no auto-tweet of routine work).
+
+**Git push vs social:** `TBCC_AUTO_PUSH=1` → agents push session commits to GitHub after gates. Buffer/X remains **milestone-only** (see `workflow-automation.mdc` milestone criteria). Do not treat every push as a ship-log event.
 
 ## Registered protocols
 
@@ -38,6 +40,7 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env`
 | **TBCC Sitrep** | `/sitrep`, `sitrep`, `situation report`, `mid-op status`, `what just shipped` | `~/.cursor/skills/tbcc-sitrep/SKILL.md` |
 | **TBCC Ops Picture** | `/ops-picture`, `ops picture`, `health and analytics`, `financial ops report`, `what's broken in tbcc` | `~/.cursor/skills/tbcc-ops-picture/SKILL.md` |
 | **TBCC Analytics Direction** | `/analytics-direction`, `analytics direction`, `where to invest`, `growth direction` | `~/.cursor/skills/tbcc-analytics-direction/SKILL.md` |
+| **TBCC Entropy Scan** | `/entropy-scan`, `scour vertices`, `max yield this request` | `~/.cursor/skills/tbcc-entropy-scan/SKILL.md` |
 
 ### Protocol chains
 
@@ -45,6 +48,7 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env`
 - **Mid-op multitask:** `/sitrep` → pick Vector (or Wire/close fuse) → implement / tray ops
 - **Money health check:** `/ops-picture` → pick blocker → fix / deploy / tray ops
 - **Data-driven bet:** `/analytics-direction` → pick direction → `/preflight` if ≥3 files → implement
+- **Yield before build:** `/entropy-scan` → pick slice or literal-only → `/preflight` if ≥3 files → implement
 - **New arc:** `/sprint-start` → `/preflight` (if ≥3 files) → implement → `/session-close`
 - **Grind:** `/preflight` → `/handoff-cc` → Claude writes `tbcc/docs/handoffs/*_report.md` → `/cc-report` in Cursor → ACK → next phase or ship
 - **Release:** `/milestone-ship` → optional `/ship-log`
