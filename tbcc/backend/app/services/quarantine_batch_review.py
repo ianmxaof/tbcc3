@@ -28,10 +28,12 @@ logger = logging.getLogger(__name__)
 
 LANE_PENDING_PREFIX = "tbcc:quarantine:lane:"
 BATCH_KEY_PREFIX = "tbcc:quarantine:batch:"
+BATCH_LEAD_PREFIX = "tbcc:quarantine:batch_lead:"
 BATCH_TTL_SECONDS = 86400 * 7
 
 CALLBACK_BATCH_APPROVE = "gk:ba:"
 CALLBACK_BATCH_REJECT = "gk:br:"
+CALLBACK_BATCH_TOGGLE = "gk:bt:"
 
 MIN_ALBUM_POST = 2
 
@@ -55,29 +57,86 @@ def lane_pending_key(lane_key: str) -> str:
     return f"{LANE_PENDING_PREFIX}{(lane_key or '').strip().lower()}"
 
 
-def _store_batch(batch_id: str, media_ids: list[int]) -> None:
+def _store_batch(
+    batch_id: str,
+    media_ids: list[int],
+    *,
+    lane_key: str | None = None,
+    lead_media_id: int | None = None,
+) -> None:
+    """Persist batch members + optional Storage Hub lane. Index lead → batch for toggle fan-out."""
+    payload = {
+        "media_ids": [int(x) for x in media_ids],
+        "lane_key": (lane_key or "").strip().lower() or None,
+        "lead_media_id": int(lead_media_id) if lead_media_id else (int(media_ids[0]) if media_ids else None),
+    }
     try:
-        _redis().set(
-            f"{BATCH_KEY_PREFIX}{batch_id}",
-            json.dumps([int(x) for x in media_ids]),
-            ex=BATCH_TTL_SECONDS,
-        )
+        r = _redis()
+        r.set(f"{BATCH_KEY_PREFIX}{batch_id}", json.dumps(payload), ex=BATCH_TTL_SECONDS)
+        lead = payload.get("lead_media_id")
+        if lead:
+            r.set(f"{BATCH_LEAD_PREFIX}{int(lead)}", batch_id, ex=BATCH_TTL_SECONDS)
     except Exception:
         logger.debug("quarantine batch store failed id=%s", batch_id, exc_info=True)
 
 
-def load_batch_media_ids(batch_id: str) -> list[int]:
+def load_batch_payload(batch_id: str) -> dict[str, Any]:
     try:
         raw = _redis().get(f"{BATCH_KEY_PREFIX}{batch_id}")
         if not raw:
-            return []
+            return {}
         data = json.loads(raw)
         if isinstance(data, list):
-            return [int(x) for x in data]
+            # Legacy shape: bare media_id list
+            return {"media_ids": [int(x) for x in data], "lane_key": None, "lead_media_id": int(data[0]) if data else None}
+        if isinstance(data, dict):
+            ids = [int(x) for x in (data.get("media_ids") or [])]
+            return {
+                "media_ids": ids,
+                "lane_key": (data.get("lane_key") or None),
+                "lead_media_id": int(data["lead_media_id"]) if data.get("lead_media_id") else (ids[0] if ids else None),
+            }
     except Exception:
         logger.debug("quarantine batch load failed id=%s", batch_id, exc_info=True)
-    return []
+    return {}
 
+
+def load_batch_media_ids(batch_id: str) -> list[int]:
+    return list(load_batch_payload(batch_id).get("media_ids") or [])
+
+
+def batch_id_for_lead_media(lead_media_id: int) -> str | None:
+    try:
+        raw = _redis().get(f"{BATCH_LEAD_PREFIX}{int(lead_media_id)}")
+        return str(raw) if raw else None
+    except Exception:
+        return None
+
+
+def fanout_batch_lane_picks(batch_id: str, lanes: list[str]) -> list[int]:
+    """Write the same operator lane picks onto every media id in the batch."""
+    from app.services.gatekeeper_lane_picker import set_picked_lanes
+
+    ids = load_batch_media_ids(batch_id)
+    clean = list(lanes or [])
+    for mid in ids:
+        set_picked_lanes(int(mid), clean)
+    return ids
+
+
+def toggle_batch_picked_lane(batch_id: str, lane_key: str) -> list[str]:
+    """Toggle a lane for the whole batch (UI is one card → one choice for all items)."""
+    from app.services.gatekeeper_lane_picker import get_picked_lanes, toggle_picked_lane
+
+    payload = load_batch_payload(batch_id)
+    ids = list(payload.get("media_ids") or [])
+    if not ids:
+        return []
+    lead = int(payload.get("lead_media_id") or ids[0])
+    selected = toggle_picked_lane(lead, lane_key)
+    fanout_batch_lane_picks(batch_id, selected)
+    # Re-read lead as source of truth after fan-out
+    return get_picked_lanes(lead)
 
 def lane_quarantine_buffer_count(lane_key: str) -> int:
     try:
@@ -87,22 +146,40 @@ def lane_quarantine_buffer_count(lane_key: str) -> int:
 
 
 def batch_review_keyboard(batch_id: str, lead_media_id: int, lane_key: str | None = None) -> dict[str, Any]:
-    from app.services.gatekeeper_lane_picker import review_lane_picker_keyboard
+    from app.services.gatekeeper_lane_picker import (
+        get_picked_lanes,
+        lane_button_label,
+        gatekeeper_lane_picker_keys,
+    )
+    from app.services.gatekeeper_review import panel_open_callback
 
-    kb = review_lane_picker_keyboard(int(lead_media_id), default_lane_key=lane_key)
-    rows = []
-    for row in kb.get("inline_keyboard") or []:
-        new_row = []
-        for btn in row:
-            data = str(btn.get("callback_data") or "")
-            text = str(btn.get("text") or "")
-            if data.startswith("gk:a:"):
-                new_row.append({"text": text, "callback_data": f"{CALLBACK_BATCH_APPROVE}{batch_id}"})
-            elif data.startswith("gk:r:"):
-                new_row.append({"text": text, "callback_data": f"{CALLBACK_BATCH_REJECT}{batch_id}"})
-            else:
-                new_row.append(btn)
-        rows.append(new_row)
+    picked = set(get_picked_lanes(int(lead_media_id)))
+    if lane_key and not picked:
+        picked = {(lane_key or "").strip().lower()}
+    rows: list[list[dict[str, str]]] = []
+    row: list[dict[str, str]] = []
+    for lane in gatekeeper_lane_picker_keys():
+        row.append(
+            {
+                "text": lane_button_label(lane, selected=lane in picked),
+                "callback_data": f"{CALLBACK_BATCH_TOGGLE}{batch_id}:{lane}",
+            }
+        )
+        if len(row) >= 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            {"text": "✅ Approve batch", "callback_data": f"{CALLBACK_BATCH_APPROVE}{batch_id}"},
+            {"text": "🗑 Reject batch", "callback_data": f"{CALLBACK_BATCH_REJECT}{batch_id}"},
+        ]
+    )
+    lane_for_open = (lane_key or "").strip().lower() or (sorted(picked)[0] if picked else None)
+    rows.append(
+        [{"text": "📋 Review all waiting", "callback_data": panel_open_callback(lane_for_open)}]
+    )
     return {"inline_keyboard": rows}
 
 
@@ -130,7 +207,7 @@ def format_batch_caption(
     lines.append("<code>" + html_escape("\n".join(numbered[:15])) + "</code>")
     if len(numbered) > 15:
         lines.append(f"<i>… +{len(numbered) - 15} more in batch</i>")
-    lines.append("<i>Tap lane emoji(s), then Approve — or Reject entire batch.</i>")
+    lines.append("<i>Batch = one lane choice for all items. Tap lane emoji(s), then Approve — or Reject entire batch.</i>")
     from app.services.tbcc_caption_stamp import merge_quarantine_review_html
 
     return merge_quarantine_review_html("\n".join(lines), lane_key=lane_key)
@@ -174,11 +251,15 @@ def post_quarantine_batch(
         return {"ok": False, "reason": "bot_token_unset"}
 
     batch_id = secrets.token_hex(4)
-    _store_batch(batch_id, [int(m.id) for m in quarantine])
-
     album_size = review_batch_size()
     album_ids = [int(m.id) for m in quarantine[:album_size]]
     lead_id = int(quarantine[album_size].id) if len(quarantine) > album_size else int(quarantine[0].id)
+    _store_batch(
+        batch_id,
+        [int(m.id) for m in quarantine],
+        lane_key=lane_key,
+        lead_media_id=lead_id,
+    )
 
     previews: list[dict[str, Any]] = []
     for m in quarantine:
@@ -347,8 +428,14 @@ def post_lane_quarantine_batch(db: Session, lane_key: str, media_ids: list[int])
     )
 
 
-def parse_batch_review_callback(data: str | None) -> tuple[str, str] | None:
+def parse_batch_review_callback(data: str | None) -> tuple[str, str] | tuple[str, str, str] | None:
     raw = (data or "").strip()
+    if raw.startswith(CALLBACK_BATCH_TOGGLE):
+        rest = raw[len(CALLBACK_BATCH_TOGGLE) :]
+        if ":" not in rest:
+            return None
+        batch_id, lane = rest.split(":", 1)
+        return ("toggle_lane", batch_id, lane)
     if raw.startswith(CALLBACK_BATCH_APPROVE):
         return ("approve", raw[len(CALLBACK_BATCH_APPROVE) :])
     if raw.startswith(CALLBACK_BATCH_REJECT):
@@ -356,21 +443,72 @@ def parse_batch_review_callback(data: str | None) -> tuple[str, str] | None:
     return None
 
 
+def _lanes_for_batch_item(
+    db: Session,
+    media_id: int,
+    *,
+    batch_lane_key: str | None,
+    operator_picks: list[str] | None,
+) -> list[str] | None:
+    """Resolve lanes for one batch member without stamping lead-only Redis onto siblings.
+
+    Priority:
+    1. Explicit operator picks (fan-out already wrote the same list on every id)
+    2. Batch's Storage Hub lane_key (whole batch came from one lane buffer)
+    3. Per-item resolve_media_lane_key / storage expected lane
+    """
+    from app.models.media import Media
+
+    if operator_picks:
+        return list(operator_picks)
+    if batch_lane_key:
+        return [batch_lane_key]
+    media = db.query(Media).filter(Media.id == int(media_id)).first()
+    if not media:
+        return None
+    fallback = resolve_media_lane_key(db, media)
+    if fallback and fallback not in ("inbox", "packs"):
+        return [fallback]
+    return None
+
+
 def operator_approve_batch(db: Session, batch_id: str, *, operator_id: int | None = None) -> dict[str, Any]:
     from app.services.gatekeeper_lane_picker import get_picked_lanes
     from app.services.gatekeeper_review import operator_approve_media
 
-    ids = load_batch_media_ids(batch_id)
+    payload = load_batch_payload(batch_id)
+    ids = list(payload.get("media_ids") or [])
     if not ids:
         return {"ok": False, "reason": "batch_not_found", "batch_id": batch_id}
-    lane_keys = get_picked_lanes(int(ids[0]))
+
+    batch_lane = (payload.get("lane_key") or "").strip().lower() or None
+    lead_id = int(payload.get("lead_media_id") or ids[0])
+    # Operator toggles fan out to every id; any member's picks reflect the batch choice.
+    operator_picks = get_picked_lanes(lead_id) or get_picked_lanes(int(ids[0]))
+    if operator_picks:
+        fanout_batch_lane_picks(batch_id, operator_picks)
+
     results = []
     for mid in ids:
+        lanes = _lanes_for_batch_item(
+            db,
+            int(mid),
+            batch_lane_key=batch_lane,
+            operator_picks=operator_picks or None,
+        )
         results.append(
-            operator_approve_media(db, mid, operator_id=operator_id, lane_keys=lane_keys or None)
+            operator_approve_media(db, int(mid), operator_id=operator_id, lane_keys=lanes)
         )
     ok = sum(1 for r in results if r.get("ok"))
-    return {"ok": ok > 0, "batch_id": batch_id, "approved": ok, "total": len(ids), "results": results}
+    route_fail = sum(1 for r in results if r.get("ok") and r.get("route_enqueue_ok") is False)
+    return {
+        "ok": ok > 0,
+        "batch_id": batch_id,
+        "approved": ok,
+        "total": len(ids),
+        "route_enqueue_failures": route_fail,
+        "results": results,
+    }
 
 
 def operator_reject_batch(db: Session, batch_id: str, *, operator_id: int | None = None) -> dict[str, Any]:

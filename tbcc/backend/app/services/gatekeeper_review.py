@@ -287,15 +287,38 @@ def resolve_media_lane_key(db: Session, media: Any) -> str | None:
     return str(expected).strip().lower() if expected else None
 
 
-def enqueue_lane_route_for_media(media_id: int, lane_keys: list[str]) -> None:
+def enqueue_lane_route_for_media(media_id: int, lane_keys: list[str]) -> dict[str, Any]:
+    """Enqueue Celery lane-route. Never claim success when ``.delay`` fails.
+
+    Returns ``{"ok": True, "queued": True, ...}`` or
+    ``{"ok": False, "queued": False, "reason": "..."}`` so callers cannot report
+    false-positive "auto-routed" / "routed" when Redis/Celery enqueue failed.
+    """
     if not lane_keys:
-        return
+        return {"ok": False, "queued": False, "reason": "no_lane_keys", "media_id": int(media_id)}
     try:
         from app.workers.gatekeeper_review_worker import route_approved_lanes_task
 
         route_approved_lanes_task.delay(int(media_id), list(lane_keys))
-    except Exception:
-        logger.debug("lane route enqueue failed media_id=%s", media_id, exc_info=True)
+        return {
+            "ok": True,
+            "queued": True,
+            "media_id": int(media_id),
+            "lane_keys": list(lane_keys),
+        }
+    except Exception as e:
+        logger.exception(
+            "lane route enqueue FAILED media_id=%s lanes=%s — caller must not claim routed",
+            media_id,
+            lane_keys,
+        )
+        return {
+            "ok": False,
+            "queued": False,
+            "reason": str(e)[:200] or type(e).__name__,
+            "media_id": int(media_id),
+            "lane_keys": list(lane_keys),
+        }
 
 
 def maybe_vault_and_evict_approved_media(db: Session, media_id: int) -> dict[str, Any]:
@@ -416,9 +439,18 @@ def operator_approve_media(
             logger.debug("gold label record skipped media_id=%s", media_id, exc_info=True)
 
     routed_lanes: list[str] = []
+    route_enqueue: dict[str, Any] = {"ok": False, "queued": False, "reason": "not_attempted"}
     if selected and lane_picker_enabled():
-        enqueue_lane_route_for_media(media_id, selected)
-        routed_lanes = selected
+        route_enqueue = enqueue_lane_route_for_media(media_id, selected) or {}
+        if route_enqueue.get("ok"):
+            routed_lanes = selected
+        else:
+            logger.error(
+                "gatekeeper approve media_id=%s lanes=%s but route enqueue failed: %s",
+                media_id,
+                selected,
+                route_enqueue.get("reason") or "enqueue_returned_empty",
+            )
 
     micro_pull_lanes: list[str] = []
     if approve_triggers_micro_pull():
@@ -427,10 +459,11 @@ def operator_approve_media(
                 enqueue_micro_pull_for_lane(lane)
                 micro_pull_lanes.append(lane)
     logger.info(
-        "gatekeeper operator approve media_id=%s operator=%s lanes=%s micro_pull=%s",
+        "gatekeeper operator approve media_id=%s operator=%s lanes=%s route_ok=%s micro_pull=%s",
         media_id,
         operator_id,
         selected,
+        route_enqueue.get("ok"),
         micro_pull_lanes,
     )
     enqueue_vault_approved_media(media_id)
@@ -440,6 +473,8 @@ def operator_approve_media(
         "status": "approved",
         "operator_lanes": selected,
         "routed_lanes": routed_lanes,
+        "route_enqueue_ok": bool(route_enqueue.get("ok")),
+        "route_enqueue_error": None if route_enqueue.get("ok") else route_enqueue.get("reason"),
         "micro_pull_lanes": micro_pull_lanes,
         "micro_pull_lane": micro_pull_lanes[0] if micro_pull_lanes else None,
     }

@@ -217,7 +217,7 @@ def _is_hard_blocked(gk: dict[str, Any]) -> bool:
     return any(str(f).startswith("hard_block:") for f in flags)
 
 
-def _apply_auto_route(db: Session, media: Any, lane: str) -> None:
+def _apply_auto_route(db: Session, media: Any, lane: str) -> dict[str, Any]:
     from app.services.export_flywheel_service import pool_id_for_network_key
     from app.services.gatekeeper_review import enqueue_lane_route_for_media
 
@@ -233,8 +233,22 @@ def _apply_auto_route(db: Session, media: Any, lane: str) -> None:
     }
     media.classification_json = json.dumps(data, ensure_ascii=False)
     db.commit()
-    enqueue_lane_route_for_media(int(media.id), [lane])
-
+    enqueue = enqueue_lane_route_for_media(int(media.id), [lane]) or {}
+    if not enqueue.get("ok"):
+        data = _classification_dict(media)
+        split = dict(data.get("gatekeeper_split") or {})
+        split["route_enqueue_ok"] = False
+        split["route_enqueue_error"] = enqueue.get("reason") or "enqueue_returned_empty"
+        data["gatekeeper_split"] = split
+        media.classification_json = json.dumps(data, ensure_ascii=False)
+        db.commit()
+        logger.error(
+            "inbox auto_route media_id=%s lane=%s approved in DB but Celery enqueue failed: %s",
+            media.id,
+            lane,
+            enqueue.get("reason") or "enqueue_returned_empty",
+        )
+    return enqueue
 
 def maybe_auto_split_inbox(
     db: Session,
@@ -309,7 +323,7 @@ def maybe_auto_split_inbox(
                 "proposed": proposed,
             }
         _mark_split_routed(media_id)
-        _apply_auto_route(db, media, str(top["lane"]))
+        enqueue = _apply_auto_route(db, media, str(top["lane"]))
         return {
             "ok": True,
             "action": "auto_route",
@@ -318,6 +332,8 @@ def maybe_auto_split_inbox(
             "margin": margin,
             "media_id": media_id,
             "proposed": proposed,
+            "route_enqueue_ok": bool(enqueue.get("ok")),
+            "route_enqueue_error": None if enqueue.get("ok") else enqueue.get("reason"),
         }
 
     if disagree and clip_top and proto_top:

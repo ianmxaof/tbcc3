@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-17 ~13:35 PT — G2 Auto brevity (local; no island deploy)
+**Last updated:** 2026-08-21 ~10:50 PT — ops breakers 1–5 local (enqueue observability, batch lane stamp, telethon lock require, hot-patch script, taboo corpus already present)
 
 ## Sprint goal
 
@@ -33,7 +33,7 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Celery home backlog + import priority | agent | **2026-07-14:** Supervisor: champagne diamond CPU/RAM meters (heat + flutter sparkle). Relaunch tray to load. |
 | Userscript monorepo + FetLife suite | agent | **v1.8.0:** Clear place/ASL + no place→ASL sync; kinksters Resume bookmark; build writes `extension/fetlife-suite.bundle.js`. Survey: `docs/FETLIFE_MOD_SURVEY.md`. |
 | Perchance Gemini-parity suite | agent | **extension-only** `perchance-suite.bundle.js` (no TM). **0.3 / ext 1.40.9:** Loot God Card Lab (border+primer+Δ subject), lean page, jobs. Reload TBCC after `userscripts` npm build. |
-| ThisVid upload MVP | agent | **ext 1.40.30:** Erome Videos → R2 library watermark → `my_video_upload` From-a-URL auto-paste. |
+| ThisVid upload MVP | agent | **ext 1.40.30:** Erome Videos → R2 library watermark → `my_video_upload` From-a-URL auto-paste. **2026-08-18:** Automated Playwright leg (`backend/scripts/thisvid_upload_local.py` + `thisvid_upload_provision.py`/`_policy.py`) — kill switch off by default (`TBCC_THISVID_MIRROR_ENABLED=0`), 1/day cap, private-first, hard TOS blocks, separate ledger from Erome. Selectors unconfirmed — run `thisvid_codegen.py --codegen` against live upload.php before trusting `--execute`. |
 | Erome browse-intel v4.2 + market intel | agent | **2026-07-19:** Shared `tbcc-browse-intel-common` — auto-push at max (keep 20%) on ER/TV/ML; TV+ML Pareto/Live captures; ML grid auto-scan. |
 | AOF watermark brand rename | agent | Burn-in + defaults: **`telegram.me/aofmainhub`** (t.me→telegram.me normalizer for .env/DB; zip `telegram.me_aofmainhub`). Gate retarget: `docs/GATE_LINK_AUDIT.md`. |
 | Creative orchestrator | agent | `/creative/plan` + suite Orch executor + Analytics deploy button; Playwright batch textarea-only |

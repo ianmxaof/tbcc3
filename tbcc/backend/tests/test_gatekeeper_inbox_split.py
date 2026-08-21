@@ -148,9 +148,14 @@ def test_confident_single_lane_auto_routes(monkeypatch):
     _patch_hub_origin(monkeypatch)
     _patch_split_redis(monkeypatch)
     routed = {}
+
+    def _enqueue(mid, lanes):
+        routed.update(media_id=mid, lanes=list(lanes))
+        return {"ok": True, "queued": True, "media_id": mid, "lane_keys": list(lanes)}
+
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: routed.update(media_id=mid, lanes=list(lanes)),
+        _enqueue,
     )
     monkeypatch.setattr(
         "app.services.export_flywheel_service.pool_id_for_network_key",
@@ -176,9 +181,14 @@ def test_second_pass_does_not_duplicate_route(monkeypatch):
     _patch_hub_origin(monkeypatch)
     _patch_split_redis(monkeypatch)
     call_count = {"n": 0}
+
+    def _enqueue(mid, lanes):
+        call_count["n"] += 1
+        return {"ok": True, "queued": True}
+
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: call_count.__setitem__("n", call_count["n"] + 1),
+        _enqueue,
     )
     monkeypatch.setattr(
         "app.services.export_flywheel_service.pool_id_for_network_key",
@@ -218,7 +228,7 @@ def test_clip_down_milf_caption_confidence_one_may_auto_route(monkeypatch):
     routed = {}
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: routed.update(lanes=list(lanes)),
+        lambda mid, lanes: (routed.update(lanes=list(lanes)) or {"ok": True, "queued": True}),
     )
     monkeypatch.setattr(
         "app.services.export_flywheel_service.pool_id_for_network_key",
@@ -255,7 +265,7 @@ def test_already_approved_untagged_inbox_still_enters_split(monkeypatch):
     routed = {}
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: routed.update(lanes=list(lanes)),
+        lambda mid, lanes: (routed.update(lanes=list(lanes)) or {"ok": True, "queued": True}),
     )
     monkeypatch.setattr(
         "app.services.export_flywheel_service.pool_id_for_network_key",
@@ -287,7 +297,7 @@ def test_clip_and_prototype_disagree_no_auto_route(monkeypatch):
     routed = {"called": False}
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: routed.__setitem__("called", True),
+        lambda mid, lanes: (routed.__setitem__("called", True) or {"ok": True, "queued": True}),
     )
     monkeypatch.setattr(
         "app.services.gatekeeper_prototypes.score_embedding",
@@ -344,7 +354,7 @@ def test_video_with_no_clip_labels_takes_caption_only_branch(monkeypatch):
     routed = {}
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: routed.update(lanes=list(lanes)),
+        lambda mid, lanes: (routed.update(lanes=list(lanes)) or {"ok": True, "queued": True}),
     )
     monkeypatch.setattr(
         "app.services.export_flywheel_service.pool_id_for_network_key",
@@ -374,7 +384,7 @@ def test_auto_routed_item_does_not_also_post_quarantine_review(monkeypatch):
     _patch_split_redis(monkeypatch)
     monkeypatch.setattr(
         "app.services.gatekeeper_review.enqueue_lane_route_for_media",
-        lambda mid, lanes: None,
+        lambda mid, lanes: {"ok": True, "queued": True},
     )
     monkeypatch.setattr(
         "app.services.export_flywheel_service.pool_id_for_network_key",

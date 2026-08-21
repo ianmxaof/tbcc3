@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ _POSTER_LOCK_KEY = "tbcc:lock:poster_telegram_session"
 _ACCOUNT_LOCK_KEY = "tbcc:lock:telegram_account_mtproto"
 # session lock token -> account lock token (release both on session release)
 _account_lock_by_session: dict[str, str] = {}
+_held_lock_labels = threading.local()
 _RELEASE_LUA = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
   return redis.call("del", KEYS[1])
@@ -35,6 +37,49 @@ else
 end
 """
 
+
+def _held_set() -> set[str]:
+    held = getattr(_held_lock_labels, "labels", None)
+    if held is None:
+        held = set()
+        _held_lock_labels.labels = held
+    return held
+
+
+def _mark_lock_held(label: str) -> None:
+    _held_set().add(label)
+
+
+def _mark_lock_released(label: str) -> None:
+    _held_set().discard(label)
+
+
+def require_telethon_session_lock_enabled() -> bool:
+    """Default on — ad-hoc scripts must hold Redis session lock before opening admin.session."""
+    raw = (os.getenv("TBCC_REQUIRE_TELETHON_SESSION_LOCK") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def require_telethon_session_lock(kind: str = "admin") -> None:
+    """Raise if this thread opens Telethon without holding the Redis session lock.
+
+    Call from scripts before ``TelegramClient(... admin.session)``. Preferred path is
+    ``telegram_admin.run_telegram_io`` / Celery telegram queue (locks already held).
+    Set ``TBCC_REQUIRE_TELETHON_SESSION_LOCK=0`` only for interactive login scripts.
+    """
+    if not require_telethon_session_lock_enabled():
+        return
+    label = (kind or "admin").strip().lower() or "admin"
+    held = _held_set()
+    if label in held:
+        return
+    raise RuntimeError(
+        f"Telethon {label}.session access blocked: Redis session lock not held "
+        f"(held={sorted(held) or 'none'}). Use app.services.telegram_admin.run_telegram_io "
+        f"(or import/poster variants) or a Celery telegram-queue task — do not open "
+        f"TelegramClient on admin.session from an ad-hoc script while Celery holds it. "
+        f"Override: TBCC_REQUIRE_TELETHON_SESSION_LOCK=0 (login scripts only)."
+    )
 
 def _redis_url() -> str:
     return (os.getenv("REDIS_URL") or "redis://localhost:6379/0").strip()
@@ -163,6 +208,7 @@ def _acquire_nested_session_lock(
         )
         if account_token:
             _account_lock_by_session[session_token] = account_token
+        _mark_lock_held(label)
         return session_token
     except Exception:
         if account_token:
@@ -170,9 +216,11 @@ def _acquire_nested_session_lock(
         raise
 
 
-def _release_nested_session_lock(lock_key: str, token: str) -> None:
+def _release_nested_session_lock(lock_key: str, token: str, *, label: str | None = None) -> None:
     account_token = _account_lock_by_session.pop(token, "")
     _release_session_lock(lock_key, token)
+    if label:
+        _mark_lock_released(label)
     if account_token:
         release_telegram_account_lock(account_token)
 
@@ -201,7 +249,7 @@ def acquire_admin_session_lock(timeout_s: float | None = None) -> str:
 
 
 def release_admin_session_lock(token: str) -> None:
-    _release_nested_session_lock(_ADMIN_LOCK_KEY, token)
+    _release_nested_session_lock(_ADMIN_LOCK_KEY, token, label="admin")
 
 
 def acquire_import_session_lock(timeout_s: float | None = None) -> str:
@@ -218,7 +266,7 @@ def acquire_import_session_lock(timeout_s: float | None = None) -> str:
 
 
 def release_import_session_lock(token: str) -> None:
-    _release_nested_session_lock(_IMPORT_LOCK_KEY, token)
+    _release_nested_session_lock(_IMPORT_LOCK_KEY, token, label="import")
 
 
 def acquire_poster_session_lock(timeout_s: float | None = None) -> str:
@@ -235,7 +283,7 @@ def acquire_poster_session_lock(timeout_s: float | None = None) -> str:
 
 
 def release_poster_session_lock(token: str) -> None:
-    _release_nested_session_lock(_POSTER_LOCK_KEY, token)
+    _release_nested_session_lock(_POSTER_LOCK_KEY, token, label="poster")
 
 
 @contextmanager

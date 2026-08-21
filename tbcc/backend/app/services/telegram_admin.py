@@ -175,8 +175,10 @@ async def reset_admin_client() -> None:
 async def _connect_admin_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
+    from app.services.telethon_session_lock import require_telethon_session_lock
     from app.utils.telethon_session import prepare_session_sqlite_file
 
+    require_telethon_session_lock("admin")
     stem = _telegram_session_path()
     prepare_session_sqlite_file(stem)
     client = TelegramClient(stem, int(os.environ["API_ID"]), os.environ["API_HASH"])
@@ -489,8 +491,10 @@ async def reset_import_client() -> None:
 async def _connect_import_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
+    from app.services.telethon_session_lock import require_telethon_session_lock
     from app.utils.telethon_session import prepare_session_sqlite_file
 
+    require_telethon_session_lock("import")
     stem = import_session_stem()
     import_path = stem + ".session"
     if not os.path.isfile(import_path):

@@ -49,8 +49,38 @@ async def on_gatekeeper_review_callback(
         if not can_operate_storage_hub_bot_api(update):
             await query.answer("Admin only", show_alert=True)
             return True
-        batch_action, batch_id = batch_parsed
+        batch_action = batch_parsed[0]
+        batch_id = batch_parsed[1]
         operator_id = getattr(update.effective_user, "id", None)
+
+        if batch_action == "toggle_lane":
+            lane = str(batch_parsed[2])
+            from app.services.quarantine_batch_review import (
+                load_batch_payload,
+                toggle_batch_picked_lane,
+                batch_review_keyboard,
+            )
+
+            selected = toggle_batch_picked_lane(batch_id, lane)
+            await query.answer(format_lane_pick_hint(selected), show_alert=False)
+            if query.message:
+                try:
+                    payload = load_batch_payload(batch_id)
+                    lead = int(payload.get("lead_media_id") or 0)
+                    kb = batch_review_keyboard(
+                        batch_id,
+                        lead,
+                        lane_key=payload.get("lane_key"),
+                    )
+                    rows = [
+                        [InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row]
+                        for row in kb["inline_keyboard"]
+                    ]
+                    await query.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(rows))
+                except Exception:
+                    logger.debug("batch lane picker refresh failed batch=%s", batch_id, exc_info=True)
+            return True
+
         with SessionLocal() as db:
             if batch_action == "approve":
                 result = operator_approve_batch(db, batch_id, operator_id=operator_id)
@@ -61,10 +91,16 @@ async def on_gatekeeper_review_callback(
             return True
         label = "Approved" if batch_action == "approve" else "Rejected"
         count = result.get("approved") or result.get("rejected") or result.get("total") or 0
-        await query.answer(f"{label} batch {batch_id} ({count} items)")
+        route_fail = int(result.get("route_enqueue_failures") or 0)
+        alert = f"{label} batch {batch_id} ({count} items)"
+        if route_fail:
+            alert = f"{alert} — {route_fail} route enqueue FAILED (check logs)"
+        await query.answer(alert, show_alert=bool(route_fail))
         if query.message:
             try:
                 suffix = f"\n\n<b>{label}</b> batch <code>{html_escape(batch_id)}</code> ({count} items)"
+                if route_fail:
+                    suffix += f"\n⚠️ <b>{route_fail}</b> item(s) approved but Celery route enqueue failed"
                 base = getattr(query.message, "text_html", None) or query.message.text or ""
                 await query.message.edit_text(f"{base}{suffix}", parse_mode=ParseMode.HTML, reply_markup=None)
             except Exception:
@@ -128,7 +164,9 @@ async def on_gatekeeper_review_callback(
     lanes = result.get("operator_lanes") or []
     if action == "approve" and lanes:
         extra = f"{extra} · {', '.join(lanes)}"
-    await query.answer(f"{label} #{media_id}{extra}")
+    if action == "approve" and result.get("route_enqueue_ok") is False:
+        extra = f"{extra} · ⚠️ route enqueue FAILED"
+    await query.answer(f"{label} #{media_id}{extra}", show_alert=bool(action == "approve" and result.get("route_enqueue_ok") is False))
 
     if query.message:
         try:

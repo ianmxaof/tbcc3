@@ -34,6 +34,9 @@ from dotenv import load_dotenv
 
 load_dotenv(_root.parent / ".env", override=True)
 
+# Interactive login must open admin.session outside Celery's Redis lock.
+os.environ["TBCC_REQUIRE_TELETHON_SESSION_LOCK"] = "0"
+
 from telethon import TelegramClient
 from telethon.errors import AuthKeyDuplicatedError, AuthKeyUnregisteredError
 
