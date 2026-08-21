@@ -35,9 +35,10 @@ import httpx
 from app.services.llm_completions import (
     TextLlmRuntime,
     chat_completions_headers,
+    is_openrouter_free_model,
     resolve_text_llm_runtime,
 )
-from app.services.llm_provider_fallback import DEFAULT_CHAIN, try_resolve_provider
+from app.services.llm_provider_fallback import DEFAULT_CHAIN
 
 FailureKind = Literal["quota", "model_not_found", "transient"]
 
@@ -55,7 +56,12 @@ _CREDIT_HINTS = (
 )
 _QUOTA_HINTS = _RATE_LIMIT_HINTS + _CREDIT_HINTS
 
-_ALL_PROVIDERS = (*DEFAULT_CHAIN, "openai")
+_BUILTIN_PROVIDERS = (*DEFAULT_CHAIN, "openai")
+
+# Heuristic only — matches the operator's own vocabulary for the opt-in
+# --prefer-uncensored lane. Off by default: most devops calls just need a
+# working model, not this (see module docstring / pick_best_model_for_provider).
+_UNCENSORED_HINTS = ("dolphin", "hermes", "abliterat", "uncensor", "heretic")
 
 
 def _now() -> datetime:
@@ -114,6 +120,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             model_id TEXT,
             updated_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS credentials (
+            provider TEXT PRIMARY KEY,
+            api_key TEXT NOT NULL,
+            base_url TEXT,
+            added_at TEXT NOT NULL
+        );
         """
     )
     conn.commit()
@@ -128,6 +140,103 @@ def _upsert_provider_state(conn: sqlite3.Connection, provider: str, **fields: An
         f"ON CONFLICT(provider) DO UPDATE SET {updates}",
         (provider, *fields.values()),
     )
+
+
+def set_credential(provider: str, api_key: str, base_url: str | None = None) -> None:
+    """Store a key for `provider` — a built-in (overrides its env var inside the
+    rotator only; production paths never read this table) or a wholly new
+    custom/HuggingFace-style endpoint (base_url required, since there's no
+    hardcoded default to fall back on). Same plaintext-local-file posture as
+    tbcc/.env: this file lives in tbcc/.tbcc-run/, gitignored, never printed."""
+    now = _now_iso()
+    with closing(_connect()) as conn:
+        conn.execute(
+            "INSERT INTO credentials (provider, api_key, base_url, added_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(provider) DO UPDATE SET api_key=excluded.api_key, base_url=excluded.base_url, "
+            "added_at=excluded.added_at",
+            (provider, api_key, base_url, now),
+        )
+        conn.commit()
+
+
+def remove_credential(provider: str) -> bool:
+    with closing(_connect()) as conn:
+        cur = conn.execute("DELETE FROM credentials WHERE provider = ?", (provider,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def _get_credential(provider: str) -> dict[str, Any] | None:
+    with closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT provider, api_key, base_url FROM credentials WHERE provider = ?", (provider,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_credentials() -> list[dict[str, Any]]:
+    """provider/base_url/added_at only — api_key is deliberately never selected
+    here so it can never end up in `llm keys list` output or a --json dump."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT provider, base_url, added_at FROM credentials ORDER BY provider"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def custom_provider_ids() -> tuple[str, ...]:
+    """Provider ids registered purely via `llm keys add <id> --base-url ...` —
+    not one of the 13 built-ins llm_completions.py already knows how to resolve."""
+    with closing(_connect()) as conn:
+        rows = conn.execute(
+            "SELECT provider FROM credentials WHERE base_url IS NOT NULL"
+        ).fetchall()
+    return tuple(r[0] for r in rows if r[0] not in _BUILTIN_PROVIDERS)
+
+
+def all_provider_ids() -> tuple[str, ...]:
+    return (*_BUILTIN_PROVIDERS, *custom_provider_ids())
+
+
+def is_builtin_provider(provider: str) -> bool:
+    return provider in _BUILTIN_PROVIDERS
+
+
+def key_source(provider: str) -> Literal["stored", "env", "none"]:
+    if _get_credential(provider) is not None:
+        return "stored"
+    if provider in _BUILTIN_PROVIDERS:
+        try:
+            resolve_text_llm_runtime(provider=provider)
+            return "env"
+        except RuntimeError:
+            return "none"
+    return "none"
+
+
+def resolve_runtime_for_rotator(provider: str, model: str | None = None) -> TextLlmRuntime | None:
+    """The rotator's own resolver — distinct from llm_completions.resolve_text_llm_runtime,
+    which only knows the 13 built-ins and only reads env vars. This one also checks
+    stored credentials (which win over env inside the rotator, since adding one via
+    `llm keys add` is a more recent, explicit operator action) and constructs a
+    TextLlmRuntime directly for custom/registered providers that resolve_text_llm_runtime
+    has never heard of."""
+    cred = _get_credential(provider)
+    if cred:
+        if cred.get("base_url"):
+            return TextLlmRuntime(
+                provider=provider, api_key=cred["api_key"], model=model or "", base_url=cred["base_url"]
+            )
+        try:
+            return resolve_text_llm_runtime(provider=provider, model=model, api_key=cred["api_key"])
+        except RuntimeError:
+            return None
+    if provider in _BUILTIN_PROVIDERS:
+        try:
+            return resolve_text_llm_runtime(provider=provider, model=model)
+        except RuntimeError:
+            return None
+    return None
 
 
 def classify_failure(exc: BaseException) -> FailureKind:
@@ -185,13 +294,12 @@ def _models_url(rt: TextLlmRuntime) -> str:
 
 def refresh_provider_models(provider: str, *, timeout: float = 20.0) -> dict[str, Any]:
     now = _now_iso()
-    try:
-        rt = resolve_text_llm_runtime(provider=provider)
-    except RuntimeError as e:
+    rt = resolve_runtime_for_rotator(provider)
+    if rt is None:
         with closing(_connect()) as conn:
             _upsert_provider_state(conn, provider, configured=0, last_refreshed_at=now)
             conn.commit()
-        return {"provider": provider, "configured": False, "ok": False, "error": str(e)}
+        return {"provider": provider, "configured": False, "ok": False, "error": "not configured (no env or stored key)"}
 
     result: dict[str, Any] = {"provider": provider, "configured": True}
     try:
@@ -265,7 +373,7 @@ def _refresh_openrouter_usage(*, timeout: float = 20.0) -> None:
 
 
 def refresh_all_providers(*, timeout: float = 20.0) -> list[dict[str, Any]]:
-    out = [refresh_provider_models(pid, timeout=timeout) for pid in _ALL_PROVIDERS]
+    out = [refresh_provider_models(pid, timeout=timeout) for pid in all_provider_ids()]
     _refresh_openrouter_usage(timeout=timeout)
     return out
 
@@ -299,34 +407,39 @@ def provider_status(provider: str) -> dict[str, Any]:
     d = dict(row) if row else {"provider": provider}
     d["exhausted"] = is_exhausted(provider)
     d["model_count"] = model_count
+    d["key_source"] = key_source(provider)
     return d
 
 
 def all_provider_status() -> list[dict[str, Any]]:
-    return [provider_status(pid) for pid in _ALL_PROVIDERS]
+    return [provider_status(pid) for pid in all_provider_ids()]
 
 
 def rank_providers_for_cycle(*, exclude: str | None = None) -> list[dict[str, Any]]:
     """Primary signal: skip exhausted providers and anything not resolvable right
-    now (checked live via try_resolve_provider, not the possibly-stale
-    `configured` column, so a provider whose key was added/removed since the
-    last `llm refresh` is still handled correctly). Secondary: providers with a
-    known positive usage_remaining (currently only OpenRouter exposes one —
-    CometAPI's quota fetcher lives outside this fallback chain) sort first by
-    remaining amount; a provider reporting <= 0 remaining is treated as
-    exhausted, not ranked last. Everyone else keeps DEFAULT_CHAIN order as an
+    now (checked live via resolve_runtime_for_rotator — covers env vars, stored
+    keys, and custom providers — not the possibly-stale `configured` column, so
+    a provider whose key was added/removed since the last `llm refresh` is still
+    handled correctly). Secondary: providers with a known positive
+    usage_remaining (currently only OpenRouter exposes one — CometAPI's quota
+    fetcher lives outside this fallback chain) sort first by remaining amount;
+    a provider reporting <= 0 remaining is treated as exhausted, not ranked
+    last. Everyone else keeps DEFAULT_CHAIN+custom-registration order as an
     'unknown, not yet observed exhausted' tier — this is the primary lane in
-    practice, not the numeric one."""
+    practice, not the numeric one, and is a plain tiebreak, not a preference
+    (DEFAULT_CHAIN's uncensored-first comment is about the secretary bot's own
+    production chain, not this rotator — see pick_best_model_for_provider for
+    where an uncensored preference is actually opt-in here)."""
     with closing(_connect()) as conn:
         rows = {r["provider"]: dict(r) for r in conn.execute("SELECT * FROM provider_state")}
     numeric: list[dict[str, Any]] = []
     unknown: list[dict[str, Any]] = []
-    for order, pid in enumerate(_ALL_PROVIDERS):
+    for order, pid in enumerate(all_provider_ids()):
         if pid == exclude:
             continue
         if is_exhausted(pid):
             continue
-        if try_resolve_provider(pid) is None:
+        if resolve_runtime_for_rotator(pid) is None:
             continue
         usage_remaining = rows.get(pid, {}).get("usage_remaining")
         if usage_remaining is not None and usage_remaining <= 0:
@@ -384,9 +497,59 @@ def _extract_context_length(raw: dict[str, Any]) -> int | None:
     return None
 
 
+def _extract_modality(raw: dict[str, Any]) -> str:
+    """Best-effort task/modality guess. Defaults to 'text' — every provider this
+    project talks to today (Groq/Mistral/NVIDIA/Cerebras/etc.) is a pure
+    chat/text-completion host with no modality field in /v1/models at all, so
+    'unknown' would be misleading; 'text' is the honest default for them."""
+    arch = raw.get("architecture")
+    if isinstance(arch, dict):
+        inputs = arch.get("input_modalities") or []
+        outputs = arch.get("output_modalities") or []
+        if inputs or outputs:
+            return f"{'+'.join(inputs) or '?'}->{'+'.join(outputs) or '?'}"
+    meta = raw.get("metadata")
+    if isinstance(meta, dict):
+        tags = meta.get("tags")
+        if isinstance(tags, list) and tags:
+            return str(tags[0])
+    return "text"
+
+
+def _extract_pricing(raw: dict[str, Any]) -> tuple[float, float] | None:
+    """($ per million input tokens, $ per million output tokens), only when the
+    provider uses the standard per-token `prompt`/`completion` pricing keys
+    (OpenRouter, some Groq models). Deliberately does NOT interpret DeepInfra's
+    metadata.pricing — its shape varies by model type (e.g. input_characters
+    for TTS is a different unit entirely) and treating it as token pricing
+    would be a wrong number, not just a missing one."""
+    price = raw.get("pricing")
+    if not isinstance(price, dict):
+        return None
+    try:
+        prompt = float(price.get("prompt"))
+        completion = float(price.get("completion"))
+    except (TypeError, ValueError):
+        return None
+    return prompt * 1_000_000, completion * 1_000_000
+
+
+def _extract_is_free(model_id: str, pricing: tuple[float, float] | None) -> bool:
+    if is_openrouter_free_model(model_id):
+        return True
+    if pricing is not None and pricing[0] <= 0 and pricing[1] <= 0:
+        return True
+    return False
+
+
+def _looks_uncensored(model_id: str) -> bool:
+    mid = model_id.lower()
+    return any(hint in mid for hint in _UNCENSORED_HINTS)
+
+
 def list_models(provider: str | None = None) -> list[dict[str, Any]]:
     """Master model list joined with provider exhaustion/usage state, for the TUI
-    and any future `llm models` listing. One row per (provider, model_id)."""
+    and `llm models`. One row per (provider, model_id)."""
     with closing(_connect()) as conn:
         if provider:
             rows = conn.execute(
@@ -400,12 +563,17 @@ def list_models(provider: str | None = None) -> list[dict[str, Any]]:
     for row in rows:
         raw = json.loads(row["raw_json"] or "{}")
         st = state_rows.get(row["provider"], {})
+        pricing = _extract_pricing(raw)
         out.append(
             {
                 "provider": row["provider"],
                 "model_id": row["model_id"],
                 "owned_by": raw.get("owned_by") or raw.get("root"),
                 "context_length": _extract_context_length(raw),
+                "modality": _extract_modality(raw),
+                "price_in_per_m": pricing[0] if pricing else None,
+                "price_out_per_m": pricing[1] if pricing else None,
+                "is_free": _extract_is_free(row["model_id"], pricing),
                 "stale": bool(row["stale"]),
                 "fetched_at": row["fetched_at"],
                 "exhausted": is_exhausted(row["provider"]),
@@ -414,3 +582,36 @@ def list_models(provider: str | None = None) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def pick_best_model_for_provider(
+    provider: str, *, task: str = "text", prefer_uncensored: bool = False
+) -> str | None:
+    """Which specific model to call for `provider`, given its catalog (if
+    refreshed). Default preference is free-first then cheapest-per-million —
+    NOT censorship: this project's own fallback chain (DEFAULT_CHAIN) is
+    already uncensored-first for the secretary bot's NSFW tolerance, but that's
+    a production-bot decision, not a general devops default. Returns None
+    (caller keeps the provider's ordinary configured default) when the catalog
+    has nothing usable — most providers (Groq/Mistral/NVIDIA/Cerebras) expose
+    no pricing at all, so this quietly no-ops for them rather than guessing."""
+    rows = [r for r in list_models(provider) if not r["stale"]]
+    if not rows:
+        return None
+    task_matches = [r for r in rows if r["modality"] == task]
+    candidates = task_matches or rows
+    if prefer_uncensored:
+        uncensored = [r for r in candidates if _looks_uncensored(r["model_id"])]
+        if uncensored:
+            candidates = uncensored
+    priced = [r for r in candidates if r["is_free"] or r["price_in_per_m"] is not None]
+    if not priced:
+        return None
+
+    def _sort_key(r: dict[str, Any]) -> tuple[int, float]:
+        if r["is_free"]:
+            return (0, 0.0)
+        return (1, r["price_in_per_m"] or float("inf"))
+
+    priced.sort(key=_sort_key)
+    return priced[0]["model_id"]

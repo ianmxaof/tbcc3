@@ -11,14 +11,21 @@ from __future__ import annotations
 
 from argparse import Namespace
 
+import pytest
+
 from app.services.llm_completions import TextLlmRuntime
 from scripts.tbcc_cli import cmd_llm_ask
+
+
+@pytest.fixture(autouse=True)
+def _isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("TBCC_LLM_INDEX_DB", str(tmp_path / "cli_ask_test.sqlite3"))
 
 
 def _args(**overrides):
     base = dict(
         prompt="hi", system="", provider="", model="", max_tokens=100,
-        temperature=0.7, timeout=10.0, json=False,
+        temperature=0.7, timeout=10.0, json=False, prefer_uncensored=False,
     )
     base.update(overrides)
     return Namespace(**base)
@@ -26,7 +33,7 @@ def _args(**overrides):
 
 def test_failure_is_attributed_to_the_provider_actually_tried(monkeypatch):
     rt = TextLlmRuntime(provider="deepinfra", api_key="k", model="dolphin")
-    monkeypatch.setattr("app.services.llm_completions.resolve_text_llm_runtime", lambda provider, model=None: rt)
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", lambda provider, model=None: rt)
     monkeypatch.setattr(
         "app.services.llm_completions.complete_chat_text_sync",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("LLM error 429: rate limited")),
@@ -52,7 +59,7 @@ def test_cycles_to_next_provider_on_quota_and_succeeds(monkeypatch):
     def _resolve(provider, model=None):
         return {"deepinfra": rt_a, "groq": rt_b}[provider]
 
-    monkeypatch.setattr("app.services.llm_completions.resolve_text_llm_runtime", _resolve)
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", _resolve)
 
     calls: list[str] = []
 
@@ -86,7 +93,7 @@ def test_falls_back_to_ranking_when_sticky_provider_unresolvable(monkeypatch, ca
             raise RuntimeError("Set TBCC_DEEPINFRA_API_KEY")
         return rt
 
-    monkeypatch.setattr("app.services.llm_completions.resolve_text_llm_runtime", _resolve)
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", _resolve)
     monkeypatch.setattr("app.services.llm_completions.complete_chat_text_sync", lambda *a, **k: "ok")
     monkeypatch.setattr("app.services.llm_model_index.get_sticky", lambda: {"provider": "deepinfra"})
     monkeypatch.setattr(
@@ -103,7 +110,7 @@ def test_no_provider_available_anywhere_errors_cleanly(monkeypatch, capsys):
     def _resolve(provider, model=None):
         raise RuntimeError("Set TBCC_API_KEY")
 
-    monkeypatch.setattr("app.services.llm_completions.resolve_text_llm_runtime", _resolve)
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", _resolve)
     monkeypatch.setattr("app.services.llm_model_index.get_sticky", lambda: None)
     monkeypatch.setattr("app.services.llm_model_index.rank_providers_for_cycle", lambda: [])
 

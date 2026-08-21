@@ -71,7 +71,13 @@ def test_app_mount_populates_table_from_index():
     asyncio.run(_run())
 
 
-def test_action_advance_sets_sticky():
+def test_action_advance_sets_sticky(monkeypatch):
+    from app.services.llm_completions import TextLlmRuntime
+
+    monkeypatch.setattr(
+        idx, "resolve_text_llm_runtime",
+        lambda provider, model=None: TextLlmRuntime(provider=provider, api_key="k", model=model or "x"),
+    )
     idx.set_sticky("zlm", None)
 
     async def _run():

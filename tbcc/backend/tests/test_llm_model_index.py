@@ -5,6 +5,8 @@ and every test points TBCC_LLM_INDEX_DB at a throwaway tmp_path file."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services import llm_model_index as idx
@@ -45,7 +47,7 @@ def test_record_failure_quota_marks_provider_exhausted():
 
 
 def test_record_failure_model_not_found_marks_only_that_model(monkeypatch):
-    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider: TextLlmRuntime(
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider, model=None: TextLlmRuntime(
         provider="deepinfra", api_key="k", model="x", base_url="https://api.deepinfra.com/v1/openai",
     ))
     monkeypatch.setattr(idx, "chat_completions_headers", lambda rt: {})
@@ -77,7 +79,7 @@ class _FakeResponse:
 
 
 def test_refresh_provider_models_unconfigured(monkeypatch):
-    def _raise(provider):
+    def _raise(provider, model=None):
         raise RuntimeError(f"Set TBCC_{provider.upper()}_API_KEY")
 
     monkeypatch.setattr(idx, "resolve_text_llm_runtime", _raise)
@@ -86,10 +88,11 @@ def test_refresh_provider_models_unconfigured(monkeypatch):
     assert result["ok"] is False
     status = idx.provider_status("mistral")
     assert status["configured"] == 0
+    assert status["key_source"] == "none"
 
 
 def test_refresh_provider_models_success_inserts_models(monkeypatch):
-    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider: TextLlmRuntime(
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider, model=None: TextLlmRuntime(
         provider="openrouter", api_key="k", model="x", base_url="https://openrouter.ai/api/v1",
     ))
     monkeypatch.setattr(idx, "chat_completions_headers", lambda rt: {})
@@ -105,7 +108,7 @@ def test_refresh_provider_models_success_inserts_models(monkeypatch):
 
 
 def test_refresh_provider_models_http_failure_isolated(monkeypatch):
-    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider: TextLlmRuntime(
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider, model=None: TextLlmRuntime(
         provider="venice", api_key="k", model="x", base_url="https://api.venice.ai/api/v1",
     ))
     monkeypatch.setattr(idx, "chat_completions_headers", lambda rt: {})
@@ -122,13 +125,17 @@ def test_refresh_provider_models_http_failure_isolated(monkeypatch):
 
 
 def _stub_resolvable(monkeypatch, unresolvable: set[str] = frozenset()):
-    """rank_providers_for_cycle checks live resolvability via try_resolve_provider,
-    not the (possibly stale) `configured` column — stub it deterministically so
-    these tests don't depend on real API keys in the test environment."""
-    def _fake(pid: str):
-        return None if pid in unresolvable else TextLlmRuntime(provider=pid, api_key="k", model="x")
+    """rank_providers_for_cycle checks live resolvability via
+    resolve_runtime_for_rotator -> (no stored credential in these tests) ->
+    resolve_text_llm_runtime for builtins. Stub that env-based layer
+    deterministically so these tests don't depend on real API keys in the
+    test environment."""
+    def _fake(provider, model=None):
+        if provider in unresolvable:
+            raise RuntimeError(f"Set TBCC_{provider.upper()}_API_KEY")
+        return TextLlmRuntime(provider=provider, api_key="k", model=model or "x")
 
-    monkeypatch.setattr(idx, "try_resolve_provider", _fake)
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", _fake)
 
 
 def test_rank_providers_skips_exhausted_and_unresolvable(monkeypatch):
@@ -191,7 +198,7 @@ def test_extract_context_length_variants():
 
 
 def test_list_models_joins_provider_state(monkeypatch):
-    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider: TextLlmRuntime(
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider, model=None: TextLlmRuntime(
         provider="openrouter", api_key="k", model="x", base_url="https://openrouter.ai/api/v1",
     ))
     monkeypatch.setattr(idx, "chat_completions_headers", lambda rt: {})
@@ -227,3 +234,161 @@ def test_sticky_roundtrip_and_advance(monkeypatch):
     assert nxt is not None
     assert nxt["provider"] != "zlm"
     assert idx.get_sticky()["provider"] == nxt["provider"]
+
+
+# --- credentials / custom providers -----------------------------------------
+
+
+def test_credentials_never_expose_the_key_value():
+    idx.set_credential("groq", "gsk-super-secret")
+    rows = idx.list_credentials()
+    assert rows == [{"provider": "groq", "base_url": None, "added_at": rows[0]["added_at"]}]
+    assert "gsk-super-secret" not in str(rows)
+
+
+def test_stored_key_wins_over_env_for_a_builtin(monkeypatch):
+    calls = []
+
+    def _fake(provider, model=None, api_key=None):
+        calls.append(api_key)
+        return TextLlmRuntime(provider=provider, api_key=api_key or "env-key", model="x")
+
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", _fake)
+    idx.set_credential("groq", "stored-key")
+
+    rt = idx.resolve_runtime_for_rotator("groq")
+    assert rt.api_key == "stored-key"
+    assert calls == ["stored-key"]
+
+
+def test_falls_back_to_env_when_no_stored_key(monkeypatch):
+    monkeypatch.setattr(
+        idx, "resolve_text_llm_runtime",
+        lambda provider, model=None: TextLlmRuntime(provider=provider, api_key="env-key", model="x"),
+    )
+    rt = idx.resolve_runtime_for_rotator("groq")
+    assert rt.api_key == "env-key"
+
+
+def test_custom_provider_registration_and_resolution():
+    idx.set_credential("huggingface", "hf_secret", base_url="https://api-inference.huggingface.co/v1")
+    assert "huggingface" in idx.custom_provider_ids()
+    assert "huggingface" in idx.all_provider_ids()
+    assert idx.is_builtin_provider("huggingface") is False
+
+    rt = idx.resolve_runtime_for_rotator("huggingface", model="meta-llama/Llama-3-8b")
+    assert rt.provider == "huggingface"
+    assert rt.api_key == "hf_secret"
+    assert rt.base_url == "https://api-inference.huggingface.co/v1"
+    assert rt.model == "meta-llama/Llama-3-8b"
+
+
+def test_unregistered_unknown_provider_does_not_resolve():
+    assert idx.resolve_runtime_for_rotator("totally-made-up") is None
+
+
+def test_remove_credential_falls_back_to_env(monkeypatch):
+    monkeypatch.setattr(
+        idx, "resolve_text_llm_runtime",
+        lambda provider, model=None, api_key=None: TextLlmRuntime(
+            provider=provider, api_key=api_key or "env-key", model="x"
+        ),
+    )
+    idx.set_credential("groq", "stored-key")
+    assert idx.resolve_runtime_for_rotator("groq").api_key == "stored-key"
+
+    assert idx.remove_credential("groq") is True
+    assert idx.remove_credential("groq") is False  # already gone
+    assert idx.resolve_runtime_for_rotator("groq").api_key == "env-key"
+
+
+def test_key_source_reports_stored_env_or_none(monkeypatch):
+    monkeypatch.setattr(idx, "resolve_text_llm_runtime", lambda provider, model=None: (_ for _ in ()).throw(
+        RuntimeError("no key")
+    ))
+    assert idx.key_source("groq") == "none"
+    idx.set_credential("groq", "k")
+    assert idx.key_source("groq") == "stored"
+
+
+# --- pricing / modality / model picking --------------------------------------
+
+
+def test_extract_modality_openrouter_architecture():
+    raw = {"architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]}}
+    assert idx._extract_modality(raw) == "text+image->text"
+
+
+def test_extract_modality_deepinfra_tags():
+    assert idx._extract_modality({"metadata": {"tags": ["tts"]}}) == "tts"
+
+
+def test_extract_modality_defaults_to_text():
+    assert idx._extract_modality({}) == "text"
+
+
+def test_extract_pricing_standard_per_token_keys():
+    raw = {"pricing": {"prompt": "0.0000008", "completion": "0.0000016"}}
+    price = idx._extract_pricing(raw)
+    assert price == pytest.approx((0.8, 1.6))
+
+
+def test_extract_pricing_ignores_non_token_shapes():
+    # DeepInfra TTS pricing: input_characters, not prompt/completion — must not
+    # be misread as per-token pricing.
+    assert idx._extract_pricing({"pricing": {"input_characters": 5.0}}) is None
+    assert idx._extract_pricing({}) is None
+
+
+def test_extract_is_free_openrouter_free_suffix():
+    assert idx._extract_is_free("meta-llama/llama-3:free", None) is True
+
+
+def test_extract_is_free_zero_priced():
+    assert idx._extract_is_free("some/model", (0.0, 0.0)) is True
+    assert idx._extract_is_free("some/model", (1.0, 2.0)) is False
+
+
+def _seed_models(provider: str, models: list[dict]):
+    now = idx._now_iso()
+    with idx.closing(idx._connect()) as conn:
+        for m in models:
+            conn.execute(
+                "INSERT INTO models (provider, model_id, raw_json, stale, fetched_at) VALUES (?, ?, ?, 0, ?)",
+                (provider, m["id"], json.dumps(m), now),
+            )
+        conn.commit()
+
+
+def test_pick_best_model_prefers_free_then_cheapest():
+    _seed_models("openrouter", [
+        {"id": "paid/expensive", "pricing": {"prompt": "0.00001", "completion": "0.00002"}},
+        {"id": "paid/cheap", "pricing": {"prompt": "0.0000001", "completion": "0.0000002"}},
+        {"id": "free/model:free", "pricing": {"prompt": "0", "completion": "0"}},
+    ])
+    assert idx.pick_best_model_for_provider("openrouter") == "free/model:free"
+
+
+def test_pick_best_model_cheapest_when_none_free():
+    _seed_models("openrouter", [
+        {"id": "paid/expensive", "pricing": {"prompt": "0.00001", "completion": "0.00002"}},
+        {"id": "paid/cheap", "pricing": {"prompt": "0.0000001", "completion": "0.0000002"}},
+    ])
+    assert idx.pick_best_model_for_provider("openrouter") == "paid/cheap"
+
+
+def test_pick_best_model_returns_none_without_pricing_data():
+    _seed_models("mistral", [{"id": "mistral-small"}, {"id": "codestral"}])
+    assert idx.pick_best_model_for_provider("mistral") is None
+
+
+def test_pick_best_model_prefer_uncensored_biases_selection():
+    _seed_models("deepinfra", [
+        {"id": "org/plain-model", "metadata": {"pricing": {"input_characters": 1}}},
+        {"id": "NousResearch/Hermes-3-Llama", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
+        {"id": "some/other-cheap", "pricing": {"prompt": "0.0000001", "completion": "0.0000002"}},
+    ])
+    # without the flag, the plain cheap model wins on price
+    assert idx.pick_best_model_for_provider("deepinfra") == "some/other-cheap"
+    # with it, the uncensored-flavored model wins even though it's pricier
+    assert idx.pick_best_model_for_provider("deepinfra", prefer_uncensored=True) == "NousResearch/Hermes-3-Llama"

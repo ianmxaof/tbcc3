@@ -22,10 +22,15 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py llm next
   py -3.13 scripts/tbcc_cli.py llm ask "what's the capital of France?"
   py -3.13 scripts/tbcc_cli.py llm tui
+  py -3.13 scripts/tbcc_cli.py llm keys add openrouter
+  py -3.13 scripts/tbcc_cli.py llm keys add huggingface --base-url https://api-inference.huggingface.co/v1
+  py -3.13 scripts/tbcc_cli.py llm keys list
+  py -3.13 scripts/tbcc_cli.py llm models openrouter
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 from pathlib import Path
@@ -435,11 +440,15 @@ def cmd_llm_status(args: argparse.Namespace) -> int:
     else:
         print("sticky: (none — run `llm next` or `llm ask` to set one)")
     for row in rows:
-        configured = row.get("configured")
-        state = "unconfigured" if configured == 0 else ("exhausted" if row.get("exhausted") else "ok")
+        if row.get("key_source") == "none":
+            state = "unconfigured"
+        elif row.get("exhausted"):
+            state = "exhausted"
+        else:
+            state = "ok"
         usage = row.get("usage_remaining")
         usage_s = f" usage_remaining={usage}" if usage is not None else ""
-        print(f"{row['provider']:<12} {state:<13} models={row.get('model_count', 0)}{usage_s}")
+        print(f"{row['provider']:<12} {state:<13} key={row.get('key_source'):<6} models={row.get('model_count', 0)}{usage_s}")
     return 0
 
 
@@ -469,6 +478,79 @@ def cmd_llm_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llm_models(args: argparse.Namespace) -> int:
+    """List the master model catalog (see also: `llm refresh` to populate it)."""
+    from app.services.llm_model_index import list_models
+
+    rows = list_models(args.provider)
+    if args.json:
+        _json(rows)
+        return 0
+    for row in rows:
+        if row["is_free"]:
+            price = "free"
+        elif row["price_in_per_m"] is not None:
+            price = f"${row['price_in_per_m']:.2f}/${row['price_out_per_m']:.2f} per M"
+        else:
+            price = "?"
+        stale = " [stale]" if row["stale"] else ""
+        print(f"{row['provider']:<12} {row['model_id']:<48} {row['modality']:<14} {price}{stale}")
+    return 0
+
+
+def cmd_llm_keys_add(args: argparse.Namespace) -> int:
+    """Prompt for a key (hidden input — never a --key flag, so it never lands
+    in shell history or a process list) and store it locally. Passing
+    --base-url registers a brand-new custom/HuggingFace-style provider id;
+    without it, this overrides a built-in provider's env var inside the
+    rotator only — secretary_bot and /zeus/v1/ask never read this table."""
+    from app.services.llm_model_index import is_builtin_provider, set_credential
+
+    provider = args.provider.strip().lower()
+    base_url = args.base_url.strip() or None
+    if not is_builtin_provider(provider) and not base_url:
+        print(
+            f"{provider!r} isn't a built-in provider — pass --base-url to register it as a new custom endpoint.",
+            file=sys.stderr,
+        )
+        return 1
+    key = getpass.getpass(f"API key for {provider}: ").strip()
+    if not key:
+        print("No key entered.", file=sys.stderr)
+        return 1
+    set_credential(provider, key, base_url)
+    print(f"{provider}: {'custom provider registered' if base_url else 'stored'}")
+    return 0
+
+
+def cmd_llm_keys_list(args: argparse.Namespace) -> int:
+    """Which providers have a key, and from where — never the key value itself."""
+    from app.services.llm_model_index import all_provider_ids, key_source, list_credentials
+
+    stored = {c["provider"]: c for c in list_credentials()}
+    rows = [
+        {"provider": pid, "key_source": key_source(pid), "base_url": stored.get(pid, {}).get("base_url")}
+        for pid in all_provider_ids()
+    ]
+    if args.json:
+        _json(rows)
+        return 0
+    for row in rows:
+        base = f" base_url={row['base_url']}" if row["base_url"] else ""
+        print(f"{row['provider']:<14} {row['key_source']:<8}{base}")
+    return 0
+
+
+def cmd_llm_keys_remove(args: argparse.Namespace) -> int:
+    from app.services.llm_model_index import remove_credential
+
+    if remove_credential(args.provider):
+        print(f"{args.provider}: stored key removed")
+        return 0
+    print(f"{args.provider}: no stored key", file=sys.stderr)
+    return 1
+
+
 def cmd_llm_tui(args: argparse.Namespace) -> int:
     """Interactive terminal viewer over the local model/provider index. Needs
     `textual` (tbcc/backend/requirements-dev.txt) — not shipped to the island,
@@ -493,15 +575,25 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
     fallback (`ask`'s default) — that tries every hop internally, so a raised
     exception could come from any of them, making it impossible to say which
     provider actually failed. Exactly one provider is tried per attempt here
-    so record_failure() always blames the right one. CLI-local devops
-    convenience only — /zeus/v1/ask and the MCP ask_llm tool stay stateless
-    and never read this cursor."""
-    from app.services.llm_completions import TextLlmRuntime, complete_chat_text_sync, resolve_text_llm_runtime
+    so record_failure() always blames the right one.
+
+    Also picks the specific model (not just the provider) when --model isn't
+    given: free-first, then cheapest input/output per million tokens, from
+    whatever `llm refresh` cached for that provider — see
+    llm_model_index.pick_best_model_for_provider. --prefer-uncensored is
+    opt-in per call, off by default; most devops asks just need a model that
+    works, not an NSFW-tolerant one.
+
+    CLI-local devops convenience only — /zeus/v1/ask and the MCP ask_llm tool
+    stay stateless and never read this cursor."""
+    from app.services.llm_completions import TextLlmRuntime, complete_chat_text_sync
     from app.services.llm_model_index import (
         advance_to_next,
         get_sticky,
+        pick_best_model_for_provider,
         rank_providers_for_cycle,
         record_failure,
+        resolve_runtime_for_rotator,
         set_sticky,
     )
 
@@ -524,10 +616,8 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
     def _resolve(pid: str | None) -> TextLlmRuntime | None:
         if not pid:
             return None
-        try:
-            return resolve_text_llm_runtime(provider=pid, model=args.model or None)
-        except RuntimeError:
-            return None
+        model = args.model or pick_best_model_for_provider(pid, prefer_uncensored=args.prefer_uncensored)
+        return resolve_runtime_for_rotator(pid, model=model)
 
     provider = args.provider or (get_sticky() or {}).get("provider")
     primary = _resolve(provider)
@@ -731,10 +821,37 @@ def main() -> int:
     lask.add_argument("--temperature", type=float, default=0.7)
     lask.add_argument("--timeout", type=float, default=90.0)
     lask.add_argument("--json", action="store_true", help="JSON output instead of raw text")
+    lask.add_argument(
+        "--prefer-uncensored", action="store_true",
+        help="Opt-in: bias model pick toward dolphin/hermes/abliterated/heretic-named models when available. Off by default.",
+    )
     lask.set_defaults(func=cmd_llm_ask)
 
     ltui = llm_sub.add_parser("tui", help="Interactive terminal viewer over the model/provider index (needs textual)")
     ltui.set_defaults(func=cmd_llm_tui)
+
+    lmodels = llm_sub.add_parser("models", help="List cached models (master catalog) for one or all providers")
+    lmodels.add_argument("provider", nargs="?", default=None)
+    lmodels.add_argument("--json", action="store_true")
+    lmodels.set_defaults(func=cmd_llm_models)
+
+    lkeys = llm_sub.add_parser("keys", help="Manage stored API keys / custom provider endpoints")
+    lkeys_sub = lkeys.add_subparsers(dest="llm_keys_cmd", required=True)
+
+    lka = lkeys_sub.add_parser(
+        "add", help="Store a key for a provider (built-in override, or register a new custom/HuggingFace-style endpoint)"
+    )
+    lka.add_argument("provider", help="Built-in provider id, or a new id for a custom endpoint")
+    lka.add_argument("--base-url", default="", help="Required when registering a new custom provider")
+    lka.set_defaults(func=cmd_llm_keys_add)
+
+    lkl = lkeys_sub.add_parser("list", help="Show which providers have a key configured (never prints the key itself)")
+    lkl.add_argument("--json", action="store_true")
+    lkl.set_defaults(func=cmd_llm_keys_list)
+
+    lkr = lkeys_sub.add_parser("remove", help="Delete a stored key (falls back to env var for built-ins, if any)")
+    lkr.add_argument("provider")
+    lkr.set_defaults(func=cmd_llm_keys_remove)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":
