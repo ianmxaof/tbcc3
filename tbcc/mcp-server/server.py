@@ -602,5 +602,42 @@ def schedule_recurring_campaign(
     return _pretty(_request("POST", "/scheduled-posts/", json_body=body))
 
 
+@mcp.tool()
+def llm_providers() -> str:
+    """List which of TBCC's configured LLM providers (openai, openrouter, mistral,
+    groq, cerebras, nvidia, etc.) currently resolve on the island — no API call,
+    no cost. Use before ask_llm to see what's actually usable right now."""
+    return _pretty(_request("GET", "/zeus/v1/ask/providers"))
+
+
+@mcp.tool()
+def ask_llm(
+    prompt: str,
+    *,
+    system: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    max_tokens: int = 600,
+    temperature: float = 0.7,
+) -> str:
+    """One-shot LLM completion via TBCC's own provider fallback chain, running on
+    the island — not this session's own model. Use this as a fallback lane when
+    your own usage is capped: it tries whichever of TBCC's 12 configured providers
+    (openai/openrouter/mistral/groq/cerebras/nvidia/...) are actually keyed, in
+    order, until one answers. Leave provider/model unset to walk the full chain."""
+    body: dict[str, Any] = {
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if system:
+        body["system"] = system
+    if provider:
+        body["provider"] = provider
+    if model:
+        body["model"] = model
+    return _pretty(_request("POST", "/zeus/v1/ask", json_body=body, timeout=100.0))
+
+
 if __name__ == "__main__":
     mcp.run()

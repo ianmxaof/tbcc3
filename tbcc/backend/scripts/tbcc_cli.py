@@ -14,6 +14,9 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py pack inventory --list
   py -3.13 scripts/tbcc_cli.py watermark analyze "D:/clips"
   py -3.13 scripts/tbcc_cli.py watermark apply "D:/clips"
+  py -3.13 scripts/tbcc_cli.py ask "summarize this in one sentence: ..."
+  py -3.13 scripts/tbcc_cli.py ask --list-providers
+  echo "some text" | py -3.13 scripts/tbcc_cli.py ask
 """
 from __future__ import annotations
 
@@ -311,6 +314,83 @@ def cmd_pack_inventory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    """One-shot LLM completion over TBCC's existing 12-provider fallback chain
+    (app/services/llm_completions.py + llm_provider_fallback.py) — no new provider
+    plumbing, just a general terminal entrypoint for it. Usable as a fallback lane
+    when the operator's normal AI usage is capped."""
+    import asyncio
+
+    from app.services.llm_completions import (
+        TextLlmRuntime,
+        complete_chat_text_sync,
+        resolve_text_llm_runtime,
+    )
+    from app.services.llm_provider_fallback import (
+        DEFAULT_CHAIN,
+        complete_chat_text_with_fallback,
+        try_resolve_provider,
+    )
+
+    if args.list_providers:
+        rows = []
+        for pid in (*DEFAULT_CHAIN, "openai"):
+            rt = try_resolve_provider(pid)
+            rows.append({"provider": pid, "configured": rt is not None, "model": rt.model if rt else None})
+        _json(rows)
+        return 0
+
+    prompt = args.prompt if args.prompt else sys.stdin.read()
+    prompt = (prompt or "").strip()
+    if not prompt:
+        print("No prompt given — pass text as an argument or pipe via stdin", file=sys.stderr)
+        return 1
+
+    messages: list[dict[str, str]] = []
+    if args.system:
+        messages.append({"role": "system", "content": args.system})
+    messages.append({"role": "user", "content": prompt})
+
+    primary: TextLlmRuntime | None = None
+    if args.provider:
+        try:
+            primary = resolve_text_llm_runtime(provider=args.provider, model=args.model or None)
+        except RuntimeError as e:
+            print(f"Could not resolve provider {args.provider!r}: {e}", file=sys.stderr)
+            return 1
+
+    try:
+        if args.no_fallback:
+            text = complete_chat_text_sync(
+                messages,
+                model=args.model or None,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                timeout=args.timeout,
+                runtime=primary,
+            )
+        else:
+            text = asyncio.run(
+                complete_chat_text_with_fallback(
+                    messages,
+                    primary=primary,
+                    model=args.model or None,
+                    max_tokens=args.max_tokens,
+                    temperature=args.temperature,
+                    timeout=args.timeout,
+                )
+            )
+    except Exception as e:
+        print(f"LLM call failed: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        _json({"ok": True, "provider": args.provider or "auto", "reply": text})
+    else:
+        print(text)
+    return 0
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -421,6 +501,19 @@ def main() -> int:
     isync.add_argument("--sources", default="", help="Comma-separated: linkvertise,admaven,workink,bmc")
     isync.add_argument("--headed", action="store_true", help="Headed browser for gate dashboard scrape")
     isync.set_defaults(func=cmd_income_sync)
+
+    ask = sub.add_parser("ask", help="One-shot LLM completion via TBCC's provider fallback chain")
+    ask.add_argument("prompt", nargs="?", default="", help="Prompt text (omit to read stdin)")
+    ask.add_argument("--system", default="", help="Optional system prompt")
+    ask.add_argument("-p", "--provider", default="", help="Force a specific provider (else full fallback chain)")
+    ask.add_argument("-m", "--model", default="", help="Override model id")
+    ask.add_argument("--max-tokens", type=int, default=600)
+    ask.add_argument("--temperature", type=float, default=0.7)
+    ask.add_argument("--timeout", type=float, default=90.0)
+    ask.add_argument("--no-fallback", action="store_true", help="Use only the resolved provider, no chain walk")
+    ask.add_argument("--list-providers", action="store_true", help="List configured providers and exit")
+    ask.add_argument("--json", action="store_true", help="JSON output instead of raw text")
+    ask.set_defaults(func=cmd_ask)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":
