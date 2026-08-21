@@ -37,20 +37,23 @@ from app.services.llm_completions import (
     chat_completions_headers,
     resolve_text_llm_runtime,
 )
-from app.services.llm_provider_fallback import DEFAULT_CHAIN
+from app.services.llm_provider_fallback import DEFAULT_CHAIN, try_resolve_provider
 
 FailureKind = Literal["quota", "model_not_found", "transient"]
 
-_QUOTA_HINTS = (
+# Credit/billing exhaustion resets on the provider's own cycle (assume ~daily);
+# a bare rate limit is usually per-minute — penalizing it for 24h like a real
+# credit exhaustion would blacklist a provider over one burst of calls.
+_RATE_LIMIT_HINTS = ("rate_limit_exceeded", "rate limit")
+_CREDIT_HINTS = (
     "insufficient_quota",
     "insufficient_user_quota",
     "quota_exceeded",
-    "rate_limit_exceeded",
-    "rate limit",
     "out of credits",
     "exceeded your current quota",
     "billing",
 )
+_QUOTA_HINTS = _RATE_LIMIT_HINTS + _CREDIT_HINTS
 
 _ALL_PROVIDERS = (*DEFAULT_CHAIN, "openai")
 
@@ -144,12 +147,21 @@ def classify_failure(exc: BaseException) -> FailureKind:
     return "transient"
 
 
+def _quota_reset_window(exc: BaseException) -> timedelta:
+    msg = str(exc).lower()
+    if any(hint in msg for hint in _RATE_LIMIT_HINTS) and not any(hint in msg for hint in _CREDIT_HINTS):
+        return timedelta(minutes=5)
+    if any(hint in msg for hint in _CREDIT_HINTS):
+        return timedelta(hours=24)
+    return timedelta(hours=1)  # bare 429, no body detail to go on
+
+
 def record_failure(provider: str, model: str | None, exc: BaseException) -> FailureKind:
     kind = classify_failure(exc)
     now = _now_iso()
     with closing(_connect()) as conn:
         if kind == "quota":
-            reset = _now() + timedelta(hours=24)
+            reset = _now() + _quota_reset_window(exc)
             _upsert_provider_state(
                 conn,
                 provider,
@@ -272,6 +284,12 @@ def is_exhausted(provider: str) -> bool:
     return _now() < until
 
 
+def clear_exhaustion(provider: str) -> None:
+    with closing(_connect()) as conn:
+        _upsert_provider_state(conn, provider, exhausted_until=None, exhausted_reason=None)
+        conn.commit()
+
+
 def provider_status(provider: str) -> dict[str, Any]:
     with closing(_connect()) as conn:
         row = conn.execute("SELECT * FROM provider_state WHERE provider = ?", (provider,)).fetchone()
@@ -289,26 +307,31 @@ def all_provider_status() -> list[dict[str, Any]]:
 
 
 def rank_providers_for_cycle(*, exclude: str | None = None) -> list[dict[str, Any]]:
-    """Primary signal: skip exhausted providers entirely. Secondary: providers
-    with a known numeric usage_remaining (currently only OpenRouter exposes
-    one — CometAPI's quota fetcher lives outside this fallback chain) sort
-    first by remaining amount; everyone else keeps DEFAULT_CHAIN order as an
+    """Primary signal: skip exhausted providers and anything not resolvable right
+    now (checked live via try_resolve_provider, not the possibly-stale
+    `configured` column, so a provider whose key was added/removed since the
+    last `llm refresh` is still handled correctly). Secondary: providers with a
+    known positive usage_remaining (currently only OpenRouter exposes one —
+    CometAPI's quota fetcher lives outside this fallback chain) sort first by
+    remaining amount; a provider reporting <= 0 remaining is treated as
+    exhausted, not ranked last. Everyone else keeps DEFAULT_CHAIN order as an
     'unknown, not yet observed exhausted' tier — this is the primary lane in
     practice, not the numeric one."""
     with closing(_connect()) as conn:
         rows = {r["provider"]: dict(r) for r in conn.execute("SELECT * FROM provider_state")}
     numeric: list[dict[str, Any]] = []
     unknown: list[dict[str, Any]] = []
-    for idx, pid in enumerate(_ALL_PROVIDERS):
+    for order, pid in enumerate(_ALL_PROVIDERS):
         if pid == exclude:
-            continue
-        st = rows.get(pid, {})
-        if st.get("configured") == 0:
             continue
         if is_exhausted(pid):
             continue
-        usage_remaining = st.get("usage_remaining")
-        entry = {"provider": pid, "usage_remaining": usage_remaining, "order": idx}
+        if try_resolve_provider(pid) is None:
+            continue
+        usage_remaining = rows.get(pid, {}).get("usage_remaining")
+        if usage_remaining is not None and usage_remaining <= 0:
+            continue
+        entry = {"provider": pid, "usage_remaining": usage_remaining, "order": order}
         (numeric if usage_remaining is not None else unknown).append(entry)
     numeric.sort(key=lambda e: e["usage_remaining"], reverse=True)
     unknown.sort(key=lambda e: e["order"])

@@ -121,11 +121,19 @@ def test_refresh_provider_models_http_failure_isolated(monkeypatch):
     assert status["models_endpoint_ok"] == 0
 
 
-def test_rank_providers_skips_exhausted_and_unconfigured():
+def _stub_resolvable(monkeypatch, unresolvable: set[str] = frozenset()):
+    """rank_providers_for_cycle checks live resolvability via try_resolve_provider,
+    not the (possibly stale) `configured` column — stub it deterministically so
+    these tests don't depend on real API keys in the test environment."""
+    def _fake(pid: str):
+        return None if pid in unresolvable else TextLlmRuntime(provider=pid, api_key="k", model="x")
+
+    monkeypatch.setattr(idx, "try_resolve_provider", _fake)
+
+
+def test_rank_providers_skips_exhausted_and_unresolvable(monkeypatch):
+    _stub_resolvable(monkeypatch, unresolvable={"mistral"})
     idx.record_failure("groq", None, RuntimeError("LLM error 429: rate limited"))
-    with idx.closing(idx._connect()) as conn:
-        idx._upsert_provider_state(conn, "mistral", configured=0)
-        conn.commit()
 
     ranked = idx.rank_providers_for_cycle()
     providers = [r["provider"] for r in ranked]
@@ -134,7 +142,8 @@ def test_rank_providers_skips_exhausted_and_unconfigured():
     assert "zlm" in providers
 
 
-def test_rank_providers_numeric_usage_sorts_first():
+def test_rank_providers_numeric_usage_sorts_first(monkeypatch):
+    _stub_resolvable(monkeypatch)
     with idx.closing(idx._connect()) as conn:
         idx._upsert_provider_state(conn, "openrouter", usage_remaining=5.0)
         idx._upsert_provider_state(conn, "custom", usage_remaining=50.0)
@@ -143,6 +152,34 @@ def test_rank_providers_numeric_usage_sorts_first():
     ranked = idx.rank_providers_for_cycle()
     assert ranked[0]["provider"] == "custom"
     assert ranked[1]["provider"] == "openrouter"
+
+
+def test_rank_providers_zero_usage_remaining_treated_as_exhausted(monkeypatch):
+    _stub_resolvable(monkeypatch)
+    with idx.closing(idx._connect()) as conn:
+        idx._upsert_provider_state(conn, "openrouter", usage_remaining=0.0)
+        conn.commit()
+
+    ranked = idx.rank_providers_for_cycle()
+    providers = [r["provider"] for r in ranked]
+    assert "openrouter" not in providers
+    assert "zlm" in providers  # unknown-tier providers still rank fine
+
+
+def test_quota_reset_window_short_for_bare_rate_limit():
+    assert idx._quota_reset_window(RuntimeError("LLM error 429: rate_limit_exceeded")) == idx.timedelta(minutes=5)
+
+
+def test_quota_reset_window_long_for_credit_exhaustion():
+    exc = RuntimeError("LLM error 402: insufficient_quota, please add credits")
+    assert idx._quota_reset_window(exc) == idx.timedelta(hours=24)
+
+
+def test_clear_exhaustion_removes_the_block():
+    idx.record_failure("groq", None, RuntimeError("LLM error 429: rate limited"))
+    assert idx.is_exhausted("groq") is True
+    idx.clear_exhaustion("groq")
+    assert idx.is_exhausted("groq") is False
 
 
 def test_extract_context_length_variants():
@@ -178,7 +215,8 @@ def test_list_models_joins_provider_state(monkeypatch):
     assert row["exhausted"] is False
 
 
-def test_sticky_roundtrip_and_advance():
+def test_sticky_roundtrip_and_advance(monkeypatch):
+    _stub_resolvable(monkeypatch)
     assert idx.get_sticky() is None
     idx.set_sticky("zlm", "glm-4.5")
     got = idx.get_sticky()

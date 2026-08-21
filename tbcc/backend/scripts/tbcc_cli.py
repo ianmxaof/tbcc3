@@ -459,6 +459,16 @@ def cmd_llm_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llm_clear(args: argparse.Namespace) -> int:
+    """Manually clear a provider's exhaustion mark (escape hatch for a bad
+    classification — see llm_model_index.classify_failure)."""
+    from app.services.llm_model_index import clear_exhaustion
+
+    clear_exhaustion(args.provider)
+    print(f"{args.provider}: exhaustion cleared")
+    return 0
+
+
 def cmd_llm_tui(args: argparse.Namespace) -> int:
     """Interactive terminal viewer over the local model/provider index. Needs
     `textual` (tbcc/backend/requirements-dev.txt) — not shipped to the island,
@@ -476,14 +486,17 @@ def cmd_llm_tui(args: argparse.Namespace) -> int:
 
 
 def cmd_llm_ask(args: argparse.Namespace) -> int:
-    """Like `ask`, but sticky: uses the last provider `llm next`/`llm ask` picked
-    (or the chain default on first run), and on a quota-classified failure,
-    auto-cycles to the next unexhausted provider and retries once. CLI-local
-    devops convenience only — /zeus/v1/ask and the MCP ask_llm tool stay
-    stateless and never read this cursor."""
-    import asyncio
-
-    from app.services.llm_completions import TextLlmRuntime, resolve_text_llm_runtime
+    """Like `ask`, but sticky and single-provider: uses the last provider
+    `llm next`/`llm ask` picked (or the top of the ranking on first run), and
+    on a quota-classified failure, auto-cycles to the next unexhausted
+    provider and retries once. Deliberately does NOT use the chain-walking
+    fallback (`ask`'s default) — that tries every hop internally, so a raised
+    exception could come from any of them, making it impossible to say which
+    provider actually failed. Exactly one provider is tried per attempt here
+    so record_failure() always blames the right one. CLI-local devops
+    convenience only — /zeus/v1/ask and the MCP ask_llm tool stay stateless
+    and never read this cursor."""
+    from app.services.llm_completions import TextLlmRuntime, complete_chat_text_sync, resolve_text_llm_runtime
     from app.services.llm_model_index import (
         advance_to_next,
         get_sticky,
@@ -491,7 +504,6 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
         record_failure,
         set_sticky,
     )
-    from app.services.llm_provider_fallback import complete_chat_text_with_fallback
 
     if args.prompt:
         prompt = args.prompt
@@ -509,53 +521,57 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
         messages.append({"role": "system", "content": args.system})
     messages.append({"role": "user", "content": prompt})
 
-    provider = args.provider or (get_sticky() or {}).get("provider")
-    if not provider:
-        ranked = rank_providers_for_cycle()
-        provider = ranked[0]["provider"] if ranked else None
-
     def _resolve(pid: str | None) -> TextLlmRuntime | None:
         if not pid:
             return None
         try:
-            return resolve_text_llm_runtime(provider=pid)
+            return resolve_text_llm_runtime(provider=pid, model=args.model or None)
         except RuntimeError:
             return None
 
+    provider = args.provider or (get_sticky() or {}).get("provider")
     primary = _resolve(provider)
     if provider and primary is None:
-        print(f"sticky provider {provider!r} no longer configured — falling back to chain", file=sys.stderr)
+        print(f"{provider!r} no longer configured — picking from the ranking instead", file=sys.stderr)
+        provider = None
+    if primary is None:
+        ranked = rank_providers_for_cycle()
+        provider = ranked[0]["provider"] if ranked else None
+        primary = _resolve(provider)
+    if primary is None:
+        print("No configured provider available — run `llm refresh` first?", file=sys.stderr)
+        return 1
 
     for attempt in range(2):
         try:
-            text = asyncio.run(
-                complete_chat_text_with_fallback(
-                    messages,
-                    primary=primary,
-                    model=args.model or None,
-                    max_tokens=args.max_tokens,
-                    temperature=args.temperature,
-                    timeout=args.timeout,
-                )
+            text = complete_chat_text_sync(
+                messages,
+                model=args.model or None,
+                max_tokens=args.max_tokens,
+                temperature=args.temperature,
+                timeout=args.timeout,
+                runtime=primary,
             )
         except Exception as e:
-            used = primary.provider if primary else "auto"
-            kind = record_failure(used, primary.model if primary else None, e)
+            kind = record_failure(primary.provider, primary.model, e)
             if kind == "quota" and attempt == 0:
-                print(f"{used}: quota exhausted, cycling to next provider…", file=sys.stderr)
+                print(f"{primary.provider}: quota exhausted, cycling to next provider…", file=sys.stderr)
                 nxt = advance_to_next()
                 if nxt is None:
                     print("No unexhausted configured provider left.", file=sys.stderr)
                     return 1
-                primary = _resolve(nxt["provider"])
+                next_primary = _resolve(nxt["provider"])
+                if next_primary is None:
+                    print("No unexhausted configured provider left.", file=sys.stderr)
+                    return 1
+                primary = next_primary
                 continue
             print(f"LLM call failed ({kind}): {e}", file=sys.stderr)
             return 1
         else:
-            if primary is not None:
-                set_sticky(primary.provider, primary.model)
+            set_sticky(primary.provider, primary.model)
             if args.json:
-                _json({"ok": True, "provider": primary.provider if primary else "auto", "reply": text})
+                _json({"ok": True, "provider": primary.provider, "reply": text})
             else:
                 print(text)
             return 0
@@ -701,6 +717,10 @@ def main() -> int:
     ln = llm_sub.add_parser("next", help="Advance the sticky cursor to the next unexhausted provider")
     ln.add_argument("--json", action="store_true")
     ln.set_defaults(func=cmd_llm_next)
+
+    lc = llm_sub.add_parser("clear", help="Clear a provider's exhaustion mark (escape hatch for a bad classification)")
+    lc.add_argument("provider")
+    lc.set_defaults(func=cmd_llm_clear)
 
     lask = llm_sub.add_parser("ask", help="Like `ask`, but sticky + auto-cycles providers on quota exhaustion")
     lask.add_argument("prompt", nargs="?", default="", help="Prompt text (omit to read stdin)")
