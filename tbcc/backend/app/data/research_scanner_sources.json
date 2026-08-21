@@ -1,0 +1,29 @@
+{
+  "_comment": "RSS/Atom sources for tbcc_cli.py `research scan`. lane: dev = matched against SPRINT_STATE's open work; growth/content = fetched+deduped+stored but excluded from the LLM match batch (per Cursor review RC2, 2026-08-21) until a lane-specific match prompt exists. All URLs hand-verified live before adding — see tbcc/docs/hermes-skills/tbcc-research-scanner/SKILL.md.",
+  "sources": [
+    {"id": "github-python-telegram-bot", "url": "https://github.com/python-telegram-bot/python-telegram-bot/releases.atom", "label": "python-telegram-bot releases", "lane": "dev"},
+    {"id": "github-telethon", "url": "https://github.com/LonamiWebs/Telethon/releases.atom", "label": "Telethon releases", "lane": "dev"},
+    {"id": "github-claude-code", "url": "https://github.com/anthropics/claude-code/releases.atom", "label": "Claude Code releases", "lane": "dev"},
+    {"id": "github-fastapi", "url": "https://github.com/fastapi/fastapi/releases.atom", "label": "FastAPI releases", "lane": "dev"},
+    {"id": "github-free-llm-apis", "url": "https://github.com/mnfst/awesome-free-llm-apis/commits.atom", "label": "Free/cheap LLM API tracker (commits)", "lane": "dev"},
+    {"id": "hnrss-ai-dev", "url": "https://hnrss.org/newest?q=LLM+API+OR+agent+OR+self-hosted", "label": "Hacker News: LLM/agent/self-hosted", "lane": "dev"},
+
+    {"id": "reddit-hermesagent", "url": "https://www.reddit.com/r/hermesagent/.rss", "label": "r/hermesagent", "lane": "dev"},
+    {"id": "reddit-hetzner", "url": "https://www.reddit.com/r/hetzner/.rss", "label": "r/hetzner", "lane": "dev"},
+    {"id": "reddit-huggingface", "url": "https://www.reddit.com/r/huggingface/.rss", "label": "r/huggingface", "lane": "dev"},
+    {"id": "reddit-localllama", "url": "https://www.reddit.com/r/LocalLLaMA/.rss", "label": "r/LocalLLaMA", "lane": "dev"},
+    {"id": "reddit-opencode", "url": "https://www.reddit.com/r/opencode/.rss", "label": "r/opencode", "lane": "dev"},
+    {"id": "reddit-selfhosted", "url": "https://www.reddit.com/r/selfhosted/.rss", "label": "r/selfhosted", "lane": "dev"},
+    {"id": "reddit-stopbadbots", "url": "https://www.reddit.com/r/StopBadBots/.rss", "label": "r/StopBadBots", "lane": "dev"},
+    {"id": "reddit-userscripts", "url": "https://www.reddit.com/r/userscripts/.rss", "label": "r/userscripts", "lane": "dev"},
+
+    {"id": "reddit-ai-tools-land", "url": "https://www.reddit.com/r/AI_Tools_Land/.rss", "label": "r/AI_Tools_Land", "lane": "growth"},
+    {"id": "reddit-digital-income-path", "url": "https://www.reddit.com/r/DigitalIncomePath/.rss", "label": "r/DigitalIncomePath", "lane": "growth"},
+    {"id": "reddit-pretty-useful-websites", "url": "https://www.reddit.com/r/prettyusefulwebsites/.rss", "label": "r/prettyusefulwebsites", "lane": "growth"},
+    {"id": "reddit-referrallinks", "url": "https://www.reddit.com/r/Referrallinks/.rss", "label": "r/Referrallinks", "lane": "growth"},
+    {"id": "reddit-refshare", "url": "https://www.reddit.com/r/refshare/.rss", "label": "r/refshare", "lane": "growth"},
+    {"id": "reddit-scamchecker", "url": "https://www.reddit.com/r/ScamChecker/.rss", "label": "r/ScamChecker", "lane": "growth"},
+
+    {"id": "reddit-daily-telegram-sexting", "url": "https://www.reddit.com/r/DailyTelegramSexting/.rss", "label": "r/DailyTelegramSexting", "lane": "content"}
+  ]
+}

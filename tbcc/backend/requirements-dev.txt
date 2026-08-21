@@ -5,3 +5,6 @@
 
 # `tbcc_cli.py llm tui` — interactive model/provider index viewer
 textual>=0.60.0
+
+# `tbcc_cli.py research scan` — Hermes-delivered RSS/Atom research scanner
+feedparser>=6.0.11

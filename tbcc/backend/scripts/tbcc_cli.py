@@ -26,6 +26,9 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py llm keys add huggingface --base-url https://api-inference.huggingface.co/v1
   py -3.13 scripts/tbcc_cli.py llm keys list
   py -3.13 scripts/tbcc_cli.py llm models openrouter
+  py -3.13 scripts/tbcc_cli.py research scan
+  py -3.13 scripts/tbcc_cli.py research scan --seed
+  py -3.13 scripts/tbcc_cli.py research scan --dry-run --json
 """
 from __future__ import annotations
 
@@ -551,6 +554,39 @@ def cmd_llm_keys_remove(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_research_scan(args: argparse.Namespace) -> int:
+    """Fetch every configured RSS/Atom source (tbcc/backend/app/data/
+    research_scanner_sources.json), dedupe against the local index
+    (tbcc/.tbcc-run/research_scanner.sqlite3), and — unless --seed — batch
+    new dev-lane items against SPRINT_STATE.md's open work via the stateless
+    LLM fallback chain (never the sticky `llm ask` cursor, so an unattended
+    cron run can't repoint the operator's interactive rotator). Delivered
+    through the tbcc-research-scanner Hermes skill."""
+    from app.services.research_scanner import run_scan
+
+    report = run_scan(seed=args.seed, dry_run=args.dry_run, fetch_timeout=args.timeout)
+    if args.json:
+        _json(report)
+        return 0
+
+    tag = " (seeded — no match pass)" if report["seeded"] else " (dry run)" if report["dry_run"] else ""
+    print(f"Scanned {len(report['sources'])} sources, {report['new_items_total']} new items{tag}")
+    for row in report["sources"]:
+        if not row["ok"]:
+            print(f"  ! {row['source_id']}: {row.get('error')}")
+    for m in report.get("matches") or []:
+        print(f"\nMATCH: {m['title']} -> {m['target']}")
+        print(f"  why: {m['why']}")
+        print(f"  {m['link']}")
+    if report.get("other_signal"):
+        print(f"\n{len(report['other_signal'])} other-lane items (not matched):")
+        for it in report["other_signal"][:10]:
+            print(f"  [{it['lane']}] {it['title']} — {it['link']}")
+    if report.get("match_error"):
+        print(f"\nmatch pass failed: {report['match_error']}", file=sys.stderr)
+    return 0
+
+
 def cmd_llm_tui(args: argparse.Namespace) -> int:
     """Interactive terminal viewer over the local model/provider index. Needs
     `textual` (tbcc/backend/requirements-dev.txt) — not shipped to the island,
@@ -852,6 +888,17 @@ def main() -> int:
     lkr = lkeys_sub.add_parser("remove", help="Delete a stored key (falls back to env var for built-ins, if any)")
     lkr.add_argument("provider")
     lkr.set_defaults(func=cmd_llm_keys_remove)
+
+    research = sub.add_parser("research", help="RSS/Atom research scanner (Hermes-delivered)")
+    research_sub = research.add_subparsers(dest="research_cmd", required=True)
+    rs = research_sub.add_parser(
+        "scan", help="Fetch sources, dedupe, batch-match new dev-lane items against SPRINT_STATE"
+    )
+    rs.add_argument("--seed", action="store_true", help="Populate dedupe only — skip the LLM match pass")
+    rs.add_argument("--dry-run", action="store_true", help="Fetch + match but write nothing to the local index")
+    rs.add_argument("--timeout", type=float, default=20.0, help="Per-source fetch timeout (seconds)")
+    rs.add_argument("--json", action="store_true")
+    rs.set_defaults(func=cmd_research_scan)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":
