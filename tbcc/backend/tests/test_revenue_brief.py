@@ -83,6 +83,52 @@ def test_draft_revenue_brief_fallback_without_llm():
     assert "revenue brief" in html.lower()
 
 
+def test_draft_revenue_brief_uses_llm_when_configured(monkeypatch):
+    """Regression test: draft_revenue_brief_html used to call
+    complete_chat_text_sync(runtime, messages=[...], ...) — runtime filled the
+    positional `messages` slot and collided with the messages= kwarg, raising a
+    TypeError on every call that the broad except caught and silently
+    downgraded to the heuristic brief. This asserts the LLM path's actual
+    output is returned, not just that no exception escapes."""
+    from app.services.llm_completions import TextLlmRuntime
+
+    rt = TextLlmRuntime(provider="openrouter", api_key="k", model="x")
+    monkeypatch.setattr("app.services.llm_completions.resolve_text_llm_runtime", lambda: rt)
+
+    captured: dict = {}
+
+    def _fake_complete(messages, **kwargs):
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return "LLM-drafted brief content " * 5  # > 80 chars
+
+    monkeypatch.setattr("app.services.llm_completions.complete_chat_text_sync", _fake_complete)
+
+    bundle = {"blockers": [], "growth_proposals": [], "undress_spike": {}}
+    html = revenue_brief.draft_revenue_brief_html(bundle, use_llm=True)
+
+    assert html.startswith("LLM-drafted brief content")
+    assert captured["kwargs"]["runtime"] is rt
+    assert captured["kwargs"]["max_tokens"] == 800
+    assert captured["kwargs"]["temperature"] == 0.3
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][1]["role"] == "user"
+
+
+def test_draft_revenue_brief_falls_back_on_llm_exception(monkeypatch):
+    from app.services.llm_completions import TextLlmRuntime
+
+    rt = TextLlmRuntime(provider="openrouter", api_key="k", model="x")
+    monkeypatch.setattr("app.services.llm_completions.resolve_text_llm_runtime", lambda: rt)
+    monkeypatch.setattr(
+        "app.services.llm_completions.complete_chat_text_sync",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("LLM error 500: boom")),
+    )
+    bundle = {"blockers": [], "growth_proposals": [], "undress_spike": {}}
+    html = revenue_brief.draft_revenue_brief_html(bundle, use_llm=True)
+    assert "revenue brief" in html.lower()
+
+
 def test_is_revenue_brief_due(monkeypatch):
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo

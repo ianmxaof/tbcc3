@@ -145,10 +145,10 @@ def draft_revenue_brief_html(bundle: dict[str, Any], *, use_llm: bool = True) ->
         )
         user = json.dumps(bundle, default=str)[:12000]
         text = complete_chat_text_sync(
-            runtime,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_tokens=800,
             temperature=0.3,
+            runtime=runtime,
         )
         body = (text or "").strip()
         if body and len(body) > 80:
