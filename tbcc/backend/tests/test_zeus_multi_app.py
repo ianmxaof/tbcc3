@@ -54,8 +54,33 @@ def test_run_applications_rejects_empty():
 
 
 def test_cohost_spike_requires_env_flag(monkeypatch):
+    """Guards against a real incident: this operator's tbcc/.env carries
+    TBCC_ZEUS_COHOST_SPIKE=1. bots/secretary_bot.py's own module-level
+    `load_dotenv(..., override=True)` reloads it from disk on first import,
+    silently undoing delenv() below and letting spike.main() past its guard to
+    build real Application objects and poll live Telegram with production
+    tokens (confirmed: this hung the suite for ~10 minutes throwing 409
+    Conflict against the island's real secretary/macro_search bots).
+    Neutralize load_dotenv so the guard is tested honestly regardless of the
+    operator's local .env, and stub the two build_* calls as a second layer —
+    a broken guard must never be able to reach real Telegram from a test.
+    """
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: None)
     monkeypatch.delenv("TBCC_ZEUS_COHOST_SPIKE", raising=False)
     from bots import zeus_cohost_spike as spike
+
+    monkeypatch.setattr(
+        spike,
+        "build_secretary",
+        MagicMock(side_effect=AssertionError("must not build a real Application when the co-host flag is unset")),
+    )
+    monkeypatch.setattr(
+        spike,
+        "build_macro_search",
+        MagicMock(side_effect=AssertionError("must not build a real Application when the co-host flag is unset")),
+    )
 
     with pytest.raises(SystemExit) as ei:
         spike.main()
