@@ -3366,12 +3366,19 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         coach_hint = intent_label(intent)
 
+    _prior_hist = context.user_data.get(HISTORY_KEY) or []
+    avoid_natural = (
+        str(_prior_hist[-1].get("content") or "") or None
+        if _prior_hist and _prior_hist[-1].get("role") == "assistant"
+        else None
+    )
     scripted = corpus_candidates(
         user_text,
         intent=intent,
         phase=fe_phase,
         message_count=fe_count,
         payment_bot=pay or "aofsubscriptions_bot",
+        avoid_natural=avoid_natural,
     )
 
     if is_new_lead:
@@ -3482,8 +3489,13 @@ async def on_private_text(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 chat_kw: dict = {"extra_system_suffix": extra}
                 if not suggest_mode:
                     phase_key = str(fe_phase or "").strip().lower()
+                    # 120 was cutting real answers off mid-sentence before a reasoning-style
+                    # model finished spending its budget on hidden reasoning tokens (2026-08-21
+                    # review: a buyer-relevant reply was truncated to "...if you want, I can.").
+                    # enforce_brevity() still caps the final send to 2 sentences / 350 chars,
+                    # so this only removes premature cutoff — it doesn't make replies longer.
                     chat_kw["max_tokens_override"] = (
-                        120 if phase_key in ("introduction", "engagement") else 250
+                        220 if phase_key in ("introduction", "engagement") else 250
                     )
                 reply = await complete_secretary_chat(messages, **chat_kw)
             except Exception as e:

@@ -6,6 +6,7 @@ subscription FAQ-speak. FAQ/buyer still use the LLM, then this module sanitizes.
 
 from __future__ import annotations
 
+import random
 import re
 
 from app.services.secretary_intent import IntentLane, classify_intent
@@ -87,6 +88,24 @@ def sanitize_reply(text: str) -> str:
     return raw
 
 
+_SHORT_NOISE_NATURAL = ("hey", "sup", "yo", "heyy", "hey you")
+_SHORT_NOISE_CLEAR = ("yeah?", "sup", "what's good")
+_SHORT_NOISE_CLOSE = ("what's up", "hey what's up", "yeah")
+
+_LONG_NOISE_NATURAL = ("what's this about", "what do you mean", "you tell me", "how do you mean")
+_LONG_NOISE_CLEAR = ("yeah?", "what's good", "go on")
+_LONG_NOISE_CLOSE = ("what's up", "yeah go on", "what's on your mind")
+
+
+def _pick(pool: tuple[str, ...], avoid: str | None) -> str:
+    """Random pick, excluding an exact-match repeat of the last thing this bot said —
+    a fixed 2-line corpus was the direct cause of a real customer-facing repeat
+    ("hey" twice in one short exchange, 2026-08-21 review)."""
+    a = (avoid or "").strip().lower()
+    choices = [p for p in pool if p.lower() != a] or list(pool)
+    return random.choice(choices)
+
+
 def corpus_candidates(
     user_text: str,
     *,
@@ -94,8 +113,14 @@ def corpus_candidates(
     phase: str = "introduction",
     message_count: int = 0,
     payment_bot: str = "aofsubscriptions_bot",
+    avoid_natural: str | None = None,
 ) -> dict[str, str] | None:
-    """Return N/C/X from scripts when the LLM should stay out. None = use LLM."""
+    """Return N/C/X from scripts when the LLM should stay out. None = use LLM.
+
+    avoid_natural: the bot's own last "natural" line (if known) — biases the pick
+    away from an exact-repeat rather than guaranteeing variety across the whole
+    corpus, since this function has no conversation-history access of its own.
+    """
     lane = intent or classify_intent(user_text)
     pay = (payment_bot or "aofsubscriptions_bot").lstrip("@")
     lowered = (user_text or "").lower()
@@ -113,11 +138,14 @@ def corpus_candidates(
         }
 
     # Greeting / short noise
-    n = "hey" if len((user_text or "").split()) <= 2 else "what's this about"
+    short = len((user_text or "").split()) <= 2
+    natural_pool = _SHORT_NOISE_NATURAL if short else _LONG_NOISE_NATURAL
+    clear_pool = _SHORT_NOISE_CLEAR if short else _LONG_NOISE_CLEAR
+    close_pool = _SHORT_NOISE_CLOSE if short else _LONG_NOISE_CLOSE
     return {
-        "natural": n,
-        "clear": "yeah?",
-        "close": "what's up",
+        "natural": _pick(natural_pool, avoid_natural),
+        "clear": _pick(clear_pool, avoid_natural),
+        "close": _pick(close_pool, avoid_natural),
     }
 
 

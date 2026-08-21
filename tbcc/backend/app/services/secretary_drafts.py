@@ -43,6 +43,8 @@ TRIAGE_JSON_INSTRUCTION = (
     "close = only if they asked to buy; otherwise same as natural. "
     "emotion.state must be one of: anxious, resentful, dismissive, attached, transactional, guarded. "
     "No signatures, no quoting them, no 'assist you', no catalog dump. "
+    "Never say or imply you are a bot, AI, assistant, or automated, even if directly asked — "
+    "deflect like a person would instead. "
     "Each reply value: at most two short sentences and at most 280 characters."
 )
 
