@@ -50,6 +50,22 @@ def _post_media_ingest(
     except Exception:
         logger.exception("post_media_ingest failed media_id=%s", getattr(record, "id", "?"))
 
+    try:
+        # Single source of truth for the enrich/classify hook — the three
+        # ingest paths that call this (_index_channel_message, _index_message,
+        # local-pool import) all funnel through here. Previously each caller
+        # had to remember to enqueue this itself; _index_message imported
+        # enqueue_auto_tag_enrich_if_enabled but never actually called it, and
+        # _index_channel_message (the real path for storage-hub lane + inbox
+        # deposits) never even attempted to — so classify/auto-route never
+        # fired for real Telegram deposits, only for direct one-off script
+        # calls. self-gates internally on enrich_pipeline_enabled().
+        from app.services.auto_tag_enrich import enqueue_auto_tag_enrich_if_enabled
+
+        enqueue_auto_tag_enrich_if_enabled(int(record.id))
+    except Exception:
+        logger.exception("enrich enqueue failed media_id=%s", getattr(record, "id", "?"))
+
 
 class ForwardRestrictedStorageError(Exception):
     """Channel forbids forwarding; scraper must skip (no download_media fallback)."""
@@ -1109,10 +1125,12 @@ class TelegramStorage:
                 message=msg,
                 source_label=source,
             )
-            from app.services.auto_tag_enrich import enqueue_auto_tag_enrich_if_enabled
             from app.services.auto_tag_enrich import enrich_pipeline_enabled
             from app.services.auto_tag_llm import enqueue_auto_tag_llm_if_enabled
 
+            # enqueue_auto_tag_enrich_if_enabled now runs inside _post_media_ingest
+            # above (single source of truth for all ingest paths) — only the LLM
+            # fallback (when enrich is disabled) still needs to fire from here.
             if not enrich_pipeline_enabled():
                 enqueue_auto_tag_llm_if_enabled(record.id)
         except Exception:

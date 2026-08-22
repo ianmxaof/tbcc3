@@ -46,6 +46,41 @@ def llm_fallback_enabled() -> bool:
     return (os.getenv("TBCC_AUTO_TAG_ON_IMPORT") or "").strip().lower() in ("1", "true", "yes")
 
 
+def vision_auto_route_lanes() -> set[str]:
+    """Comma-separated lane allowlist for hands-off vision auto-route. Unset/empty = disabled.
+
+    Deliberately opt-in and narrow — only lanes with real validated ground-truth
+    accuracy belong here. Everything else still lands as a MediaLaneVisionDecision
+    suggestion for the Q&A panel, it just doesn't self-move into the lane subtopic.
+    """
+    raw = os.getenv("TBCC_VISION_AUTO_ROUTE_LANES") or ""
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def _maybe_auto_route_vision_lane(media_id: int, vision_decision: dict[str, Any] | None) -> None:
+    if not vision_decision:
+        return
+    lane_key = vision_decision.get("lane_key")
+    if not lane_key:
+        return
+    allowlist = vision_auto_route_lanes()
+    if not allowlist or lane_key not in allowlist:
+        return
+    try:
+        from app.services.gatekeeper_review import enqueue_lane_route_for_media
+
+        result = enqueue_lane_route_for_media(media_id, [lane_key])
+        if not result.get("ok"):
+            logger.error(
+                "vision auto-route enqueue FAILED media_id=%s lane=%s reason=%s",
+                media_id,
+                lane_key,
+                result.get("reason"),
+            )
+    except Exception:
+        logger.warning("vision auto-route skipped media_id=%s lane=%s", media_id, lane_key, exc_info=True)
+
+
 def _is_http_source(raw: str | None) -> str | None:
     s = (raw or "").strip()
     if s.startswith("http://") or s.startswith("https://"):
@@ -353,7 +388,8 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
         if img_for_clip:
             from app.services.media_lane_vision_classify import classify_and_log_lane_vision
 
-            classify_and_log_lane_vision(db, media_id, img_for_clip)
+            vision_decision = classify_and_log_lane_vision(db, media_id, img_for_clip)
+            _maybe_auto_route_vision_lane(media_id, vision_decision)
 
         route = try_assign_pool_from_tags(db, media_id)
         if route.get("applied"):

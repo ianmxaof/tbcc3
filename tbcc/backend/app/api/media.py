@@ -203,10 +203,27 @@ def _recommendation_score(media, stats: dict) -> float:
     return (source_rate * 0.34) + (tag_rate * 0.32) + (type_rate * 0.20) + (tier_rate * 0.10) + (base * 0.04)
 
 
+def _extract_storage_hub_chat_ident(source_channel: str | None) -> str:
+    """Unwrap a topic-qualified source_channel to the bare chat id.
+
+    Index-only channel/topic deposits (_index_channel_message) store
+    source_channel as ``"telegram:{chat_id}#topic:{thread_id}"`` when the
+    source label carries a topic, not the bare chat id. Downstream Telethon
+    lookups (resolve_telethon_entity, get_messages) need the bare id.
+    """
+    sc = (source_channel or "").strip()
+    if sc.startswith("telegram:"):
+        sc = sc[len("telegram:"):]
+    hash_idx = sc.find("#")
+    if hash_idx != -1:
+        sc = sc[:hash_idx]
+    return sc.strip()
+
+
 def _is_storage_hub_source(source_channel: str | None) -> bool:
     from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
 
-    sc = (source_channel or "").strip()
+    sc = _extract_storage_hub_chat_ident(source_channel)
     if not sc:
         return False
     if sc == STORAGE_HUB_IDENT:
@@ -292,7 +309,7 @@ async def _fetch_media_bytes_and_type(ctx: MediaFetchContext) -> tuple[bytes, st
     # The real file is always in Saved Messages at telegram_message_id (same as poster / album pipeline).
     if ctx.telegram_message_id is not None:
 
-        hub_ident = (ctx.source_channel or "").strip()
+        hub_ident = _extract_storage_hub_chat_ident(ctx.source_channel)
         use_hub = _is_storage_hub_source(hub_ident)
 
         async def _download_job(storage):
@@ -370,7 +387,7 @@ async def _fetch_media_bytes_and_type_via_import(ctx: MediaFetchContext) -> tupl
     if ctx.telegram_message_id is not None:
         from app.services.telegram_admin import run_telegram_import_io
 
-        hub_ident = (ctx.source_channel or "").strip()
+        hub_ident = _extract_storage_hub_chat_ident(ctx.source_channel)
         use_hub = _is_storage_hub_source(hub_ident)
 
         async def _download_job(storage):

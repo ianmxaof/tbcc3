@@ -325,37 +325,49 @@ def telegram_account_redis_lock():
 async def acquire_admin_session_lock_async(timeout_s: float | None = None):
     import asyncio
 
-    return await asyncio.to_thread(acquire_admin_session_lock, timeout_s)
+    # _mark_lock_held is threading.local — the sync acquire above runs on a
+    # to_thread pool thread, so its mark never reaches the caller's event-loop
+    # thread. Re-mark here, on the thread that will actually check it.
+    token = await asyncio.to_thread(acquire_admin_session_lock, timeout_s)
+    _mark_lock_held("admin")
+    return token
 
 
 async def release_admin_session_lock_async(token: str) -> None:
     import asyncio
 
     await asyncio.to_thread(release_admin_session_lock, token)
+    _mark_lock_released("admin")
 
 
 async def acquire_import_session_lock_async(timeout_s: float | None = None):
     import asyncio
 
-    return await asyncio.to_thread(acquire_import_session_lock, timeout_s)
+    token = await asyncio.to_thread(acquire_import_session_lock, timeout_s)
+    _mark_lock_held("import")
+    return token
 
 
 async def release_import_session_lock_async(token: str) -> None:
     import asyncio
 
     await asyncio.to_thread(release_import_session_lock, token)
+    _mark_lock_released("import")
 
 
 async def acquire_poster_session_lock_async(timeout_s: float | None = None):
     import asyncio
 
-    return await asyncio.to_thread(acquire_poster_session_lock, timeout_s)
+    token = await asyncio.to_thread(acquire_poster_session_lock, timeout_s)
+    _mark_lock_held("poster")
+    return token
 
 
 async def release_poster_session_lock_async(token: str) -> None:
     import asyncio
 
     await asyncio.to_thread(release_poster_session_lock, token)
+    _mark_lock_released("poster")
 
 
 async def acquire_telegram_account_lock_async(timeout_s: float | None = None):
