@@ -336,7 +336,11 @@ def run_auto_tag_enrich_for_media(media_id: int) -> dict[str, Any]:
         clip_confident = False
         clip_tag_count = 0
         img_for_clip = img_bytes
-        if not img_for_clip and mt in ("photo", "gif", ""):
+        if not img_for_clip and mt in ("photo", "gif", "", "video"):
+            # _fetch_classify_bytes_sync already samples one ffmpeg frame for
+            # video (media_frame_sample.extract_video_frame_jpeg) — this gate
+            # just never invited video in, so vision classify was silently
+            # blind to every video deposit (2026-08-22 finding).
             img_for_clip = _fetch_classify_bytes_sync(media_id)
         if img_for_clip and not _skip_sidecar:
             from app.services.clip_classifier import clip_classifier_enabled

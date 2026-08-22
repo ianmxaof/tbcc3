@@ -328,11 +328,15 @@ def notify_composer_bot(
     )
     row = storage_map_by_key().get(nk)
     topic_title = row.topic_title if row else nk
-    refresh = refresh_storage_deposit_panel_http(
-        chat_id=storage_hub_chat_id_int(),
-        message_thread_id=int(storage_thread_id),
-        topic_title=topic_title,
-        network_key=nk,
+    from app.services.import_job_runner import _run_on_worker_loop
+
+    refresh = _run_on_worker_loop(
+        refresh_storage_deposit_panel_http(
+            chat_id=storage_hub_chat_id_int(),
+            message_thread_id=int(storage_thread_id),
+            topic_title=topic_title,
+            network_key=nk,
+        )
     )
     if refresh.get("ok"):
         return {"ok": True, "action": "panel_refreshed", "panel": refresh}
