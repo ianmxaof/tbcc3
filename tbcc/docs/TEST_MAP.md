@@ -24,6 +24,7 @@ py -3.13 -m pytest <path> -x -q
 | **Secretary operator reports** | `tests/test_secretary_report_copy.py`, `tests/test_traffic_inbox_copy.py`, `tests/test_revenue_brief.py`, `tests/test_admin_inbox_html.py` | Inbox / pulse / heuristic Telegram HTML; no double-escaped tags |
 | **Growth** | `tests/test_growth_reaction.py`, `tests/test_content_signals.py`, `tests/test_analytics_direction.py`, `tests/test_reddit_circuit.py`, `tests/test_reddit_surface_caption.py` | Growth signals + on-demand direction ranking; Reddit global cap, beacons, ledger |
 | **Env secrets / capture** | `tests/test_tbcc_env_secret_store.py` | Clipboard/.env key suggest + write |
+| **API Pocket / slots CLI** | `tests/test_api_slot_registry.py` | PC-local `tbcc/.tbcc-run/api_slot_registry.sqlite3` — classify/suggest, CRUD, generic REST caller; `tbcc_cli slots add\|list\|show\|call\|remove\|suggest` |
 | **Zeus / secretary menu** | `tests/test_zeus_menu.py` | Phase 1 hub callbacks, stack HTML, deep-link keyboards |
 | **Leave-message cleanup** | `tests/test_leave_message_cleanup.py` | Env flags + chat allowlist for Loot Room “X left” sweep |
 | **Zeus HTTP (3a)** | `tests/test_zeus_v1.py` | Read-only `/zeus/v1/stack/status` alias of `/ops/stack-status` |

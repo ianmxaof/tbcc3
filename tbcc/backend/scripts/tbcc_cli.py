@@ -29,6 +29,10 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py research scan
   py -3.13 scripts/tbcc_cli.py research scan --seed
   py -3.13 scripts/tbcc_cli.py research scan --dry-run --json
+  py -3.13 scripts/tbcc_cli.py slots add --id smoke-echo --category generic-rest --base-url https://httpbin.org --auth-env-key TBCC_SMOKE_KEY --path /post --method POST --json
+  py -3.13 scripts/tbcc_cli.py slots list --json
+  py -3.13 scripts/tbcc_cli.py slots call smoke-echo --body '{"hello":"pocket"}' --json
+  py -3.13 scripts/tbcc_cli.py slots suggest "sk-or-abcdef..." --json
 """
 from __future__ import annotations
 
@@ -704,6 +708,128 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_slots_add(args: argparse.Namespace) -> int:
+    """Register a new API Pocket slot — immediately callable via `slots call`
+    without any per-vendor SDK. See app/services/api_slot_registry.py."""
+    from app.services.api_slot_registry import add_slot
+
+    headers: dict[str, str] = {}
+    for h in args.header or []:
+        if ":" in h:
+            k, v = h.split(":", 1)
+            headers[k.strip()] = v.strip()
+
+    try:
+        result = add_slot(
+            slot_id=args.id,
+            category=args.category,
+            base_url=args.base_url,
+            auth_env_key=args.auth_env_key,
+            auth_style=args.auth_style,
+            openapi_url=args.openapi_url,
+            method=args.method,
+            path_template=args.path,
+            headers=headers or None,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    if args.json:
+        _json(result)
+    else:
+        print(f"{result['id']}: registered ({result['category']}, auth={result['auth_env_key']})")
+        if result.get("warning"):
+            print(f"warning: {result['warning']}", file=sys.stderr)
+    return 0
+
+
+def cmd_slots_list(args: argparse.Namespace) -> int:
+    from app.services.api_slot_registry import list_slots
+
+    rows = list_slots()
+    if args.json:
+        _json(rows)
+        return 0
+    for row in rows:
+        print(f"{row['id']:<20} {row['category']:<14} auth={row['auth_env_key']:<28} {row.get('base_url') or ''}")
+    return 0
+
+
+def cmd_slots_show(args: argparse.Namespace) -> int:
+    from app.services.api_slot_registry import get_slot
+
+    slot = get_slot(args.id)
+    if slot is None:
+        print(f"{args.id}: not found", file=sys.stderr)
+        return 1
+    if args.json:
+        _json(slot)
+    else:
+        for k, v in slot.items():
+            print(f"{k}: {v}")
+    return 0
+
+
+def cmd_slots_call(args: argparse.Namespace) -> int:
+    """Generic REST forward through a registered slot — the TUI contract:
+    stable exit codes, --json everywhere, human errors on stderr."""
+    from app.services.api_slot_registry import call_slot
+
+    body = None
+    if args.body:
+        try:
+            body = json.loads(args.body)
+        except json.JSONDecodeError as e:
+            print(f"--body is not valid JSON: {e}", file=sys.stderr)
+            return 1
+
+    result = call_slot(
+        args.id,
+        body=body,
+        method=args.method or None,
+        path=args.path or None,
+        timeout=args.timeout,
+    )
+    if args.json:
+        _json(result)
+    else:
+        print(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_slots_remove(args: argparse.Namespace) -> int:
+    from app.services.api_slot_registry import remove_slot
+
+    ok = remove_slot(args.id)
+    if args.json:
+        _json({"ok": ok})
+    else:
+        print(f"{args.id}: {'removed' if ok else 'not found'}")
+    return 0 if ok else 1
+
+
+def cmd_slots_suggest(args: argparse.Namespace) -> int:
+    """Classify pasted key/URL/curl text into a slot suggestion — does not
+    persist anything; pipe the result into `slots add` once it looks right."""
+    from app.services.api_slot_registry import suggest_slot
+
+    text = args.text
+    if not text and not sys.stdin.isatty():
+        text = sys.stdin.read()
+    text = (text or "").strip()
+    if not text:
+        print("No input given — pass text as an argument or pipe via stdin", file=sys.stderr)
+        return 1
+
+    result = suggest_slot(text, page_url=args.page_url, id_override=args.id)
+    if args.json:
+        _json(result)
+    else:
+        print(result)
+    return 0
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -899,6 +1025,52 @@ def main() -> int:
     rs.add_argument("--timeout", type=float, default=20.0, help="Per-source fetch timeout (seconds)")
     rs.add_argument("--json", action="store_true")
     rs.set_defaults(func=cmd_research_scan)
+
+    slots = sub.add_parser("slots", help="API Pocket — PC-local REST service-slot registry")
+    slots_sub = slots.add_subparsers(dest="slots_cmd", required=True)
+
+    sa = slots_sub.add_parser("add", help="Register a new API slot")
+    sa.add_argument("--id", default="", help="Slot id (default: derived from base URL / auth env key)")
+    sa.add_argument("--category", default="generic-rest", choices=["llm", "text-format", "media", "generic-rest"])
+    sa.add_argument("--base-url", default="", help="API base URL")
+    sa.add_argument("--auth-env-key", required=True, help="Env var name holding the API key")
+    sa.add_argument("--auth-style", default="bearer", choices=["bearer", "x-api-key", "query", "none"])
+    sa.add_argument("--openapi-url", default="", help="Optional OpenAPI spec URL to infer a call path")
+    sa.add_argument("--method", default="GET")
+    sa.add_argument("--path", default="", help="Path template appended to base URL on call")
+    sa.add_argument("--header", action="append", help="Extra static header 'Name: value' (repeatable)")
+    sa.add_argument("--json", action="store_true")
+    sa.set_defaults(func=cmd_slots_add)
+
+    sl = slots_sub.add_parser("list", help="List registered slots")
+    sl.add_argument("--json", action="store_true")
+    sl.set_defaults(func=cmd_slots_list)
+
+    ssh = slots_sub.add_parser("show", help="Show one slot's stored config")
+    ssh.add_argument("id")
+    ssh.add_argument("--json", action="store_true")
+    ssh.set_defaults(func=cmd_slots_show)
+
+    sc = slots_sub.add_parser("call", help="Call a registered slot")
+    sc.add_argument("id")
+    sc.add_argument("--body", default="", help="JSON request body")
+    sc.add_argument("--method", default="", help="Override the slot's stored method")
+    sc.add_argument("--path", default="", help="Override the slot's stored path template")
+    sc.add_argument("--timeout", type=float, default=20.0)
+    sc.add_argument("--json", action="store_true")
+    sc.set_defaults(func=cmd_slots_call)
+
+    sr = slots_sub.add_parser("remove", help="Delete a registered slot")
+    sr.add_argument("id")
+    sr.add_argument("--json", action="store_true")
+    sr.set_defaults(func=cmd_slots_remove)
+
+    ssg = slots_sub.add_parser("suggest", help="Classify pasted key/URL/curl text into a slot suggestion")
+    ssg.add_argument("text", nargs="?", default="", help="Pasted text (omit to read stdin)")
+    ssg.add_argument("--page-url", default="", help="Browser page URL context, if known")
+    ssg.add_argument("--id", default="", help="Force a specific slot id in the suggestion")
+    ssg.add_argument("--json", action="store_true")
+    ssg.set_defaults(func=cmd_slots_suggest)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":
