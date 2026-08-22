@@ -2304,14 +2304,22 @@ function blobNameAndTypeForUrl(url) {
 
 async function tbccPrepareImportArrayBuffer(arrayBuffer, url) {
   const { name, type } = blobNameAndTypeForUrl(url);
-  if (typeof TbccWebp === "undefined" || !TbccWebp.tbccEnsureJpegArrayBuffer) {
+  if (typeof TbccWebp === "undefined" || !TbccWebp.tbccEnsureExportArrayBuffer) {
+    if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegArrayBuffer) {
+      const r = await TbccWebp.tbccEnsureJpegArrayBuffer(arrayBuffer, url, name);
+      return {
+        buffer: r.buffer,
+        name: r.name,
+        type: r.converted ? "image/jpeg" : type,
+      };
+    }
     return { buffer: arrayBuffer, name, type };
   }
-  const r = await TbccWebp.tbccEnsureJpegArrayBuffer(arrayBuffer, url, name);
+  const r = await TbccWebp.tbccEnsureExportArrayBuffer(arrayBuffer, url, name);
   return {
     buffer: r.buffer,
     name: r.name,
-    type: r.converted ? "image/jpeg" : type,
+    type: r.converted ? r.type || type : type,
   };
 }
 
@@ -6712,6 +6720,70 @@ async function tbccCaptureSecretFromSelection(info, tab) {
   }
 }
 
+async function tbccLoadApiSlotFromSelection(info, tab) {
+  const value = String((info && info.selectionText) || "").trim();
+  if (!value) {
+    notifyThrottled(
+      "load-api-slot-empty",
+      "TBCC",
+      "Select the API key (and optionally its base URL) text first, then right-click.",
+      6000
+    );
+    return;
+  }
+  const pageUrl = (tab && tab.url) || "";
+  try {
+    const r = await tbccFetchCaptureSecret("/tools/slots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value, page_url: pageUrl }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (r.ok && data && data.ok) {
+      notifyThrottled(
+        "load-api-slot-ok",
+        "TBCC",
+        `slot ${data.id} ready` + (data.backed_up_credential_manager ? " (+ Credential Manager)" : ""),
+        6000
+      );
+      return;
+    }
+    if (r.status === 400 || r.status === 422) {
+      await tbccOpenCaptureSecretPrompt(value, pageUrl);
+      notifyThrottled(
+        "load-api-slot-fallback",
+        "TBCC",
+        "Couldn't auto-register as an API slot — opened the plain key-capture picker instead.",
+        7000
+      );
+      return;
+    }
+    const detail =
+      (data && data.detail && (data.detail.message || data.detail.error || data.detail)) ||
+      data.detail ||
+      r.statusText ||
+      "slot registration failed";
+    notifyThrottled("load-api-slot-fail", "TBCC", String(detail), 8000);
+  } catch (e) {
+    try {
+      await tbccOpenCaptureSecretPrompt(value, pageUrl);
+      notifyThrottled(
+        "load-api-slot-offline",
+        "TBCC",
+        "API unreachable — key picker opened; start TBCC API if save fails.",
+        8000
+      );
+    } catch (_) {
+      notifyThrottled(
+        "load-api-slot-offline",
+        "TBCC",
+        "Backend offline — start TBCC API, or use Windows desktop menu.",
+        8000
+      );
+    }
+  }
+}
+
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   const id = String(info.menuItemId || "");
 
@@ -6728,6 +6800,11 @@ async function tbccContextMenuClickedAsync(info, tab) {
 
   if (id === "tbccCaptureSecretSelection") {
     void tbccCaptureSecretFromSelection(info, tab);
+    return;
+  }
+
+  if (id === "tbccLoadApiSlotSelection") {
+    void tbccLoadApiSlotFromSelection(info, tab);
     return;
   }
 

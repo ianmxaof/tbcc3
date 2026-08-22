@@ -25,6 +25,12 @@
       menuFamily: "media",
     },
     {
+      id: "tbccLoadApiSlotSelection",
+      title: "TBCC: Load API from clipboard",
+      contexts: ["selection"],
+      menuFamily: "media",
+    },
+    {
       id: "tbccAddVideoUrlToList",
       title: "TBCC: Save URL to master archive",
       contexts: ["selection", "link", "page", "frame", "video"],

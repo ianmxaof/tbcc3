@@ -97,13 +97,25 @@ def _slugify(text: str) -> str:
     return s or "slot"
 
 
+def _brand_label_from_host(url: str) -> str:
+    """First DNS label that actually names the vendor — a bare "api" leading
+    label (api.openrouter.ai) isn't a brand name, so it's dropped when a real
+    second label is still left to use instead. Shared by both the slot-id and
+    the fallback-env-key heuristics so they never diverge on the same host."""
+    if not url:
+        return ""
+    host = urlparse(url).netloc or url
+    host = re.sub(r"^www\.", "", host, flags=re.I)
+    labels = host.split(".") if host else []
+    if len(labels) > 2 and labels[0].lower() == "api":
+        labels = labels[1:]
+    return labels[0] if labels else ""
+
+
 def _slot_id_from_hint(base_url: str, auth_env_key: str) -> str:
-    if base_url:
-        host = urlparse(base_url).netloc or base_url
-        host = re.sub(r"^www\.", "", host)
-        first = host.split(".")[0] if host else ""
-        if first:
-            return _slugify(first)
+    label = _brand_label_from_host(base_url)
+    if label:
+        return _slugify(label)
     return _slugify(re.sub(r"_API(_KEY)?$", "", auth_env_key or ""))
 
 
@@ -159,9 +171,7 @@ def parse_slot_source(text: str) -> dict[str, str]:
 
 
 def _fallback_env_key(url: str) -> str:
-    host = urlparse(url).netloc if url else ""
-    host = re.sub(r"^www\.", "", host).split(".")[0] if host else ""
-    label = host or "GENERIC"
+    label = _brand_label_from_host(url) or "GENERIC"
     return normalize_env_key(f"TBCC_{label}_API_KEY")
 
 

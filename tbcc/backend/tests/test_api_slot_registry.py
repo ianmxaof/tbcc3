@@ -70,8 +70,26 @@ def test_suggest_slot_generates_id_and_category():
     result = reg.suggest_slot("https://api.openrouter.ai\nsk-or-" + ("x" * 24))
     assert result["auth_env_key"] == "OPENROUTER_API_KEY"
     assert result["category"] == "llm"
-    assert result["id"] == "api"
+    assert result["id"] == "openrouter"
     assert result["base_url"] == "https://api.openrouter.ai"
+
+
+def test_slot_id_from_hint_drops_leading_api_subdomain():
+    assert reg._slot_id_from_hint("https://api.openrouter.ai", "OPENROUTER_API_KEY") == "openrouter"
+
+
+def test_slot_id_from_hint_two_label_host_unchanged():
+    assert reg._slot_id_from_hint("https://httpbin.org", "TBCC_HTTPBIN_API_KEY") == "httpbin"
+
+
+def test_slot_id_from_hint_strips_www_then_api_subdomain():
+    assert reg._slot_id_from_hint("https://www.api.example.com", "TBCC_FOO_API_KEY") == "example"
+
+
+def test_fallback_env_key_shares_the_same_host_heuristic():
+    result = reg.suggest_slot("https://api.foo.com\nsk-abcdefghijklmnopqrstuvwx")
+    assert result["auth_env_key"] == "TBCC_FOO_API_KEY"
+    assert result["id"] == "foo"
 
 
 def test_suggest_slot_unknown_key_falls_back_to_host_env_key():

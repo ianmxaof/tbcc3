@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from starlette.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
-from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, goblin, link_resolver, crawler, jdownloader, caption_snippets, funnel_strategies, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, ops_admin_bridge, zeus_v1, zeus_llm, extension_context_menu, extension_capture_secret, extension_aof_pools, extension_storage_hub, album_composer_drafts, k2s, lane_drops, click_beacon
+from app.api import analytics, bots, channels, forum, media, jobs, import_, pools, referrals, sources, subscriptions, subscription_plans, scheduled_posts, campaigns, external_payment_orders, growth_settings, growth_hub, companion, internal_launch, tags, llm_shop, webhooks_payment, webhooks_companion, watch_folder, payment_bot_settings, loot_bot_settings, loot, goblin, link_resolver, crawler, jdownloader, caption_snippets, funnel_strategies, listening_relay_settings, promo_affiliate_links, telegram_custom_emoji, emoji_factory, zip_bundle_settings, gallery_send_promo, main_channel_divider, watermark_settings, archive, macro_search_submissions, secretary, automation, ops_focus, ops_alerts, ops_triage, ops_flywheel, ops_workflow, ops_stack, ops_admin_bridge, zeus_v1, zeus_llm, extension_context_menu, extension_capture_secret, extension_aof_pools, extension_storage_hub, album_composer_drafts, k2s, lane_drops, click_beacon, tools_slots
 from app.database.session import engine
 from app.models.base import Base
 from app.models.payment_bot_settings import PaymentBotSettings  # noqa: F401
@@ -58,6 +58,13 @@ app = FastAPI(title="Telegram Bot Command Center")
 
 @app.on_event("startup")
 def on_startup():
+    # Wire UserbotFleet inbound bridge
+    try:
+        from app.services.userbot_fleet import UserbotFleet, handle_inbound_userbot_message
+        fleet = UserbotFleet()
+        fleet.register_inbound_handler(handle_inbound_userbot_message)
+    except Exception as e:
+        print(f"UserbotFleet startup hook skipped: {e}")
     from app.services.bundle_storage import ensure_bundle_dir
     from app.services.system_health import auto_remediate_on_startup
     from app.utils.telethon_session import (
@@ -1294,6 +1301,7 @@ app.include_router(k2s.router, prefix="/k2s", tags=["k2s"])
 app.include_router(watermark_settings.router, prefix="/watermark-settings", tags=["watermark-settings"])
 app.include_router(extension_context_menu.router, prefix="/extension/context-menu", tags=["extension-context-menu"])
 app.include_router(extension_capture_secret.router, prefix="/extension/capture-secret", tags=["extension-capture-secret"])
+app.include_router(tools_slots.router, prefix="/tools/slots", tags=["tools-slots"])
 app.include_router(extension_aof_pools.router, prefix="/extension/aof-pools", tags=["extension-aof-pools"])
 app.include_router(extension_storage_hub.router, prefix="/extension/storage-hub", tags=["extension-storage-hub"])
 app.include_router(lane_drops.router, prefix="/lane-drops", tags=["lane-drops"])
