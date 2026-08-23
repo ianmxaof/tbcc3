@@ -48,8 +48,16 @@ _USER_AGENT = "Mozilla/5.0 (compatible; tbcc-research-scanner/0.1; +https://api.
 # RSSHub specifically — deferred, not attempted here.
 _FETCH_DELAY_SECONDS = 2.0
 _REDDIT_FETCH_DELAY_SECONDS = 20.0
-_SOURCES_PATH = Path(__file__).resolve().parents[1] / "data" / "research_scanner_sources.json"
+_DEFAULT_SOURCES_PATH = Path(__file__).resolve().parents[1] / "data" / "research_scanner_sources.json"
 _SPRINT_STATE_PATH = Path(__file__).resolve().parents[3] / "docs" / "SPRINT_STATE.md"
+_VALID_LANES = {"dev", "growth", "content"}
+
+
+def _sources_path() -> Path:
+    override = (os.getenv("TBCC_RESEARCH_SCANNER_SOURCES") or "").strip()
+    if override:
+        return Path(override)
+    return _DEFAULT_SOURCES_PATH
 
 
 @dataclass(frozen=True)
@@ -61,8 +69,58 @@ class FeedSource:
 
 
 def load_sources() -> list[FeedSource]:
-    data = json.loads(_SOURCES_PATH.read_text(encoding="utf-8"))
+    data = json.loads(_sources_path().read_text(encoding="utf-8"))
     return [FeedSource(id=s["id"], url=s["url"], label=s["label"], lane=s["lane"]) for s in data["sources"]]
+
+
+def list_sources() -> list[dict[str, str]]:
+    """Raw source rows (id/url/label/lane) as stored on disk, in file order."""
+    data = json.loads(_sources_path().read_text(encoding="utf-8"))
+    return list(data["sources"])
+
+
+def add_source(*, source_id: str, url: str, label: str, lane: str) -> dict[str, str]:
+    """Append a new RSS/Atom source to research_scanner_sources.json — picked
+    up by the next `research scan` (sources are read fresh each run, no
+    restart needed). Raises ValueError on a missing field, invalid lane, or a
+    duplicate id/url; callers (tbcc_cli.py `research feed-add`) should catch
+    and exit nonzero rather than silently overwrite an existing source.
+
+    Writes via targeted text insertion rather than re-serializing the whole
+    file, to preserve the hand-curated single-line-per-source formatting and
+    lane groupings instead of exploding every existing entry into a diff."""
+    source_id = (source_id or "").strip()
+    url = (url or "").strip()
+    label = (label or "").strip()
+    lane = (lane or "").strip()
+
+    if not source_id:
+        raise ValueError("id required")
+    if not url:
+        raise ValueError("url required")
+    if not label:
+        raise ValueError("label required")
+    if lane not in _VALID_LANES:
+        raise ValueError(f"lane must be one of {sorted(_VALID_LANES)}")
+
+    path = _sources_path()
+    raw = path.read_text(encoding="utf-8")
+    payload = json.loads(raw)
+    existing = payload.get("sources", [])
+    for s in existing:
+        if s["id"] == source_id:
+            raise ValueError(f"source id already registered: {source_id}")
+        if s["url"] == url:
+            raise ValueError(f"source url already registered (id={s['id']}): {url}")
+
+    new_source = {"id": source_id, "url": url, "label": label, "lane": lane}
+    new_line = json.dumps(new_source, ensure_ascii=False)
+    closing_idx = raw.rindex("]")
+    last_entry_end = raw.rindex("}", 0, closing_idx)
+    updated = raw[: last_entry_end + 1] + ",\n    " + new_line + "\n  " + raw[closing_idx:]
+    json.loads(updated)  # fail loud before touching disk if the splice broke something
+    path.write_text(updated, encoding="utf-8")
+    return new_source
 
 
 def _db_path() -> Path:

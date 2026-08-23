@@ -29,6 +29,8 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py research scan
   py -3.13 scripts/tbcc_cli.py research scan --seed
   py -3.13 scripts/tbcc_cli.py research scan --dry-run --json
+  py -3.13 scripts/tbcc_cli.py research feed-add --id hnrss-frontpage --url https://hnrss.org/frontpage --label "HN frontpage" --lane growth
+  py -3.13 scripts/tbcc_cli.py research feed-list --json
   py -3.13 scripts/tbcc_cli.py slots add --id smoke-echo --category generic-rest --base-url https://httpbin.org --auth-env-key TBCC_SMOKE_KEY --path /post --method POST --json
   py -3.13 scripts/tbcc_cli.py slots list --json
   py -3.13 scripts/tbcc_cli.py slots call smoke-echo --body '{"hello":"pocket"}' --json
@@ -591,6 +593,39 @@ def cmd_research_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_research_feed_add(args: argparse.Namespace) -> int:
+    """Register a new RSS/Atom source in research_scanner_sources.json —
+    picked up by the next `research scan` run, no restart needed (the file is
+    read fresh each call). See app/services/research_scanner.py:add_source."""
+    from app.services.research_scanner import add_source
+
+    try:
+        result = add_source(source_id=args.id, url=args.url, label=args.label, lane=args.lane)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    if args.json:
+        _json(result)
+    else:
+        print(f"{result['id']}: added ({result['lane']}) {result['url']}")
+    return 0
+
+
+def cmd_research_feed_list(args: argparse.Namespace) -> int:
+    """List every configured RSS/Atom source, as stored on disk."""
+    from app.services.research_scanner import list_sources
+
+    rows = list_sources()
+    if args.json:
+        _json(rows)
+        return 0
+    for row in rows:
+        print(f"{row['id']:<32} {row['lane']:<8} {row['label']}")
+        print(f"  {row['url']}")
+    return 0
+
+
 def cmd_llm_tui(args: argparse.Namespace) -> int:
     """Interactive terminal viewer over the local model/provider index. Needs
     `textual` (tbcc/backend/requirements-dev.txt) — not shipped to the island,
@@ -1025,6 +1060,18 @@ def main() -> int:
     rs.add_argument("--timeout", type=float, default=20.0, help="Per-source fetch timeout (seconds)")
     rs.add_argument("--json", action="store_true")
     rs.set_defaults(func=cmd_research_scan)
+
+    rfa = research_sub.add_parser("feed-add", help="Register a new RSS/Atom source")
+    rfa.add_argument("--id", required=True, help="Unique source id (kebab-case)")
+    rfa.add_argument("--url", required=True, help="Feed URL (RSS/Atom)")
+    rfa.add_argument("--label", required=True, help="Human-readable label")
+    rfa.add_argument("--lane", required=True, choices=["dev", "growth", "content"])
+    rfa.add_argument("--json", action="store_true")
+    rfa.set_defaults(func=cmd_research_feed_add)
+
+    rfl = research_sub.add_parser("feed-list", help="List configured RSS/Atom sources")
+    rfl.add_argument("--json", action="store_true")
+    rfl.set_defaults(func=cmd_research_feed_list)
 
     slots = sub.add_parser("slots", help="API Pocket — PC-local REST service-slot registry")
     slots_sub = slots.add_subparsers(dest="slots_cmd", required=True)

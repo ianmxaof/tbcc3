@@ -307,3 +307,69 @@ def test_run_scan_growth_and_content_lanes_never_reach_the_match_prompt(monkeypa
     assert called["n"] == 0  # no dev-lane items -> no LLM call at all
     assert report["new_items_total"] == 4  # 2 sources x 2 entries each
     assert len(report["other_signal"]) == 4
+
+
+_SEED_SOURCES_JSON = """{
+  "_comment": "test fixture",
+  "sources": [
+    {"id": "seed-a", "url": "https://example.com/seed-a.atom", "label": "Seed A", "lane": "dev"}
+  ]
+}
+"""
+
+
+@pytest.fixture
+def _sources_file(tmp_path, monkeypatch):
+    path = tmp_path / "sources.json"
+    path.write_text(_SEED_SOURCES_JSON, encoding="utf-8")
+    monkeypatch.setenv("TBCC_RESEARCH_SCANNER_SOURCES", str(path))
+    return path
+
+
+def test_list_sources_reads_seed_file(_sources_file):
+    rows = scanner.list_sources()
+    assert rows == [{"id": "seed-a", "url": "https://example.com/seed-a.atom", "label": "Seed A", "lane": "dev"}]
+
+
+def test_add_source_appends_and_is_loadable(_sources_file):
+    result = scanner.add_source(source_id="new-b", url="https://example.com/new-b.atom", label="New B", lane="growth")
+    assert result == {"id": "new-b", "url": "https://example.com/new-b.atom", "label": "New B", "lane": "growth"}
+
+    rows = scanner.list_sources()
+    assert [r["id"] for r in rows] == ["seed-a", "new-b"]
+
+    # round-trips through load_sources() (FeedSource dataclass), not just list_sources()
+    sources = scanner.load_sources()
+    assert [s.id for s in sources] == ["seed-a", "new-b"]
+
+    # original entry + JSON structure untouched
+    payload = json.loads(_sources_file.read_text(encoding="utf-8"))
+    assert payload["_comment"] == "test fixture"
+    assert payload["sources"][0]["id"] == "seed-a"
+
+
+def test_add_source_rejects_duplicate_id(_sources_file):
+    with pytest.raises(ValueError, match="already registered"):
+        scanner.add_source(source_id="seed-a", url="https://example.com/different.atom", label="Dup", lane="dev")
+    assert len(scanner.list_sources()) == 1
+
+
+def test_add_source_rejects_duplicate_url(_sources_file):
+    with pytest.raises(ValueError, match="already registered"):
+        scanner.add_source(source_id="different-id", url="https://example.com/seed-a.atom", label="Dup", lane="dev")
+    assert len(scanner.list_sources()) == 1
+
+
+def test_add_source_rejects_invalid_lane(_sources_file):
+    with pytest.raises(ValueError, match="lane must be one of"):
+        scanner.add_source(source_id="bad-lane", url="https://example.com/bad.atom", label="Bad", lane="nope")
+    assert len(scanner.list_sources()) == 1
+
+
+def test_add_source_rejects_missing_fields(_sources_file):
+    with pytest.raises(ValueError, match="id required"):
+        scanner.add_source(source_id="", url="https://example.com/x.atom", label="X", lane="dev")
+    with pytest.raises(ValueError, match="url required"):
+        scanner.add_source(source_id="x", url="", label="X", lane="dev")
+    with pytest.raises(ValueError, match="label required"):
+        scanner.add_source(source_id="x", url="https://example.com/x.atom", label="", lane="dev")
