@@ -36,13 +36,19 @@ async def route_media_to_lane_topics(storage, media: Any, lane_keys: list[str]) 
             continue
         dest_thread = int(row.message_thread_id)
         try:
-            fwd = await storage.client.forward_messages(
-                hub_entity,
-                msg_id,
+            import os
+
+            from telethon.tl.functions.messages import ForwardMessagesRequest
+
+            req = ForwardMessagesRequest(
                 from_peer=hub_entity,
-                reply_to=dest_thread,
+                id=[msg_id],
+                to_peer=hub_entity,
+                top_msg_id=dest_thread,
+                random_id=[int.from_bytes(os.urandom(8), "big", signed=True)],
             )
-            fwd_msgs = fwd if isinstance(fwd, list) else [fwd]
+            result = await storage.client(req)
+            fwd_msgs = storage.client._get_response_message(req, result, hub_entity) or []
             from app.services.tbcc_caption_stamp import hub_intake_caption
 
             for fm in fwd_msgs:
