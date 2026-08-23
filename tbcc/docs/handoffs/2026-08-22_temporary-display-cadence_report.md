@@ -1,4 +1,4 @@
-Track: CADENCE · CC-1 · 🔄 P0-P1 done, STOP for ACK
+Track: CADENCE · CC-1 · ✅ done
 
 # Report: temporary-display cadence (CADENCE track)
 
@@ -76,18 +76,44 @@ Three options, not deciding among them for you:
 
 **My recommendation: C now, B later if/when volume justifies it.** But this is a doctrine call, not a technical one — over to you.
 
-## Phase 2 — not started, waiting on your ACK
+## ACK received
 
-Will apply once you pick: (a) the I2 interval change (I'd apply this regardless unless you say otherwise), (b) the I6 forceKeep pin, (c) your I3 choice from A/B/C/other.
+> ACK P0–P1. Proceed Phase 2: (1) set all 11 content-lane scheduled_text_posts.interval_minutes → 288, (2) pin TBCC_STORAGE_DEPOSIT_AUTO_APPROVE=1 in seed $forceKeep, (3) I3 = C. Phase 3: evidence I4 congestion on AI pool only. Deploy after apply.
 
-## Phase 3 — not started
+## Phase 2 — apply + deploy
 
-Backlog evidence, scoped to AI pool given the I4 finding above, pending Phase 2.
+**Status: done.**
+
+**I2 — interval bump.** Wrote `tbcc/backend/scripts/apply_lane_cadence.py` (idempotent dry-run/`--execute`, per the directive's preference over one-off SQL). Dry-run matched the Phase 1 table exactly (11/11 names found, all showing the expected before→target). Applied with `--execute`: `Applied: 11/11 rows changed`. Re-ran immediately after to confirm idempotency: `Applied: 0/11 rows changed` (all already at target). Re-ran again *after* the Phase 2 deploy (below) to confirm the DB write survived a container rebuild: still `0/11 rows changed`, all 11 lanes at 288m.
+
+**I6 — auto-approve pin.** Added `TBCC_STORAGE_DEPOSIT_AUTO_APPROVE=1` to `seed-island-env-from-home.ps1`'s `$forceKeep` (same pattern as its sibling `TBCC_GATEKEEPER_HUB_AUTO_APPROVE`). Seeded, synced, confirmed present in the island's `.env.revenue-island`, containers recreated to pick it up. No behavior change (was already the code default) — this closes the drift risk, nothing else.
+
+**I3 — no action.** Per your call: no `pin_after_send`/`delete_after_pin_seconds` change on any of the 11 lane schedulers. Option B (rolling-window prune) deferred to a later track once real backlog exists across more lanes.
+
+**Committed:**
+- `2174eaa` — `apply_lane_cadence.py` (new) + `seed-island-env-from-home.ps1` (bundled with several forceKeep entries from earlier tonight that had never been committed — REDIS_URL self-heal, the INBOX-PIPE track's four vars, and this track's auto-approve pin; see commit message for the full breakdown)
+
+**Deployed:** ran the real `deploy-island-live.ps1` (not a hot-patch). One transient hiccup — the Storage Hub panel bootstrap step hit Telegram flood control on 3 of 14 lanes (`bop`, `goon`, `milf` — pre-existing rate-limit behavior, unrelated to this track's changes), the script's own retry-with-backoff caught it and succeeded on the second pass (`posted: 14, errors: 0`). Deploy exited 0. `curl https://api.powercore.app/health` → `{"status":"ok",...}`.
+
+## Phase 3 — I4 backlog evidence (AI pool)
+
+**Status: done.**
+
+```
+pool 2 (AOF AI POOL), right now:
+  approved: 35
+  pending:   8
+  interval:  288m (5 posts/day)
+```
+
+35 approved ÷ 5/day ≈ **7 days of runway already queued**, with 8 more items behind it in the approval pipeline. Backlog (35) is comfortably ahead of the daily post rate (5) — real, demonstrable congestion, no caveats needed for this lane.
+
+Voyeur, bop, ass — the three lanes originally named for I4 evidence — remain at **0 approved** as of this report. Confirmed this is unchanged from Phase 1's finding: the interval change doesn't touch approval flow, so it wouldn't move this number, and it hasn't. Per your instruction, noting this explicitly as **a deposit-volume gap, not a cadence failure** — these lanes need media to actually reach `status='approved'` before "backlog ahead of the clock" means anything for them. Out of scope for this track.
 
 ## Constraints honored
 
-No `git add -A`. No stash/other-session files touched. `content_pools.interval_minutes` and `album_size` left untouched (already correct / dead path). No deletes applied. No doctrine decided.
+No `git add -A`. No stash/other-session files touched. `content_pools.interval_minutes` and `album_size` left untouched (confirmed dead path / already correct). No deletes applied — I3 stayed at "no action" per your call. No doctrine decided.
 
 ---
 
-**STOP for Cursor ACK on the I3 delete-window choice (A/B/C) and confirmation to proceed with I2's interval bump before Phase 2.**
+**Track: CADENCE · CC-1 · ✅ done — STOP before Frontier doctrine work.**
