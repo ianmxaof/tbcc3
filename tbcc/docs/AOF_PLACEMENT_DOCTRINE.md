@@ -4,12 +4,23 @@ Strategic rules for where checkout, promo, and outbound links appear. Every surf
 
 ## Surface matrix
 
+**2026-08-22 ACK locks (forum-as-library, Week-1):** paid library moves to a **new private twin forum** — Loot Room itself is *not* paywalled this track. Game/vault (VIP) is **not ACK'd as product** — deferred until vault inventory is named. See `tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1.md` for full directive.
+
 | Surface | Role | Checkout | Promo | Outbound X |
 | ------- | ---- | -------- | ----- | ---------- |
 | **@aofmainhub** | Top-of-funnel landing from X / Erome / ML / TV | **One** durable pinned 3-button CTA (Stars + Crypto + Gumroad) | Ephemeral pin pings (shuffled SFW poster, no checkout keyboard) | N/A (inbound target) |
-| **Loot Room** | Live community + LINKS bulletin | Cadenced checkout on main scheduler (`TBCC_MAIN_GROUP_CHECKOUT_EVERY_N`) | Network liveness | Primary X mirror |
-| **BOP / Taboo** | High-attention niche lanes | Rare / soft — route to hub or VIP | Pool content | **Mandatory wrapped links** (`TBCC_BUFFER_MIRROR_STRICT_NETWORK_KEYS`) |
-| **AOF VIP** | Paid lane | Native Stars sub + pack CTAs | Premium drops | Secondary X (`TBCC_BUFFER_CHANNEL_ID_X_SECONDARY`) |
+| **Loot Room** | **Hangout** — free live community + LINKS bulletin. Stays free until a later hard-cutover ACK; not the paid destination. | None this track (library checkout moved to twin) | Network liveness | Primary X mirror |
+| **AOF Library (twin)** | **Library** — new private forum, the paid destination for forum-as-library. Week-1: one AI topic feed + remixer cadence only. | Twin membership (Stars sub / ledger seat) — **not** the 24h loot key (rolls-only, no seat) | Twin AI topic + `/rebundle` cadence | N/A (private forum, no outbound) |
+| **Free lanes** (ai/ass/big_tits/milf/abg/goon/packs/voyeur/taboo/blowjob/bop) | **Party boards** — shallow-live teaser cadence (CADENCE track: 288min / ~5 posts day) | None | Network liveness | Lane invites via LV |
+| **BOP / Taboo** | High-attention niche lanes | Rare / soft — route to hub or twin | Pool content | **Mandatory wrapped links** (`TBCC_BUFFER_MIRROR_STRICT_NETWORK_KEYS`) |
+| **AOF VIP** | **Deferred game/vault lane** — not ACK'd as product; existing native Stars sub stays live but is not this track's target | Native Stars sub + pack CTAs (unchanged, not touched this track) | Premium drops | Secondary X (`TBCC_BUFFER_CHANNEL_ID_X_SECONDARY`) |
+| **Loot God bot** (`@aof_lootgod_bot`) | **Taste** — free sampler/teaser funnel; 24h loot key is **rolls-only** (no forum seat granted) | None (key ≠ seat) | Roll cadence | Only bot CTA |
+
+## Library access rules (Week-1 ACK, forum-as-library)
+
+- **24h loot key = rolls-only.** The Loot God bot's 24h key grants roll cadence (taste/sampler), **never** a twin forum seat. Key redemption and library membership are separate ledgers — do not wire the loot key flow to auto-seat the twin.
+- **Grandfather = yes.** Existing active AOF VIP (main-section) subscribers are auto-seated into the twin at cutover/beta — no separate purchase. Week-1 only *documents* the dry-run count (see Phase 3 of the directive); no mass invite executes without a later explicit operator ACK.
+- **No hard cutover this track.** Loot Room is not paywalled, `+97f4…` public invite is not killed, and no addlist surgery happens under this ACK — see Scope in `tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1.md`.
 
 ## Mainhub schedulers
 

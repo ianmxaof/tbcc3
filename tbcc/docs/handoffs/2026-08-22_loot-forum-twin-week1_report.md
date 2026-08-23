@@ -1,0 +1,144 @@
+Track: loot-forum-twin-week1 · Lane C · Phase 0 of 3
+
+# Report: AOF forum-as-library twin — Week-1 (Phase 0)
+
+**Against:** `tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1.md` — ACK locks: forum-as-library · twin (not in-place paywall) · CTA retarget (draft) · 24h loot key = rolls-only · grandfather = yes.
+**Date:** 2026-08-22
+
+## Phase 0 — Topic sync + doctrine/CTA docs (no twin required)
+
+**Status: done.**
+
+### I1 — live topic sync (P0)
+
+Ran `scripts/sync_main_group_topic_map.py --list` against Loot Room (`-1003927742839`). **Not** run locally — the script opens `admin.session` via Telethon and needs the shared Redis session lock; running it on the operator PC against local `.env` (localhost Postgres/Redis) would risk a second Telethon connection outside the island's lock coordination (409 risk per operator policy). Ran it the documented way instead:
+
+```
+ssh root@5.161.53.91 'cd /opt/tbcc/infra && docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island exec -T api python scripts/sync_main_group_topic_map.py --list'
+```
+
+One transient retry (`attempt 1/8`, event-loop reset), self-healed per the script's existing backoff — not a new issue. Result: **every lane thread ID in the static map was stale**, and two live topics (`blowjob`, `bop`) were missing from the map entirely.
+
+| lane | old static id | live id | live title |
+|---|---|---|---|
+| ai | 17 | 562 | AOF AI 18+ |
+| ass | 7 | 405 | AOF ASS 18+ |
+| big_tits | 5 | 6 | AOF BIG TITS 18+ |
+| abg | 25 | 518 | AOF ABG / LBFM 18+ |
+| goon | 182 | 202 | AOF GOON 18+ |
+| milf (+ dup gilf row) | 19 / 9 | 523 | AOF MILF / GILF 18+ (now one combined topic) |
+| packs | 32 | 204 | AOF PACKS 18+ |
+| voyeur | 8011 | 557 | AOF PUBLIC / VOYEUR 18+ |
+| taboo | 8888 | 525 | AOF NICEST TABOO 18+ |
+| blowjob | *(missing)* | 206 | AOF BLOWJOB 18+ |
+| bop | *(missing)* | 200 | AOF BOP 18+ |
+
+Unchanged and confirmed still correct: `MAIN_GROUP_PATCH_NOTES_TOPIC_ID=2408` (live title "PATCH NOTES"), `MAIN_GROUP_GENERAL_TOPIC_ID=1` (live title "RECEPTION / PARTY / TOWNSQUARE"). One live topic has no network-channel match and was left out of the map (not a lane): `COMMONS / BULLETINS` (695).
+
+**Applied:** rewrote `tbcc/backend/app/data/aof_main_group_topic_map.py` — `AOF_MAIN_GROUP_TOPIC_MAP` now holds all 11 live lane thread IDs (added `blowjob`, `bop`; collapsed the milf/gilf duplicate to the one live combined topic), dropped the stale docstring/comment. **Not yet deployed** — this is a local edit; the island still runs the old stale map until a deploy ships it. Sanity-checked the edit imports cleanly and dedupes to 11 rows via a local Python import of the module (no DB/Redis touched — pure dataclass data, safe to import off-island).
+
+### I5 — placement doctrine patched to ACK locks (P0)
+
+Patched `tbcc/docs/AOF_PLACEMENT_DOCTRINE.md` surface matrix: added a **AOF Library (twin)** row (library role, Week-1 = one AI topic + remixer only, no public CTA yet), reframed **Loot Room** as hangout (free, not the paywall — cadenced-checkout language removed), reframed **AOF VIP** as deferred game/vault (not ACK'd as product, unchanged native Stars sub not touched), added a **Free lanes** row (party boards, ties to the CADENCE track's 288min cadence), reframed **Loot God bot** as taste/sampler with the rolls-only key note. Added a "Library access rules (Week-1 ACK)" section stating the 24h key ≠ seat rule and the grandfather-auto-seat/no-hard-cutover rules explicitly.
+
+### I6 — CTA retarget draft (P0)
+
+New file `tbcc/docs/AOF_CTA_RETARGET_DRAFT.md` — one matrix row per current CTA surface (from `GATE_LINK_AUDIT.md`) showing "Week-1 change: None" for every existing live destination, plus a placeholder row for the twin (does not exist yet, no public CTA points at it). Explicit "what this draft deliberately does NOT do" section (no LV dashboard edits, no invite constant changes, no `BULLETIN_CHANNEL_INVITES` entry) and a "trigger for go live" checklist gating the matrix behind three future ACKs. Zero live edits — confirmed no `GATE_LINK_AUDIT.md` or any LV-adjacent dashboard file touched (`git status` below).
+
+### I7 — rolls-only key + grandfather notes
+
+Folded into the doctrine patch above (Library access rules section) rather than a separate addendum — directive allowed either.
+
+## Completion gates
+
+| Gate | Result |
+|---|---|
+| Tests | No `TEST_MAP.md` entry for `aof_main_group_topic_map.py`; no dedicated test file exists. This is pure dataclass data (no branching logic) — verified by local import + manual dedup check (11 rows, correct network-key grouping) rather than pytest. Suggest a small `test_aof_main_group_topic_map.py` asserting no duplicate `network_key` collisions and PATCH NOTES/RECEPTION ids stay outside the tuple, as a later follow-up — not blocking. |
+| Migration | N/A — no schema touched. |
+| Stack | No bot/Celery/tray spawn. Topic sync ran read-only inside the island's existing `api` container over SSH — did not start anything new. |
+| Extension version | N/A — no `tbcc/extension/` files touched. |
+| Git | See below. |
+| Scope | 3 files touched (2 modified + 1 new doc) + this report. Under the 8-file halt threshold. |
+
+```
+$ git status --short
+ M tbcc/backend/app/data/aof_main_group_topic_map.py
+ M tbcc/docs/AOF_PLACEMENT_DOCTRINE.md
+?? tbcc/docs/AOF_CTA_RETARGET_DRAFT.md
+?? tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1.md
+?? tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1_report.md
+```
+
+Not yet committed — holding for your ACK per the working agreement (commit per phase, message prefix `docs(aof):`).
+
+## Constraints honored
+
+No local Telethon/Redis/Postgres spawned. No LV dashboard edits. No `MAIN_GROUP_INVITE` / addlist / any `aof_network.py` invite constant touched. No twin id invented — Phase 1 stays blocked on you pasting `chat_id` + invite. No doctrine invented beyond the literal ACK locks and the directive's own I5 acceptance text.
+
+## Open item for you
+
+The topic map fix (`aof_main_group_topic_map.py`) is a real, unrelated-to-twin bug fix — the island has been running on stale thread IDs since before this track. It's low-risk to deploy on its own (data-only, no behavior branch changes) but I'm holding it for your ACK rather than shipping mid-report, since deploy wasn't asked for this phase and the directive's default is "no deploy this track."
+
+## ACK received
+
+> ACK'd Phase 0, 2026-08-23. Proceed Phase 1a: operator checklist + inert env/ident pattern only. No twin ids, no scheduler wiring, no Loot Room paywall. Stop for Cursor ACK.
+
+## Phase 1a — twin operator checklist + env pattern
+
+**Status: done.**
+
+### I2a — operator checklist
+
+New section below ("Twin forum — operator checklist") — everything in it is generic setup instruction, no invented Telegram ids. Real bot handles used where the codebase has a fixed public `@handle` (loot: `@aof_lootgod_bot`, payment/subscriptions: `@aofsubscriptions_bot` — both confirmed live via `aof_network.py` / `aof_manual_gate_links.py` promo copy, not guessed). The remixer/album-composer bot has no fixed public handle in code — it's resolved dynamically from `TBCC_ALBUM_COMPOSER_BOT_TOKEN` via BotFather's `getMe` at runtime (`bots/album_composer_bot.py`) — checklist references it by that env var identity instead of inventing a handle. Also flagged: scheduled posts (`scheduled_post_service.send_scheduled_post`) run through Telethon (`client: TelegramClient`, the `admin.session` account), not a bot — so the admin account itself needs membership + post rights in the twin for Phase 2, separate from the three bots.
+
+### I2b — env/ident pattern
+
+New file `tbcc/backend/app/data/aof_library_forum.py` — `TBCC_AOF_LIBRARY_FORUM_IDENT` / `TBCC_AOF_LIBRARY_FORUM_INVITE`, read via `os.getenv`, both return `None` when unset (verified locally: `aof_library_forum_ident()==None`, `aof_library_forum_invite()==None`, `aof_library_forum_registered()==False` with no env set). Modeled on the existing `os.getenv("TBCC_X") or DEFAULT` pattern (`checkout_list_hub.py`, `aof_vip_checkout.py`) but **no default** — unlike VIP/checkout-list, there is no real value to fall back to yet, so unset must resolve to `None`, not a placeholder string. **Zero callers** — not imported by `aof_network.py`, `BULLETIN_CHANNEL_INVITES`, any scheduler, or any service. Purely additive; nothing in the running system changes behavior from this file existing.
+
+`MAIN_GROUP_IDENT` / `MAIN_GROUP_INVITE` in `aof_network.py` are untouched — confirmed via `git diff` (not in this phase's changed-file list below).
+
+### Twin forum — operator checklist
+
+Do these in the Telegram app, then paste the two values back into the next directive (do not paste them into chat as a "just fix it" — they need to land as a proper Phase 1b directive so this stays reversible):
+
+1. **Create a new private group**, not a channel (payment/loot bots need group semantics for topic threads).
+2. **Enable Topics** (Group settings → Group Type → Topics on) — this converts it into a forum.
+3. **Create one topic**: `AI` — Week-1 scope is exactly one lane feed, don't pre-create the others yet (matches CADENCE/doctrine: don't open empty topics ahead of approved content).
+4. **Add these as admins** (post messages + manage topics, at minimum):
+   - `@aof_lootgod_bot` (loot)
+   - `@aofsubscriptions_bot` (payment/subscriptions)
+   - The album-composer/remixer bot tied to `TBCC_ALBUM_COMPOSER_BOT_TOKEN` in `tbcc/.env` — you'll know it by its BotFather name, code never hardcodes a public handle for it
+   - The Telegram account behind `admin.session` (your own operator account, most likely) — Phase 2's scheduled AI-topic posts run through this account via Telethon, not through a bot
+5. **Copy the chat_id** (Telegram shows it once you view the group's info via a bot/API, or it's derivable the same way `MAIN_GROUP_IDENT` was originally captured) **and the primary invite link**.
+6. **Paste both back** as the start of a Phase 1b directive — that's the only way real values enter `aof_library_forum.py`; nothing in this codebase invents or scrapes them for you.
+
+Nothing above pings the codebase — this checklist can be executed at any pace with zero deploy or code risk.
+
+## Completion gates (Phase 1a)
+
+| Gate | Result |
+|---|---|
+| Tests | `aof_library_forum.py` is pure stdlib (`os.getenv` only), no branching beyond null-checks. No `TEST_MAP.md` entry. Verified by local import (see I2b) rather than pytest — same reasoning as Phase 0's topic-map check. Not blocking. |
+| Migration | N/A. |
+| Stack | N/A — no bot/Celery/tray spawn, no island contact this phase. |
+| Extension version | N/A. |
+| Git | See below. |
+| Scope | 2 new files (`aof_library_forum.py`, this report section) on top of Phase 0's 3 — 5 total, under the 8-file halt threshold. |
+
+```
+$ git status --short (scope-relevant files only)
+ M tbcc/backend/app/data/aof_main_group_topic_map.py     (Phase 0)
+ M tbcc/docs/AOF_PLACEMENT_DOCTRINE.md                    (Phase 0)
+?? tbcc/docs/AOF_CTA_RETARGET_DRAFT.md                    (Phase 0)
+?? tbcc/backend/app/data/aof_library_forum.py             (Phase 1a)
+?? tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1.md
+?? tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1_report.md
+```
+
+## Constraints honored (Phase 1a)
+
+No twin `chat_id` / invite invented anywhere — `aof_library_forum.py` returns `None` for both until you set the env vars. `MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, addlist, and every live LV destination are untouched. No scheduler/remixer wiring (that's Phase 2). No Loot Room paywall. No bot spawn, no island contact.
+
+---
+
+**Track: loot-forum-twin-week1 · Phase 1a done — STOP for Cursor ACK. Phase 1b (register real ids) needs you to paste `chat_id` + invite into a new directive first; Phase 2/3 stay blocked until then.**

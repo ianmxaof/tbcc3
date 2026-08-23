@@ -4,7 +4,6 @@ Loot Room hub forum topic → AOF network key (API names kept as main_group_*).
 Public hub chat: MAIN_GROUP_IDENT (Loot Room). Paired with Storage Hub via network_key.
 Refresh live topics: py -3.13 scripts/sync_main_group_topic_map.py --list
 
-Topic rows below are STALE until a live sync against Loot Room (-1003927742839).
 Do not invent thread IDs — open a Loot Room subtopic only when the lane meets
 ChannelReadinessSpec (see loot_lane_economy / docs/LOOT_LANE_ECONOMY.md).
 """
@@ -27,18 +26,21 @@ class MainGroupTopicMap:
     network_key: str
 
 
-# STALE — last live sync was banned Main (2026-06-19). Re-sync against Loot Room before use.
+# Live sync 2026-08-22 (scripts/sync_main_group_topic_map.py --list, run against Loot Room
+# via the island api container). blowjob/bop added — live topics existed but were missing
+# from this map. COMMONS / BULLETINS (695) has no network channel match; not a lane, omitted.
 AOF_MAIN_GROUP_TOPIC_MAP: tuple[MainGroupTopicMap, ...] = (
-    MainGroupTopicMap(17, "Ai", "ai"),
-    MainGroupTopicMap(7, "ASS", "ass"),
-    MainGroupTopicMap(5, "BIG TITS", "big_tits"),
-    MainGroupTopicMap(25, "ABG's / LBFM's / AZN", "abg"),
-    MainGroupTopicMap(182, "GOON", "goon"),
-    MainGroupTopicMap(19, "MILF", "milf"),
-    MainGroupTopicMap(9, "GILF", "milf"),
-    MainGroupTopicMap(32, "PACKS", "packs"),
-    MainGroupTopicMap(8011, "PUBLIC / VOYEUR / SPY / UNAWARE", "voyeur"),
-    MainGroupTopicMap(8888, "NICEST TABOO 18+", "taboo"),
+    MainGroupTopicMap(562, "AOF AI 18+", "ai"),
+    MainGroupTopicMap(405, "AOF ASS 18+", "ass"),
+    MainGroupTopicMap(6, "AOF BIG TITS 18+", "big_tits"),
+    MainGroupTopicMap(518, "AOF ABG / LBFM 18+", "abg"),
+    MainGroupTopicMap(202, "AOF GOON 18+", "goon"),
+    MainGroupTopicMap(523, "AOF MILF / GILF 18+", "milf"),
+    MainGroupTopicMap(204, "AOF PACKS 18+", "packs"),
+    MainGroupTopicMap(557, "AOF PUBLIC / VOYEUR 18+", "voyeur"),
+    MainGroupTopicMap(525, "AOF NICEST TABOO 18+", "taboo"),
+    MainGroupTopicMap(206, "AOF BLOWJOB 18+", "blowjob"),
+    MainGroupTopicMap(200, "AOF BOP 18+", "bop"),
 )
 
 # Reception / Party Room — general liveness fallback (not a storage lane)
