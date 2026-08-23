@@ -271,7 +271,6 @@ foreach ($islandKey in $copies.Keys) {
 # Keep island-local compose URLs unless already customized
 $forceKeep = @{
   "TBCC_API_URL"             = "http://api:8000"
-  "REDIS_URL"                = "redis://redis:6379/0"
   "POSTGRES_DB"              = "tbcc"
   "POSTGRES_USER"            = "postgres"
   "TBCC_LINK_GATE_PROVIDERS" = "linkvertise,admaven,workink"
@@ -302,9 +301,43 @@ $forceKeep = @{
   "TBCC_LOOT_REVEAL_VIDEO"             = "1"
   "TBCC_LOOT_BORDER_REVEAL"            = "1"
   "TBCC_RELAY_USE_BOT_API"             = "1"
+  # Blunt global kill-switch: any ONE overdue scheduler (of ~50, on 2-8hr
+  # intervals) was pausing ALL pool auto-post island-wide. The granular
+  # per-pool block (_pool_ids_blocked_by_overdue_schedulers, still active)
+  # already isolates the actual offending pool — this layer was pure
+  # redundant blast radius. Root-caused 2026-08-21/22; disabled 2026-08-22.
+  "TBCC_POOL_AUTOPOST_PAUSE_WHEN_OVERDUE" = "0"
+  # Island was still pointed at the free/rate-limited vision model
+  # (nemotron-nano-12b-v2-vl:free -> 429 storms, occasional refusals).
+  # qwen3-vl validated reliable end-to-end tonight (~$0.0002/image) —
+  # force it so enrich-on-import doesn't get flipped on against the free tier.
+  "TBCC_VISION_LLM_PROVIDER" = "openrouter"
+  "TBCC_VISION_LLM_MODEL" = "qwen/qwen3-vl-235b-a22b-instruct"
+  # Closes the inbox-to-lane loop hands-off: classify every new import, then
+  # auto-move only the two lanes with validated ground-truth accuracy
+  # (voyeur, bop) into their subtopic. Everything else still lands as a
+  # MediaLaneVisionDecision suggestion for the Q&A panel. Operator-confirmed
+  # go-live 2026-08-22.
+  "TBCC_ENRICH_ON_IMPORT" = "1"
+  "TBCC_VISION_AUTO_ROUTE_LANES" = "voyeur,bop"
+  # Already the code default (storage_deposit_auto_approve.py) — pinned
+  # explicitly so it doesn't silently drift, matching TBCC_GATEKEEPER_HUB_AUTO_APPROVE
+  # above. CADENCE track I6, 2026-08-22.
+  "TBCC_STORAGE_DEPOSIT_AUTO_APPROVE" = "1"
 }
 foreach ($k in $forceKeep.Keys) {
   $lines = Set-DotEnvKey $lines $k $forceKeep[$k]
+}
+
+# REDIS_URL must always embed the island's own TBCC_REDIS_PASSWORD (celery/redis-py read
+# REDIS_URL only — a bare "redis://redis:6379/0" causes NOAUTH/AuthenticationError once Redis
+# requires a password). Derive from whatever password is already on the island so this can't
+# drift out of sync or get silently reverted to a passwordless literal on the next deploy.
+$islandRedisPassword = ($existingIsland["TBCC_REDIS_PASSWORD"] -as [string]).Trim()
+if ($islandRedisPassword) {
+  $lines = Set-DotEnvKey $lines "REDIS_URL" "redis://:$islandRedisPassword@redis:6379/0"
+} else {
+  Write-Host "WARN TBCC_REDIS_PASSWORD not set on island - leaving REDIS_URL untouched." -ForegroundColor Yellow
 }
 
 # Public API URL: never copy home ngrok — island tunnel or explicit override only.
