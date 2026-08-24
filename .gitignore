@@ -2,6 +2,10 @@
 .cursor/
 .mcp
 
+# Local run state / scratch (not TBCC runtime)
+.tbcc-run/
+aof-forum/.tmp/
+
 # Claude Code — personal overrides (bypass mode, machine-specific allows)
 **/.claude/settings.local.json
 
