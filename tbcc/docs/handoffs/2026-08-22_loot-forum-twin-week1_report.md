@@ -364,3 +364,71 @@ The twin AI topic will now actually receive its first post whenever the beat sch
 ---
 
 **Track: loot-forum-twin-week1 · Phase 2b done — Archive of Filth AI topic (thread 57) is live-fed. STOP for Cursor ACK. Phase 3 (grandfather dry-run) needs a fresh directive.**
+
+## ACK received
+
+> `/directive` for TARGET=Claude Code, 2026-08-23. Proceed Phase 3 (final): grandfather dry-run only — count who would get Archive of Filth seats, print invite plan, send nothing. Week-1 closes after this.
+
+## Phase 3 — Grandfather dry-run only
+
+**Status: done.**
+
+### I7-count — grandfather population count
+
+Wrote `tbcc/backend/scripts/grandfather_dry_run_aof_library.py` — read-only, no `--execute` flag exists (nothing in this phase writes anything, so there's nothing to gate behind one). Population filter mirrors `app.services.subscription_access.user_has_active_subscription(subscriptions_only=True, bot_section="main")` — the same "existing VIP / main-section" doctrine population already used by `vip_member_status.py` and `dm_active_vip_subscribers.py`. Query: `subscriptions.status="active"` joined to `subscription_plans` where `product_type="subscription"` and `bot_section="main"`, plus the same expiry guard `subscription_access._active_rows` uses (`expires_at is None or expires_at > now`), deduped by `telegram_user_id` (a seat headcount, not a per-row ledger).
+
+Ran the query read-only against the island's existing `api` container (stdin-piped `python -`, same SSH pattern as Phase 0/2's read-only checks — no file copied to the island, no hot-patch, no deploy):
+
+```
+ssh root@5.161.53.91 'cd /opt/tbcc/infra && docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island exec -T api python -' < grandfather_dry_run_inline.py
+```
+
+Result:
+
+```json
+{
+  "grandfather_count": 0,
+  "raw_active_rows_before_dedupe": 0,
+  "plan_breakdown": {},
+  "payment_method_breakdown": {}
+}
+```
+
+**Grandfather population is currently 0.** Sanity-checked this isn't a filter bug before trusting it: confirmed the `(bot_section="main", product_type="subscription")` combination does exist on `subscription_plans` (island has 4 distinct `(bot_section, product_type)` pairs: `companion/companion_credits`, `packs/bundle`, `loot/subscription`, `main/subscription`), and separately confirmed `subscriptions.status="active"` has **zero rows total on the island, across every section** (not just main) — so the 0 is a true empty-table result, not a query-side exclusion. Island currently has no active paid subscribers of any kind (main, loot, or packs) at the moment this ran.
+
+### I7-plan — invite plan
+
+Printed (plan text only — not sent, no Bot API call made):
+
+> `0 people x twin invite https://t.me/+dTExOHWqbMU5YWFl (Archive of Filth -1003790667061) - PLAN TEXT ONLY, no sends issued`
+
+Invite matches the registered default in `aof_library_forum.py` (`AOF_LIBRARY_FORUM_INVITE_DEFAULT`, unchanged since Phase 1b, no env override on island).
+
+### I7-fence — no invite/DM blast
+
+`grandfather_dry_run_aof_library.py` has no `--execute` / `--execute-send` flag and no import of any Telegram client, bot token, or `send_*`/`addChatMember`/`createChatInviteLink` call — it only imports SQLAlchemy models and the twin's already-registered ident/invite constants. The inline island query used for this report is the same code path, run via stdin with no file written to the island. `git diff` confirms zero touch to `aof_network.py`, any bot module under `bots/`, or `BULLETIN_CHANNEL_INVITES`.
+
+## Completion gates (Phase 3)
+
+| Gate | Result |
+|---|---|
+| Tests | Script is a linear read + dedupe + print, no branching worth a unit test; mirrors already-tested filter semantics in `subscription_access.py` (`tests/test_aof_vip_membership.py` covers that helper). No `TEST_MAP.md` entry. Verified by running the real query against island data (see above) rather than pytest — same reasoning as Phases 0–2. Not blocking. |
+| Migration | N/A — read-only, no schema touched. |
+| Stack | No bot/Celery/tray spawn, no hot-patch, no deploy, no container restart — one `exec -T` read-only query into the already-running `api` container. |
+| Extension version | N/A. |
+| Git | 1 new file (`grandfather_dry_run_aof_library.py`) + this report edit. |
+| Scope | 2 files this phase; **8 distinct files across the whole track** (Phase 0: 3, 1a: 2 [1 overlap], 1b: 2, 2: 4 [1 overlap], 3: 2) — at the 8-file halt threshold. Track is closing after this phase per the directive, so no further additions are planned; flagging per the gate rather than halting mid-report since this is the last phase and nothing further is scoped. |
+
+```
+$ git status --short (scope-relevant files only)
+?? tbcc/backend/scripts/grandfather_dry_run_aof_library.py
+ M tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1_report.md
+```
+
+## Constraints honored (Phase 3)
+
+Zero Telegram invite/DM/addChatMember calls made or coded. No pricing or seat SKU invented — count is a straight read of existing `subscriptions`/`subscription_plans` rows. No hard cutover, no Loot Room paywall, no LV/CTA edit, no `BULLETIN_CHANNEL_INVITES` row, no scheduler/vision-allowlist change. No island deploy or hot-patch — read-only `exec -T` query only, no file copied to the island filesystem.
+
+---
+
+**Track: loot-forum-twin-week1 · Phase 3 done — Week-1 complete pending Cursor `/cc-report` ACK. Grandfather population is currently 0 (island has no active paid subscriptions in any section right now); invite plan printed as plan text only, nothing sent. Hard cutover needs a new directive.**
