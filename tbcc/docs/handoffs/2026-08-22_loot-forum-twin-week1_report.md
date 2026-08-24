@@ -139,6 +139,71 @@ $ git status --short (scope-relevant files only)
 
 No twin `chat_id` / invite invented anywhere — `aof_library_forum.py` returns `None` for both until you set the env vars. `MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, addlist, and every live LV destination are untouched. No scheduler/remixer wiring (that's Phase 2). No Loot Room paywall. No bot spawn, no island contact.
 
+## ACK received
+
+> ACK Phase 1a, 2026-08-23. Proceed Phase 1b: register twin IDENT `-1003790667061` / INVITE `https://t.me/+dTExOHWqbMU5YWFl` + 11 pasted topic thread ids (AI=57 is Week-1's only feed target). No scheduler wiring, no Loot Room paywall, no CTA flips.
+
+## Phase 1b — register twin ident/invite + topic inventory
+
+**Status: done.**
+
+### I2-reg — `aof_library_forum.py` switched from inert-None to VIP-style registered
+
+Rewrote the module to the same pattern as `AOF_VIP_IDENT` / `TBCC_AOF_VIP_CHANNEL_IDENT` (`aof_vip_checkout.py`): a committed default plus env override. `AOF_LIBRARY_FORUM_IDENT_DEFAULT = "-1003790667061"`, `AOF_LIBRARY_FORUM_INVITE_DEFAULT = "https://t.me/+dTExOHWqbMU5YWFl"` — env vars `TBCC_AOF_LIBRARY_FORUM_IDENT`/`INVITE` still win if ever set, matching how every other AOF channel ident in this codebase is overridable.
+
+Verified locally with env unset (defaults resolve, matching the directive's "True when env unset if defaults used" branch):
+
+```
+ident: -1003790667061
+invite: https://t.me/+dTExOHWqbMU5YWFl
+registered: True
+```
+
+No display name registered — operator said "no name for now." The invite's Telegram-side preview title (reportedly "TheHoneyGoon") is not written into any doctrine/brand file; `aof_library_forum.py`'s docstring explicitly flags this so a future phase doesn't treat the preview title as a product lock.
+
+**Still zero callers.** Not imported by `aof_network.py`, `BULLETIN_CHANNEL_INVITES`, any scheduler, or any service — same as Phase 1a, just no longer returning `None`.
+
+### I2-map — new `aof_library_forum_topic_map.py`, all 11 pasted thread ids
+
+| title (operator) | thread_id | network_key |
+|---|---|---|
+| ai | 57 | ai |
+| ass | 59 | ass |
+| public / voyeur | 61 | voyeur |
+| bop | 63 | bop |
+| abg / azn | 65 | abg |
+| big tits | 67 | big_tits |
+| milf / gilf | 69 | milf |
+| nicest taboo | 71 | taboo |
+| full length | 73 | full_length |
+| blowjob | 75 | blowjob |
+| webcams | 77 | webcams |
+
+`AOF_LIBRARY_FORUM_WEEK1_FEED_THREAD_ID = 57` is a module-level constant, documented in the file's docstring as the **only** topic scheduled/fed this track. `webcams` (77) carries `network_key="webcams"` — there is no `AofNetworkChannel` with that key in `aof_network.py` (checked: `main, ai, blowjob, big_tits, taboo, voyeur, milf, ass, abg, packs, goon, bop, inbox, full_length`) — the docstring explicitly says this is inventory only, not a product SKU, and adding a real "webcams" channel needs its own doctrine ACK. Not this phase.
+
+This module is **not** synced by `scripts/sync_main_group_topic_map.py` — that script's `MAIN_GROUP_IDENT` target is Loot Room, a different chat than the twin. All 11 rows here came directly from your paste; nothing was scraped or invented.
+
+Verified locally: 11 rows, `library_forum_topic_for_network_key("ai").message_thread_id == 57`.
+
+### I2-fence — no public-surface bleed
+
+`git diff` confirmed to touch only the two new `app/data/aof_library_forum*.py` files plus this report — `aof_network.py` (`MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, `AOF_VIP_*`) has zero diff. No `GATE_LINK_AUDIT.md` edit, no scheduler table touched, no CADENCE interval touched.
+
+## Completion gates (Phase 1b)
+
+| Gate | Result |
+|---|---|
+| Tests | Both files are pure stdlib (`os.getenv`) / dataclass data, no branching beyond string presence and a linear key lookup. No `TEST_MAP.md` entry. Verified by local import + assertions (see I2-reg/I2-map) rather than pytest — same reasoning as Phase 0/1a. Not blocking. |
+| Migration | N/A. |
+| Stack | N/A — no bot/Celery/tray spawn, no island contact this phase. |
+| Extension version | N/A. |
+| Git | 2 new files (`aof_library_forum_topic_map.py` new; `aof_library_forum.py` modified in place, same file as Phase 1a) + this report edit. `aof_network.py` untouched (confirmed above). |
+| Scope | 2 files touched this phase, 7 total across the track (Phase 0: 3, Phase 1a: 2, Phase 1b: 2) — under the 8-file halt threshold; flagging since the *track* total is close to it. |
+
+## Constraints honored (Phase 1b)
+
+Values registered are exactly what you pasted — no invented ids, no invented display name, no invented "webcams" product. `MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, addlist, and every live LV destination remain untouched (confirmed via `git diff`). No scheduler or remixer row created for AI(57) or any other topic — that's explicitly Phase 2. No Loot Room paywall, no public CTA edit, no island deploy, no bot spawn.
+
 ---
 
-**Track: loot-forum-twin-week1 · Phase 1a done — STOP for Cursor ACK. Phase 1b (register real ids) needs you to paste `chat_id` + invite into a new directive first; Phase 2/3 stay blocked until then.**
+**Track: loot-forum-twin-week1 · Phase 1b done — STOP for Cursor ACK. Phase 2 (AI topic feed + remixer cadence on thread 57 only) and Phase 3 (grandfather dry-run) both need a fresh ACK before starting.**
