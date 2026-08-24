@@ -204,6 +204,77 @@ Verified locally: 11 rows, `library_forum_topic_for_network_key("ai").message_th
 
 Values registered are exactly what you pasted — no invented ids, no invented display name, no invented "webcams" product. `MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, addlist, and every live LV destination remain untouched (confirmed via `git diff`). No scheduler or remixer row created for AI(57) or any other topic — that's explicitly Phase 2. No Loot Room paywall, no public CTA edit, no island deploy, no bot spawn.
 
+## ACK received
+
+> ACK Phase 1b, 2026-08-23. Proceed Phase 2: register display name "Archive of Filth"; one supervised/scheduled AI-topic (thread 57) content path; document + enable remixer oversight across ALL twin topics, not AI-only. Stop before grandfather invites, hard cutover, or live LV/CTA flips.
+
+## Phase 2 — display name, AI feed path, remixer-all-topics
+
+**Status: done.**
+
+### I-name — display name locked
+
+Added `AOF_LIBRARY_FORUM_DISPLAY_NAME = "Archive of Filth"` to `aof_library_forum.py` (env override `TBCC_AOF_LIBRARY_FORUM_DISPLAY_NAME` available, same pattern as ident/invite) and a new `aof_library_forum_display_name()` accessor. Doctrine row in `AOF_PLACEMENT_DOCTRINE.md` renamed from "AOF Library (twin)" to "AOF Library — Archive of Filth (twin)". Docstrings on both `aof_library_forum.py` and `aof_library_forum_topic_map.py` explicitly flag that the invite's Telegram-side preview title ("TheHoneyGoon") is not the product name. No other doc references the twin by any other name — checked `AOF_CTA_RETARGET_DRAFT.md` (still name-agnostic, no edit needed there).
+
+### I3 — AI feed path: script written, dry-run only (not executed)
+
+Wrote `tbcc/backend/scripts/seed_library_forum_ai_feed.py` — idempotent, dry-run-by-default / `--execute` pattern (same shape as `apply_lane_cadence.py`). It would create exactly one `channels` row (`identifier=-1003790667061`, name "Archive of Filth (twin)") and one `scheduled_text_posts` row (`name="AOF LIBRARY — AI topic (twin)"`, `message_thread_id=57`, `pool_id=2` — the existing **AOF AI POOL**, same approved media source as the public AI lane — `interval_minutes=288`, `pool_only_mode=True`, `album_size=1`, `scheduler_category="manual"`).
+
+**Did not push this script to the island or run it there.** Pushing it would require a hot-patch/deploy (the script's two new import dependencies, `aof_library_forum.py`/`aof_library_forum_topic_map.py`, aren't on the island's image yet either), and `hot-patch-island.ps1` restarts containers unconditionally by design — more than this phase's "no island deploy" default, and more than "documented or dry-run" requires. Instead I validated the plan against real island state with a read-only query:
+
+```
+twin channel rows: []                          (confirms nothing already exists — no dup risk)
+AI SCHEDULER template: id=2 channel_id=2 pool_id=2 interval=288 pool_only_mode=True album_size=1
+                        scheduler_category='main_lane'
+existing twin scheduler rows: []
+```
+
+The script's proposed values (`pool_id=2`, `interval=288`, `pool_only_mode=True`, `album_size=1`) intentionally mirror the live public AI scheduler's template — same content source, different destination, same cadence discipline. `scheduler_category="manual"` (not `"main_lane"`) so it stays outside `apply_lane_cadence.py`'s `LANE_SCHEDULER_NAMES` allowlist by construction — confirmed by re-running `apply_lane_cadence.py` (dry-run) after this phase's other work: **still `0/11 rows changed, 11/11 matched`** — the twin path cannot be swept up by that script, and the 11 public rows are untouched.
+
+**This is deliberately a documented-and-ready script, not a live scheduler row.** Running `--execute` (after a hot-patch/deploy makes the script and its dependencies available on the island) is the moment this actually starts posting into the twin — that's a separate, explicit step for you or a future directive, not bundled into this phase.
+
+### I4 — remixer oversees all twin topics, not AI-only
+
+Confirmed by reading `bots/remixer_rebundle.py`: its own docstring is "group loose media into albums in **any chat the bot admins**" — there is no per-channel/per-topic allowlist or registration table gating `/rebundle`; authorization is by operator/admin Telegram user id, not by chat. Since you've confirmed all bots (including album-composer) and all three Telegram accounts are already admin across the whole twin, remixer oversight is **already live on every topic** — no code change was needed or made for this to be true.
+
+What I did change: `aof_library_forum_topic_map.py`'s docstring now explicitly separates the two scopes that were previously conflated in Phase 1b wording — **scheduled auto-feed = AI (57) only**, **remixer curation = all 11 topics** — so a future reader doesn't assume "AI-only" applies to remixer too. Added two small helpers (`library_forum_topic_deep_link()`, `library_forum_smoke_targets()`) that build `t.me/c/{internal_id}/{thread_id}` links for every twin topic — pure formatting, zero callers, exists so you (or a future directive) can print a ready smoke-test list instead of hand-assembling links. Verified locally:
+
+```
+('ai', 57, 'https://t.me/c/3790667061/57')
+('ass', 59, 'https://t.me/c/3790667061/59')
+... (11 rows total, one per topic)
+```
+
+**Manual smoke checklist (your action, not automatable from here — I have no live Telegram session into the twin):** run `/rebundle` in the AI topic (57) and at least one other, e.g. blowjob (75), and confirm the bot responds with album grouping in both. That's the acceptance path the directive names as an alternative to a scripted smoke test.
+
+### I-fence — no public-surface bleed
+
+`git diff` this phase touches only: `aof_library_forum.py`, `aof_library_forum_topic_map.py`, `AOF_PLACEMENT_DOCTRINE.md` (one line — the twin's matrix row), the new `seed_library_forum_ai_feed.py`, and this report. `aof_network.py` (`MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, `AOF_VIP_*`) — zero diff, re-confirmed. No `GATE_LINK_AUDIT.md` edit. No non-AI twin scheduler row exists (none were created at all, AI included — see I3). Public 288m cadence re-verified live (see below) — unchanged.
+
+## Completion gates (Phase 2)
+
+| Gate | Result |
+|---|---|
+| Tests | `aof_library_forum.py`/`aof_library_forum_topic_map.py` additions are pure stdlib/dataclass, no new branching worth a unit test. `seed_library_forum_ai_feed.py` is an idempotent seed script in the same family as `apply_lane_cadence.py`, which also has no dedicated test — matching existing convention. No `TEST_MAP.md` entry. Verified by local import (display name, deep-link helpers) and a real read-only island query (channel/scheduler absence, AI template values) rather than pytest. Not blocking. |
+| Migration | N/A — no schema touched; `seed_library_forum_ai_feed.py` writes rows, not schema, and wasn't executed. |
+| Stack | No bot/Celery/tray spawn. One read-only DB query via the island's existing `api` container (same pattern as Phase 0's topic sync and this phase's `apply_lane_cadence.py` dry-run re-check). No hot-patch, no deploy, no restart. |
+| Extension version | N/A. |
+| Git | See below. |
+| Scope | 4 files touched this phase (3 modified + 1 new script) on top of Phase 0/1a/1b's 6 (one file, `aof_library_forum.py`, already counted) — **7 distinct files total across the whole track**, still under the 8-file halt threshold but worth flagging before any Phase 3 additions. |
+
+```
+$ git status --short (scope-relevant files only)
+ M tbcc/backend/app/data/aof_library_forum.py
+ M tbcc/backend/app/data/aof_library_forum_topic_map.py
+ M tbcc/docs/AOF_PLACEMENT_DOCTRINE.md
+?? tbcc/backend/scripts/seed_library_forum_ai_feed.py
+ M tbcc/docs/handoffs/2026-08-22_loot-forum-twin-week1_report.md
+```
+
+## Constraints honored (Phase 2)
+
+No pricing, hard-cutover, VIP=library, or "webcams" SKU invented. No twin topic auto-fed except the documented (not executed) AI path. Remixer's "all topics" scope is a documentation clarification of existing bot behavior, not a new grant of access — the bot already had it via existing Telegram admin rights the operator set up. `MAIN_GROUP_IDENT`, `MAIN_GROUP_INVITE`, `BULLETIN_CHANNEL_INVITES`, addlist, and every live LV destination untouched. No island deploy, no hot-patch, no bot Start. Public 288m cadence re-verified unchanged.
+
 ---
 
-**Track: loot-forum-twin-week1 · Phase 1b done — STOP for Cursor ACK. Phase 2 (AI topic feed + remixer cadence on thread 57 only) and Phase 3 (grandfather dry-run) both need a fresh ACK before starting.**
+**Track: loot-forum-twin-week1 · Phase 2 done — STOP for Cursor ACK. Phase 3 (grandfather dry-run) needs a fresh directive; so does actually executing `seed_library_forum_ai_feed.py --execute` (requires a hot-patch/deploy first, which also needs its own ACK per this phase's "no island deploy" default).**
