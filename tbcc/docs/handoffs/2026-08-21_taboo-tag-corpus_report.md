@@ -55,4 +55,8 @@ One note: `tests/test_tag_corpus.py` was edited externally partway through this 
 
 ## Explicitly not touched (per plan's out-of-scope list)
 
-Q&A batch-review mis-tagging bug, container-patch-without-restart guardrails, Telethon session contention enforcement, `enqueue_lane_route_for_media`'s silent `logger.debug` swallow, any third-party scraping (StashDB/coomer/etc.), fine-tune dashboard, operator-correction loop, sidecar `.tbcc-meta.json` removal, making vision primary for live routing, local tray/bots/Postgres/Celery, `.env` edits, remote pushes, island deploy. `tbcc_tags` DB schema also untouched — went with the versioned data-file SSOT per the plan's explicit preference, no alembic migration needed for this slice.
+Container-patch-without-restart guardrails, Telethon session contention enforcement, any third-party scraping (StashDB/coomer/etc.), fine-tune dashboard, operator-correction loop, making vision primary for live routing, local tray/bots/Postgres/Celery, `.env` edits, remote pushes, island deploy. `tbcc_tags` DB schema also untouched — went with the versioned data-file SSOT per the plan's explicit preference, no alembic migration needed for this slice.
+
+~~Q&A batch-review mis-tagging bug~~ and ~~`enqueue_lane_route_for_media`'s silent `logger.debug` swallow~~ — both fixed same-day in `d5cd695` ("fix(ops): stop silent lane-route failures and batch lane stamp bugs"), pruned 2026-08-22.
+
+~~Sidecar `.tbcc-meta.json` removal~~ — dropped 2026-08-22: the sidecar is live, working code in the local watch-folder pipeline (`watch_folder_nsfw.py`, `watch_folder_organizer.py`, `media_mover_to_storage_hub.py`), unrelated to this slice's vision-lane work, and no replacement was ever specified. Operator confirmed: leave as-is.

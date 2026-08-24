@@ -1,6 +1,6 @@
 # Sprint State
 
-**Last updated:** 2026-08-21 ~10:50 PT — ops breakers 1–5 local (enqueue observability, batch lane stamp, telethon lock require, hot-patch script, taboo corpus already present)
+**Last updated:** 2026-08-21 ~21:10 PT — FetLife + ThisVid SF community kits; Motherless community retired; prior: GSP v2.4
 
 ## Sprint goal
 
@@ -26,15 +26,15 @@ Fully automated agent workflow — zero slash commands; ship-log and session rit
 | Sale FOMO announce | agent | **2026-07-16:** Hub `main` = **Loot Room** (`-1003927742839`, invite `+97f4…`). Clear `TBCC_SALE_ANNOUNCE_SKIP_KEYS`. Island FOMO targets `network,buffer`. Bake `aof_network.py` into GHCR. |
 | Save AOF + watch lanes | agent | **2026-07-15:** Plan shipped — `aof_lane_tag_map` + watch preprocess/route; Ext Save AOF (watermark-bytes → inbox + `.tbcc-meta.json`); overlay Download = Save AOF by default. Folders: emoji `🍒 AOF BIG TITS` or `TBCC_WATCH_AOF_FOLDER_STYLE=disk` → `AOF NETWORK/AOF BIG TITS`. |
 | R2 watermark upload menus | agent | **2026-07-15:** Ext **1.40.5** — context **Watermark → R2 aof-media (library)** + **R2 SFW X promo** (`library/` / `sfw-x-promo/` via `POST /import/watermark-upload-r2`). Set `TBCC_R2_BUCKET=aof-media`. |
-| Motherless enhancer | agent | **2026-07-19:** Ext **1.40.30** — Intel tab: grid auto-scan + Pareto/Live + auto-push at max. Prior: thumb ♥ 📣 🖼 👥. |
+| Motherless enhancer | — | **Retired for community/SF.** No public TM cut. Operator extension intel remains private; do not revive a Sleazy Fork listing. |
 | Loot Room leave sweep | agent | **2026-07-19:** Shared `leave_message_cleanup` on secretary + **loot-bot** (island money path) + album composer. Needs bot admin in Loot Room; `TBCC_CLEAN_LEAVE_MESSAGES=1` (default). Restart loot/secretary after pull. |
 | FYP–AOF Link Hub divider | agent | **Live:** `fyp_aof_divider_v2_by_7787282561` — Saved Messages preview #110075; add via https://t.me/addemoji/fyp_aof_divider_v2_by_7787282561. Paste: F Y P · · A O F. |
 | Zeus CI/CD prep | operator | **2026-07-22 smoke:** Alembic **095+** live (`click_links` tables; head **096**). Click beacon green — `POST /zeus/v1/click-links`, `GET /r/{slug}` → 302 + hit row (`?id=` works). Island `TBCC_CLICK_BEACON_PUBLIC_BASE=https://api.powercore.app`. Home `.env` has `TBCC_ZEUS_COHOST_SPIKE=1`; tray secretary+macro_search **Off** — enable secretary only when testing co-host (tokens in Dashboard). Remixer `/cover` smoke: start album_composer, forward photo in DM. |
 | Celery home backlog + import priority | agent | **2026-07-14:** Supervisor: champagne diamond CPU/RAM meters (heat + flutter sparkle). Relaunch tray to load. |
-| Userscript monorepo + FetLife suite | agent | **v1.8.0:** Clear place/ASL + no place→ASL sync; kinksters Resume bookmark; build writes `extension/fetlife-suite.bundle.js`. Survey: `docs/FETLIFE_MOD_SURVEY.md`. |
+| Userscript monorepo + FetLife suite | agent | **v1.8.8:** operator suite. **2026-08-21:** Sleazy Fork community `fetlife-suite-community.user.js` **1.0.0** — no intel / no social-proof. Paste: `docs/fetlife-enhancer/SLEAZY_FORK_PUBLISH.md`. |
 | Perchance Gemini-parity suite | agent | **extension-only** `perchance-suite.bundle.js` (no TM). **0.3 / ext 1.40.9:** Loot God Card Lab (border+primer+Δ subject), lean page, jobs. Reload TBCC after `userscripts` npm build. |
-| ThisVid upload MVP | agent | **ext 1.40.30:** Erome Videos → R2 library watermark → `my_video_upload` From-a-URL auto-paste. **2026-08-18:** Automated Playwright leg (`backend/scripts/thisvid_upload_local.py` + `thisvid_upload_provision.py`/`_policy.py`) — kill switch off by default (`TBCC_THISVID_MIRROR_ENABLED=0`), 1/day cap, private-first, hard TOS blocks, separate ledger from Erome. Selectors unconfirmed — run `thisvid_codegen.py --codegen` against live upload.php before trusting `--execute`. |
-| Erome browse-intel v4.2 + market intel | agent | **2026-07-19:** Shared `tbcc-browse-intel-common` — auto-push at max (keep 20%) on ER/TV/ML; TV+ML Pareto/Live captures; ML grid auto-scan. |
+| ThisVid upload MVP | agent | **ext 1.40.47:** COMMUNITY gate for SF userscript (no intel / no R2 tab). Public file `tools/thisvid-enhancer/thisvid-enhancer-community.user.js`. Paste: `docs/thisvid-enhancer/SLEAZY_FORK_PUBLISH.md`. Prior: Playwright upload leg kill-switch off. |
+| Erome browse-intel v4.2 + market intel | agent | **2026-07-19:** Shared `tbcc-browse-intel-common` — auto-push at max (keep 20%) on ER/TV/ML; TV+ML Pareto/Live captures; ML grid auto-scan. **2026-08-21:** Community Sleazy Fork cut `erome-enhancer-community.user.js` **4.3.0** (`build_community.py`) — no intel; listing promo → `loot_free` + hub. Operator: upload Code + Info from `docs/erome-enhancer/SLEAZY_FORK_PUBLISH.md`. |
 | AOF watermark brand rename | agent | Burn-in + defaults: **`telegram.me/aofmainhub`** (t.me→telegram.me normalizer for .env/DB; zip `telegram.me_aofmainhub`). Gate retarget: `docs/GATE_LINK_AUDIT.md`. |
 | Creative orchestrator | agent | `/creative/plan` + suite Orch executor + Analytics deploy button; Playwright batch textarea-only |
 | Loot key → full `/roll` | agent | **2026-07-16:** Shared-library eligibility — all named TBCC pools banded **1–10** (22 enabled on island); `_pools_for_tier` uses every loot_enabled row. Temp until true 1:1 tier pools. Bake docker-cp into GHCR. |
