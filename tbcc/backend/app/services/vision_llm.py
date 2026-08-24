@@ -136,12 +136,33 @@ def analyze_image_bytes(
                 data_url,
                 timeout=timeout,
                 extra_headers=headers,
+                openrouter_plugins=_openrouter_vision_plugins(),
             )
         if p in ("ollama", "local"):
             return _vision_ollama(prompt, data_url, image_bytes, timeout=timeout)
     except Exception as e:
         logger.warning("vision_llm failed (%s): %s", p, e)
     return {}
+
+
+def _openrouter_vision_plugins() -> list[dict[str, Any]]:
+    """OpenRouter-only request-level plugins (https://openrouter.ai/docs/features/*).
+
+    response-healing: repairs malformed JSON before it hits our own
+    _parse_json_object — activates only for non-streaming + response_format
+    json_object/json_schema (both true here). Real, if marginal, value: a
+    classify call that would otherwise be silently dropped on a malformed
+    response gets a chance to parse instead.
+
+    context-compression is deliberately NOT defaulted on here — it only
+    activates for endpoints with <=8192 token context windows, and the
+    configured vision model's context is far larger, so it would be a
+    permanent no-op for this call path. TBCC_OPENROUTER_VISION_PLUGINS can
+    still add it (or anything else) explicitly if that ever changes.
+    """
+    raw = (os.getenv("TBCC_OPENROUTER_VISION_PLUGINS") or "response-healing").strip()
+    ids = [p.strip() for p in raw.split(",") if p.strip()]
+    return [{"id": pid} for pid in ids]
 
 
 def _vision_openai_compatible(
@@ -152,6 +173,7 @@ def _vision_openai_compatible(
     *,
     timeout: float,
     extra_headers: dict[str, str] | None = None,
+    openrouter_plugins: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     if extra_headers:
@@ -170,10 +192,27 @@ def _vision_openai_compatible(
             }
         ],
     }
+    if openrouter_plugins:
+        payload["plugins"] = openrouter_plugins
+    payload["usage"] = {"include": True}
     with httpx.Client(timeout=timeout) as client:
         r = client.post(url, headers=headers, json=payload)
+        if r.status_code == 429:
+            try:
+                from app.services.openrouter_spend import record_vision_rate_limit
+
+                record_vision_rate_limit()
+            except Exception:
+                logger.debug("vision 429 counter skipped", exc_info=True)
+            r.raise_for_status()
         r.raise_for_status()
         body = r.json()
+    try:
+        from app.services.openrouter_spend import record_vision_completion_usage
+
+        record_vision_completion_usage(body if isinstance(body, dict) else {})
+    except Exception:
+        logger.debug("vision usage record skipped", exc_info=True)
     content = body["choices"][0]["message"]["content"]
     parsed = _parse_json_object(content)
     if isinstance(parsed.get("facets"), list):
