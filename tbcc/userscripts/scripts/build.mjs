@@ -19,23 +19,23 @@ function bumpPatch(version) {
 
 function renderHeader(manifest) {
   const h = manifest.header;
-  const lines = [
-    '// ==UserScript==',
-    `// @name         ${h.name}`,
-    `// @namespace    ${h.namespace}`,
+  const lines = ['// ==UserScript==', `// @name         ${h.name}`, `// @namespace    ${h.namespace}`];
+  if (h.homepageURL) lines.push(`// @homepageURL  ${h.homepageURL}`);
+  lines.push(
     `// @version      ${manifest.version}`,
     `// @description  ${h.description}`,
-    '// @author       TBCC',
-  ];
+    `// @author       ${h.author || 'TBCC'}`,
+  );
   for (const m of h.match || []) lines.push(`// @match        ${m}`);
   for (const g of h.grant || []) lines.push(`// @grant        ${g}`);
   if (h['run-at']) lines.push(`// @run-at       ${h['run-at']}`);
   if (h.license) lines.push(`// @license      ${h.license}`);
-  // Local dev updates: run `npm run serve` then Tampermonkey "Check for updates"
-  const updateUrl = h.updateURL || 'http://127.0.0.1:8765/fetlife-suite.user.js';
-  const downloadUrl = h.downloadURL || updateUrl;
-  lines.push(`// @updateURL    ${updateUrl}`);
-  lines.push(`// @downloadURL  ${downloadUrl}`);
+  if (h.updateURL !== false) {
+    const updateUrl = h.updateURL || 'http://127.0.0.1:8765/fetlife-suite.user.js';
+    const downloadUrl = h.downloadURL || updateUrl;
+    lines.push(`// @updateURL    ${updateUrl}`);
+    lines.push(`// @downloadURL  ${downloadUrl}`);
+  }
   lines.push('// ==/UserScript==', '');
   return lines.join('\n');
 }
@@ -77,6 +77,34 @@ function buildSuite(suiteDir) {
   const outPath = path.join(distDir, outName);
   fs.writeFileSync(outPath, tmChunks.join('\n') + '\n', 'utf8');
 
+  let communityPath = null;
+  let communityBytes = 0;
+  if (manifest.community && manifest.community.header) {
+    const omit = new Set(manifest.community.omitFiles || []);
+    const cManifest = {
+      version: manifest.community.version || '1.0.0',
+      header: { ...manifest.community.header, updateURL: false },
+      files: (manifest.files || []).filter((rel) => !omit.has(rel)),
+    };
+    const cBody = concatSuiteBodies(suiteDir, cManifest);
+    const edition =
+      "(function (g) { g.__TBCC_EDITION__ = 'community'; })(typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);\n";
+    const cChunks = [
+      renderHeader(cManifest),
+      `/* AOF community build ${new Date().toISOString()} - v${cManifest.version} - see tbcc/userscripts/NOTICE.md */`,
+      '',
+      edition,
+      cBody,
+    ];
+    const communityDir = path.join(root, 'community');
+    fs.mkdirSync(communityDir, { recursive: true });
+    communityPath = path.join(communityDir, `${manifest.name}-community.user.js`);
+    fs.writeFileSync(communityPath, cChunks.join('\n') + '\n', 'utf8');
+    const distCommunity = path.join(distDir, `${manifest.name}-community.user.js`);
+    fs.writeFileSync(distCommunity, cChunks.join('\n') + '\n', 'utf8');
+    communityBytes = fs.statSync(communityPath).size;
+  }
+
   let extPath = null;
   let extBytes = 0;
   // Chrome extension content-script wraps (no Tampermonkey).
@@ -114,6 +142,8 @@ function buildSuite(suiteDir) {
     bumped: shouldBump,
     extPath,
     extBytes,
+    communityPath,
+    communityBytes,
   };
 }
 
@@ -134,5 +164,8 @@ for (const r of results) {
   console.log(`built ${r.name} v${ver} → ${path.relative(root, r.outPath)} (${r.bytes} bytes)`);
   if (r.extPath) {
     console.log(`  extension → ${path.relative(root, r.extPath)} (${r.extBytes} bytes)`);
+  }
+  if (r.communityPath) {
+    console.log(`  community → ${path.relative(root, r.communityPath)} (${r.communityBytes} bytes)`);
   }
 }

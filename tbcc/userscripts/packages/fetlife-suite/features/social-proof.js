@@ -4,6 +4,7 @@
   const US = global.__TBCC_US__;
   const S = US.shared;
   const FL = (US.fetlife = US.fetlife || {});
+  FL.socialProofFlagLabel = 'Profile count padding (Friends/Followers/Following)';
 
   const CFG_KEY = 'tbcc_fl_social_proof_v1';
   const ORIG_ATTR = 'data-tbcc-fl-count-orig';
@@ -205,6 +206,65 @@
     formatCount,
     profileNicknameFromPath,
     findCountTargets,
+    renderStoriesPanel(body) {
+      const cfg = loadCfg();
+      const pathNick = profileNicknameFromPath() || '';
+      body.innerHTML = `
+      <p class="hint"><b>Browser-only</b> social proof: pads Friends / Followers / Following on the profile you view in <em>this</em> browser (screenshots / screen-share). Other people without TBCC still see FetLife’s real counts — the site API cannot be faked from an extension.</p>
+      <label class="row"><input type="checkbox" data-sp="enabled" /> Enable count padding</label>
+      <label class="row">Profile nickname (lock to your profile)</label>
+      <input type="text" data-sp="nickname" placeholder="e.g. freeUse-LongBoy" />
+      <button type="button" data-sp="use-page" style="margin:6px 0 10px;width:100%">Use nickname from this page${pathNick ? ` (${pathNick})` : ''}</button>
+      <label class="row">Friends</label>
+      <input type="text" data-sp="friends" inputmode="numeric" placeholder="leave blank = no change" />
+      <label class="row">Followers</label>
+      <input type="text" data-sp="followers" inputmode="numeric" placeholder="e.g. 12000" />
+      <label class="row">Following</label>
+      <input type="text" data-sp="following" inputmode="numeric" placeholder="leave blank = no change" />
+      <button type="button" class="primary" data-sp="apply">Apply counts on this page</button>
+      <p class="hint" data-sp="status" style="margin-top:8px"></p>
+      <hr style="border:none;border-top:1px solid #2a2a2a;margin:14px 0" />
+      <strong style="display:block;margin-bottom:8px">Story types</strong>
+      <div data-story-catalog></div>
+    `;
+      body.querySelector('[data-sp="enabled"]').checked = cfg.enabled !== false;
+      body.querySelector('[data-sp="nickname"]').value = cfg.nickname || '';
+      body.querySelector('[data-sp="friends"]').value = cfg.friends != null ? cfg.friends : '';
+      body.querySelector('[data-sp="followers"]').value = cfg.followers != null ? cfg.followers : '';
+      body.querySelector('[data-sp="following"]').value = cfg.following != null ? cfg.following : '';
+      const persist = (andApply) => {
+        const next = {
+          enabled: body.querySelector('[data-sp="enabled"]').checked,
+          nickname: body.querySelector('[data-sp="nickname"]').value.trim(),
+          friends: body.querySelector('[data-sp="friends"]').value.trim(),
+          followers: body.querySelector('[data-sp="followers"]').value.trim(),
+          following: body.querySelector('[data-sp="following"]').value.trim(),
+        };
+        saveCfg(next);
+        const status = body.querySelector('[data-sp="status"]');
+        if (andApply) {
+          const r = apply();
+          if (status) {
+            status.textContent = r?.ok
+              ? `Applied — friends:${r.result?.friends ? '✓' : '—'} followers:${r.result?.followers ? '✓' : '—'} following:${r.result?.following ? '✓' : '—'}`
+              : 'Saved. Open your profile About page to see padded counts.';
+          }
+        } else if (status) {
+          status.textContent = 'Saved.';
+        }
+      };
+      body.querySelector('[data-sp="enabled"]').addEventListener('change', () => persist(true));
+      ['nickname', 'friends', 'followers', 'following'].forEach((k) => {
+        body.querySelector(`[data-sp="${k}"]`).addEventListener('change', () => persist(true));
+      });
+      body.querySelector('[data-sp="apply"]').addEventListener('click', () => persist(true));
+      body.querySelector('[data-sp="use-page"]').addEventListener('click', () => {
+        const nick = profileNicknameFromPath() || '';
+        if (nick) body.querySelector('[data-sp="nickname"]').value = nick;
+        persist(true);
+      });
+      FL.storyFilter?.mountCatalog?.(body.querySelector('[data-story-catalog]'));
+    },
   };
 
   FL.features = FL.features || {};

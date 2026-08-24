@@ -28,6 +28,11 @@ Regenerate Perchance Gemini prompt packs (from `tbcc/backend`):
 py -3.13 scripts\export_perchance_prompt_packs.py
 ```
 
+## Install (community / Sleazy Fork)
+
+Public cuts (no intel): `community/fetlife-suite-community.user.js` after `npm run build:nobump`.
+Paste kit: `tbcc/docs/fetlife-enhancer/SLEAZY_FORK_PUBLISH.md`. Index: `tbcc/docs/SLEAZY_FORK_COMMUNITY.md`.
+
 ## Install (FetLife)
 
 **Skip “Track from disk” on Brave/Chrome** — it often does nothing even with file-URL access on.

@@ -5,6 +5,8 @@
   const S = US.shared;
   const FL = (US.fetlife = US.fetlife || {});
 
+  const COMMUNITY = global.__TBCC_EDITION__ === 'community';
+  const SUITE_TITLE = COMMUNITY ? 'FetLife Enhancer' : 'TBCC FetLife Suite';
   const ROOT_ID = 'tbcc-fl-overlay';
   const TOP_KEY = 'tbcc_fl_overlay_top_v1';
   const UI_KEY = 'tbcc_fl_overlay_ui_v1';
@@ -28,7 +30,7 @@
   const INTEL_META_KEY = 'tbcc_fl_intel_meta_v1';
   const KW_KEY = 'tbcc_fl_title_kw_v1';
   const JUMP_STACK_ID = 'tbcc-fl-jump-stack';
-  const PAGES = [
+  const PAGES_ALL = [
     { id: 'features', title: 'Features' },
     { id: 'autofollow', title: 'Auto-follow' },
     { id: 'gender', title: 'ASL filter' },
@@ -38,6 +40,7 @@
     { id: 'mute', title: 'Mute' },
     { id: 'intel', title: 'Intel' },
   ];
+  const PAGES = COMMUNITY ? PAGES_ALL.filter((p) => p.id !== 'intel') : PAGES_ALL;
 
   let pageIndex = 0;
   let collapsed = true;
@@ -384,10 +387,10 @@
     const root = document.createElement('div');
     root.id = ROOT_ID;
     root.innerHTML = `
-      <button type="button" class="tbcc-chevron" title="TBCC FetLife Suite">FL ▸</button>
+      <button type="button" class="tbcc-chevron" title="${SUITE_TITLE}">FL ▸</button>
       <div class="tbcc-panel">
         <div class="tbcc-head">
-          <strong>TBCC FetLife Suite</strong>
+          <strong>${SUITE_TITLE}</strong>
           <button type="button" data-act="width" title="Cycle panel width">Width</button>
           <button type="button" data-act="collapse">Hide</button>
         </div>
@@ -466,6 +469,7 @@
     const labels = hooks.labels || {};
     body.innerHTML = `<p class="hint">Toggle modules. Changes apply immediately.</p>`;
     Object.keys(flags.all()).forEach((key) => {
+      if (COMMUNITY && key === 'socialProof') return;
       const lab = document.createElement('label');
       lab.className = 'row';
       const cb = document.createElement('input');
@@ -782,263 +786,20 @@
   }
 
   function renderStories(body) {
-    const sp = FL.socialProof;
-    const cfg = sp?.loadCfg?.() || {};
-    const pathNick = sp?.profileNicknameFromPath?.() || '';
+    if (typeof FL.socialProof?.renderStoriesPanel === 'function') {
+      FL.socialProof.renderStoriesPanel(body);
+      return;
+    }
     body.innerHTML = `
-      <p class="hint"><b>Browser-only</b> social proof: pads Friends / Followers / Following on the profile you view in <em>this</em> browser (screenshots / screen-share). Other people without TBCC still see FetLife’s real counts — the site API cannot be faked from an extension.</p>
-      <label class="row"><input type="checkbox" data-sp="enabled" /> Enable count padding</label>
-      <label class="row">Profile nickname (lock to your profile)</label>
-      <input type="text" data-sp="nickname" placeholder="e.g. freeUse-LongBoy" />
-      <button type="button" data-sp="use-page" style="margin:6px 0 10px;width:100%">Use nickname from this page${pathNick ? ` (${pathNick})` : ''}</button>
-      <label class="row">Friends</label>
-      <input type="text" data-sp="friends" inputmode="numeric" placeholder="leave blank = no change" />
-      <label class="row">Followers</label>
-      <input type="text" data-sp="followers" inputmode="numeric" placeholder="e.g. 12000" />
-      <label class="row">Following</label>
-      <input type="text" data-sp="following" inputmode="numeric" placeholder="leave blank = no change" />
-      <button type="button" class="primary" data-sp="apply">Apply counts on this page</button>
-      <p class="hint" data-sp="status" style="margin-top:8px"></p>
-      <hr style="border:none;border-top:1px solid #2a2a2a;margin:14px 0" />
       <strong style="display:block;margin-bottom:8px">Story types</strong>
       <div data-story-catalog></div>
     `;
-
-    body.querySelector('[data-sp="enabled"]').checked = cfg.enabled !== false;
-    body.querySelector('[data-sp="nickname"]').value = cfg.nickname || '';
-    body.querySelector('[data-sp="friends"]').value = cfg.friends != null ? cfg.friends : '';
-    body.querySelector('[data-sp="followers"]').value = cfg.followers != null ? cfg.followers : '';
-    body.querySelector('[data-sp="following"]').value = cfg.following != null ? cfg.following : '';
-
-    const persist = (andApply) => {
-      const next = {
-        enabled: body.querySelector('[data-sp="enabled"]').checked,
-        nickname: body.querySelector('[data-sp="nickname"]').value.trim(),
-        friends: body.querySelector('[data-sp="friends"]').value.trim(),
-        followers: body.querySelector('[data-sp="followers"]').value.trim(),
-        following: body.querySelector('[data-sp="following"]').value.trim(),
-      };
-      sp?.saveCfg?.(next);
-      const status = body.querySelector('[data-sp="status"]');
-      if (andApply) {
-        const r = sp?.apply?.();
-        if (status) {
-          status.textContent = r?.ok
-            ? `Applied — friends:${r.result?.friends ? '✓' : '—'} followers:${r.result?.followers ? '✓' : '—'} following:${r.result?.following ? '✓' : '—'}`
-            : 'Saved. Open your profile About page to see padded counts.';
-        }
-      } else if (status) {
-        status.textContent = 'Saved.';
-      }
-    };
-
-    body.querySelector('[data-sp="enabled"]').addEventListener('change', () => persist(true));
-    ['nickname', 'friends', 'followers', 'following'].forEach((k) => {
-      body.querySelector(`[data-sp="${k}"]`).addEventListener('change', () => persist(true));
-    });
-    body.querySelector('[data-sp="apply"]').addEventListener('click', () => persist(true));
-    body.querySelector('[data-sp="use-page"]').addEventListener('click', () => {
-      const nick = sp?.profileNicknameFromPath?.() || '';
-      if (nick) body.querySelector('[data-sp="nickname"]').value = nick;
-      persist(true);
-    });
-
     FL.storyFilter?.mountCatalog?.(body.querySelector('[data-story-catalog]'));
   }
 
   function renderMute(body) {
     body.innerHTML = `<p class="hint">Mute adds a (mute) link next to comment authors. List is stored in extension/local storage.</p>
       <p class="stat">Muted IDs: ${(S.storage.get('tbcc_fl_muted_users_v1', '') || '(none)')}</p>`;
-  }
-
-  function loadIntelMeta() {
-    const saved = S.storage.get(INTEL_META_KEY, null);
-    return {
-      recordIntel: false, // opt-in — no media scrape; thin context only
-      maxIntelRows: 2000,
-      tbccApiUrl: 'http://127.0.0.1:8000/analytics/erome-browse-intel',
-      ...(saved && typeof saved === 'object' ? saved : {}),
-    };
-  }
-
-  function saveIntelMeta(meta) {
-    S.storage.set(INTEL_META_KEY, meta || {});
-  }
-
-  function loadIntelRows() {
-    const rows = S.storage.get(INTEL_ROWS_KEY, []);
-    return Array.isArray(rows) ? rows : [];
-  }
-
-  function saveIntelRows(rows) {
-    const meta = loadIntelMeta();
-    const cap = Math.max(200, Number(meta.maxIntelRows) || 2000);
-    S.storage.set(INTEL_ROWS_KEY, (rows || []).slice(-cap));
-  }
-
-  function scrapeFetlifeContextTags() {
-    const tags = [];
-    const push = (t) => {
-      const s = String(t || '')
-        .trim()
-        .replace(/^#/, '')
-        .toLowerCase();
-      if (s && s.length >= 2 && s.length < 48) tags.push(s);
-    };
-    document
-      .querySelectorAll(
-        'a[href*="/hashtags/"], a[href*="/kinks/"], a[href*="/fetishes/"], .tag, [data-tag], a[href*="/groups/"]'
-      )
-      .forEach((a) => {
-        const href = a.getAttribute('href') || '';
-        const m =
-          href.match(/\/(?:hashtags|kinks|fetishes)\/([^/?#]+)/i) ||
-          href.match(/\/groups\/([^/?#]+)/i);
-        if (m) push(decodeURIComponent(m[1]).replace(/[-_]+/g, ' '));
-        else push(a.textContent);
-      });
-    const path = location.pathname || '';
-    const place = path.match(/\/places?\/([^/?#]+)/i);
-    if (place) push('place:' + decodeURIComponent(place[1]));
-    const group = path.match(/\/groups\/([^/?#]+)/i);
-    if (group) push('group:' + decodeURIComponent(group[1]).replace(/[-_]+/g, ' '));
-    const disc = path.match(/\/discussions\/(\d+)/i);
-    if (disc) push('discussion');
-    return [...new Set(tags)].slice(0, 30);
-  }
-
-  function flContextEntityId() {
-    const path = (location.pathname || '/').replace(/\/+$/, '') || '/';
-    const day = new Date().toISOString().slice(0, 10);
-    let hash = 0;
-    const s = path + '|' + day;
-    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
-    return 'flctx_' + hash.toString(16);
-  }
-
-  function scanFetlifeContextIntel() {
-    const meta = loadIntelMeta();
-    if (meta.recordIntel === false) return 0;
-    const tags = scrapeFetlifeContextTags();
-    if (!tags.length) return 0;
-    const id = flContextEntityId();
-    const url = location.href.split('#')[0];
-    const row = {
-      platform: 'fetlife',
-      captured_at: new Date().toISOString(),
-      album_url: url,
-      album_id: id,
-      entity_id: id,
-      entity_url: url,
-      title: (document.title || pathTitle()).slice(0, 200),
-      tags,
-      views: null,
-      likes: null,
-      videos: 0,
-      images: 0,
-      format_bucket: 'context_page',
-      page_context: { path: location.pathname, kind: 'context_tags' },
-      uploader: null,
-    };
-    const rows = loadIntelRows().filter((r) => String(r.album_id) !== id);
-    rows.push(row);
-    saveIntelRows(rows);
-    return 1;
-  }
-
-  function pathTitle() {
-    return (location.pathname || '/').split('/').filter(Boolean).slice(-2).join('/') || 'fetlife';
-  }
-
-  function exportFlIntelJsonl() {
-    const rows = loadIntelRows();
-    const name = `fetlife-context-intel-${new Date().toISOString().slice(0, 10)}.jsonl`;
-    if (globalThis.tbccBrowseIntel && typeof globalThis.tbccBrowseIntel.exportJsonlSaveAs === 'function') {
-      void globalThis.tbccBrowseIntel.exportJsonlSaveAs(rows, name);
-      return;
-    }
-    const blob = new Blob(
-      [rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : '')],
-      { type: 'application/x-ndjson' }
-    );
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = name;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-
-  async function pushFlIntelToTbcc() {
-    const meta = loadIntelMeta();
-    const url = String(meta.tbccApiUrl || '').trim();
-    if (!url) throw new Error('Set TBCC ingest URL');
-    const rows = loadIntelRows();
-    if (!rows.length) throw new Error('No intel rows');
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return rows.length;
-  }
-
-  function renderIntel(body) {
-    const meta = loadIntelMeta();
-    const rows = loadIntelRows();
-    const preview = scrapeFetlifeContextTags().slice(0, 12);
-    body.innerHTML = `
-      <p class="hint"><b>Thin context only</b> — no media scrape. Records hashtags/kinks/group/place from the page you already opened. Default OFF. Push is manual.</p>
-      <label class="row"><input type="checkbox" data-fl-intel="rec" /> Record context intel (opt-in)</label>
-      <label class="field">TBCC ingest URL
-        <input type="text" data-fl-intel="url" />
-      </label>
-      <div class="friend-grid" style="display:flex;flex-wrap:wrap;gap:6px;margin:8px 0">
-        <button type="button" class="accent" data-fl-intel-act="scan">Scan this page</button>
-        <button type="button" data-fl-intel-act="export">Export JSONL</button>
-        <button type="button" data-fl-intel-act="push">Push to TBCC</button>
-        <button type="button" data-fl-intel-act="clear">Clear</button>
-      </div>
-      <p class="stat">${rows.length} row(s) · visible tags: ${preview.length ? preview.join(', ') : '(none on this page)'}</p>
-    `;
-    body.querySelector('[data-fl-intel="rec"]').checked = !!meta.recordIntel;
-    body.querySelector('[data-fl-intel="url"]').value = meta.tbccApiUrl || '';
-    const persist = () => {
-      saveIntelMeta({
-        ...loadIntelMeta(),
-        recordIntel: !!body.querySelector('[data-fl-intel="rec"]').checked,
-        tbccApiUrl: body.querySelector('[data-fl-intel="url"]').value.trim(),
-      });
-    };
-    body.querySelector('[data-fl-intel="rec"]').addEventListener('change', persist);
-    body.querySelector('[data-fl-intel="url"]').addEventListener('change', persist);
-    body.querySelector('[data-fl-intel-act="scan"]').addEventListener('click', () => {
-      persist();
-      if (!loadIntelMeta().recordIntel) {
-        saveIntelMeta({ ...loadIntelMeta(), recordIntel: true });
-      }
-      const n = scanFetlifeContextIntel();
-      body.querySelector('.stat').textContent = n
-        ? `Recorded · ${loadIntelRows().length} row(s)`
-        : 'No tags found on this page';
-    });
-    body.querySelector('[data-fl-intel-act="export"]').addEventListener('click', () => {
-      exportFlIntelJsonl();
-    });
-    body.querySelector('[data-fl-intel-act="push"]').addEventListener('click', async () => {
-      persist();
-      try {
-        const n = await pushFlIntelToTbcc();
-        body.querySelector('.stat').textContent = `Pushed ${n} row(s)`;
-      } catch (e) {
-        body.querySelector('.stat').textContent = 'Push failed: ' + (e.message || e);
-      }
-    });
-    body.querySelector('[data-fl-intel-act="clear"]').addEventListener('click', () => {
-      if (!confirm('Clear FetLife context intel rows?')) return;
-      saveIntelRows([]);
-      render();
-    });
   }
 
   function render() {
@@ -1057,7 +818,7 @@
     else if (page.id === 'flconsole') renderFlConsole(body);
     else if (page.id === 'stories') renderStories(body);
     else if (page.id === 'mute') renderMute(body);
-    else if (page.id === 'intel') renderIntel(body);
+    else if (page.id === 'intel') FL.overlayIntel?.render?.(body, render);
   }
 
   FL.overlay = {
@@ -1085,7 +846,7 @@
       }
       if (typeof GM_registerMenuCommand === 'function') {
         try {
-          GM_registerMenuCommand('TBCC FetLife Suite: open overlay', () => FL.overlay.open());
+          GM_registerMenuCommand(SUITE_TITLE + ': open overlay', () => FL.overlay.open());
         } catch (_) { /* ignore */ }
       }
     },

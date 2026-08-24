@@ -1,3 +1,27 @@
+// ==UserScript==
+// @name         ThisVid Enhancer
+// @namespace    https://sleazyfork.org/users/1618643-ianmxaof
+// @homepageURL  https://telegram.me/aofsubscriptions_bot
+// @version      1.0.0
+// @license      MIT
+// @author       AOF community fork
+// @description  ThisVid browsing: title filters, privacy/duration/views sort, infinite scroll, download buttons, mass-friend helpers. Community build — no analytics, no upload library.
+// Privacy: settings stay in localStorage; fetches go to thisvid.com.
+// @match        https://thisvid.com/*
+// @match        https://www.thisvid.com/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+
+(function (global) {
+  'use strict';
+  function tbccWaitForModule(_id, fn) { fn(); }
+  function tbccBindModuleDisableListener() {}
+  global.tbccWaitForModule = tbccWaitForModule;
+  global.tbccBindModuleDisableListener = tbccBindModuleDisableListener;
+})(typeof unsafeWindow !== 'undefined' ? unsafeWindow : window);
+
 /**
  * TBCC ThisVid enhancer — title include/exclude, privacy/duration/views sort,
  * strict no-gay filter, mass friend request, download, R2/media upload library → form fill.
@@ -575,7 +599,7 @@ tbccWaitForModule('thisvid_enhancer', function () {
     const TAG_LISTS_KEY = 'tbcc_tv_tag_lists_v1';
     const INTEL_ROWS_KEY = 'tbcc_tv_intel_rows_v1';
     const INTEL_META_KEY = 'tbcc_tv_intel_meta_v1';
-    /** R2 / media.powercore.app queue for ThisVid my_video_upload form fill. */
+    /** R2 /  queue for ThisVid my_video_upload form fill. */
     const UPLOAD_LIB_KEY = 'tbcc_tv_upload_library_v1';
     const UPLOAD_LIB_MAX = 80;
 
@@ -990,7 +1014,7 @@ tbccWaitForModule('thisvid_enhancer', function () {
         {
           recordIntel: true,
           maxIntelRows: 5000,
-          tbccApiUrl: 'http://127.0.0.1:8000/analytics/erome-browse-intel',
+          tbccApiUrl: '',
         },
         loadJson(INTEL_META_KEY, {})
       );
@@ -1430,9 +1454,9 @@ tbccWaitForModule('thisvid_enhancer', function () {
       const lib = loadUploadLibrary();
       const onUpload = isThisVidUploadPage();
       body.innerHTML = `
-        <p class="hint">Queue R2 / media.powercore.app clips, then one-click fill Title · Description · Tags on <code>my_video_upload</code>.</p>
+        <p class="hint">Queue R2 /  clips, then one-click fill Title · Description · Tags on <code>my_video_upload</code>.</p>
         <label class="field">Paste media URL(s)
-          <textarea id="tbccTvUpPaste" rows="3" placeholder="https://media.powercore.app/….mp4&#10;https://pub-….r2.dev/….mp4"></textarea>
+          <textarea id="tbccTvUpPaste" rows="3" placeholder="/….mp4&#10;https://pub-….r2.dev/….mp4"></textarea>
         </label>
         <label class="field">Title override
           <input type="text" id="tbccTvUpTitle" placeholder="auto from filename" />
@@ -1500,7 +1524,7 @@ tbccWaitForModule('thisvid_enhancer', function () {
         listEl.appendChild(row);
       });
       if (!lib.length) {
-        listEl.innerHTML = '<p class="hint">Library empty — paste a media.powercore.app or R2 .mp4 URL above.</p>';
+        listEl.innerHTML = '<p class="hint">Library empty — paste a  or R2 .mp4 URL above.</p>';
       }
 
       body.querySelector('#tbccTvUpAdd').addEventListener('click', () => {
@@ -1702,7 +1726,7 @@ tbccWaitForModule('thisvid_enhancer', function () {
           <input type="number" id="tbccTvIntelMax" min="500" max="50000" />
         </label>
         <label class="field">TBCC ingest URL
-          <input type="text" id="tbccTvIntelUrl" placeholder="http://127.0.0.1:8000/analytics/erome-browse-intel" />
+          <input type="text" id="tbccTvIntelUrl" placeholder="" />
         </label>
         <div class="friend-grid">
           <button type="button" class="accent" id="tbccTvIntelScan">Scan visible now (optional)</button>

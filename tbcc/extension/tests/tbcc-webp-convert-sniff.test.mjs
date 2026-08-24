@@ -1,5 +1,5 @@
 /**
- * Magic-byte sniff for tbcc-webp-convert (ZIP mislabel regression).
+ * Magic-byte sniff + export settings for tbcc-webp-convert (ZIP mislabel regression).
  * Run: node extension/tests/tbcc-webp-convert-sniff.test.mjs
  */
 import { createRequire } from "module";
@@ -32,15 +32,21 @@ assert.strictEqual(
   "webp"
 );
 
+assert.strictEqual(W.tbccNormalizeMaxEdge(1024), 1024);
+assert.strictEqual(W.tbccNormalizeMaxEdge(99999), 16384);
+assert.strictEqual(W.tbccNormalizeQuality(1.5), 0.98);
+assert.strictEqual(W.tbccNormalizeMaxBytes(5242880), 5242880);
+
+assert.strictEqual(W.tbccTargetKindFromFormat("png"), "png");
+assert.strictEqual(W.tbccTargetKindFromFormat("jpeg_all"), "jpeg");
+assert.strictEqual(W.tbccFilenameForKind("photo.webp", "png"), "photo.png");
+
 // Fake .jpg name must not force jpg when bytes are webp — align helper
 const webpBytes = u8(0x52, 0x49, 0x46, 0x46, 0x10, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0, 0, 0, 0);
 const blob = new Blob([webpBytes], { type: "image/jpeg" });
 const aligned = await W.tbccAlignFilenameToBlob(blob, "049_avatar.jpg");
 assert.strictEqual(aligned, "049_avatar.webp");
 
-const ensured = await W.tbccEnsureJpegBlob(blob, { name: "049_avatar.jpg", force: false });
-// force false + default settings may still convert if storage missing (defaults true)
-// With force false and we mock — just check failure path with force true that produces jpeg OR keeps webp
 const forced = await W.tbccEnsureJpegBlob(blob, { name: "049_avatar.jpg", force: true });
 if (forced.converted) {
   assert.ok(/\.jpe?g$/i.test(forced.name));
@@ -48,6 +54,16 @@ if (forced.converted) {
   assert.strictEqual(k, "jpeg");
 } else {
   assert.ok(/\.webp$/i.test(forced.name), "failed convert must keep .webp not fake .jpg");
+}
+
+const pngForced = await W.tbccEnsureExportBlob(blob, {
+  name: "049_avatar.jpg",
+  forceFormat: "png",
+});
+if (pngForced.converted && typeof createImageBitmap === "function") {
+  assert.ok(/\.png$/i.test(pngForced.name));
+  const k = await W.tbccSniffImageKind(pngForced.blob);
+  assert.strictEqual(k, "png");
 }
 
 console.log("tbcc-webp-convert-sniff: ok");

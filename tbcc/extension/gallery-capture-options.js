@@ -6,6 +6,10 @@
   const STORAGE_PAGE_MEDIA_MENU = "tbccPageMediaMenuEnabled";
 
   const elFormat = document.getElementById("captureSettingFormat");
+  const elExportMaxEdge = document.getElementById("captureSettingExportMaxEdge");
+  const elJpegQuality = document.getElementById("captureSettingJpegQuality");
+  const elJpegQualityVal = document.getElementById("captureSettingJpegQualityVal");
+  const elExportMaxMb = document.getElementById("captureSettingExportMaxMb");
   const elAuto = document.getElementById("captureSettingAutoRefresh");
   const elHard = document.getElementById("captureSettingHardRefresh");
   const elRt = document.getElementById("captureSettingResourceTiming");
@@ -120,10 +124,53 @@
     }
   }
 
+  function formatFromStorage(s) {
+    const f = s && s.format;
+    if (f === "jpeg" || f === "jpeg_all" || f === "png" || f === "webp" || f === "original") return f;
+    return "jpeg";
+  }
+
+  function maxEdgeFromStorage(s) {
+    const n = parseInt(String((s && s.exportMaxEdge) || 0), 10);
+    if (n === 1024 || n === 2048 || n === 4096) return String(n);
+    return "0";
+  }
+
+  function maxMbFromStorage(s) {
+    const b = parseInt(String((s && s.exportMaxBytes) || 0), 10);
+    if (b === 1048576) return "1";
+    if (b === 2097152) return "2";
+    if (b === 5242880) return "5";
+    if (b === 10485760) return "10";
+    return "0";
+  }
+
+  function maxBytesFromMbSelect(val) {
+    const n = parseInt(String(val || 0), 10);
+    if (n === 1) return 1048576;
+    if (n === 2) return 2097152;
+    if (n === 5) return 5242880;
+    if (n === 10) return 10485760;
+    return 0;
+  }
+
+  function qualityFromStorage(s) {
+    const q = typeof (s && s.jpegQuality) === "number" ? s.jpegQuality : parseFloat(String((s && s.jpegQuality) || 0.92));
+    if (!Number.isFinite(q)) return 92;
+    return Math.max(75, Math.min(98, Math.round(q * 100)));
+  }
+
   async function load() {
     const o = await new Promise((r) => chrome.storage.local.get([STORAGE_SETTINGS, STORAGE_PAGE_MEDIA_MENU], r));
     const s = o[STORAGE_SETTINGS] || {};
-    if (elFormat) elFormat.value = s.format === "jpeg" ? "jpeg" : "original";
+    if (elFormat) elFormat.value = formatFromStorage(s);
+    if (elExportMaxEdge) elExportMaxEdge.value = maxEdgeFromStorage(s);
+    if (elExportMaxMb) elExportMaxMb.value = maxMbFromStorage(s);
+    if (elJpegQuality) {
+      const pct = qualityFromStorage(s);
+      elJpegQuality.value = String(pct);
+      if (elJpegQualityVal) elJpegQualityVal.textContent = (pct / 100).toFixed(2);
+    }
     if (elAuto) elAuto.checked = s.autoRefresh !== false;
     if (elHard) elHard.checked = s.refreshHard !== false;
     if (elRt) elRt.checked = s.resourceTimingAllImages === true;
@@ -150,6 +197,24 @@
 
   if (elFormat)
     elFormat.addEventListener("change", () => mergeSave({ format: elFormat.value }));
+  if (elExportMaxEdge)
+    elExportMaxEdge.addEventListener("change", () =>
+      mergeSave({ exportMaxEdge: parseInt(elExportMaxEdge.value, 10) || 0 })
+    );
+  if (elExportMaxMb)
+    elExportMaxMb.addEventListener("change", () =>
+      mergeSave({ exportMaxBytes: maxBytesFromMbSelect(elExportMaxMb.value) })
+    );
+  if (elJpegQuality)
+    elJpegQuality.addEventListener("input", () => {
+      const pct = parseInt(elJpegQuality.value, 10) || 92;
+      if (elJpegQualityVal) elJpegQualityVal.textContent = (pct / 100).toFixed(2);
+    });
+  if (elJpegQuality)
+    elJpegQuality.addEventListener("change", () => {
+      const pct = parseInt(elJpegQuality.value, 10) || 92;
+      mergeSave({ jpegQuality: Math.max(0.75, Math.min(0.98, pct / 100)) });
+    });
   if (elAuto)
     elAuto.addEventListener("change", () => mergeSave({ autoRefresh: !!elAuto.checked }));
   if (elHard)

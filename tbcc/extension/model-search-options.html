@@ -26,9 +26,33 @@
     </label>
     <p class="sub" style="margin:0 0 12px">These apply when you refresh or scan a tab in the gallery. Same settings as the old gallery settings modal.</p>
     <label class="row2">Format
-      <select id="captureSettingFormat" title="WebP images are re-encoded to JPEG in the browser before download, ZIP, import, and Saved Messages (no ImageMagick required)">
-        <option value="original">Original</option>
-        <option value="jpeg">Convert to JPG (WebP → JPEG)</option>
+      <select id="captureSettingFormat" title="Re-encode images in the browser before download, ZIP, import, and Saved Messages. Animated GIF → first frame. SVG/video unchanged.">
+        <option value="original">Original (keep source bytes)</option>
+        <option value="jpeg">Convert to JPEG (WebP/AVIF only)</option>
+        <option value="jpeg_all">Convert all images to JPEG</option>
+        <option value="png">Convert all images to PNG</option>
+        <option value="webp">Convert all images to WebP</option>
+      </select>
+    </label>
+    <label class="row2">Max edge (px, 0 = no resize)
+      <select id="captureSettingExportMaxEdge" title="Fit inside this box; preserve aspect ratio. Applied before format conversion.">
+        <option value="0">Off</option>
+        <option value="1024">1024 (PayPal / square tiles)</option>
+        <option value="2048">2048</option>
+        <option value="4096">4096</option>
+      </select>
+    </label>
+    <label class="row2">JPEG / WebP quality
+      <input type="range" id="captureSettingJpegQuality" min="75" max="98" step="1" value="92" style="flex:1" />
+      <span id="captureSettingJpegQualityVal" style="min-width:2.5em;text-align:right">0.92</span>
+    </label>
+    <label class="row2">Max file size
+      <select id="captureSettingExportMaxMb" title="If output exceeds this, lower quality and/or scale down (PNG may fall back to JPEG).">
+        <option value="0">Off</option>
+        <option value="1">1 MB</option>
+        <option value="2">2 MB</option>
+        <option value="5">5 MB (PayPal upload cap)</option>
+        <option value="10">10 MB</option>
       </select>
     </label>
     <label class="row2"><input type="checkbox" id="captureSettingAutoRefresh" /> Auto-scan when the side panel opens or becomes visible</label>

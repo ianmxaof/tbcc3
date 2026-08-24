@@ -5,6 +5,7 @@
   const S = US.shared;
   const FL = (US.fetlife = US.fetlife || {});
 
+  const COMMUNITY = global.__TBCC_EDITION__ === 'community';
   const FLAG_KEY = 'tbcc_fl_suite_flags_v1';
   const DEFAULTS = {
     loginRedirect: true,
@@ -15,9 +16,10 @@
     genderFilter: true,
     autoFollow: true,
     infiniteScroll: true,
-    socialProof: true,
+    socialProof: !COMMUNITY,
     privacyConsole: true,
   };
+  if (COMMUNITY) delete DEFAULTS.socialProof;
 
   const LABELS = {
     loginRedirect: 'Redirect login/home → last kinksters place',
@@ -28,9 +30,9 @@
     genderFilter: 'ASL filter (female / location)',
     autoFollow: 'Auto-follow controls (panel)',
     infiniteScroll: 'Kinksters infinite scroll (fill gaps)',
-    socialProof: 'Profile count padding (Friends/Followers/Following)',
     privacyConsole: 'FLConsole privacy presets',
   };
+  if (FL.socialProofFlagLabel) LABELS.socialProof = FL.socialProofFlagLabel;
 
   const flags = S.createFlags(FLAG_KEY, DEFAULTS);
   // Force-enable new defaults for users who already have an old flags blob
@@ -43,7 +45,7 @@
     upgrade('genderFilter');
     upgrade('loginRedirect');
     upgrade('infiniteScroll');
-    upgrade('socialProof');
+    if (!COMMUNITY) upgrade('socialProof');
     upgrade('privacyConsole');
   }
 
@@ -91,7 +93,7 @@
       setTimeout(() => FL.overlay.open('autofollow'), 700);
     }
 
-    console.info('[TBCC FetLife Suite] v1.8 ready', flags.all());
+    console.info(COMMUNITY ? '[AOF FetLife Enhancer] community ready' : '[TBCC FetLife Suite] v1.8 ready', flags.all());
   }
 
   if (document.readyState === 'loading') {

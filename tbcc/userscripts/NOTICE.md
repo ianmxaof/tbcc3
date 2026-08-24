@@ -12,4 +12,6 @@ This suite aggregates and adapts prior userscripts. Keep attributions when forki
 | Perchance lazy iframe queue / history ideas | [Perchance AI Image Generator Improvements](https://greasyfork.org/scripts/576634) | GPL-3.0-or-later (full upstream in `inbox/perchance/`) |
 | Gemini→Perchance prompt packs | TBCC `gemini_*_prompt` builders | MIT (repo) |
 
-Do not strip this file from redistributed builds.
+Do not strip this file from redistributed **operator** builds.
+
+**Sleazy Fork community cuts** omit intel / social-proof / TBCC ingest. See `tbcc/docs/SLEAZY_FORK_COMMUNITY.md`.

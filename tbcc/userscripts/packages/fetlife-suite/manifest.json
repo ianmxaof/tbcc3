@@ -39,7 +39,31 @@
     "data/privacy-presets.js",
     "data/genders.js",
     "features/privacy-console.js",
+    "features/overlay-intel.js",
     "features/overlay.js",
     "boot.js"
-  ]
+  ],
+  "community": {
+    "version": "1.0.0",
+    "omitFiles": ["features/social-proof.js", "features/overlay-intel.js"],
+    "header": {
+      "name": "FetLife Enhancer",
+      "namespace": "https://sleazyfork.org/users/1618643-ianmxaof",
+      "homepageURL": "https://telegram.me/aofsubscriptions_bot",
+      "description": "FetLife browsing: masonry home feed, story filter, mute, ASL/gender filter, auto-follow, place kinksters nav, infinite scroll, privacy presets. Community build — no analytics.",
+      "author": "AOF community fork",
+      "match": [
+        "https://fetlife.com/*",
+        "https://www.fetlife.com/*"
+      ],
+      "grant": [
+        "GM_getValue",
+        "GM_setValue",
+        "GM_registerMenuCommand",
+        "GM_addStyle"
+      ],
+      "run-at": "document-idle",
+      "license": "MIT"
+    }
+  }
 }

@@ -308,6 +308,9 @@ let activeTab = "current";
 let currentTabId = null;
 let settings = {
   format: "jpeg",
+  exportMaxEdge: 0,
+  jpegQuality: 0.92,
+  exportMaxBytes: 0,
   autoRefresh: true,
   cropBottomEnabled: false,
   cropBottomPercent: 8,
@@ -6594,22 +6597,33 @@ async function tbccApplyPromoWatermarkBlob(blob, mediaTypeHint) {
   return blob;
 }
 
-/** WebP → JPG when ⚙ Format is "Convert to JPG"; then optional crop/watermark pipeline. */
+/** WebP → JPG / PNG / resize when ⚙ Format or export size caps are set; then optional crop/watermark pipeline. */
 async function tbccPrepareRasterBlob(blob, url, filenameHint) {
   let out = blob;
   let name = filenameHint || filenameFromUrl(url) || "media.jpg";
-  if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegBlob) {
+  if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureExportBlob) {
+    const w = await TbccWebp.tbccEnsureExportBlob(out, { url, name });
+    out = w.blob;
+    name = w.name;
+  } else if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegBlob) {
     const w = await TbccWebp.tbccEnsureJpegBlob(out, { url, name });
     out = w.blob;
     name = w.name;
   }
   if (isImageItem({ url, mediaType: "photo" }) && shouldApplyImagePipelineForUrl(url)) {
     const piped = await applyImagePipeline(out, url);
-    // Pipeline may return original WebP on failure — never force .jpg over non-JPEG bytes.
     if (piped && piped !== out) {
       out = piped;
-      if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegBlob) {
-        const w2 = await TbccWebp.tbccEnsureJpegBlob(out, { url, name: filenameForCropUrl(url), force: tbccWebpConvertEnabled() });
+      if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureExportBlob) {
+        const w2 = await TbccWebp.tbccEnsureExportBlob(out, { url, name: filenameForCropUrl(url) });
+        out = w2.blob;
+        name = w2.name;
+      } else if (typeof TbccWebp !== "undefined" && TbccWebp.tbccEnsureJpegBlob) {
+        const w2 = await TbccWebp.tbccEnsureJpegBlob(out, {
+          url,
+          name: filenameForCropUrl(url),
+          force: tbccRasterExportActive(),
+        });
         out = w2.blob;
         name = w2.name;
       } else {
@@ -6621,8 +6635,35 @@ async function tbccPrepareRasterBlob(blob, url, filenameHint) {
   return { blob: out, name };
 }
 
+function tbccRasterExportActive() {
+  const f = settings.format || "jpeg";
+  if (f === "jpeg_all" || f === "png" || f === "webp") return true;
+  if ((settings.exportMaxEdge || 0) > 0) return true;
+  if ((settings.exportMaxBytes || 0) > 0) return true;
+  return false;
+}
+
+function tbccLegacyWebpJpegActive() {
+  return (settings.format || "jpeg") === "jpeg";
+}
+
+/** @deprecated legacy WebP→JPEG mode flag (format === "jpeg"); use tbccRasterExportActive for bulk export */
 function tbccWebpConvertEnabled() {
-  return settings.format === "jpeg";
+  return (settings.format || "jpeg") === "jpeg";
+}
+
+function tbccImageDownloadNeedsProcessing(it, httpFetchUrl) {
+  if (!isImageItem(it)) return false;
+  if (shouldApplyImagePipelineForUrl(it.url)) return true;
+  if (tbccRasterExportActive()) return true;
+  if (
+    tbccLegacyWebpJpegActive() &&
+    typeof TbccWebp !== "undefined" &&
+    TbccWebp.tbccUrlLooksLikeWebp(httpFetchUrl)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function tbccIsEromeMediaUrl(url) {
@@ -9427,12 +9468,7 @@ async function downloadSelectedDirect(selected) {
             "That URL is a page (HTML), not a video file. The extension needs a direct .mp4 (or similar) link — or use JDownloader / your backend to resolve the stream."
           );
         }
-        if (
-          isImageItem(it) &&
-          (shouldApplyImagePipelineForUrl(it.url) ||
-            tbccWebpConvertEnabled() ||
-            (typeof TbccWebp !== "undefined" && TbccWebp.tbccUrlLooksLikeWebp(httpFetchUrl)))
-        ) {
+        if (tbccImageDownloadNeedsProcessing(it, httpFetchUrl)) {
           const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
           if (!raw || !raw.size) throw new Error("Could not fetch image for processing");
           const prep = await tbccPrepareRasterBlob(raw, it.url, filenameFromUrl(httpFetchUrl));
@@ -9472,12 +9508,7 @@ async function downloadSelectedDirect(selected) {
               else resolve();
             });
           });
-        } else if (
-          isImageItem(it) &&
-          tbccWebpConvertEnabled() &&
-          typeof TbccWebp !== "undefined" &&
-          TbccWebp.tbccUrlLooksLikeWebp(httpFetchUrl)
-        ) {
+        } else if (tbccImageDownloadNeedsProcessing(it, httpFetchUrl)) {
           const raw = await fetchUrlBytesToBlob(httpFetchUrl, await tbccRefererPageForItem(it), it);
           if (!raw || !raw.size) throw new Error("Could not fetch WebP for conversion");
           const prep = await tbccPrepareRasterBlob(raw, it.url, filenameFromUrl(httpFetchUrl));
@@ -10530,9 +10561,10 @@ async function runSendSavedBatchAlbums(selected, poolId, bump, appendErr, savedC
             const url = typeof it === "string" ? it : (it && it.url) || "";
             const refItem = typeof it === "object" && it ? it : { url };
             const preferSession =
-              tbccWebpConvertEnabled() &&
-              typeof TbccWebp !== "undefined" &&
-              TbccWebp.tbccUrlLooksLikeWebp(url);
+              tbccRasterExportActive() ||
+              (tbccLegacyWebpJpegActive() &&
+                typeof TbccWebp !== "undefined" &&
+                TbccWebp.tbccUrlLooksLikeWebp(url));
             const oneMeta = savedSendMeta(false, 1);
             scheduleSavedSend(async (meta) => {
               try {

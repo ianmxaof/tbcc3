@@ -144,6 +144,10 @@
         const prep = await global.tbccPrepareRasterBlob(blob, img.url, name);
         blob = prep.blob;
         name = prep.name;
+      } else if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureExportBlob) {
+        const prep = await global.TbccWebp.tbccEnsureExportBlob(blob, { url: img.url, name });
+        blob = prep.blob;
+        name = prep.name;
       } else if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureJpegBlob) {
         const prep = await global.TbccWebp.tbccEnsureJpegBlob(blob, { url: img.url, name });
         blob = prep.blob;
@@ -348,7 +352,11 @@
     let uploadBlob = file;
     let uploadName = file.name || "promo.jpg";
     try {
-      if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureJpegBlob) {
+      if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureExportBlob) {
+        const prep = await global.TbccWebp.tbccEnsureExportBlob(file, { name: uploadName });
+        uploadBlob = prep.blob;
+        uploadName = prep.name;
+      } else if (typeof global.TbccWebp !== "undefined" && global.TbccWebp.tbccEnsureJpegBlob) {
         const prep = await global.TbccWebp.tbccEnsureJpegBlob(file, { name: uploadName });
         uploadBlob = prep.blob;
         uploadName = prep.name;
