@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "title": "TBCC entropy scan lenses",
+  "default_lens": "revenue",
+  "infer_rules": [
+    {
+      "lens": "marketing",
+      "when_hints": ["notification copy", "caption", "Buffer", "FOMO", "promo", "tone", "variation", "flywheel social"]
+    },
+    {
+      "lens": "devops",
+      "when_hints": ["deploy", "island", "alembic", "hot-patch", "fragile", "toil", "observability gap", "409"]
+    },
+    {
+      "lens": "media-intel",
+      "when_hints": ["vision", "CLIP", "lane tag", "gatekeeper", "taboo", "corpus", "ground-truth"]
+    },
+    {
+      "lens": "agent-workflow",
+      "when_hints": ["protocol", "skill", "handoff", "directive", "conductor", "GSP", "compose"]
+    },
+    {
+      "lens": "observability",
+      "when_hints": ["pulse", "inbox", "ops picture", "error hub", "how often", "metrics"]
+    },
+    {
+      "lens": "innovation",
+      "when_hints": ["underexploited", "leftover leverage", "unlock", "primitive sitting unused"]
+    },
+    {
+      "lens": "revenue",
+      "when_hints": ["CTA", "paywall", "SKU", "checkout", "loot_free", "VIP", "conversion", "source_ref"]
+    }
+  ],
+  "lenses": {
+    "revenue": {
+      "label": "Monetization / conversion",
+      "vertex_axes": [
+        "CTA",
+        "attribution (source_ref)",
+        "paywall / SKU",
+        "friction-to-cash",
+        "retention / latency-to-money"
+      ],
+      "ranking": "short-term cash first",
+      "skip_extra": []
+    },
+    "devops": {
+      "label": "Development ops / CI",
+      "vertex_axes": [
+        "toil (manual repeat)",
+        "fragility (SPOF / silent fail)",
+        "observability gap",
+        "reversibility of recent change",
+        "deploy / recycle risk"
+      ],
+      "ranking": "kill earning-risk first, then toil",
+      "skip_extra": ["pricing doctrine"]
+    },
+    "innovation": {
+      "label": "Leftover capability leverage",
+      "vertex_axes": [
+        "unexploited primitive in codebase",
+        "capability gap vs now-possible",
+        "integration surface unwired",
+        "leverage left by recent build"
+      ],
+      "ranking": "reversible leverage before greenfield",
+      "skip_extra": []
+    },
+    "marketing": {
+      "label": "Marketing / promotion / notification voice",
+      "vertex_axes": [
+        "frequency (how often / day)",
+        "caption / copy variation count",
+        "tone of language",
+        "channel fit (TG / X / Buffer / secretary)",
+        "proof honesty (real sales only for FOMO)"
+      ],
+      "ranking": "trust-safe reach before volume",
+      "skip_extra": ["fake FOMO"]
+    },
+    "media-intel": {
+      "label": "Vision / lane / tag intelligence",
+      "vertex_axes": [
+        "cue / vocab coverage",
+        "ground-truth accuracy",
+        "lane alignment (corpus ↔ CLIP ↔ LANE_TAG_MAP)",
+        "operator correction loop",
+        "routing primacy (vision vs rules)"
+      ],
+      "ranking": "measurable accuracy before architecture",
+      "skip_extra": ["third-party scrape expansion without pick"]
+    },
+    "agent-workflow": {
+      "label": "Agent protocols / handoffs",
+      "vertex_axes": [
+        "compose edge missing",
+        "deferred not surfaced",
+        "slash vs situational gap",
+        "Cursor ↔ Claude Code continuity",
+        "ruleset weight (keep light)"
+      ],
+      "ranking": "operator time-to-next-command first",
+      "skip_extra": []
+    },
+    "observability": {
+      "label": "Ops visibility / pulse",
+      "vertex_axes": [
+        "signal vs noise",
+        "latency to notice",
+        "actionability of alert",
+        "attribution of failure",
+        "digest vs instant balance"
+      ],
+      "ranking": "actionable signal before more dashboards",
+      "skip_extra": []
+    }
+  }
+}

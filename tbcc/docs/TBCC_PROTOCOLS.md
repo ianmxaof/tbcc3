@@ -1,10 +1,12 @@
 # TBCC GSP Protocols
 
-Protocols conform to **Global Protocol Standard v2.1** (`.cursor/rules/global-protocol-standard.mdc` in your local Cursor config). Personal skill copies live under `~/.cursor/skills/`; this file is the repo-backed index.
+Protocols conform to **Global Protocol Standard v2.4** (`.cursor/rules/global-protocol-standard.mdc`). Personal skill copies live under `~/.cursor/skills/`; this file is the repo-backed index.
 
 **Sprint warm-start:** agents read `tbcc/docs/SPRINT_STATE.md` before substantive work (see `.cursor/rules/sprint-state.mdc`).
 
 **Always-apply rules:** `completion-gates.mdc`, `tbcc-dev-ops.mdc`, `bottom-line-next-steps.mdc`, `tbcc-agent-platform-routing.mdc`, `sprint-state.mdc`, `workflow-automation.mdc`, `global-protocol-standard.mdc`, `tbcc-daily-brief.mdc`, `tbcc-entropy-scan.mdc`.
+
+**Compose graph:** `tbcc/docs/protocol-chains.json` (situational-match). **Entropy lenses:** `tbcc/docs/entropy-lenses.json`. Obvious next hops appear in Bottom line as **Compose:** (GSP v2.4). Thin router: `/conductor`.
 
 **Lane calculus (v1.1):** execution → Auto (~80%); judgment gate (≥2 of revenue / multi-system / irreversible doctrine / leakage / critique / costly trade-offs) → Frontier Plan/Ask once, then Auto implement. Forbid Auto-stub on doctrine. Cloud remains rare (hard gate).
 
@@ -33,6 +35,8 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env` (def
 | **TBCC Session Close** | `/session-close`, `close session`, `wrap up` | `~/.cursor/skills/tbcc-session-close/SKILL.md` |
 | **Claude Code Handoff** | `/handoff-cc`, `hand off to Claude Code`, `Lane C` | `~/.cursor/skills/handoff-claude-code/SKILL.md` |
 | **Claude Code Reverse Report** | `/cc-report`, `Claude Code report`, `read the CC report` | `~/.cursor/skills/claude-code-report/SKILL.md` |
+| **TBCC Continue Thread** | `/continue-thread`, `next directive`, `what should CC do next` | `~/.cursor/skills/tbcc-continue-thread/SKILL.md` |
+| **TBCC Protocol Conductor** | `/conductor`, `what command next`, `standing by for next directive` | `~/.cursor/skills/tbcc-protocol-conductor/SKILL.md` |
 | **TBCC Ship Log** | `/ship-log`, `TBCC ship log`, `draft my build-in-public tweet` | `~/.cursor/skills/tbcc-ship-log/SKILL.md` |
 | **TBCC Milestone Ship** | `/milestone-ship`, `TBCC milestone ship`, `ship milestone to GitHub` | `~/.cursor/skills/tbcc-milestone-ship/SKILL.md` |
 | **TBCC Extension Errors** | `/ext-errors`, `check extension errors`, `TBCC extension errors` | `~/.cursor/skills/tbcc-ext-errors/SKILL.md` |
@@ -40,7 +44,7 @@ Ship-log env: `TBCC_SHIP_LOG_AUTO_MODE=idea|queue|share_now` in `tbcc/.env` (def
 | **TBCC Sitrep** | `/sitrep`, `sitrep`, `situation report`, `mid-op status`, `what just shipped` | `~/.cursor/skills/tbcc-sitrep/SKILL.md` |
 | **TBCC Ops Picture** | `/ops-picture`, `ops picture`, `health and analytics`, `financial ops report`, `what's broken in tbcc` | `~/.cursor/skills/tbcc-ops-picture/SKILL.md` |
 | **TBCC Analytics Direction** | `/analytics-direction`, `analytics direction`, `where to invest`, `growth direction` | `~/.cursor/skills/tbcc-analytics-direction/SKILL.md` |
-| **TBCC Entropy Scan** | `/entropy-scan`, `scour vertices`, `max yield this request` | `~/.cursor/skills/tbcc-entropy-scan/SKILL.md` |
+| **TBCC Entropy Scan** | `/entropy-scan`, `/entropy-scan <lens>`, `scour vertices`, `max yield this request` | `~/.cursor/skills/tbcc-entropy-scan/SKILL.md` |
 
 ### Protocol chains
 

@@ -16,6 +16,8 @@ Monorepo root: `telegram_bot2/` (`tbcc/`, `aof-forum/`).
 
 Mechanical grinds: multi-file commits, pytest, island deploy, handoff reports.
 
+**TBCC skills (repo `.claude/skills/`):** `/tbcc-continue-thread`, `/tbcc-conductor`, `/tbcc-entropy-scan`, `/tbcc-directive-generator` — keep twins in sync with `~/.cursor/skills/tbcc-*` when changing compose/entropy behavior. Graphs: `tbcc/docs/protocol-chains.json`, `tbcc/docs/entropy-lenses.json`.
+
 - Forward handoffs: `tbcc/docs/handoffs/YYYY-MM-DD_*.md`
 - Reverse reports: `tbcc/docs/handoffs/YYYY-MM-DD_*_report.md` — **stop after each phase** for Cursor ACK via `/cc-report`
 - Commit **one slice at a time**; **push after each slice when `TBCC_AUTO_PUSH=1`** in `tbcc/.env` (`git push -u origin HEAD`). Never commit `.env`, `*.session*`, `.tbcc-run/`, `.tmp/`, generated promo art.
@@ -35,8 +37,10 @@ When **this** session is the TARGET of a pasted directive/handoff: honor Fence +
 
 | Skill | Invoke when |
 |-------|-------------|
-| `tbcc-entropy-scan` | leftover yield / conversion vertices before locking a plan (`/tbcc-entropy-scan`) |
-| `tbcc-directive-generator` | raw issues → paste-ready directive for another agent/session (`/tbcc-directive-generator`, `/directive`) |
+| `tbcc-continue-thread` | after ACK / “standing by” → deferred-first next slice (`/tbcc-continue-thread`) |
+| `tbcc-protocol-conductor` | “what command next” / compose-edge menu (`/tbcc-conductor`) |
+| `tbcc-entropy-scan` | leftover yield / lenses (`/tbcc-entropy-scan`, `/tbcc-entropy-scan marketing`) |
+| `tbcc-directive-generator` | raw issues → paste-ready directive (`/tbcc-directive-generator`, `/directive`) |
 
 Skills need valid `name` + third-person `description` frontmatter to trigger. Start Claude Code from **repo root** (`telegram_bot2/`) so these load.
 

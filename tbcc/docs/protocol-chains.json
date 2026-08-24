@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "title": "TBCC protocol compose chains",
+  "routing": {
+    "algorithm": "situational-match",
+    "reuse": [
+      "workflow-automation.mdc situational table",
+      "tbcc-protocol-registry trigger phrases",
+      "GSP Exit Conditions / Composes",
+      "bottom-line-next-steps.mdc ladder"
+    ],
+    "note": "No separate NLP router. Match edges by from_protocol + when_hints against the just-finished work and thread topic. When suggest_in_ladder is true and the match is obvious, put that next hop in the Bottom line 1–5 menu (tag Compose:)."
+  },
+  "edges": [
+    {
+      "id": "cc-report-ack-to-continue",
+      "from": "claude-code-report",
+      "to": "continue-thread",
+      "when_hints": ["ack", "accepted as shipped", "standing by", "slice closed", "reverse report"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/continue-thread",
+      "cc_alias": "/tbcc-continue-thread"
+    },
+    {
+      "id": "continue-to-entropy",
+      "from": "continue-thread",
+      "to": "entropy-scan",
+      "when_hints": ["deferred open", "multiple vertices", "unsure which deferred", "what next yield"],
+      "lens_infer": true,
+      "suggest_in_ladder": true,
+      "ladder_bias": "mid",
+      "alias": "/entropy-scan"
+    },
+    {
+      "id": "continue-to-directive",
+      "from": "continue-thread",
+      "to": "directive-generator",
+      "when_hints": ["single clear deferred", "ready for CC", "paste for Claude Code"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/directive"
+    },
+    {
+      "id": "entropy-pick-to-preflight",
+      "from": "entropy-scan",
+      "to": "preflight",
+      "when_hints": ["slice picked", "≥3 files", "backend+extension"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "mid",
+      "alias": "/preflight"
+    },
+    {
+      "id": "entropy-pick-to-directive",
+      "from": "entropy-scan",
+      "to": "directive-generator",
+      "when_hints": ["slice picked", "for Claude Code", "Lane C", "cold paste"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/directive"
+    },
+    {
+      "id": "directive-to-handoff-cc",
+      "from": "directive-generator",
+      "to": "handoff-claude-code",
+      "when_hints": ["TARGET Claude Code", "Lane C", "reshape for handoff"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/handoff-cc"
+    },
+    {
+      "id": "handoff-to-cc-report",
+      "from": "handoff-claude-code",
+      "to": "claude-code-report",
+      "when_hints": ["CC finished", "report written", "reverse handoff"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/cc-report"
+    },
+    {
+      "id": "session-close-to-ship-or-deploy",
+      "from": "session-close",
+      "to": "milestone-ship",
+      "when_hints": ["milestone", "build in public", "significant ship"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "mid",
+      "alias": "/milestone-ship"
+    },
+    {
+      "id": "payment-notif-topic-to-entropy-marketing",
+      "from": "*",
+      "to": "entropy-scan",
+      "lens": "marketing",
+      "when_hints": [
+        "payment bot notification",
+        "secretary toast",
+        "sale FOMO copy",
+        "caption variation",
+        "checkout DM tone"
+      ],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/entropy-scan marketing",
+      "example": "After fixing payment/secretary notification HTML: how often per day, how many caption variations, what tone?"
+    },
+    {
+      "id": "vision-lane-to-entropy-media-intel",
+      "from": "*",
+      "to": "entropy-scan",
+      "lens": "media-intel",
+      "when_hints": ["vision llm", "taboo corpus", "CLIP lane", "gatekeeper tag", "tag_corpus"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/entropy-scan media-intel"
+    },
+    {
+      "id": "island-ops-to-entropy-devops",
+      "from": "*",
+      "to": "entropy-scan",
+      "lens": "devops",
+      "when_hints": ["island deploy", "hot-patch", "alembic", "409", "telethon lock", "tray"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "mid",
+      "alias": "/entropy-scan devops"
+    },
+    {
+      "id": "paypal-sub-stamps-to-entropy-marketing",
+      "from": "*",
+      "to": "entropy-scan",
+      "lens": "marketing",
+      "when_hints": [
+        "paypal subscription",
+        "subscription stamp",
+        "multicolor logo",
+        "vip plan variant",
+        "insiders tier art"
+      ],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/entropy-scan marketing",
+      "cc_alias": "/tbcc-entropy-scan marketing"
+    },
+    {
+      "id": "conductor-ambiguous-next",
+      "from": "*",
+      "to": "protocol-conductor",
+      "when_hints": ["what command next", "standing by", "hand off to next agent", "which protocol"],
+      "suggest_in_ladder": true,
+      "ladder_bias": "high",
+      "alias": "/conductor",
+      "cc_alias": "/tbcc-conductor"
+    }
+  ]
+}
