@@ -1,5 +1,5 @@
 # Hot-patch Python files onto the revenue island AND always restart affected containers.
-# Never docker-cp into a running container without restart — code stays invisible until recycle.
+# Never docker-cp into a running container without restart - code stays invisible until recycle.
 #
 #   .\scripts\revenue-island\hot-patch-island.ps1 -RelativePaths @("app/services/gatekeeper_review.py")
 #   .\scripts\revenue-island\hot-patch-island.ps1 -RelativePaths @("app/services/foo.py") -Services api,worker
@@ -51,50 +51,52 @@ foreach ($rel in $RelativePaths) {
   $remoteDirOnly = Split-Path $remoteBackendSrc -Parent
   Write-Host "scp $norm -> island backend-src" -ForegroundColor Yellow
   if ($WhatIf) {
-    Write-Host "WHATIF scp $local ${HostName}:$remoteBackendSrc" -ForegroundColor DarkGray
+    Write-Host ("WHATIF scp {0} {1}:{2}" -f $local, $HostName, $remoteBackendSrc) -ForegroundColor DarkGray
   } else {
     Invoke-Remote "mkdir -p $remoteDirOnly"
-    & scp $local "${HostName}:$remoteBackendSrc"
+    & scp $local ($HostName + ":" + $remoteBackendSrc)
     if ($LASTEXITCODE -ne 0) { throw "scp failed for $norm" }
   }
   $copied++
 
   # Also docker cp into running containers so the next restart/process reload sees files
-  # even when the image layer is stale — restart below is still mandatory.
+  # even when the image layer is stale - restart below is still mandatory.
   foreach ($svc in $Services) {
-    $cidCmd = "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile ps -q $svc"
+    $cidCmd = "cd $RemoteDir/infra; docker compose -f $composeFile --env-file $envFile ps -q $svc"
     if ($WhatIf) {
-      Write-Host "WHATIF docker cp into $svc:/app/$norm" -ForegroundColor DarkGray
+      Write-Host ("WHATIF docker cp into {0}:/app/{1}" -f $svc, $norm) -ForegroundColor DarkGray
       continue
     }
     $cid = (Invoke-Remote $cidCmd).Trim()
     if (-not $cid) {
-      Write-Host "WARN: no container for service $svc — skip docker cp" -ForegroundColor Yellow
+      Write-Host "WARN: no container for service $svc - skip docker cp" -ForegroundColor Yellow
       continue
     }
     $containerPath = "/app/$norm"
     $containerDir = Split-Path $containerPath -Parent
     Invoke-Remote "docker exec $cid mkdir -p $containerDir"
-    & scp $local "${HostName}:/tmp/tbcc-hotpatch-file"
-    Invoke-Remote "docker cp /tmp/tbcc-hotpatch-file ${cid}:$containerPath && rm -f /tmp/tbcc-hotpatch-file"
-    Write-Host "  docker cp -> $svc:$containerPath" -ForegroundColor DarkGray
+    & scp $local ($HostName + ":/tmp/tbcc-hotpatch-file")
+    # Avoid `$id:path` drive-scope parse - build the remote cmd with explicit concat.
+    $dockerCpCmd = 'docker cp /tmp/tbcc-hotpatch-file ' + $cid + ':' + $containerPath + '; rm -f /tmp/tbcc-hotpatch-file'
+    Invoke-Remote $dockerCpCmd
+    Write-Host ("  docker cp -> {0}:{1}" -f $svc, $containerPath) -ForegroundColor DarkGray
   }
 }
 
 if ($copied -lt 1) { throw "Nothing copied" }
 
 $svcList = ($Services -join " ")
-Write-Host "`nRestarting services (required — without this, patches are invisible): $svcList" -ForegroundColor Yellow
+Write-Host ("`nRestarting services (required - without this, patches are invisible): {0}" -f $svcList) -ForegroundColor Yellow
 if ($WhatIf) {
   Write-Host "WHATIF compose restart $svcList" -ForegroundColor DarkGray
 } else {
-  Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile restart $svcList"
-  $started = Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile ps --format '{{.Service}} {{.Status}}' $svcList"
+  Invoke-Remote "cd $RemoteDir/infra; docker compose -f $composeFile --env-file $envFile restart $svcList"
+  $started = Invoke-Remote "cd $RemoteDir/infra; docker compose -f $composeFile --env-file $envFile ps --format '{{.Service}} {{.Status}}' $svcList"
   Write-Host $started
   $health = Invoke-Remote "curl -fsS --max-time 8 http://127.0.0.1:8000/health || true"
   Write-Host "health: $health" -ForegroundColor Green
 }
 
-Write-Host "`n=== Hot-patch complete (copied=$copied, restarted) ===" -ForegroundColor Green
+Write-Host ("`n=== Hot-patch complete (copied={0}, restarted) ===" -f $copied) -ForegroundColor Green
 Write-Host "Evidence: compose ps Status should show recent Up; /health must respond."
 Write-Host "DO NOT raw 'docker cp' without this script or a compose restart/recreate."

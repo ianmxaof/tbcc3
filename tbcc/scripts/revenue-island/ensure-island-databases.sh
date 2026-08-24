@@ -27,6 +27,11 @@ if [[ ! -f "$COMPOSE_FILE" || ! -f "$ENV_FILE" ]]; then
   exit 1
 fi
 
+# Redis requires auth (requirepass) — pull the password straight out of the env
+# file rather than `source`-ing it, so a literal `$` in the value can't be
+# misread as shell expansion.
+TBCC_REDIS_PASSWORD="$(grep -m1 '^TBCC_REDIS_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+
 compose() {
   docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
@@ -41,7 +46,7 @@ postgres_ok() {
 }
 
 redis_ok() {
-  service_running redis && compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG
+  service_running redis && compose exec -T redis redis-cli --no-auth-warning -a "$TBCC_REDIS_PASSWORD" ping 2>/dev/null | grep -q PONG
 }
 
 ensure_service() {

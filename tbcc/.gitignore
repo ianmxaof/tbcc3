@@ -45,6 +45,12 @@ build/
 # Node / Vite
 dashboard/node_modules/
 dashboard/dist/
+static/powercore-verify/node_modules/
+
+# Local scratch (never ship)
+.tmp/
+assets/promo-generated/
+docs/operator-scratch/
 
 # Local DB & uploads (dev data)
 *.db
