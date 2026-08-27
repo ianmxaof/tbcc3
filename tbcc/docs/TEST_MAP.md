@@ -10,7 +10,7 @@ py -3.13 -m pytest <path> -x -q
 | Area | Path / pattern | Notes |
 |------|----------------|-------|
 | **Ops / stack** | `tests/test_tbcc_stack_control.py` | Tray adapter, stack CLI |
-| **Silent-fail probes** | `tests/test_silent_fail_probes.py` | `/silent-fail` pilots B+D — intake last_run + storage-hub-r2-export `exported_at`; CLI `scripts/silent_fail_probe.py` |
+| Silent-fail probes | `tests/test_silent_fail_probes.py`, `tests/test_ops_picture_silent_fail.py` | `/silent-fail` pilots B+D + enrich-backlog last_success; ops-picture blockers; CLI `tbcc_cli silent-fail` / `scripts/silent_fail_probe.py` |
 | **Ops admin bridge** | `tests/test_admin_bridge.py` | Dashboard ↔ forum HMAC deep-links |
 | **Ops alerts** | `tests/test_ops_alert_smoke.py`, `test_ops_restart_grace.py`, `test_ops_workflow_runner.py` | |
 | **Loot** | `tests/test_loot_*.py`, `tests/test_lane_readiness_robocopy.py`, `tests/test_zip_flywheel.py`, `tests/test_pack_gate_wrap.py`, `tests/test_lane_drop_checkpoint.py`, `tests/test_prompt_gate_lookup.py`, `tests/test_prompt_gate_registry.py`, `tests/test_linkvertise_text_selectors.py`, `tests/test_aof_loot_goblin_promo.py`, `tests/test_prompt_gate_placement.py` | Pack pool, VIP pull, free/key roll, tier cards; lane economy; zip flywheel; LV ingest; prompt_gate registry + placement guards |
@@ -42,6 +42,7 @@ py -3.13 -m pytest <path> -x -q
 | **Quarantine one-tap route** | `tests/test_gatekeeper_batch_one_tap.py`, `tests/test_quarantine_batch_review.py` | `gk:bt:` pattern must match lane taps; one-tap route stamps lane + approve; `VISION_AUTO_ROUTE=all` suppresses soft inbox cards |
 | **Enrich backlog sweep** | `tests/test_enrich_backlog.py` | Backstop that re-drives deposits with no lane decision. Storage-Hub-only scope, limit clamp, stagger, and skip-while-`pause_auto_tag` (a wide un-staggered sweep caused the Telethon lock storm it then waited on) |
 | **Buffer X link order** | `tests/test_buffer_x_link_order.py` | Spicy-first then affiliate-first preview pin; optional cycle when `AFFILIATE_FIRST=0` |
+| **Signal scout paste fanout** | `tests/test_signal_paste_fanout.py` | Diary draft + leak fence + destination registry dry-run |
 | **Telegram Stars balance** | `tests/test_telegram_stars_balance.py` | Bot API getMyStarBalance / getStarTransactions reconcile helpers |
 | **Checkout List SFW silo** | `tests/test_affiliate_content_lane.py`, `tests/test_checkout_list_hub.py`, `tests/test_secretary_affiliate_intake.py`, `tests/test_affiliate_sponsor_report.py`, `tests/test_affiliate_sponsor_packs.py` | SFW/NSFW affiliate routing; @thecheckoutlist bulletin; secretary `/sponsors` report; sequenced sponsor packs A/B/C |
 | **Sale FOMO announce** | `tests/test_sale_public_announce.py` | Anonymous network + Buffer/X on fulfilled sales (no buyer PII) |

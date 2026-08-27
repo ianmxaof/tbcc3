@@ -116,6 +116,11 @@ celery.conf.task_routes = {
     "app.workers.import_telegram_worker.*": {"queue": "telegram"},
     "app.workers.sent_cache_composer_worker.*": {"queue": "telegram"},
     "app.workers.topic_rebundle_worker.*": {"queue": "telegram"},
+    # Enrich downloads the media over Telethon, so it belongs on the telegram
+    # worker that already owns admin.session. On the general celery queue it let
+    # a second pool of processes open that sqlite session concurrently, which
+    # showed up as "database is locked" storms and auto-applied telegram_relief.
+    "app.workers.media_auto_tag_worker.auto_tag_media_enrich": {"queue": "telegram"},
     "app.workers.media_auto_tag_worker.*": {"queue": "celery"},
     "app.workers.link_resolver_worker.*": {"queue": "celery"},
     "app.workers.myjd_worker.*": {"queue": "celery"},
@@ -288,6 +293,13 @@ def _storage_pool_seed_crontab_hours() -> str:
 celery.conf.beat_schedule["intake-schedule-tick"] = {
     "task": "app.workers.inbox_intake_worker.run_intake_schedule_tick",
     "schedule": crontab(minute="*/5"),
+}
+
+# Backstop for deposits that never got a lane decision (focus pause, Telethon
+# failure, worker restart). Without it a missed item is never retried.
+celery.conf.beat_schedule["enrich-backlog-sweep"] = {
+    "task": "app.workers.media_auto_tag_worker.auto_tag_enrich_backlog_tick",
+    "schedule": crontab(minute="*/10"),
 }
 
 # Legacy alias — storage-pool-seed now delegates to intake tick (force all due lanes).

@@ -267,6 +267,63 @@ def _goblin_summary(db: Session, *, days: int = 14) -> dict[str, Any]:
     }
 
 
+def _vision_llm_spend_section() -> dict[str, Any]:
+    from app.services.openrouter_spend import format_vision_spend_pulse_line, vision_spend_snapshot
+
+    snap = vision_spend_snapshot()
+    snap["pulse_line"] = format_vision_spend_pulse_line(snap)
+    return snap
+
+
+def _silent_fail_section(db: Session) -> dict[str, Any]:
+    """Class-2 probe snapshots for intake / R2 export / enrich-backlog."""
+    from app.services.silent_fail_probes import (
+        probe_enrich_backlog,
+        probe_intake_all,
+        probe_storage_hub_r2_export,
+    )
+
+    probes: list[dict[str, Any]] = []
+    try:
+        probes.append(probe_intake_all())
+    except Exception as e:
+        probes.append(
+            {
+                "id": "intake_all_lanes",
+                "verdict": "blocked",
+                "error": str(e)[:300],
+            }
+        )
+    try:
+        probes.append(probe_storage_hub_r2_export(db))
+    except Exception as e:
+        probes.append(
+            {
+                "id": "storage_hub_r2_export",
+                "verdict": "blocked",
+                "error": str(e)[:300],
+            }
+        )
+    try:
+        probes.append(probe_enrich_backlog())
+    except Exception as e:
+        probes.append(
+            {
+                "id": "enrich_backlog",
+                "verdict": "blocked",
+                "error": str(e)[:300],
+            }
+        )
+
+    order = {"never_seen": 0, "stale": 1, "blocked": 2, "ok": 3, "idle": 4}
+    worst = min(probes, key=lambda r: order.get(str(r.get("verdict")), 9)) if probes else {}
+    return {
+        "verdict": (worst or {}).get("verdict", "ok"),
+        "worst_id": (worst or {}).get("id"),
+        "probes": probes,
+    }
+
+
 def derive_blockers(report: dict[str, Any]) -> list[dict[str, Any]]:
     """Plain-language blockers ranked by financial impact."""
     blockers: list[dict[str, Any]] = []
@@ -368,6 +425,46 @@ def derive_blockers(report: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
 
+    vision = report.get("vision_llm") or {}
+    loc = vision.get("vision_local") if isinstance(vision, dict) else {}
+    if int((loc or {}).get("rate_limited_utc_today") or 0) > 0:
+        blockers.append(
+            {
+                "id": "vision_rate_limited",
+                "severity": "medium",
+                "what": f"OpenRouter vision 429s today={loc.get('rate_limited_utc_today')}",
+                "why": "Inbox auto-route stalls when Qwen VL is rate-limited; spend still accrues on successes.",
+                "evidence": vision.get("pulse_line") or vision.get("logs_url") or "openrouter.ai/logs",
+            }
+        )
+
+    sf = report.get("silent_fail") or {}
+    for probe in sf.get("probes") or []:
+        if not isinstance(probe, dict):
+            continue
+        verdict = str(probe.get("verdict") or "")
+        if verdict not in ("never_seen", "stale"):
+            continue
+        pid = str(probe.get("id") or probe.get("beat_key") or "silent_fail")
+        severity = "high" if verdict == "never_seen" else "medium"
+        evidence = (
+            probe.get("stop_evidence")
+            or probe.get("error")
+            or f"verdict={verdict} age_s={probe.get('age_s')}"
+        )
+        blockers.append(
+            {
+                "id": f"silent_fail_{pid}",
+                "severity": severity,
+                "what": f"Silent-fail {verdict}: {pid}",
+                "why": (
+                    "Enabled work never succeeded or last success is past cadence "
+                    "(class-2); process-up health alone is not enough."
+                ),
+                "evidence": str(evidence)[:400],
+            }
+        )
+
     return blockers
 
 
@@ -411,6 +508,8 @@ def build_ops_picture_report(
                 "approved_total": db.query(func.count(Media.id)).filter(Media.status == "approved").scalar(),
             },
         ),
+        ("vision_llm", _vision_llm_spend_section),
+        ("silent_fail", lambda: _silent_fail_section(db)),
     ]
 
     for name, fn in loaders:

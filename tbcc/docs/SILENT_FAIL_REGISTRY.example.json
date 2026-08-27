@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "title": "TBCC silent-fail watch registry (DESIGN ONLY — not wired to a daemon)",
+  "notes": [
+    "Phase 1 contract sketch. Do not treat as production config until Phase 2 unlocks a pilot.",
+    "Flag zombie only when enablement AND expected_cadence are true AND (never_seen OR last_success older than stale_after).",
+    "class 3 intentional idle must verdict idle — not stale/never_seen.",
+    "network_liveness content posters are out of subject unless explicitly added later."
+  ],
+  "failure_classes": {
+    "1": "process-down",
+    "2": "work-never-ran",
+    "3": "intentional-idle"
+  },
+  "watches": [
+    {
+      "id": "island_api_health",
+      "class_focus": 1,
+      "mode": "always_on",
+      "enablement": "revenue island expected up",
+      "expected_cadence": "continuous",
+      "stale_after": null,
+      "probe": {
+        "stop_kind": "http",
+        "command": "(Invoke-WebRequest -Uri 'https://api.powercore.app/health' -UseBasicParsing -TimeoutSec 15).Content",
+        "ok_when": "JSON status == ok"
+      },
+      "reuse": "prefer over /ops/stack-status on island (tray-unavailable)"
+    },
+    {
+      "id": "celery_ops_worker",
+      "class_focus": 1,
+      "mode": "always_on",
+      "enablement": "Beat routes ops_growth/ops_relay/ops_erome to celery_ops",
+      "expected_cadence": "worker process present while scheduling stack up",
+      "stale_after": null,
+      "probe": {
+        "stop_kind": "api_field",
+        "source": "app.services.system_health.cached_scheduling_health",
+        "field": "celery_ops_worker_running",
+        "ok_when": "true"
+      },
+      "reuse": "idle_service_governor.governor_tick already warns when false"
+    },
+    {
+      "id": "intake_lane_last_run",
+      "class_focus": 2,
+      "mode": "conditional",
+      "enablement": "intake_scheduler_enabled() and lane active",
+      "expected_cadence": "per-lane interval_minutes",
+      "stale_after": "2x interval_minutes",
+      "probe": {
+        "stop_kind": "redis",
+        "source": "app.services.intake_scheduler.get_last_run_ts / snapshot",
+        "ok_when": "last_run_ts within stale_after",
+        "never_seen_when": "enablement true and last_run_ts == 0"
+      },
+      "pilot_candidate": true,
+      "pilot_status": "implemented",
+      "probe_command": "cd tbcc/backend && py -3.13 scripts/silent_fail_probe.py intake --lane inbox"
+    },
+    {
+      "id": "post_due_queue_drain",
+      "class_focus": 2,
+      "mode": "conditional",
+      "enablement": "post scheduler / worker_post expected when scheduled_text_posts used",
+      "expected_cadence": "due_queue drains while work present",
+      "stale_after": "drain_tick TTL without consumer",
+      "probe": {
+        "stop_kind": "redis",
+        "source": "app.services.post_scheduler ensure_post_drain_consumer / due_queue + drain_tick",
+        "ok_when": "no orphaned due_queue without drain path"
+      },
+      "reuse": "healer already exists — silent-fail reports; does not invent a second healer"
+    },
+    {
+      "id": "island_beat_side_effect",
+      "class_focus": 2,
+      "mode": "conditional",
+      "enablement": "TBCC_REVENUE_ISLAND_ACTIVE=1 and beat key registered (e.g. storage-hub-r2-export)",
+      "expected_cadence": "per beat schedule",
+      "stale_after": "TBD per task",
+      "probe": {
+        "stop_kind": "db",
+        "source": "Media.classification_json.r2.exported_at (max among recent rows)",
+        "never_seen_when": "enablement true and no exported_at stamp found"
+      },
+      "pilot_candidate": true,
+      "pilot_status": "implemented",
+      "beat_key": "storage-hub-r2-export",
+      "probe_command": "cd tbcc/backend && py -3.13 scripts/silent_fail_probe.py r2-export"
+    }
+  ]
+}
