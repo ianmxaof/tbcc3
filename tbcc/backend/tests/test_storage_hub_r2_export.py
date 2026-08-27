@@ -51,4 +51,9 @@ def test_media_r2_export_skipped():
 
 def test_is_telegram_missing_error():
     assert _is_telegram_missing_error(Exception("404: Media not found in Telegram")) is True
+    assert (
+        _is_telegram_missing_error(Exception("404: Media not found in Storage Hub topic"))
+        is True
+    )
     assert _is_telegram_missing_error(Exception("timeout")) is False
+    assert _is_telegram_missing_error(Exception("500: boom")) is False

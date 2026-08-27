@@ -79,8 +79,27 @@ def _merge_r2_export_skip(media, *, reason: str, detail: str = "") -> None:
 
 
 def _is_telegram_missing_error(exc: BaseException) -> bool:
+    """Permanent skip: Telegram/hub message gone — do not retry every Beat tick.
+
+    Live island errors include both:
+    - ``404: Media not found in Telegram``
+    - ``404: Media not found in Storage Hub topic`` (no ``telegram`` substring)
+    """
     msg = str(exc).lower()
-    return "404" in msg and "telegram" in msg
+    if "404" not in msg:
+        return False
+    return (
+        "telegram" in msg
+        or "storage hub" in msg
+        or "media not found" in msg
+    )
+
+
+def _r2_skip_reason_for_error(exc: BaseException) -> str:
+    msg = str(exc).lower()
+    if "storage hub" in msg:
+        return "hub_topic_404"
+    return "telegram_404"
 
 
 def _merge_r2_into_classification(media, r2_meta: dict[str, Any]) -> None:
@@ -165,13 +184,14 @@ def export_one_media_to_r2(db: Session, media_id: int, *, force: bool = False) -
     except Exception as e:
         logger.warning("storage_hub r2 download failed media_id=%s: %s", media_id, e)
         if _is_telegram_missing_error(e):
-            _merge_r2_export_skip(media, reason="telegram_404", detail=str(e))
+            reason = _r2_skip_reason_for_error(e)
+            _merge_r2_export_skip(media, reason=reason, detail=str(e))
             db.commit()
             return {
                 "ok": True,
                 "media_id": media_id,
                 "skipped": True,
-                "reason": "telegram_404",
+                "reason": reason,
             }
         return {"ok": False, "media_id": media_id, "error": f"download:{e}"}
 
@@ -280,6 +300,14 @@ def export_storage_hub_batch(
             skipped += 1
         else:
             exported += 1
+    # Beat-attempt stamp for silent-fail — distinguishes "never fired" from
+    # "firing but all downloads fail / nothing to export".
+    try:
+        from app.services.silent_fail_probes import mark_storage_hub_r2_tick
+
+        mark_storage_hub_r2_tick()
+    except Exception:
+        logger.debug("r2 export tick stamp failed", exc_info=True)
     return {
         "ok": failed == 0,
         "count": len(ids),

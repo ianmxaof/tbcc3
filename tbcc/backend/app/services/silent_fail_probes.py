@@ -241,6 +241,45 @@ def count_hub_missing_r2_sample(db, *, limit: int = 20) -> int:
         return -1
 
 
+_R2_TICK_KEY = "tbcc:storage_hub_r2:last_tick"
+
+
+def _redis_client():
+    from urllib.parse import urlparse
+
+    import redis
+
+    u = (os.getenv("REDIS_URL") or "").strip()
+    if not u:
+        raise RuntimeError("REDIS_URL unset")
+    p = urlparse(u)
+    return redis.Redis(
+        host=p.hostname,
+        port=p.port or 6379,
+        password=p.password,
+        db=int((p.path or "/0").lstrip("/") or 0),
+    )
+
+
+def get_storage_hub_r2_last_tick_ts() -> float:
+    """Unix ts of last Beat/batch attempt (incl. exported=0 / all-fail)."""
+    try:
+        raw = _redis_client().get(_R2_TICK_KEY)
+        if raw is not None:
+            return float(raw)
+    except Exception:
+        logger.debug("r2 last_tick read failed", exc_info=True)
+    return 0.0
+
+
+def mark_storage_hub_r2_tick() -> None:
+    """Stamp that storage-hub-r2-export ran (success optional)."""
+    try:
+        _redis_client().set(_R2_TICK_KEY, str(time.time()))
+    except Exception:
+        logger.debug("r2 last_tick write failed", exc_info=True)
+
+
 def probe_storage_hub_r2_export(
     db,
     *,
@@ -251,7 +290,9 @@ def probe_storage_hub_r2_export(
     """
     Class-2 probe for Beat key storage-hub-r2-export.
 
-    Side-effect evidence: Media.classification_json.r2.exported_at (written on success).
+    Cadence uses Redis ``last_tick`` (Beat attempt) when present so "firing but
+    all downloads fail" is not confused with "never fired". Successful
+    ``exported_at`` stays in the payload for export-lag visibility.
     """
     enabled = storage_hub_r2_export_enabled()
     interval = storage_hub_r2_export_interval_minutes()
@@ -266,8 +307,9 @@ def probe_storage_hub_r2_export(
         }
 
     try:
-        last = latest_r2_exported_at_ts(db, sample=sample)
+        last_export = latest_r2_exported_at_ts(db, sample=sample)
         pending = count_hub_missing_r2_sample(db)
+        last_tick = float(get_storage_hub_r2_last_tick_ts() or 0.0)
     except Exception as e:
         logger.debug("r2 export probe failed", exc_info=True)
         return {
@@ -279,18 +321,27 @@ def probe_storage_hub_r2_export(
             "stop_kind": "db",
         }
 
+    # Prefer Beat-attempt stamp; fall back to last successful export for older islands.
+    cadence_ts = last_tick if last_tick > 0 else last_export
     verdict = verdict_from_last_success(
         enabled=True,
-        last_success_ts=last,
+        last_success_ts=cadence_ts if cadence_ts else None,
         interval_minutes=interval,
         now=now,
         stale_mult=stale_mult,
     )
-    # Soften: enabled, never stamped, but no backlog → still never_seen (task may be dormant)
-    # but annotate urgency via pending_missing.
+    now_f = float(now if now is not None else time.time())
     age_s = None
-    if last is not None:
-        age_s = max(0.0, float(now if now is not None else time.time()) - float(last))
+    if cadence_ts is not None and float(cadence_ts) > 0:
+        age_s = max(0.0, now_f - float(cadence_ts))
+    export_age_s = None
+    if last_export is not None and float(last_export) > 0:
+        export_age_s = max(0.0, now_f - float(last_export))
+    export_lag = bool(
+        pending and pending > 0
+        and last_tick > 0
+        and (last_export is None or (export_age_s or 0) > interval * 60 * stale_mult)
+    )
 
     return {
         "id": "storage_hub_r2_export",
@@ -298,14 +349,18 @@ def probe_storage_hub_r2_export(
         "verdict": verdict,
         "enabled": True,
         "interval_min": interval,
-        "last_exported_at_ts": last,
+        "last_exported_at_ts": last_export,
+        "last_tick_ts": last_tick if last_tick > 0 else None,
         "age_s": age_s,
+        "export_age_s": export_age_s,
         "pending_missing_sample": pending,
+        "export_lag": export_lag,
         "stale_mult": stale_mult,
-        "stop_kind": "db",
+        "stop_kind": "redis" if last_tick > 0 else "db",
         "stop_evidence": (
-            f"max(classification_json.r2.exported_at) ts={last} "
-            f"pending_missing~{pending}"
+            f"last_tick={last_tick or 0} "
+            f"max(exported_at) ts={last_export} "
+            f"pending_missing~{pending} export_lag={export_lag}"
         ),
     }
 

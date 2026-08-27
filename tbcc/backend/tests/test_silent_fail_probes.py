@@ -119,11 +119,31 @@ def test_probe_r2_export_never_seen(monkeypatch):
     monkeypatch.setenv("TBCC_STORAGE_HUB_R2_EXPORT_MINUTES", "10")
     monkeypatch.setattr(sfp, "latest_r2_exported_at_ts", lambda db, sample=80: None)
     monkeypatch.setattr(sfp, "count_hub_missing_r2_sample", lambda db, limit=20: 3)
+    monkeypatch.setattr(sfp, "get_storage_hub_r2_last_tick_ts", lambda: 0.0)
 
     out = sfp.probe_storage_hub_r2_export(SimpleNamespace())
     assert out["verdict"] == "never_seen"
     assert out["beat_key"] == "storage-hub-r2-export"
     assert out["pending_missing_sample"] == 3
+
+
+def test_probe_r2_export_ok_on_recent_tick_despite_old_export(monkeypatch):
+    """Beat firing with failed downloads must not look like 'never fired'."""
+    from app.services import silent_fail_probes as sfp
+
+    now = 1_000_000.0
+    monkeypatch.setenv("TBCC_STORAGE_HUB_R2_EXPORT_ENABLED", "1")
+    monkeypatch.setenv("TBCC_STORAGE_HUB_R2_EXPORT_MINUTES", "10")
+    monkeypatch.setattr(
+        sfp, "latest_r2_exported_at_ts", lambda db, sample=80: now - 10_000
+    )
+    monkeypatch.setattr(sfp, "count_hub_missing_r2_sample", lambda db, limit=20: 4)
+    monkeypatch.setattr(sfp, "get_storage_hub_r2_last_tick_ts", lambda: now - 60)
+
+    out = sfp.probe_storage_hub_r2_export(SimpleNamespace(), now=now, stale_mult=3.0)
+    assert out["verdict"] == "ok"
+    assert out["export_lag"] is True
+    assert out["pending_missing_sample"] == 4
 
 
 def test_probe_enrich_backlog_idle_when_off(monkeypatch):
