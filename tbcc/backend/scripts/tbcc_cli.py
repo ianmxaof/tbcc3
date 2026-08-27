@@ -35,11 +35,16 @@ TBCC headless CLI — run ops without the dashboard.
   py -3.13 scripts/tbcc_cli.py slots list --json
   py -3.13 scripts/tbcc_cli.py slots call smoke-echo --body '{"hello":"pocket"}' --json
   py -3.13 scripts/tbcc_cli.py slots suggest "sk-or-abcdef..." --json
+  py -3.13 scripts/tbcc_cli.py operator tui
+  py -3.13 scripts/tbcc_cli.py silent-fail all
+  py -3.13 scripts/tbcc_cli.py silent-fail intake --all
+  py -3.13 scripts/tbcc_cli.py silent-fail enrich-backlog --json
 """
 from __future__ import annotations
 
 import argparse
 import getpass
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -461,6 +466,29 @@ def cmd_llm_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_llm_sticky_set(args: argparse.Namespace) -> int:
+    """Pin the rotator sticky cursor (provider + optional model) without firing
+    an ask — used after `llm keys add` + `llm refresh` to default Operator TUI
+    Ask at e.g. moonshot/kimi-k2.7-code. See tbcc/docs/KIMI_ROTATOR_SETUP.md."""
+    from app.services.llm_model_index import resolve_runtime_for_rotator, set_sticky
+
+    provider = args.provider.strip().lower()
+    model = (args.model or "").strip() or None
+    if resolve_runtime_for_rotator(provider, model=model) is None:
+        print(
+            f"{provider!r} is not configured — run `llm keys add {provider} --base-url …` first.",
+            file=sys.stderr,
+        )
+        return 1
+    set_sticky(provider, model)
+    if args.json:
+        _json({"provider": provider, "model": model})
+    else:
+        label = f"{provider}/{model}" if model else provider
+        print(f"sticky: {label}")
+    return 0
+
+
 def cmd_llm_next(args: argparse.Namespace) -> int:
     """Advance the sticky cursor to whichever unexhausted provider ranks next
     (known usage-remaining first, then DEFAULT_CHAIN order for the rest)."""
@@ -642,6 +670,45 @@ def cmd_llm_tui(args: argparse.Namespace) -> int:
     return tui_main()
 
 
+def cmd_operator_tui(args: argparse.Namespace) -> int:
+    """Unified operator terminal — models/keys/affiliate-links/semantic-scan
+    in one persistent Textual app. Needs `textual` (tbcc/backend/requirements-dev.txt)
+    — not shipped to the island, operator-machine install only."""
+    try:
+        from scripts.operator_tui import main as tui_main
+    except ImportError:
+        print(
+            "textual is not installed. Run:\n"
+            "  py -3.13 -m pip install -r requirements-dev.txt",
+            file=sys.stderr,
+        )
+        return 1
+    return tui_main()
+
+
+def _silent_fail_probe_mod():
+    path = Path(__file__).resolve().parent / "silent_fail_probe.py"
+    spec = importlib.util.spec_from_file_location("_tbcc_silent_fail_probe", path)
+    if not spec or not spec.loader:
+        raise RuntimeError("silent_fail_probe.py missing")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def cmd_silent_fail(args: argparse.Namespace) -> int:
+    """Readonly class-2 probes — delegates to scripts/silent_fail_probe.py."""
+    mod = _silent_fail_probe_mod()
+    cmd = (getattr(args, "sf_cmd", None) or "all").strip().lower()
+    if cmd == "intake":
+        return int(mod.cmd_intake(args))
+    if cmd in ("r2-export", "r2"):
+        return int(mod.cmd_r2(args))
+    if cmd in ("enrich-backlog", "enrich"):
+        return int(mod.cmd_enrich(args))
+    return int(mod.cmd_all(args))
+
+
 def cmd_llm_ask(args: argparse.Namespace) -> int:
     """Like `ask`, but sticky and single-provider: uses the last provider
     `llm next`/`llm ask` picked (or the top of the ranking on first run), and
@@ -659,18 +726,15 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
     opt-in per call, off by default; most devops asks just need a model that
     works, not an NSFW-tolerant one.
 
+    The resolve/ask/cycle-on-quota-retry logic itself lives in
+    llm_model_index.ask_with_rotation — shared with the operator TUI's ask
+    pane (scripts/operator_tui.py) so there's exactly one implementation.
+    This function is just the CLI's stdin-handling + stdout/stderr shape
+    around that shared call.
+
     CLI-local devops convenience only — /zeus/v1/ask and the MCP ask_llm tool
     stay stateless and never read this cursor."""
-    from app.services.llm_completions import TextLlmRuntime, complete_chat_text_sync
-    from app.services.llm_model_index import (
-        advance_to_next,
-        get_sticky,
-        pick_best_model_for_provider,
-        rank_providers_for_cycle,
-        record_failure,
-        resolve_runtime_for_rotator,
-        set_sticky,
-    )
+    from app.services.llm_model_index import ask_with_rotation
 
     if args.prompt:
         prompt = args.prompt
@@ -683,64 +747,26 @@ def cmd_llm_ask(args: argparse.Namespace) -> int:
         print("No prompt given — pass text as an argument or pipe via stdin", file=sys.stderr)
         return 1
 
-    messages: list[dict[str, str]] = []
-    if args.system:
-        messages.append({"role": "system", "content": args.system})
-    messages.append({"role": "user", "content": prompt})
-
-    def _resolve(pid: str | None) -> TextLlmRuntime | None:
-        if not pid:
-            return None
-        model = args.model or pick_best_model_for_provider(pid, prefer_uncensored=args.prefer_uncensored)
-        return resolve_runtime_for_rotator(pid, model=model)
-
-    provider = args.provider or (get_sticky() or {}).get("provider")
-    primary = _resolve(provider)
-    if provider and primary is None:
-        print(f"{provider!r} no longer configured — picking from the ranking instead", file=sys.stderr)
-        provider = None
-    if primary is None:
-        ranked = rank_providers_for_cycle()
-        provider = ranked[0]["provider"] if ranked else None
-        primary = _resolve(provider)
-    if primary is None:
-        print("No configured provider available — run `llm refresh` first?", file=sys.stderr)
+    result = ask_with_rotation(
+        prompt,
+        system=args.system,
+        provider=args.provider or None,
+        model=args.model or None,
+        max_tokens=args.max_tokens,
+        temperature=args.temperature,
+        timeout=args.timeout,
+        prefer_uncensored=args.prefer_uncensored,
+    )
+    for notice in result.get("notices") or []:
+        print(notice, file=sys.stderr)
+    if not result["ok"]:
+        print(result["error"], file=sys.stderr)
         return 1
-
-    for attempt in range(2):
-        try:
-            text = complete_chat_text_sync(
-                messages,
-                model=args.model or None,
-                max_tokens=args.max_tokens,
-                temperature=args.temperature,
-                timeout=args.timeout,
-                runtime=primary,
-            )
-        except Exception as e:
-            kind = record_failure(primary.provider, primary.model, e)
-            if kind == "quota" and attempt == 0:
-                print(f"{primary.provider}: quota exhausted, cycling to next provider…", file=sys.stderr)
-                nxt = advance_to_next()
-                if nxt is None:
-                    print("No unexhausted configured provider left.", file=sys.stderr)
-                    return 1
-                next_primary = _resolve(nxt["provider"])
-                if next_primary is None:
-                    print("No unexhausted configured provider left.", file=sys.stderr)
-                    return 1
-                primary = next_primary
-                continue
-            print(f"LLM call failed ({kind}): {e}", file=sys.stderr)
-            return 1
-        else:
-            set_sticky(primary.provider, primary.model)
-            if args.json:
-                _json({"ok": True, "provider": primary.provider, "reply": text})
-            else:
-                print(text)
-            return 0
-    return 1
+    if args.json:
+        _json({"ok": True, "provider": result["provider"], "reply": result["reply"]})
+    else:
+        print(result["reply"])
+    return 0
 
 
 def cmd_slots_add(args: argparse.Namespace) -> int:
@@ -1001,6 +1027,15 @@ def main() -> int:
     lstatus.add_argument("--json", action="store_true")
     lstatus.set_defaults(func=cmd_llm_status)
 
+    lsticky = llm_sub.add_parser("sticky", help="Pin or inspect the rotator sticky cursor")
+    lsticky_sub = lsticky.add_subparsers(dest="llm_sticky_cmd", required=True)
+
+    lsticky_set = lsticky_sub.add_parser("set", help="Set sticky provider and optional model id")
+    lsticky_set.add_argument("provider", help="Provider id (built-in or custom)")
+    lsticky_set.add_argument("model", nargs="?", default="", help="Model id (optional)")
+    lsticky_set.add_argument("--json", action="store_true")
+    lsticky_set.set_defaults(func=cmd_llm_sticky_set)
+
     ln = llm_sub.add_parser("next", help="Advance the sticky cursor to the next unexhausted provider")
     ln.add_argument("--json", action="store_true")
     ln.set_defaults(func=cmd_llm_next)
@@ -1118,6 +1153,43 @@ def main() -> int:
     ssg.add_argument("--id", default="", help="Force a specific slot id in the suggestion")
     ssg.add_argument("--json", action="store_true")
     ssg.set_defaults(func=cmd_slots_suggest)
+
+    operator = sub.add_parser("operator", help="Unified operator terminal (models/keys/affiliate-links/semantic-scan)")
+    operator_sub = operator.add_subparsers(dest="operator_cmd", required=True)
+    otui = operator_sub.add_parser(
+        "tui", help="Interactive multi-pane terminal over models, API Pocket, affiliate links, and semantic-scan (needs textual)"
+    )
+    otui.set_defaults(func=cmd_operator_tui)
+
+    sf = sub.add_parser(
+        "silent-fail",
+        help="Readonly class-2 probes (ok|stale|never_seen|idle|blocked) — intake / r2-export / enrich-backlog",
+    )
+    sf.add_argument("--json", action="store_true", help="Full JSON payload")
+    sf.add_argument(
+        "--stale-mult",
+        type=float,
+        default=2.0,
+        help="stale if age > interval_minutes * mult",
+    )
+    sf_sub = sf.add_subparsers(dest="sf_cmd", required=True)
+
+    sf_intake = sf_sub.add_parser("intake", help="Intake last_run Redis")
+    sf_intake.add_argument("--lane", default="inbox")
+    sf_intake.add_argument("--all", action="store_true")
+    sf_intake.set_defaults(func=cmd_silent_fail)
+
+    sf_r2 = sf_sub.add_parser("r2-export", help="storage-hub-r2-export exported_at")
+    sf_r2.add_argument("--sample", type=int, default=80)
+    sf_r2.add_argument("--stale-mult", type=float, default=3.0)
+    sf_r2.set_defaults(func=cmd_silent_fail)
+
+    sf_en = sf_sub.add_parser("enrich-backlog", help="enrich-backlog-sweep last_success")
+    sf_en.set_defaults(func=cmd_silent_fail)
+
+    sf_all = sf_sub.add_parser("all", help="Intake + r2-export + enrich-backlog")
+    sf_all.add_argument("--sample", type=int, default=80)
+    sf_all.set_defaults(func=cmd_silent_fail)
 
     args = p.parse_args()
     if getattr(args, "camp_cmd", None) == "deploy":

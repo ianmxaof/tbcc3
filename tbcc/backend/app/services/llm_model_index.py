@@ -584,6 +584,28 @@ def list_models(provider: str | None = None) -> list[dict[str, Any]]:
     return out
 
 
+_NON_CHAT_MODEL_HINTS = (
+    "prompt-guard", "promptguard", "safeguard", "-guard-",
+    "whisper", "orpheus", "tts", "text-to-speech", "speech-to-text", "asr",
+    "embed", "rerank", "moderation",
+)
+
+
+def _looks_non_chat(model_id: str) -> bool:
+    """`_extract_modality` tags nearly everything "text" by default (most
+    providers' /models responses don't self-describe task type at all), so
+    non-chat models slip into the picker's candidate pool unfiltered. Real
+    bug this fixes: Groq's catalog includes meta-llama/llama-prompt-guard-2-
+    22m — a prompt-injection *classifier* that returns a bare probability
+    score, not a chat reply — priced at $0.03/M, cheaper than every actual
+    chat model in the same catalog, so free-then-cheapest picked it and
+    "hi" got answered with "0.0014354782178997993". Name-pattern exclusion
+    is the only signal available — these APIs don't expose a real task/
+    capability field to filter on instead."""
+    mid = model_id.lower()
+    return any(hint in mid for hint in _NON_CHAT_MODEL_HINTS)
+
+
 def pick_best_model_for_provider(
     provider: str, *, task: str = "text", prefer_uncensored: bool = False
 ) -> str | None:
@@ -595,7 +617,7 @@ def pick_best_model_for_provider(
     (caller keeps the provider's ordinary configured default) when the catalog
     has nothing usable — most providers (Groq/Mistral/NVIDIA/Cerebras) expose
     no pricing at all, so this quietly no-ops for them rather than guessing."""
-    rows = [r for r in list_models(provider) if not r["stale"]]
+    rows = [r for r in list_models(provider) if not r["stale"] and not _looks_non_chat(r["model_id"])]
     if not rows:
         return None
     task_matches = [r for r in rows if r["modality"] == task]
@@ -615,3 +637,163 @@ def pick_best_model_for_provider(
 
     priced.sort(key=_sort_key)
     return priced[0]["model_id"]
+
+
+_MAX_TOKENS_CAP_RE = re.compile(r"max_tokens.{0,30}less than or equal to `?(\d+)", re.I)
+
+
+def ask_with_rotation(
+    prompt: str,
+    *,
+    system: str = "",
+    provider: str | None = None,
+    model: str | None = None,
+    max_tokens: int = 600,
+    temperature: float = 0.7,
+    timeout: float = 90.0,
+    prefer_uncensored: bool = False,
+) -> dict[str, Any]:
+    """Shared resolve -> ask -> retry logic behind `llm ask` (tbcc_cli.py
+    cmd_llm_ask) and the operator TUI's ask pane — one implementation, not
+    two (tbcc/docs/handoffs/2026-08-25_llm-rotator-auto-routing-directive.md,
+    card I3). Sticky/single-provider by design: tries exactly one provider
+    per attempt so record_failure() always blames the provider actually
+    tried, rather than the chain-walking fallback that tries every hop
+    internally and would make it impossible to say which one raised.
+
+    Three narrow, separately-budgeted retry paths (one each — this is not a
+    general retry-everything loop, which would risk hammering a genuinely
+    dead provider):
+      - quota (429): cycle to the next unexhausted provider, same as before.
+      - model_not_found (404): record_failure() already marked that exact
+        model stale; only when the caller didn't pin an explicit `model`,
+        re-resolve the same provider so the picker skips it and retry once.
+      - a "max_tokens must be <= N" 400 from the provider: retry once with
+        that N instead of the requested max_tokens. Real-world trigger: a
+        model whose output cap is below the 600-token default (2026-08-25,
+        operator hit this on a Cerebras model) — classify_failure() calls
+        this "transient" and (correctly, for genuine transient errors) never
+        retries it, so without this path the exact same call fails forever.
+
+    Returns a plain dict, never raises:
+      {"ok": True, "provider", "model", "reply", "notices": [...]}
+      {"ok": False, "error", "notices": [...]}
+    `notices` are human-readable side-events (fallback to ranking, a mid-call
+    provider cycle, a max_tokens clamp) — callers render them however fits
+    their surface (CLI: stderr lines; TUI: a status line/log).
+
+    complete_chat_text_sync is imported locally (not at module top) so a
+    test can monkeypatch app.services.llm_completions.complete_chat_text_sync
+    and have this function pick up the patched version — same pattern
+    cmd_llm_ask already relied on before this logic moved here."""
+    from app.services.llm_completions import complete_chat_text_sync
+
+    prompt = (prompt or "").strip()
+    notices: list[str] = []
+    if not prompt:
+        return {"ok": False, "error": "No prompt given", "notices": notices}
+
+    messages: list[dict[str, str]] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    def _resolve(pid: str | None) -> TextLlmRuntime | None:
+        if not pid:
+            return None
+        picked_model = model or pick_best_model_for_provider(pid, prefer_uncensored=prefer_uncensored)
+        return resolve_runtime_for_rotator(pid, model=picked_model)
+
+    provider_id = provider or (get_sticky() or {}).get("provider")
+    primary = _resolve(provider_id)
+    if provider_id and primary is None:
+        notices.append(f"{provider_id!r} no longer configured — picking from the ranking instead")
+        provider_id = None
+    if primary is None:
+        ranked = rank_providers_for_cycle()
+        provider_id = ranked[0]["provider"] if ranked else None
+        primary = _resolve(provider_id)
+    if primary is None:
+        return {
+            "ok": False,
+            "error": "No configured provider available — run `llm refresh` first?",
+            "notices": notices,
+        }
+
+    current_max_tokens = max_tokens
+    quota_cycle_used = False
+    model_repick_used = False
+    token_clamp_used = False
+
+    for _ in range(4):  # 1 normal attempt + at most one of each retry path below
+        try:
+            text = complete_chat_text_sync(
+                messages,
+                model=model or None,
+                max_tokens=current_max_tokens,
+                temperature=temperature,
+                timeout=timeout,
+                runtime=primary,
+            )
+        except Exception as e:
+            kind = record_failure(primary.provider, primary.model, e)
+
+            if kind == "quota" and not quota_cycle_used:
+                quota_cycle_used = True
+                notices.append(f"{primary.provider}: quota exhausted, cycling to next provider…")
+                nxt = advance_to_next()
+                if nxt is None:
+                    return {"ok": False, "error": "No unexhausted configured provider left.", "notices": notices}
+                next_primary = _resolve(nxt["provider"])
+                if next_primary is None:
+                    return {"ok": False, "error": "No unexhausted configured provider left.", "notices": notices}
+                primary = next_primary
+                continue
+
+            if kind == "model_not_found" and not model and not model_repick_used:
+                model_repick_used = True
+                retried = _resolve(primary.provider)
+                if retried is not None and retried.model != primary.model:
+                    notices.append(f"{primary.provider}/{primary.model}: model not found, retrying with a different model…")
+                    primary = retried
+                    continue
+                # No better candidate on this provider — its cached catalog
+                # may have nothing left with pricing/free data (confirmed
+                # real case: a provider's local cache can be 100+ rows, all
+                # non-text utility models, so pick_best_model_for_provider
+                # returns None and the runtime layer falls back to a
+                # hardcoded per-provider default model that can itself be
+                # stale — silently retrying "the same dead model" forever.
+                # Cycle to a different provider instead of surfacing that.
+                if not quota_cycle_used:
+                    quota_cycle_used = True
+                    notices.append(f"{primary.provider}: no other usable model cached, cycling to next provider…")
+                    nxt = advance_to_next()
+                    if nxt is not None:
+                        next_primary = _resolve(nxt["provider"])
+                        if next_primary is not None:
+                            primary = next_primary
+                            continue
+
+            cap_match = _MAX_TOKENS_CAP_RE.search(str(e))
+            if cap_match and not token_clamp_used:
+                new_cap = int(cap_match.group(1))
+                if new_cap < current_max_tokens:
+                    token_clamp_used = True
+                    notices.append(
+                        f"{primary.provider}/{primary.model}: max_tokens capped at {new_cap} for this model, retrying…"
+                    )
+                    current_max_tokens = new_cap
+                    continue
+
+            return {"ok": False, "error": f"LLM call failed ({kind}): {e}", "notices": notices}
+        else:
+            set_sticky(primary.provider, primary.model)
+            return {
+                "ok": True,
+                "provider": primary.provider,
+                "model": primary.model,
+                "reply": text,
+                "notices": notices,
+            }
+    return {"ok": False, "error": "retry loop exhausted", "notices": notices}

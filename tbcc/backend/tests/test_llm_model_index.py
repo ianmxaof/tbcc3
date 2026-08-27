@@ -369,6 +369,21 @@ def test_pick_best_model_prefers_free_then_cheapest():
     assert idx.pick_best_model_for_provider("openrouter") == "free/model:free"
 
 
+def test_pick_best_model_excludes_prompt_guard_and_whisper_even_when_cheapest():
+    """Real bug hit in practice: Groq's catalog has meta-llama/llama-prompt-
+    guard-2-22m (a prompt-injection classifier that returns a bare
+    probability score, not a chat reply) priced at $0.03/M — cheaper than
+    every actual chat model in the same catalog. "hi" got answered with
+    "0.0014354782178997993". Name-pattern exclusion is the fix since these
+    catalogs don't expose a real task/capability field."""
+    _seed_models("groq", [
+        {"id": "meta-llama/llama-prompt-guard-2-22m", "pricing": {"prompt": "0.00000003", "completion": "0.00000003"}},
+        {"id": "whisper-large-v3", "pricing": {"prompt": "0.00000001", "completion": "0.00000001"}},
+        {"id": "openai/gpt-oss-20b", "pricing": {"prompt": "0.000000075", "completion": "0.000000075"}},
+    ])
+    assert idx.pick_best_model_for_provider("groq") == "openai/gpt-oss-20b"
+
+
 def test_pick_best_model_cheapest_when_none_free():
     _seed_models("openrouter", [
         {"id": "paid/expensive", "pricing": {"prompt": "0.00001", "completion": "0.00002"}},
@@ -392,3 +407,131 @@ def test_pick_best_model_prefer_uncensored_biases_selection():
     assert idx.pick_best_model_for_provider("deepinfra") == "some/other-cheap"
     # with it, the uncensored-flavored model wins even though it's pricier
     assert idx.pick_best_model_for_provider("deepinfra", prefer_uncensored=True) == "NousResearch/Hermes-3-Llama"
+
+
+# --- ask_with_rotation (2026-08-25: operator hit both real failure shapes) --
+
+
+def test_ask_with_rotation_retries_once_on_model_not_found_with_a_different_model(monkeypatch):
+    """record_failure() already marked the 404'd model stale; ask_with_rotation
+    should re-resolve the same provider (picker now skips it) and retry once,
+    rather than failing outright on a model the caller never explicitly asked for."""
+    pick_calls = {"n": 0}
+
+    def _pick(pid, *, prefer_uncensored=False):
+        pick_calls["n"] += 1
+        return "dolphin-old" if pick_calls["n"] == 1 else "fresh-model"
+
+    def _resolve(provider, model=None):
+        return TextLlmRuntime(provider=provider, api_key="k", model=model)
+
+    complete_calls: list[str] = []
+
+    def _complete(messages, *, model, max_tokens, temperature, timeout, runtime):
+        complete_calls.append(runtime.model)
+        if runtime.model == "dolphin-old":
+            raise RuntimeError("LLM error 404: model not found")
+        return "ok reply"
+
+    monkeypatch.setattr("app.services.llm_model_index.pick_best_model_for_provider", _pick)
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", _resolve)
+    monkeypatch.setattr("app.services.llm_completions.complete_chat_text_sync", _complete)
+    monkeypatch.setattr("app.services.llm_model_index.get_sticky", lambda: {"provider": "deepinfra"})
+    monkeypatch.setattr("app.services.llm_model_index.set_sticky", lambda p, m: None)
+
+    result = idx.ask_with_rotation("hello")
+    assert result["ok"] is True
+    assert result["reply"] == "ok reply"
+    assert complete_calls == ["dolphin-old", "fresh-model"]
+    assert any("model not found" in n for n in result["notices"])
+
+
+def test_ask_with_rotation_does_not_repick_model_when_caller_pinned_one(monkeypatch):
+    """--model was explicit — a 404 there is a real error to surface, not
+    something to silently paper over with a different model."""
+    rt = TextLlmRuntime(provider="deepinfra", api_key="k", model="pinned-model")
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", lambda provider, model=None: rt)
+    monkeypatch.setattr("app.services.llm_model_index.get_sticky", lambda: {"provider": "deepinfra"})
+    monkeypatch.setattr(
+        "app.services.llm_completions.complete_chat_text_sync",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("LLM error 404: model not found")),
+    )
+
+    result = idx.ask_with_rotation("hello", model="pinned-model")
+    assert result["ok"] is False
+    assert "model_not_found" in result["error"]
+
+
+def test_ask_with_rotation_cycles_provider_when_repick_yields_no_better_model(monkeypatch):
+    """Real bug hit in practice: a provider's cached catalog can be 100+ rows
+    with none usable (no pricing/free data) — pick_best_model_for_provider
+    returns None, the runtime layer falls back to a hardcoded per-provider
+    default model, and that default can itself be the same dead model that
+    404'd. Re-picking on the same provider then just returns the identical
+    model again. Confirms this now cycles to a different provider instead of
+    surfacing the original stale-model error forever."""
+    pick_calls = {"n": 0}
+
+    def _pick(pid, *, prefer_uncensored=False):
+        pick_calls["n"] += 1
+        return None  # simulates an exhausted/unusable local catalog
+
+    def _resolve(provider, model=None):
+        # deepinfra always resolves to the same hardcoded-default model
+        # (model=None -> the runtime layer's own dead default), groq gets a
+        # real model once cycled to.
+        if provider == "deepinfra":
+            return TextLlmRuntime(provider="deepinfra", api_key="k1", model="dead-hardcoded-default")
+        return TextLlmRuntime(provider="groq", api_key="k2", model="a-real-model")
+
+    complete_calls: list[str] = []
+
+    def _complete(messages, *, model, max_tokens, temperature, timeout, runtime):
+        complete_calls.append(runtime.provider)
+        if runtime.provider == "deepinfra":
+            raise RuntimeError("LLM error 404: model not found")
+        return "ok reply"
+
+    monkeypatch.setattr("app.services.llm_model_index.pick_best_model_for_provider", _pick)
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", _resolve)
+    monkeypatch.setattr("app.services.llm_completions.complete_chat_text_sync", _complete)
+    monkeypatch.setattr("app.services.llm_model_index.get_sticky", lambda: {"provider": "deepinfra"})
+    monkeypatch.setattr("app.services.llm_model_index.advance_to_next", lambda: {"provider": "groq"})
+    monkeypatch.setattr("app.services.llm_model_index.set_sticky", lambda p, m: None)
+
+    result = idx.ask_with_rotation("hello")
+    assert result["ok"] is True
+    assert result["provider"] == "groq"
+    assert complete_calls == ["deepinfra", "groq"]
+    assert any("cycling to next provider" in n for n in result["notices"])
+
+
+def test_ask_with_rotation_retries_with_provider_stated_max_tokens_cap(monkeypatch):
+    """Real bug: a model whose output cap is below the 600-token default (hit
+    on a Cerebras model) gets classified 'transient' by classify_failure()
+    and — correctly, for genuine transient errors — never auto-retried. This
+    path specifically parses the provider's stated cap out of the error and
+    retries once with it, instead of failing the same way forever."""
+    rt = TextLlmRuntime(provider="cerebras", api_key="k", model="some-model")
+    monkeypatch.setattr("app.services.llm_model_index.resolve_text_llm_runtime", lambda provider, model=None: rt)
+    monkeypatch.setattr("app.services.llm_model_index.get_sticky", lambda: {"provider": "cerebras"})
+    monkeypatch.setattr("app.services.llm_model_index.set_sticky", lambda p, m: None)
+
+    calls: list[int] = []
+
+    def _complete(messages, *, model, max_tokens, temperature, timeout, runtime):
+        calls.append(max_tokens)
+        if max_tokens > 512:
+            raise RuntimeError(
+                'LLM error 400: {"error":{"message":"`max_tokens` must be less than or equal to `512`, '
+                'the maximum value for `max_tokens` is less than the `context_window` for this model",'
+                '"type":"invalid_request_error","param":"max_tokens"}}'
+            )
+        return "ok reply"
+
+    monkeypatch.setattr("app.services.llm_completions.complete_chat_text_sync", _complete)
+
+    result = idx.ask_with_rotation("hello", max_tokens=600)
+    assert result["ok"] is True
+    assert calls == [600, 512]
+    assert any("max_tokens capped at 512" in n for n in result["notices"])
