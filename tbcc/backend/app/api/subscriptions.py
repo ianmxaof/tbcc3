@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Header
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
@@ -345,8 +345,15 @@ def subscription_create_from_payload(data: dict, db: Session) -> dict:
 
 
 @router.post("/")
-def create_subscription(data: dict = Body(...), db: Session = Depends(get_db)):
-    """Create a subscription (called by payment bot on successful payment)."""
+def create_subscription(
+    data: dict = Body(...),
+    db: Session = Depends(get_db),
+    x_tbcc_internal_key: str | None = Header(None),
+):
+    """Create a subscription (payment bot only — X-TBCC-Internal-Key when TBCC_INTERNAL_API_KEY is set)."""
+    from app.api.external_payment_orders import _require_internal
+
+    _require_internal(x_tbcc_internal_key)
     return subscription_create_from_payload(data, db)
 
 

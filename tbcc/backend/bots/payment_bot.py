@@ -901,7 +901,11 @@ async def create_subscription(
                 payload["referrer_id"] = referrer_id
             if telegram_payment_charge_id:
                 payload["telegram_payment_charge_id"] = telegram_payment_charge_id
-            r = await client.post(f"{API_BASE}/subscriptions/", json=payload)
+            headers = {}
+            key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+            if key:
+                headers["X-TBCC-Internal-Key"] = key
+            r = await client.post(f"{API_BASE}/subscriptions/", json=payload, headers=headers)
             r.raise_for_status()
             return r.json()
     except Exception as e:
@@ -3215,7 +3219,7 @@ def main() -> None:
         CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:[atr]:")
     )
     app.add_handler(
-        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b[ar]:")
+        CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b(?:a|r|t):")
     )
     app.add_handler(
         CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:")

@@ -98,7 +98,11 @@ async def handle_vip_chat_member_update(update: Update, context) -> None:
     }
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(f"{api_base}/subscriptions/", json=payload)
+            headers = {}
+            internal_key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+            if internal_key:
+                headers["X-TBCC-Internal-Key"] = internal_key
+            r = await client.post(f"{api_base}/subscriptions/", json=payload, headers=headers)
             r.raise_for_status()
             result = r.json()
     except Exception as e:

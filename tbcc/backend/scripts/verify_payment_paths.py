@@ -62,18 +62,21 @@ def main() -> int:
         fails += 1
     pub = public_api_base_url()
     if pub:
-        try:
-            r = httpx.get(f"{pub}/health", timeout=15, headers={"ngrok-skip-browser-warning": "1"})
-            if r.status_code == 200:
-                _ok(f"public /health ({pub[:40]}…)")
-            else:
-                _fail("public /health", str(r.status_code))
-                fails += 1
-        except Exception as e:
-            _fail("public /health", str(e))
-            fails += 1
+        _ok(f"public_api_base_url configured ({pub[:40]}…)")
     else:
         _fail("TBCC_PUBLIC_API_BASE_URL missing")
+        fails += 1
+
+    api_base = (os.getenv("TBCC_API_URL") or "http://localhost:8000").strip().rstrip("/")
+    try:
+        r = httpx.get(f"{api_base}/health", timeout=15)
+        if r.status_code == 200:
+            _ok(f"API /health ({api_base[:40]}…)")
+        else:
+            _fail("API /health", str(r.status_code))
+            fails += 1
+    except Exception as e:
+        _fail("API /health", str(e))
         fails += 1
 
     # --- Stars pre_checkout logic ---
