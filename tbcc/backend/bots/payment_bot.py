@@ -644,10 +644,15 @@ async def fetch_bundles() -> list[dict]:
 async def fetch_user_subscriptions(telegram_user_id: int) -> list[dict]:
     """Fetch user's subscriptions from backend."""
     try:
+        headers = {}
+        key = (os.getenv("TBCC_INTERNAL_API_KEY") or "").strip()
+        if key:
+            headers["X-TBCC-Internal-Key"] = key
         async with httpx.AsyncClient() as client:
             r = await client.get(
                 f"{API_BASE}/subscriptions/",
                 params={"telegram_user_id": telegram_user_id},
+                headers=headers,
             )
             r.raise_for_status()
             data = r.json()

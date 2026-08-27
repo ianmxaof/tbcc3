@@ -387,8 +387,14 @@ def _check_milestones(db: Session) -> None:
 
 
 @router.get("/milestone-progress")
-def milestone_progress(db: Session = Depends(get_db)):
+def milestone_progress(
+    db: Session = Depends(get_db),
+    x_tbcc_internal_key: str | None = Header(None),
+):
     """Return progress toward next milestone for 'crowdsourced FOMO' messaging."""
+    from app.api.external_payment_orders import _require_internal
+
+    _require_internal(x_tbcc_internal_key)
     from app.services.growth_promo import milestone_progress_api_dict
 
     return milestone_progress_api_dict(db)
@@ -399,7 +405,11 @@ def list_subscriptions(
     db: Session = Depends(get_db),
     status: str | None = None,
     telegram_user_id: int | None = None,
+    x_tbcc_internal_key: str | None = Header(None),
 ):
+    from app.api.external_payment_orders import _require_internal
+
+    _require_internal(x_tbcc_internal_key)
     q = db.query(Subscription)
     if status:
         q = q.filter(Subscription.status == status)
@@ -409,7 +419,14 @@ def list_subscriptions(
 
 
 @router.get("/{sub_id}")
-def get_subscription(sub_id: int, db: Session = Depends(get_db)):
+def get_subscription(
+    sub_id: int,
+    db: Session = Depends(get_db),
+    x_tbcc_internal_key: str | None = Header(None),
+):
+    from app.api.external_payment_orders import _require_internal
+
+    _require_internal(x_tbcc_internal_key)
     s = db.query(Subscription).filter(Subscription.id == sub_id).first()
     if not s:
         return {"error": "Not found"}
