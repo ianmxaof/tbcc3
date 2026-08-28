@@ -13,6 +13,20 @@
   if (!lib) return;
 
   let snippets = [];
+  let usagePersistTimer = null;
+
+  /** Bump useCount/lastUsedAt on the expanded entry and persist (debounced — a fast typist can trigger several expansions in a row). */
+  function recordUsage(entry) {
+    if (!entry || !entry.id) return;
+    entry.useCount = (Number(entry.useCount) || 0) + 1;
+    entry.lastUsedAt = Date.now();
+    if (usagePersistTimer) clearTimeout(usagePersistTimer);
+    usagePersistTimer = setTimeout(() => {
+      usagePersistTimer = null;
+      chrome.storage.local.set({ [STORAGE_SNIPPETS]: snippets });
+    }, 400);
+  }
+
   let settings = { enabled: true, disabledDomains: [] };
   let suppressed = false;
   let listening = false;
@@ -116,18 +130,21 @@
     }
     const expansion = lib.expandTokens(match.body, { clipboardText });
 
+    let expanded = false;
     if (editableInput) {
-      replaceInInputLike(el, triggerLen, expansion);
+      expanded = replaceInInputLike(el, triggerLen, expansion);
     } else {
       suppressed = true;
       try {
         if (replaceInContentEditable(el, triggerLen)) {
           document.execCommand("insertText", false, expansion.text);
+          expanded = true;
         }
       } finally {
         suppressed = false;
       }
     }
+    if (expanded) recordUsage(match);
   }
 
   function onInput(e) {

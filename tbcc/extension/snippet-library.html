@@ -16,6 +16,7 @@
       gap: 10px;
       padding: 10px 0;
       border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+      position: relative;
     }
     .snip-row:last-child { border-bottom: none; }
     .snip-row input[type="checkbox"] { margin-top: 4px; }
@@ -28,7 +29,7 @@
       padding: 3px 6px;
       word-break: break-all;
     }
-    .snip-body { min-width: 0; }
+    .snip-body { min-width: 0; cursor: help; }
     .snip-label { font-weight: 500; color: var(--tbcc-text-primary); font-size: 13px; }
     .snip-preview {
       margin-top: 2px;
@@ -50,6 +51,36 @@
       padding: 0;
     }
     .snip-actions button.danger { color: var(--tbcc-error, #f38ba8); }
+    .snip-row-tooltip {
+      display: none;
+      position: absolute;
+      left: 50%;
+      width: 75%;
+      max-width: 75%;
+      transform: translateX(-50%);
+      top: calc(100% - 2px);
+      z-index: 30;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      background: var(--tbcc-bg-elevated, #313244);
+      border: 1px solid var(--tbcc-border, #45475a);
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+      font-size: 11px;
+      line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--tbcc-text-primary, #cdd6f4);
+      max-height: min(50vh, 360px);
+      overflow-y: auto;
+      pointer-events: auto;
+    }
+    .snip-row:hover .snip-row-tooltip,
+    .snip-row:focus-within .snip-row-tooltip,
+    .snip-row-tooltip:hover {
+      display: block;
+    }
     #snipEmpty { font-size: 12px; color: var(--tbcc-text-muted); padding: 8px 0; }
     .token-chip {
       display: inline-block;
@@ -73,20 +104,61 @@
       font-family: inherit;
       resize: vertical;
     }
+    .snip-hotkey-row { margin-top: 10px; }
+    .snip-hotkey-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .snip-hotkey-btn {
+      min-width: 180px;
+      padding: 8px 12px;
+      font: 600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: var(--tbcc-text-primary);
+      background: var(--tbcc-bg-surface);
+      border: 1px solid var(--tbcc-border, #45475a);
+      border-radius: 8px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .snip-hotkey-btn:hover { border-color: var(--tbcc-accent, #89dceb); }
+    .snip-hotkey-btn.recording {
+      border-color: var(--tbcc-accent, #89dceb);
+      box-shadow: 0 0 0 2px rgba(137, 220, 235, 0.25);
+      color: var(--tbcc-accent, #89dceb);
+    }
+    .snip-hotkey-reset { font-size: 12px; padding: 6px 10px; }
   </style>
 </head>
 <body class="tbcc-options-page">
   <h1>Snippet &amp; prompt library</h1>
-  <p class="sub">Type a trigger (e.g. <code>/p3</code>) in any text field on any site to instantly expand it. Works in inputs, textareas, and most contenteditable fields (chat boxes, compose boxes).</p>
+  <p class="sub">Type a trigger (e.g. <code>/p3</code> or <code>/preflight</code>) in any text field on any site to instantly expand it. Operator protocol prompts from <code>OPERATOR_GPT_POCKET_KIT.md</code> are preloaded below — edit or disable like any other snippet.</p>
 
   <section class="card">
     <h1>Settings</h1>
     <label class="row2"><input type="checkbox" id="snipEnabled" checked /> Enable snippet expansion everywhere</label>
+    <p class="sub" style="margin:8px 0 0;font-size:12px">
+      <strong>Quick Fix</strong> (Raycast-style): highlight messy text in any field — or focus the field with no selection — then press your Quick Fix hotkey below.
+      Uses the TBCC API for spelling/grammar when reachable; otherwise local caps and spacing cleanup.
+    </p>
+    <div class="snip-hotkey-row">
+      <span style="font-size:12px;color:var(--tbcc-text-secondary)">Quick Fix hotkey</span>
+      <div class="snip-hotkey-controls">
+        <button type="button" id="snipQuickFixHotkeyBtn" class="snip-hotkey-btn" aria-label="Record Quick Fix hotkey">⇧⇧</button>
+        <button type="button" id="snipQuickFixHotkeyReset" class="tbcc-btn-secondary snip-hotkey-reset">Reset default</button>
+      </div>
+      <p id="snipQuickFixHotkeyHint" class="sub" style="margin:4px 0 0;font-size:11px">
+        Click the key box, then press a shortcut — or double-tap <strong>Shift</strong> (⇧⇧, Raycast-style). Chords need Ctrl/Shift/Alt/⌘. Esc cancels.
+      </p>
+    </div>
     <label style="display:flex;flex-direction:column;gap:4px;margin-top:8px">
       <span style="font-size:12px;color:var(--tbcc-text-secondary)">Disabled on these domains (one per line — e.g. <code>mybank.com</code>)</span>
       <textarea id="snipDisabledDomains" rows="3" class="tbcc-input" style="width:100%"></textarea>
     </label>
     <button type="button" id="snipSaveSettings" class="tbcc-btn-primary">Save settings</button>
+    <p id="snipSettingsStatus" class="sub" style="margin:8px 0 0;font-size:11px"></p>
   </section>
 
   <section class="card">
@@ -125,11 +197,16 @@
 
   <section class="card">
     <h1>Your snippets</h1>
+    <input type="text" id="snipSearch" class="tbcc-input" style="width:100%;margin-bottom:10px" placeholder="Search by trigger, label, body, or intent (e.g. &quot;checklist for code review&quot;)" spellcheck="false" />
     <div id="snipList"></div>
     <p id="snipEmpty" style="display:none">No snippets yet — add one above.</p>
+    <p class="sub" style="margin:8px 0 0;font-size:11px">Hover a row (or Tab to focus it) to read the full prompt. Sorted by search relevance while searching, otherwise by usage.</p>
   </section>
 
+  <script src="tbcc-hotkey-lib.js"></script>
   <script src="tbcc-snippet-lib.js"></script>
+  <script src="tbcc-recall-lib.js"></script>
+  <script src="tbcc-operator-command-snippets.js"></script>
   <script src="snippet-library.js"></script>
 </body>
 </html>
