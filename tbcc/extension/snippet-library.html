@@ -130,6 +130,50 @@
       color: var(--tbcc-accent, #89dceb);
     }
     .snip-hotkey-reset { font-size: 12px; padding: 6px 10px; }
+    .tbcc-tabs {
+      display: flex;
+      gap: 4px;
+      margin: 4px 0 16px;
+      border-bottom: 1px solid var(--tbcc-bg-elevated, #313244);
+    }
+    .tbcc-tab {
+      border: none;
+      background: none;
+      cursor: pointer;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--tbcc-text-secondary);
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .tbcc-tab:hover { color: var(--tbcc-text-primary); }
+    .tbcc-tab.active { color: var(--tbcc-accent, #89dceb); border-bottom-color: var(--tbcc-accent, #89dceb); }
+    .facet-select-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .facet-select-row label { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
+    .facet-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+    .facet-chip {
+      border: 1px solid var(--tbcc-bg-elevated, #313244);
+      background: var(--tbcc-bg-surface);
+      color: var(--tbcc-text-secondary);
+      border-radius: 999px;
+      padding: 4px 11px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .facet-chip:hover { border-color: var(--tbcc-accent, #89dceb); }
+    .facet-chip.active { background: var(--tbcc-accent, #89dceb); color: var(--tbcc-bg-base); border-color: var(--tbcc-accent, #89dceb); }
+    .facet-tag {
+      display: inline-block;
+      font-size: 10px;
+      color: var(--tbcc-text-secondary);
+      background: var(--tbcc-bg-surface);
+      border-radius: 3px;
+      padding: 1px 5px;
+      margin: 0 4px 0 0;
+    }
+    .prompt-pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--tbcc-text-secondary); }
+    .prompt-pager button:disabled { opacity: 0.4; cursor: default; }
   </style>
 </head>
 <body class="tbcc-options-page">
@@ -173,35 +217,101 @@
     <p class="sub" style="margin-top:8px">{{cursor}} places the caret there after expansion (plain inputs/textareas only — contenteditable fields land the caret at the end).</p>
   </section>
 
-  <section class="card">
-    <h1>Add / edit snippet</h1>
-    <div class="form-grid">
-      <input type="hidden" id="snipEditId" value="" />
-      <label style="display:flex;flex-direction:column;gap:4px">
-        <span style="font-size:12px;color:var(--tbcc-text-secondary)">Trigger (must be unique, e.g. <code>/p3</code>)</span>
-        <input type="text" id="snipTrigger" class="tbcc-input" placeholder="/p3" spellcheck="false" style="width:100%" />
-      </label>
-      <label style="display:flex;flex-direction:column;gap:4px">
-        <span style="font-size:12px;color:var(--tbcc-text-secondary)">Label (for your reference only)</span>
-        <input type="text" id="snipLabel" class="tbcc-input" placeholder="Prompt #3 — outline generator" style="width:100%" />
-      </label>
-      <label style="display:flex;flex-direction:column;gap:4px">
-        <span style="font-size:12px;color:var(--tbcc-text-secondary)">Body</span>
-        <textarea id="snipBody" placeholder="Write a detailed outline for {{cursor}}..."></textarea>
-      </label>
-    </div>
-    <button type="button" id="snipSaveEntry" class="tbcc-btn-primary">Save snippet</button>
-    <button type="button" id="snipCancelEdit" class="tbcc-btn-secondary" style="display:none">Cancel edit</button>
-    <p id="snipFormStatus" class="sub" style="margin:8px 0 0"></p>
-  </section>
+  <div class="tbcc-tabs" role="tablist">
+    <button type="button" class="tbcc-tab active" id="tabBtnSnippets" role="tab" aria-selected="true">Snippets</button>
+    <button type="button" class="tbcc-tab" id="tabBtnPrompts" role="tab" aria-selected="false">Prompts</button>
+  </div>
 
-  <section class="card">
-    <h1>Your snippets</h1>
-    <input type="text" id="snipSearch" class="tbcc-input" style="width:100%;margin-bottom:10px" placeholder="Search by trigger, label, body, or intent (e.g. &quot;checklist for code review&quot;)" spellcheck="false" />
-    <div id="snipList"></div>
-    <p id="snipEmpty" style="display:none">No snippets yet — add one above.</p>
-    <p class="sub" style="margin:8px 0 0;font-size:11px">Hover a row (or Tab to focus it) to read the full prompt. Sorted by search relevance while searching, otherwise by usage.</p>
-  </section>
+  <div id="tabPanelSnippets">
+    <section class="card">
+      <h1>Add / edit snippet</h1>
+      <div class="form-grid">
+        <input type="hidden" id="snipEditId" value="" />
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:12px;color:var(--tbcc-text-secondary)">Trigger (must be unique, e.g. <code>/p3</code>)</span>
+          <input type="text" id="snipTrigger" class="tbcc-input" placeholder="/p3" spellcheck="false" style="width:100%" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:12px;color:var(--tbcc-text-secondary)">Label (for your reference only)</span>
+          <input type="text" id="snipLabel" class="tbcc-input" placeholder="Prompt #3 — outline generator" style="width:100%" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:12px;color:var(--tbcc-text-secondary)">Body</span>
+          <textarea id="snipBody" placeholder="Write a detailed outline for {{cursor}}..."></textarea>
+        </label>
+      </div>
+      <button type="button" id="snipSaveEntry" class="tbcc-btn-primary">Save snippet</button>
+      <button type="button" id="snipCancelEdit" class="tbcc-btn-secondary" style="display:none">Cancel edit</button>
+      <p id="snipFormStatus" class="sub" style="margin:8px 0 0"></p>
+    </section>
+
+    <section class="card">
+      <h1>Your snippets</h1>
+      <input type="text" id="snipSearch" class="tbcc-input" style="width:100%;margin-bottom:10px" placeholder="Search by trigger, label, body, or intent (e.g. &quot;checklist for code review&quot;)" spellcheck="false" />
+      <div id="snipList"></div>
+      <p id="snipEmpty" style="display:none">No snippets yet — add one above.</p>
+      <p class="sub" style="margin:8px 0 0;font-size:11px">Hover a row (or Tab to focus it) to read the full prompt. Sorted by search relevance while searching, otherwise by usage.</p>
+    </section>
+  </div>
+
+  <div id="tabPanelPrompts" hidden>
+    <section class="card">
+      <h1>Add / edit prompt</h1>
+      <p class="sub" style="margin-bottom:8px">Longer, reusable prompts — same trigger-expansion mechanic as snippets, plus facets (borrowed from the standalone Prompt Library app) so a growing library stays browsable instead of one long alphabetical list.</p>
+      <div class="form-grid">
+        <input type="hidden" id="promptEditId" value="" />
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:12px;color:var(--tbcc-text-secondary)">Trigger (must be unique, e.g. <code>/outline</code>)</span>
+          <input type="text" id="promptTrigger" class="tbcc-input" placeholder="/outline" spellcheck="false" style="width:100%" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:12px;color:var(--tbcc-text-secondary)">Label (for your reference only)</span>
+          <input type="text" id="promptLabel" class="tbcc-input" placeholder="Outline generator" style="width:100%" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:12px;color:var(--tbcc-text-secondary)">Body</span>
+          <textarea id="promptBody" placeholder="Write a detailed outline for {{cursor}}..."></textarea>
+        </label>
+        <div class="facet-select-row">
+          <label>
+            <span style="font-size:12px;color:var(--tbcc-text-secondary)">Use case</span>
+            <select id="promptUseCase" class="tbcc-input"><option value="">—</option></select>
+          </label>
+          <label>
+            <span style="font-size:12px;color:var(--tbcc-text-secondary)">Role</span>
+            <select id="promptRole" class="tbcc-input"><option value="">—</option></select>
+          </label>
+          <label>
+            <span style="font-size:12px;color:var(--tbcc-text-secondary)">Output type</span>
+            <select id="promptOutputType" class="tbcc-input"><option value="">—</option></select>
+          </label>
+          <label>
+            <span style="font-size:12px;color:var(--tbcc-text-secondary)">Verbosity</span>
+            <select id="promptVerbosity" class="tbcc-input">
+              <option value="">—</option>
+              <option value="low">Low</option>
+              <option value="med">Med</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <button type="button" id="promptAutoClassify" class="tbcc-btn-secondary" style="margin-top:8px">Auto-classify from body</button>
+      <button type="button" id="promptSaveEntry" class="tbcc-btn-primary">Save prompt</button>
+      <button type="button" id="promptCancelEdit" class="tbcc-btn-secondary" style="display:none">Cancel edit</button>
+      <p id="promptFormStatus" class="sub" style="margin:8px 0 0"></p>
+    </section>
+
+    <section class="card">
+      <h1>Your prompts</h1>
+      <input type="text" id="promptSearch" class="tbcc-input" style="width:100%;margin-bottom:10px" placeholder="Search by trigger, label, body, or intent (e.g. &quot;checklist for code review&quot;)" spellcheck="false" />
+      <div id="promptFacetChips" class="facet-chips"></div>
+      <div id="promptList"></div>
+      <p id="promptEmpty" style="display:none">No prompts yet — add one above.</p>
+      <div id="promptPager" class="prompt-pager"></div>
+      <p class="sub" style="margin:8px 0 0;font-size:11px">Hover a row (or Tab to focus it) to read the full prompt. Sorted by search relevance while searching, otherwise by usage.</p>
+    </section>
+  </div>
 
   <script src="tbcc-hotkey-lib.js"></script>
   <script src="tbcc-snippet-lib.js"></script>
