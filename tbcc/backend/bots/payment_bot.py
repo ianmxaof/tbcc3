@@ -1599,6 +1599,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_companion_credits_catalog_message(msg, context, sku_filter=sku)
         return
 
+    if payload == "subscribe":
+        await send_subscription_catalog_message(msg, context, section="main")
+        return
+
     if payload.startswith("ref_"):
         referrer_id = await resolve_referrer_id_from_start_payload(payload)
         if referrer_id is not None and referrer_id != user.id:

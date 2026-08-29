@@ -34,6 +34,35 @@ def test_payload_to_source_ref_bait_and_loot():
     assert payload_to_source_ref("vf_username") is None
 
 
+def test_payload_to_source_ref_subscribe_and_companion_packs():
+    assert payload_to_source_ref("subscribe") == "src_vip_subscribe"
+    assert payload_to_source_ref("companion") == "src_companion_catalog"
+    assert payload_to_source_ref("companion_5") == "src_companion_pack_5"
+    assert payload_to_source_ref("companion_15") == "src_companion_pack_15"
+    assert payload_to_source_ref("companion_50") == "src_companion_pack_50"
+    assert payload_to_source_ref("companion_") is None
+
+
+def test_record_traffic_touch_companion_pack_not_unmapped():
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+
+    out = record_traffic_touch(db, 99, "companion_5", commit=False)
+    assert out["ok"] is True
+    assert out.get("skipped") is None
+    assert out["source_ref"] == "src_companion_pack_5"
+
+
+def test_record_traffic_touch_subscribe_not_unmapped():
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+
+    out = record_traffic_touch(db, 100, "subscribe", commit=False)
+    assert out["ok"] is True
+    assert out.get("skipped") is None
+    assert out["source_ref"] == "src_vip_subscribe"
+
+
 def test_record_traffic_touch_first_and_last():
     db = MagicMock()
     row = UserFunnelTouch(

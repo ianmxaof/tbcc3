@@ -70,6 +70,14 @@ def payload_to_source_ref(payload: str) -> str | None:
     if p in ("loot", "menu_loot", "loot_keys"):
         return "src_loot_paid"
 
+    if p == "subscribe":
+        return "src_vip_subscribe"
+
+    if p == "companion":
+        return "src_companion_catalog"
+    if p.startswith("companion_") and len(p) > len("companion_"):
+        return f"src_companion_pack_{p[len('companion_'):]}"
+
     if p.startswith("goblin_") and len(p) > len("goblin_"):
         return "src_goblin_claim"
 
