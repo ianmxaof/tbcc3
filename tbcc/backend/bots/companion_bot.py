@@ -1677,6 +1677,9 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_preset_callback, pattern=r"^comp_preset:"))
     app.add_handler(CallbackQueryHandler(on_vpose_callback, pattern=r"^comp_vpose:"))
     app.add_handler(CallbackQueryHandler(on_vpage_callback, pattern=r"^comp_vpage:"))
+    from app.services.bot_network_discovery import on_network_callback
+
+    app.add_handler(CallbackQueryHandler(on_network_callback, pattern=r"^aof_net:"))
     app.add_handler(PreCheckoutQueryHandler(pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     app.add_handler(CommandHandler("age", cmd_age))

@@ -146,7 +146,7 @@ def _loot_inline_keyboard(
     rows.append(
         [
             InlineKeyboardButton("📖 Guide", callback_data="loot:guide"),
-            InlineKeyboardButton("ℹ️ Menu", callback_data="loot:help"),
+            InlineKeyboardButton("🌐 Network", callback_data="aof_net:home"),
         ]
     )
     if invite:
@@ -1036,6 +1036,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if arg.startswith("src_lv_") and await _handle_lane_gate(msg, context, arg):
         return
 
+    from app.services.bot_network_discovery import parse_network_start_payload, send_network_menu
+
+    if parse_network_start_payload(arg):
+        await send_network_menu(chat_id=msg.chat_id, context=context)
+        return
+
     await _send_welcome(msg, context, cfg)
 
 
@@ -1066,7 +1072,7 @@ async def _handle_lane_gate(msg, context: ContextTypes.DEFAULT_TYPE, payload: st
         msg,
         f"<b>{html.escape(name)}</b> — you're in.\n\n"
         f'<a href="{html.escape(invite, quote=True)}">Open {html.escape(name)}</a>\n\n'
-        "<i>Free pull while you're here: /roll</i>",
+        "<i>Free pull while you're here: /roll · tap 🌐 Network for more lanes.</i>",
         disable_web_page_preview=False,
         reply_markup=_loot_inline_keyboard(cfg),
     )
@@ -1110,6 +1116,15 @@ async def cmd_guide(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_welcome(update.effective_message, context) if update.effective_message else None
+
+
+async def cmd_network(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    from app.services.bot_network_discovery import send_network_menu
+
+    await send_network_menu(chat_id=msg.chat_id, context=context)
 
 
 async def on_loot_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1686,7 +1701,11 @@ def main() -> None:
     application.add_handler(CommandHandler("referral", cmd_referral))
     application.add_handler(CommandHandler("model", cmd_model))
     application.add_handler(CommandHandler("status", cmd_status))
+    application.add_handler(CommandHandler("network", cmd_network))
     application.add_handler(CallbackQueryHandler(on_loot_callback, pattern=r"^loot:"))
+    from app.services.bot_network_discovery import on_network_callback
+
+    application.add_handler(CallbackQueryHandler(on_network_callback, pattern=r"^aof_net:"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
     try:
         from bots.leave_message_cleanup import register_leave_cleanup_handler

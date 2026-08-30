@@ -48,6 +48,7 @@ AFFILIATE_PLACEMENTS: frozenset[str] = frozenset(
         "links_hub_ai",
         "links_hub_sfw",
         "loot_roll",
+        "bot_network_menu",
     }
 )
 DEFAULT_PLACEMENT = "manual_only"

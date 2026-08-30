@@ -105,6 +105,7 @@ _default_main_menu = [
         {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
     ],
+    [{"label": "🌐 Explore AOF network", "action": "menu_network"}],
     [
         {"label": "🔗 Referral", "action": "menu_referral"},
         {"label": "📋 Status", "action": "menu_status"},
@@ -1165,6 +1166,16 @@ async def cmd_videofind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await cmd_macrosearch(update, context, get_settings=_get_runtime_settings)
 
 
+async def cmd_network(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open the shared AOF network discovery menu."""
+    msg = update.effective_message
+    if not msg:
+        return
+    from app.services.bot_network_discovery import send_network_menu
+
+    await send_network_menu(chat_id=msg.chat_id, context=context)
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help — same overview as /start (without referral deep-link side effects)."""
     msg = update.effective_message
@@ -1597,6 +1608,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if payload == "companion" or payload.startswith("companion_"):
         sku = payload[len("companion_") :] if payload != "companion" else None
         await send_companion_credits_catalog_message(msg, context, sku_filter=sku)
+        return
+
+    from app.services.bot_network_discovery import parse_network_start_payload, send_network_menu
+
+    if parse_network_start_payload(payload):
+        await send_network_menu(chat_id=msg.chat_id, context=context)
         return
 
     if payload == "subscribe":
@@ -2306,6 +2323,10 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await reply_referral(msg, user, context)
     elif query.data == "menu_status":
         await reply_status(msg, user, context)
+    elif query.data == "menu_network":
+        from app.services.bot_network_discovery import send_network_menu
+
+        await send_network_menu(chat_id=msg.chat_id, context=context)
 
 
 async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3171,6 +3192,7 @@ def main() -> None:
     app.add_handler(CommandHandler("packs", cmd_packs))
     app.add_handler(CommandHandler("referral", cmd_referral))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("network", cmd_network))
     app.add_handler(CommandHandler("resolve", cmd_resolve))
     app.add_handler(CommandHandler("videofind", cmd_videofind))
     from app.services.storage_hub_bot_wiring import payment_storage_hub_enabled
@@ -3237,8 +3259,11 @@ def main() -> None:
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")
     )
     app.add_handler(
-        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|companion|referral|status)$")
+        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|companion|referral|status|network)$")
     )
+    from app.services.bot_network_discovery import on_network_callback
+
+    app.add_handler(CallbackQueryHandler(on_network_callback, pattern=r"^aof_net:"))
     app.add_handler(CallbackQueryHandler(handle_pick_pack_callback, pattern=r"^pick_pack_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_external_payment_callback, pattern=r"^ext_(plan|pack|credit)_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_gumroad_payment_callback, pattern=r"^gr_(plan|pack|credit)_\d+$"))

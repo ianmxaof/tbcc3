@@ -34,7 +34,7 @@ PACK_WALLET_EARN = SponsorPack(
     id="wallet_earn",
     title="Wallet → Earn",
     lane="sfw",
-    surfaces=("links_hub_sfw", "links_hub", "x_buffer"),
+    surfaces=("links_hub_sfw", "links_hub", "x_buffer", "bot_network_menu"),
     network_keys=None,
     max_ctas_per_message=1,
     slots=(
@@ -98,6 +98,7 @@ PLACEMENT_PACK_ROTATION: dict[str, tuple[str, ...]] = {
     "telegram_footer": ("lane_pps",),
     "x_buffer": ("wallet_earn", "learn_ai_pay"),
     "loot_roll": ("learn_ai_pay", "lane_pps"),
+    "bot_network_menu": ("wallet_earn",),
 }
 
 META_CURSOR_KEYS: dict[str, str] = {

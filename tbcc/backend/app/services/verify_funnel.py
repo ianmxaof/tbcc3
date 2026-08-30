@@ -103,6 +103,11 @@ def _vip_upgrade_keyboard_rows(db: Session) -> list[list[dict[str, str]]]:
     if card.startswith("https://"):
         rows.append([{"text": "💳 Pay with card", "url": card}])
     rows.append([{"text": "🗝 Loot Room keys", "url": f"https://t.me/{pay}?start=verify_loot"}])
+    from app.services.bot_network_discovery import network_deep_link_url
+
+    network = network_deep_link_url()
+    if network:
+        rows.append([{"text": "🌐 Explore AOF network", "url": network}])
     return rows
 
 

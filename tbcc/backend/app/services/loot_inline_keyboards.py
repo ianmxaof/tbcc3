@@ -101,7 +101,7 @@ def build_loot_roll_inline_markup(
     rows.append(
         [
             InlineKeyboardButton("📖 Guide", callback_data="loot:guide"),
-            InlineKeyboardButton("ℹ️ Menu", callback_data="loot:help"),
+            InlineKeyboardButton("🌐 Network", callback_data="aof_net:home"),
         ]
     )
     return InlineKeyboardMarkup(rows)

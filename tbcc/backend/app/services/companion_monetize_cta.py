@@ -22,7 +22,12 @@ def vip_checkout_cta_url() -> str:
 
 def companion_exhaustion_inline_keyboard_rows() -> list[list[dict[str, str]]]:
     """Bot API reply_markup rows."""
+    from app.services.bot_network_discovery import network_deep_link_url
+
     rows: list[list[dict[str, str]]] = []
+    network = network_deep_link_url()
+    if network:
+        rows.append([{"text": "🌐 Explore AOF network", "url": network}])
     loot = loot_free_cta_url()
     vip = vip_checkout_cta_url()
     if loot:
@@ -54,6 +59,11 @@ def companion_exhaustion_cta_html(*, include_undress: bool = False, undress_url:
     parts = [
         "<b>Want more on AOF?</b>",
     ]
+    from app.services.bot_network_discovery import network_deep_link_url
+
+    network = network_deep_link_url()
+    if network:
+        parts.append(f'🌐 <a href="{html.escape(network, quote=True)}">Explore the network</a> — channels, bots, sponsors')
     if loot:
         parts.append(f'🎲 <a href="{html.escape(loot, quote=True)}">Loot God</a> — free rolls, then keys')
     if vip:

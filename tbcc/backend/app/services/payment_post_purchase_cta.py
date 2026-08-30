@@ -30,9 +30,14 @@ def post_purchase_inline_keyboard_rows(kind: str) -> list[list[dict[str, str]]]:
     companion = f"https://telegram.me/{companion_un}" if companion_un else ""
     subscribe = f"https://t.me/{pay}?start=subscribe" if pay else ""
     intro = f"https://t.me/{pay}?start=cm10" if pay else subscribe
+    from app.services.bot_network_discovery import network_deep_link_url
+
+    network = network_deep_link_url()
 
     if kind == "loot_key":
         rows: list[list[dict[str, str]]] = []
+        if network:
+            rows.append([{"text": "🌐 Explore AOF network", "url": network}])
         if intro:
             rows.append([{"text": f"⭐ {vip_display_name()} Intro — skip gates", "url": intro}])
         if companion:
@@ -41,6 +46,8 @@ def post_purchase_inline_keyboard_rows(kind: str) -> list[list[dict[str, str]]]:
 
     if kind == "bundle":
         rows = []
+        if network:
+            rows.append([{"text": "🌐 Explore AOF network", "url": network}])
         if loot:
             rows.append([{"text": "🎲 Loot God — free roll", "url": loot}])
         if companion:
@@ -48,6 +55,8 @@ def post_purchase_inline_keyboard_rows(kind: str) -> list[list[dict[str, str]]]:
         return rows
 
     rows = []
+    if network:
+        rows.append([{"text": "🌐 Explore AOF network", "url": network}])
     if loot:
         rows.append([{"text": "🎲 Loot God — free roll", "url": loot}])
     if companion:

@@ -16,6 +16,7 @@ DEFAULT_MAIN_MENU: list[list[dict[str, str]]] = [
         {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
     ],
+    [{"label": "🌐 Explore AOF network", "action": "menu_network"}],
     [
         {"label": "🔗 Referral", "action": "menu_referral"},
         {"label": "📋 Status", "action": "menu_status"},
@@ -28,8 +29,10 @@ ALLOWED_MENU_ACTIONS = {
     "menu_loot_subscribe",
     "menu_subscribe",
     "menu_packs",
+    "menu_companion",
     "menu_referral",
     "menu_status",
+    "menu_network",
 }
 
 DEFAULT_VIDEO_FINDER_SOURCES: list[dict[str, str]] = [
