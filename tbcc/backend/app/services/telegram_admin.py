@@ -175,9 +175,13 @@ async def reset_admin_client() -> None:
 async def _connect_admin_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
-    from app.services.telethon_session_lock import require_telethon_session_lock
+    from app.services.telethon_session_lock import (
+        assert_safe_to_open_telethon_session,
+        require_telethon_session_lock,
+    )
     from app.utils.telethon_session import prepare_session_sqlite_file
 
+    assert_safe_to_open_telethon_session("admin")
     require_telethon_session_lock("admin")
     stem = _telegram_session_path()
     prepare_session_sqlite_file(stem)
@@ -344,8 +348,10 @@ async def reset_album_client() -> None:
 async def _connect_album_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
+    from app.services.telethon_session_lock import assert_safe_to_open_telethon_session
     from app.utils.telethon_session import prepare_session_sqlite_file
 
+    assert_safe_to_open_telethon_session("album")
     stem = album_composer_session_stem()
     album_path = stem + ".session"
     if not os.path.isfile(album_path):
@@ -491,9 +497,13 @@ async def reset_import_client() -> None:
 async def _connect_import_client() -> TelegramClient:
     if not os.environ.get("API_ID") or not os.environ.get("API_HASH"):
         raise RuntimeError("Telegram API not configured")
-    from app.services.telethon_session_lock import require_telethon_session_lock
+    from app.services.telethon_session_lock import (
+        assert_safe_to_open_telethon_session,
+        require_telethon_session_lock,
+    )
     from app.utils.telethon_session import prepare_session_sqlite_file
 
+    assert_safe_to_open_telethon_session("import")
     require_telethon_session_lock("import")
     stem = import_session_stem()
     import_path = stem + ".session"

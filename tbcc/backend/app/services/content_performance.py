@@ -304,6 +304,9 @@ async def refresh_delivery_views_async(db: Session, *, limit: int = 200) -> dict
         if ident:
             by_channel[ident].append(r)
 
+    from app.services.telethon_session_lock import assert_safe_to_open_telethon_session
+
+    assert_safe_to_open_telethon_session("poster")
     session = view_refresh_telegram_session()
     prepare_session_sqlite_file(session)
     updated = 0

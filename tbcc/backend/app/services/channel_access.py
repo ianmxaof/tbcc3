@@ -18,6 +18,9 @@ BAN_DURATION_DAYS = 365
 
 
 def _build_client() -> TelegramClient:
+    from app.services.telethon_session_lock import assert_safe_to_open_telethon_session
+
+    assert_safe_to_open_telethon_session("admin")
     return TelegramClient(
         admin_session_stem(),
         int(os.environ["API_ID"]),

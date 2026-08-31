@@ -37,13 +37,14 @@ async def fetch_channel_post_stats(
     from telethon import TelegramClient
     from telethon.tl.functions.messages import GetMessagesViewsRequest
 
-    from app.services.telethon_session_lock import poster_session_redis_lock
+    from app.services.telethon_session_lock import assert_safe_to_open_telethon_session, poster_session_redis_lock
     from app.utils.telethon_session import configure_telethon_sqlite_session, prepare_session_sqlite_file
 
     ident = (channel_identifier or "").strip()
     if not ident:
         return {"ok": False, "error": "empty channel identifier"}
 
+    assert_safe_to_open_telethon_session("poster")
     session = _poster_session_name()
     prepare_session_sqlite_file(session)
     with poster_session_redis_lock():

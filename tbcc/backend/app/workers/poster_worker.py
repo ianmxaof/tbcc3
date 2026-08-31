@@ -299,6 +299,9 @@ async def _get_poster_client():
     with _poster_client_lock:
         if _poster_client is not None:
             return _poster_client
+        from app.services.telethon_session_lock import assert_safe_to_open_telethon_session
+
+        assert_safe_to_open_telethon_session("poster")
         stem = poster_session_stem()
         prepare_session_sqlite_file(stem)
         c = TelegramClient(
@@ -713,6 +716,17 @@ async def _execute_post_scheduled_text(
                         reshuffle_album=reshuffle_album,
                         invite_fallback=getattr(channel, "invite_link", None),
                     )
+                    if outcome is None:
+                        # Pool-only skip (unresolved media) — do not advance last_posted.
+                        db.rollback()
+                        from app.services.post_scheduler import release_post_enqueue_lock
+
+                        release_post_enqueue_lock(int(post_id))
+                        logger.warning(
+                            "scheduled post %s skipped (no send) — last_posted not advanced",
+                            post_id,
+                        )
+                        return
                     now = datetime.utcnow()
                     if is_recurring:
                         _stamp_recurring_last_posted(post, now)

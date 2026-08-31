@@ -81,6 +81,49 @@ def require_telethon_session_lock(kind: str = "admin") -> None:
         f"Override: TBCC_REQUIRE_TELETHON_SESSION_LOCK=0 (login scripts only)."
     )
 
+
+def revenue_island_active() -> bool:
+    """True only on the revenue island itself — set unconditionally in docker-compose.revenue-island.yml."""
+    raw = (os.getenv("TBCC_REVENUE_ISLAND_ACTIVE") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def local_telethon_override_enabled() -> bool:
+    """Explicit operator opt-in to open a real local Telethon session while the island is canonical."""
+    raw = (os.getenv("TBCC_LOCAL_TELETHON_ALLOWED") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def assert_safe_to_open_telethon_session(kind: str = "admin") -> None:
+    """
+    Refuse to open a local Telethon session unless this process IS the revenue
+    island or the operator explicitly opted in.
+
+    admin/import/poster/album session files are copies sharing one Telegram auth
+    key (see module docstring) — Telegram allows only one live MTProto connection
+    per auth key. On 2026-08-31 a local process (backend/Celery/local_lane_hub_worker)
+    held this session live at the same time as the revenue island; Telegram forced
+    the island's connection out with AuthKeyDuplicatedError, breaking live scheduled
+    posting until the operator manually re-synced sessions and recreated the island
+    containers. The island is the canonical, cloud-only Telegram runtime (see
+    .claude/CLAUDE.md Operator policy) — local processes must not hold it live.
+    """
+    if revenue_island_active():
+        return
+    if local_telethon_override_enabled():
+        return
+    label = (kind or "admin").strip().lower() or "admin"
+    raise RuntimeError(
+        f"Refusing to open the local Telethon {label} session: the revenue island "
+        "(api.powercore.app) owns this Telegram account's session. Opening it here too "
+        "causes AuthKeyDuplicatedError and breaks live island posting — this happened "
+        "on 2026-08-31 (local backend/Celery/local_lane_hub_worker collided with the "
+        "island). Do not start local Telegram bots/workers per .claude/CLAUDE.md "
+        "Operator policy. If you have confirmed the island is intentionally paused and "
+        "specifically intend to run Telegram I/O from this machine, set "
+        "TBCC_LOCAL_TELETHON_ALLOWED=1."
+    )
+
 def _redis_url() -> str:
     return (os.getenv("REDIS_URL") or "redis://localhost:6379/0").strip()
 
