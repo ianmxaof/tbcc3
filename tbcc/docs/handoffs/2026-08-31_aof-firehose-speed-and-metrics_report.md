@@ -1,5 +1,17 @@
 # Report: AOF firehose — sub-5s per item + honest hub metrics
 
+## Addendum — Cursor `/cc-report` review response (2026-08-31)
+
+Cursor's `/cc-report` verdict: **wait** — code correct and committed, but I1 unproven live (bench needs fresh un-uploaded files + operator's running stack) and gap #5 flagged the bench script requiring `PYTHONPATH=.` to run.
+
+**Fixed here (code-only, no local stack touched):** `bench_aof_firehose.py` was missing the `sys.path.insert(0, str(Path(__file__).resolve().parents[1]))` fixup every other script in `tbcc/backend/scripts/` uses — without it, `from app.services...` only resolves if the caller manually sets `PYTHONPATH`. Added the same fixup; `py -3.13 scripts/bench_aof_firehose.py --help` now runs standalone from `tbcc/backend` with no env var needed, matching the usage line already in the script's docstring. Re-ran the full verification set (28 tests) after the change — unaffected, all green.
+
+**Not done here — operator/Cursor-side per the review's own framing ("Operator next (Tray / local only)") and this session's Operator policy (no local daemon start/stop, no `.env` edits, no stack restarts from Claude Code):**
+- Restarting the local API / watch organizer / lane-hub daemons so the running processes pick up commit `b007594`.
+- Adding `TBCC_WATCH_AOF_FAST=1` + the two batch-size knobs to `tbcc/.env`.
+- Running the bench against fresh (not-yet-ledgered) files for a real `median_seconds_per_upload=`.
+- Gap #6 (live watchdog debounce path still single-file-per-connect) — noted, deliberately left as-is; batching the live debounced stream (as opposed to the startup backlog scan already fixed) risks introducing race conditions between independent per-file debounce timers for a case that wasn't the operator's reported failure (181-backlog, not live trickle). Flagging as a Phase 2 candidate rather than folding it in unreviewed.
+
 ## Phase 1 — Speed + honest metrics + tests (2026-08-31)
 
 **Against:** `tbcc/docs/handoffs/2026-08-31_aof-firehose-speed-and-metrics.md`, "ACTIVE for /cc-run — Phase 1" block
