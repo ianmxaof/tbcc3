@@ -24,6 +24,13 @@ def test_resolve_lane_disk_style(monkeypatch):
     assert aof_library_subdir("Images", meta) == "AOF BIG TITS"
 
 
+def test_inbox_lane_disk_style(monkeypatch):
+    monkeypatch.setenv("TBCC_WATCH_AOF_FOLDER_STYLE", "disk")
+    meta = {"lane_key": "inbox", "aof_preprocessed": True}
+    assert resolve_lane_from_meta(meta) == "inbox"
+    assert aof_library_subdir("Videos", meta) == "AOF INBOX"
+
+
 def test_resolve_lane_preferred_key(monkeypatch):
     monkeypatch.setenv("TBCC_WATCH_AOF_FOLDER_STYLE", "disk")
     meta = {"tags": ["asian"], "lane_key": "milf"}
@@ -52,6 +59,25 @@ def test_preprocess_skips_when_marked(tmp_path: Path):
     assert out_path == media
     assert out_meta.get("aof_preprocessed") is True
     assert out_meta.get("lane_key") == "big_tits"
+
+
+def test_fast_mode_skips_watermark(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("TBCC_WATCH_AOF_FAST", "1")
+    media = tmp_path / "AOF_media_00002_telegram.me_aofmainhub.jpg"
+    media.write_bytes(b"x")
+
+    called = {"n": 0}
+
+    def fake_watermark_file(path):
+        called["n"] += 1
+        raise AssertionError("watermark_file must not run in fast mode (I8)")
+
+    monkeypatch.setattr("app.services.local_media_watermark.watermark_file", fake_watermark_file)
+
+    out_path, out_meta = preprocess_inbox_media(media, {})
+    assert called["n"] == 0
+    assert out_meta.get("watermark_skipped") == "fast_mode"
+    assert out_path.is_file()
 
 
 def test_sidecar_roundtrip(tmp_path: Path):

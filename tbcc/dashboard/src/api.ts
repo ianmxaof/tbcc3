@@ -198,6 +198,84 @@ export type WatchFolderStatus =
       runbook: { watch: string; once: string; dry_run: string };
     };
 
+export type AofNetworkLane = {
+  network_key: string;
+  folder_name: string;
+  path: string;
+  exists: boolean;
+  media_count: number | null;
+  ledger_uploads?: number;
+  pending_uploads?: number | null;
+  message_thread_id: number;
+  topic_title: string;
+  emoji: string;
+};
+
+export type AofNetworkStatus = {
+  ok: boolean;
+  ts: string;
+  root: string;
+  counts_mode?: "fast" | "full";
+  counts_refreshing?: boolean;
+  watch: {
+    running: boolean;
+    pids: number[];
+    inbox_path: string;
+    inbox_exists: boolean;
+    inbox_media_count: number | null;
+    library_path: string;
+    debounce_s: number;
+    stable_wait_s: number;
+    aof_lane_folders: boolean;
+    log_path: string | null;
+  };
+  lane_hub: {
+    enabled: boolean;
+    running: boolean;
+    pids: number[];
+    ledger: { ledger_path: string; total_uploads: number; by_lane: Record<string, number> };
+    album_buffer?: { enabled: boolean; total_pending: number; by_topic: Record<string, number> };
+    log_path: string | null;
+    lanes: AofNetworkLane[];
+  };
+  utilities: Record<
+    string,
+    { label: string; path: string; exists: boolean; media_count: number | null }
+  >;
+  counters?: {
+    moves_total: number;
+    uploads_total: number;
+    skips_total: number;
+    errors_total: number;
+    last_move_ts: number | null;
+    last_upload_ts: number | null;
+    last_error: string | null;
+  };
+  activity: {
+    watch_recent: Array<Record<string, unknown>>;
+    hub_recent: Array<Record<string, unknown>>;
+    moves_last_minute: number;
+    uploads_last_minute: number;
+    moves_last_5m?: number;
+    uploads_last_5m?: number;
+    errors_last_minute?: number;
+    skips_last_minute: number;
+    pipeline_active: boolean;
+  };
+  summary: {
+    inbox_pending: number | null;
+    total_lane_media: number;
+    unsorted_media?: number | null;
+    hub_uploads_total?: number;
+    hub_pending_uploads?: number | null;
+    hub_buffer_pending?: number;
+    lanes_watched: number;
+    watch_running: boolean;
+    lane_hub_running: boolean;
+    firehose_ready: boolean;
+  };
+};
+
 export type PaymentBotMenuButton = { label: string; action: string };
 export type SecretarySettingsEffective = {
   format_engine_enabled: boolean;
@@ -585,6 +663,18 @@ export const api = {
     }),
   watchFolder: {
     status: () => fetchApi<WatchFolderStatus>("/watch-folder/status"),
+  },
+  aofNetwork: {
+    status: (refreshCounts = false) =>
+      fetchApi<AofNetworkStatus>(
+        `/aof-network/status?${refreshCounts ? "refresh_counts=true&fast=false" : "fast=true"}`
+      ),
+    startAll: () => fetchApi<{ ok: boolean }>("/aof-network/start-all", { method: "POST" }),
+    stopAll: () => fetchApi<{ ok: boolean }>("/aof-network/stop-all", { method: "POST" }),
+    watchStart: () => fetchApi<{ ok: boolean }>("/aof-network/watch/start", { method: "POST" }),
+    watchStop: () => fetchApi<{ ok: boolean }>("/aof-network/watch/stop", { method: "POST" }),
+    laneHubStart: () => fetchApi<{ ok: boolean }>("/aof-network/lane-hub/start", { method: "POST" }),
+    laneHubStop: () => fetchApi<{ ok: boolean }>("/aof-network/lane-hub/stop", { method: "POST" }),
   },
   media: {
     list: (

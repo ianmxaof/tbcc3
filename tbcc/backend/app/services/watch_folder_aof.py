@@ -32,6 +32,14 @@ def watch_aof_inbox_preprocess_enabled() -> bool:
     return _is_truthy(os.environ.get("TBCC_WATCH_AOF_PREPROCESS"), default=True)
 
 
+def watch_aof_fast_mode() -> bool:
+    """
+    Hot-path mode for local firehose backlog drains: skip the watermark pass and
+    clamp watch/hub debounce+stable waits (I6/I8). AOF rename still runs — cheap.
+    """
+    return _is_truthy(os.environ.get("TBCC_WATCH_AOF_FAST"), default=False)
+
+
 def _tags_from_meta(meta: dict[str, Any] | None) -> list[str]:
     if not meta:
         return []
@@ -85,21 +93,24 @@ def preprocess_inbox_media(src: Path, meta: dict[str, Any] | None) -> tuple[Path
                 out_meta["lane_key"] = lane
         return working, out_meta
 
-    # Watermark (images + videos when ffmpeg/size ok)
-    try:
-        from app.services.local_media_watermark import is_media_path, watermark_file
+    # Watermark (images + videos when ffmpeg/size ok) — skipped on the fast hot path (I8)
+    if watch_aof_fast_mode():
+        out_meta["watermark_skipped"] = "fast_mode"
+    else:
+        try:
+            from app.services.local_media_watermark import is_media_path, watermark_file
 
-        if is_media_path(working):
-            wm = watermark_file(working)
-            if wm.ok and wm.changed:
-                out_meta["watermark_applied"] = True
-            elif wm.ok:
-                out_meta["watermark_applied"] = out_meta.get("watermark_applied", False)
-            else:
-                out_meta["watermark_skipped"] = wm.message
-    except Exception as e:
-        logger.warning("watch aof watermark skipped %s: %s", working.name, e)
-        out_meta["watermark_skipped"] = str(e)
+            if is_media_path(working):
+                wm = watermark_file(working)
+                if wm.ok and wm.changed:
+                    out_meta["watermark_applied"] = True
+                elif wm.ok:
+                    out_meta["watermark_applied"] = out_meta.get("watermark_applied", False)
+                else:
+                    out_meta["watermark_skipped"] = wm.message
+        except Exception as e:
+            logger.warning("watch aof watermark skipped %s: %s", working.name, e)
+            out_meta["watermark_skipped"] = str(e)
 
     # AOF rename
     if not is_aof_branded_filename(working.name):

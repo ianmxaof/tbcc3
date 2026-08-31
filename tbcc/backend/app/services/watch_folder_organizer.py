@@ -149,6 +149,12 @@ def _append_log(log_path: Path | None, record: dict) -> None:
         line = json.dumps(record, ensure_ascii=False) + "\n"
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(line)
+        try:
+            from app.services.aof_pipeline_counters import bump_watch
+
+            bump_watch(str(record.get("action") or ""))
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("watch log write failed: %s", e)
 
@@ -333,7 +339,7 @@ def scan_inbox_once(
     if not inbox.is_dir():
         logger.error("TBCC_WATCH_INBOX is not a directory: %s", inbox)
         return 0
-    for entry in sorted(inbox.iterdir()):
+    for entry in sorted(inbox.rglob("*")):
         if not entry.is_file():
             continue
         ok, msg, _ = organize_file(
@@ -359,6 +365,14 @@ def _env_path(name: str, default: str | None = None) -> Path | None:
     if not v:
         return Path(default).resolve() if default else None
     return Path(v).expanduser().resolve()
+
+
+def _is_under_inbox(inbox: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(inbox.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 class _DebouncedOrganizer:
@@ -388,7 +402,7 @@ class _DebouncedOrganizer:
         except OSError:
             return
         try:
-            if path.parent.resolve() != self.inbox.resolve():
+            if not _is_under_inbox(self.inbox, path):
                 return
         except OSError:
             return
@@ -469,7 +483,7 @@ def run_watch_loop(
             deb.schedule(Path(event.dest_path))
 
     observer = Observer()
-    observer.schedule(Handler(), str(inbox), recursive=False)
+    observer.schedule(Handler(), str(inbox), recursive=True)
     observer.start()
     logger.info(
         "TBCC watch organizer: inbox=%s library=%s debounce=%ss stable_wait=%ss overrides=%s media_only=%s reject_dir=%s aof_lanes=%s aof_preprocess=%s nsfw_tier=%s nsfw_class=%s clip_niche=%s vision_llm=%s",
@@ -526,6 +540,11 @@ def main(argv: list[str] | None = None) -> int:
 
     debounce = float(os.environ.get("TBCC_WATCH_DEBOUNCE_S") or "1.5")
     stable_wait_s = max(0.0, float(os.environ.get("TBCC_WATCH_STABLE_WAIT_S") or "2.0"))
+    from app.services.watch_folder_aof import watch_aof_fast_mode
+
+    if watch_aof_fast_mode():
+        debounce = min(debounce, 0.5)
+        stable_wait_s = min(stable_wait_s, 0.5)
     media_only = _is_truthy_env(os.environ.get("TBCC_WATCH_MEDIA_ONLY"))
     reject_dir_raw = (os.environ.get("TBCC_WATCH_REJECT_DIR") or "").strip()
     reject_dir = Path(reject_dir_raw).expanduser().resolve() if reject_dir_raw else None
