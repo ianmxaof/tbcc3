@@ -27,11 +27,17 @@ if _env.exists():
     load_dotenv(_env, override=True)
 
 import httpx
-from telegram import BotCommand, Update
+from telegram import BotCommand, MenuButtonCommands, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from bots.macro_search_telegram import build_macro_search_handlers, cmd_macrosearch
 from bots.macro_search_forum import build_forum_handlers
+from bots.macro_search_overlay_ui import (
+    bot_commands_public,
+    bot_long_description,
+    bot_short_description,
+    macro_overlay_reply_keyboard,
+)
+from bots.macro_search_telegram import build_macro_search_handlers, cmd_macrosearch
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -106,16 +112,23 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text(forum_welcome_html(), parse_mode="HTML")
         return
     await msg.reply_text(
-        "TBCC Macro Search\n\n"
-        "• /macrosearch &lt;username&gt; — scan macro sources, send video URLs\n"
+        "<b>AOF Macro Search</b> — Telegram twin of the OnlyFans overlay\n\n"
+        "Use the keyboard chips (Search / OnlyFans / Cams / Videos) or:\n\n"
+        "• /macrosearch &lt;user&gt; — probe sources (hits + Open buttons)\n"
+        "• /macrosearch of:&lt;user&gt; — OnlyFans family\n"
+        "• /find &lt;keywords&gt; — Archive of Filth DM album\n"
+        "• /recent — re-run past searches\n"
         "• /videofind — same as /macrosearch\n"
-        "• /inbox &lt;url&gt; — queue erome/bunkr link for TBCC review\n"
-        "• /suggestsource — suggest a macro search site (community review)\n"
-        "• /macroaddsource — add a source immediately (admin)\n"
-        "• /macrolist — list sources (admin)\n\n"
+        "• /inbox &lt;url&gt; — queue gallery URL for TBCC\n"
+        "• /suggestsource — suggest a site (community)\n\n"
         "Deep link: /start ms_&lt;username&gt;",
         parse_mode="HTML",
+        reply_markup=macro_overlay_reply_keyboard(),
     )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await cmd_start(update, context)
 
 
 async def cmd_videofind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -123,22 +136,41 @@ async def cmd_videofind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _post_init(app: Application) -> None:
-    commands = [
-        BotCommand("start", "Help & commands"),
-        BotCommand("help", "Commands & TBCC bridge help"),
-        BotCommand("macrosearch", "Macro search by username"),
-        BotCommand("videofind", "Alias for macrosearch"),
-        BotCommand("inbox", "Queue gallery URL for TBCC"),
-        BotCommand("suggestsource", "Suggest macro search site"),
-        BotCommand("macroaddsource", "Add macro source (admin)"),
-        BotCommand("macrodebug", "Per-source probe report (admin)"),
-        BotCommand("macrolist", "List macro sources (admin)"),
-        BotCommand("pending", "Pending submissions (admin)"),
-    ]
+    commands = [BotCommand(c, d) for c, d in bot_commands_public()]
+    commands.extend(
+        [
+            BotCommand("inbox", "Queue gallery URL for TBCC"),
+            BotCommand("suggestsource", "Suggest macro search site"),
+            BotCommand("macroaddsource", "Add macro source (admin)"),
+            BotCommand("macrodebug", "Per-source probe report (admin)"),
+            BotCommand("macrolist", "List macro sources (admin)"),
+            BotCommand("pending", "Pending submissions (admin)"),
+        ]
+    )
+    # Dedupe by command name (public list already has inbox-ish items)
+    seen: set[str] = set()
+    uniq: list[BotCommand] = []
+    for cmd in commands:
+        if cmd.command in seen:
+            continue
+        seen.add(cmd.command)
+        uniq.append(cmd)
     try:
-        await app.bot.set_my_commands(commands)
+        await app.bot.set_my_commands(uniq)
     except Exception as e:
         logger.warning("set_my_commands failed: %s", e)
+    try:
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    except Exception as e:
+        logger.warning("set_chat_menu_button failed: %s", e)
+    try:
+        await app.bot.set_my_short_description(bot_short_description())
+    except Exception as e:
+        logger.warning("set_my_short_description failed: %s", e)
+    try:
+        await app.bot.set_my_description(bot_long_description())
+    except Exception as e:
+        logger.warning("set_my_description failed: %s", e)
     from bots.macro_search_forum import post_forum_welcome
 
     await post_forum_welcome(app)
@@ -191,6 +223,7 @@ def build_application(token: str | None = None) -> Application | None:
     dm_scope = filters.ChatType.PRIVATE if forum_enabled() else None
 
     app.add_handler(CommandHandler("videofind", cmd_videofind, filters=dm_scope))
+    app.add_handler(CommandHandler("help", cmd_help, filters=dm_scope))
 
     async def start_deeplink(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         args = context.args or []
@@ -212,8 +245,14 @@ def build_application(token: str | None = None) -> Application | None:
         _patch_macro_custom_sources,
         _force_refresh_runtime_settings,
         command_filters=dm_scope,
+        include_overlay_text=True,
     ):
         app.add_handler(h)
+
+    from bots.aof_search_telegram import build_find_handlers
+
+    for h in build_find_handlers(bot_kind="macro"):
+        app.add_handler(h, group=1)
 
     for h in build_forum_handlers(_get_runtime_settings, _patch_macro_custom_sources):
         app.add_handler(h)

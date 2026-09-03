@@ -383,6 +383,32 @@ def get_macro_search_sites(
     return [s for s in sites if s.get("category") == cat and s["id"] not in disabled]
 
 
+def get_model_search_sites_for_mode(
+    *,
+    mode: str = "macro",
+    custom_sites: list[dict[str, Any]] | None = None,
+    disabled_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Overlay-style mode → site list.
+    macro / onlyfans / livecams / videos / all
+    """
+    disabled = {str(x).strip() for x in (disabled_ids or set()) if str(x).strip()}
+    sites = merge_model_search_sites(custom_sites)
+    mode_l = (mode or "macro").strip().lower()
+    if mode_l in ("all", "everything"):
+        return [s for s in sites if s["id"] not in disabled]
+    if mode_l in ("of", "onlyfans", "fans"):
+        want = {MODEL_SEARCH_CATEGORY_ONLYFANS}
+    elif mode_l in ("cam", "cams", "livecams", "livecam"):
+        want = {MODEL_SEARCH_CATEGORY_LIVECAMS}
+    elif mode_l in ("video", "videos", "clips"):
+        want = {MODEL_SEARCH_CATEGORY_VIDEOS}
+    else:
+        want = {MODEL_SEARCH_CATEGORY_MACRO}
+    return [s for s in sites if s.get("category") in want and s["id"] not in disabled]
+
+
 def validate_custom_source_url(url: str) -> str | None:
     u = str(url or "").strip()
     if not u.startswith(("http://", "https://")):

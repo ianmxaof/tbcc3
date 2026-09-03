@@ -1,8 +1,11 @@
 """
-Telegram macro model search — extension parity in the payment bot DM.
+Telegram macro model search — extension parity in the payment bot DM + dedicated macro bot.
 
-Commands: /macrosearch, /videofind (alias), /macroaddsource (admin), /macrolist (admin)
+Commands: /macrosearch, /videofind (alias), /find (archive), /recent, /macroaddsource (admin), /macrolist (admin)
 Deep links: /start ms_<username> or vf_<username>
+
+UX mirrors the OnlyFans username-search overlay: category chips, hit cards with Open buttons,
+recent history. Archive keyword search runs first when enabled; external SEO is the fallback.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 from telegram import Update
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -29,8 +33,20 @@ from app.services.model_search_engine import (
     build_model_search_url,
     derive_username_template_from_search_url,
     extract_video_links_from_html,
+    get_model_search_sites_for_mode,
     new_custom_site_id,
     validate_custom_source_url,
+)
+from bots.macro_search_overlay_ui import (
+    category_chip_keyboard,
+    hit_open_keyboard,
+    history_keyboard,
+    list_search_history,
+    macro_overlay_reply_keyboard,
+    normalize_search_category,
+    parse_category_and_query,
+    push_search_history,
+    reply_label_action,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +82,27 @@ def admin_user_id() -> int | None:
 def is_admin(user_id: int | None) -> bool:
     aid = admin_user_id()
     return aid is not None and user_id is not None and user_id == aid
+
+
+def resolve_sources_for_mode(st: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    """Prefer dashboard-configured macro list for macro mode; otherwise filter full catalog."""
+    mode_n = normalize_search_category(mode)
+    custom = st.get("macro_search_custom_sources")
+    if not isinstance(custom, list):
+        custom = []
+    disabled_raw = st.get("macro_search_disabled_ids")
+    disabled: set[str] = set()
+    if isinstance(disabled_raw, list):
+        disabled = {str(x) for x in disabled_raw if x}
+    if mode_n == "macro":
+        sources = st.get("macro_search_sources") or []
+        if sources:
+            return list(sources)
+    return get_model_search_sites_for_mode(
+        mode=mode_n,
+        custom_sites=custom,
+        disabled_ids=disabled,
+    )
 
 
 async def probe_macro_site(
@@ -108,7 +145,7 @@ async def run_macro_search(
     sources: list[dict[str, Any]],
     max_links: int,
 ) -> list[dict[str, Any]]:
-    """Probe all macro sources; return hits with video links or labeled probe-only rows."""
+    """Probe all sources; return hits with video links or labeled probe-only rows."""
     sem = asyncio.Semaphore(MACRO_SEARCH_CONCURRENCY)
     headers = {
         "User-Agent": (
@@ -149,6 +186,7 @@ async def run_macro_search(
                     "count": len(links),
                     "links": links,
                     "kind": "links",
+                    "category": site.get("category"),
                     "reason": row.get("reason"),
                     "fetch_status": row.get("fetch_status"),
                     "signal": row.get("signal"),
@@ -169,6 +207,7 @@ async def run_macro_search(
                 "count": row.get("count"),
                 "links": [],
                 "kind": "probe",
+                "category": site.get("category"),
                 "reason": row.get("reason"),
                 "fetch_status": row.get("fetch_status"),
                 "signal": row.get("signal"),
@@ -189,36 +228,143 @@ async def send_macro_search_results(
     username: str,
     hits: list[dict[str, Any]],
     scanned: int,
+    *,
+    category: str = "macro",
 ) -> None:
+    """Overlay-style report: summary + Open buttons + category chips (not raw URL walls)."""
     msg = update.effective_message
     if not msg:
         return
+    cat_label = {
+        "macro": "Macro",
+        "onlyfans": "OnlyFans",
+        "livecams": "Live cams",
+        "videos": "Videos",
+        "all": "All sources",
+    }.get(category, category)
+    chips = category_chip_keyboard(username, active=category)
+
     if not hits:
         await msg.reply_text(
-            f"No macro hits on {scanned} source(s) for <b>@{html.escape(username)}</b>.",
+            f"No real hits on <b>{scanned}</b> {html.escape(cat_label)} source(s) for "
+            f"<b>@{html.escape(username)}</b>.\n"
+            "<i>Sites with only search-box echoes are hidden — same as the browser overlay.</i>",
+            parse_mode="HTML",
+            reply_markup=chips,
+        )
+        return
+
+    link_hits = sum(1 for h in hits if h.get("kind") == "links")
+    probe_hits = sum(1 for h in hits if h.get("kind") == "probe")
+    total_est = sum(int(h.get("count") or 0) for h in hits)
+    await msg.reply_text(
+        f"<b>{html.escape(cat_label)} search</b> — <b>{len(hits)}</b> hit(s) for "
+        f"<b>@{html.escape(username)}</b>\n"
+        f"{link_hits} with video URLs · {probe_hits} probe-only · ~{total_est} estimated\n"
+        f"<i>{scanned} source(s) scanned</i>",
+        parse_mode="HTML",
+        reply_markup=chips,
+    )
+
+    lines: list[str] = []
+    for i, h in enumerate(hits[:12], 1):
+        name = html.escape(str(h.get("name") or h.get("site_id") or "source"))
+        kind = "🎬" if h.get("kind") == "links" else "🔎"
+        cnt = h.get("count") or 0
+        lines.append(f"{i}. {kind} <b>{name}</b> · {cnt}")
+    if len(hits) > 12:
+        lines.append(f"… +{len(hits) - 12} more")
+    open_kb = hit_open_keyboard(hits)
+    await msg.reply_text(
+        "<b>Hits</b> — tap Open to visit the search page:\n" + "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=open_kb,
+        disable_web_page_preview=True,
+    )
+
+    video_lines: list[str] = []
+    for h in hits:
+        if h.get("kind") != "links":
+            continue
+        name = html.escape(str(h.get("name") or "source"))
+        for u in (h.get("links") or [])[:3]:
+            video_lines.append(f"• <b>{name}</b> — {html.escape(u)}")
+        if len(video_lines) >= 12:
+            break
+    if video_lines:
+        await msg.reply_text(
+            "<b>Direct video URLs</b>\n" + "\n".join(video_lines),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+
+
+async def _run_external_macro_probe(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    get_settings: _GetSettings,
+    query: str,
+    category: str,
+    status_msg=None,
+) -> None:
+    from app.services.aof_macro_search_router import macro_fallback_username
+
+    user = update.effective_user
+    msg = update.effective_message
+    if not msg:
+        return
+
+    username = macro_fallback_username(query)
+    if not username:
+        username = normalize_macro_username(query)
+    if not username:
+        text = (
+            f"<code>{html.escape(query[:80])}</code> is not a valid model username.\n"
+            "Try <code>/macrosearch of:modelname</code> or tap a category chip."
+        )
+        if status_msg:
+            await status_msg.edit_text(text, parse_mode="HTML")
+        else:
+            await msg.reply_text(text, parse_mode="HTML")
+        return
+
+    st = await get_settings()
+    if not bool(st.get("video_finder_enabled", True)):
+        await msg.reply_text("Macro search is disabled in bot settings.")
+        return
+    sources = resolve_sources_for_mode(st, category)
+    if not sources:
+        await msg.reply_text(
+            f"No sources configured for category <code>{html.escape(category)}</code>.",
             parse_mode="HTML",
         )
         return
-    link_hits = sum(1 for h in hits if h.get("kind") == "links")
-    probe_hits = sum(1 for h in hits if h.get("kind") == "probe")
-    await msg.reply_text(
-        f"Macro search: <b>{len(hits)}</b> hit(s) for <b>@{html.escape(username)}</b> "
-        f"({link_hits} with video URLs, {probe_hits} probe-only)",
-        parse_mode="HTML",
+    max_links = int(st.get("video_finder_max_links_per_source") or 8)
+    cat_label = category.replace("_", " ")
+    progress = (
+        f"🔎 {html.escape(cat_label.title())} probe for <b>@{html.escape(username)}</b> — "
+        f"{len(sources)} source(s)…"
     )
-    for h in hits:
-        name = html.escape(str(h.get("name") or h.get("site_id") or "source"))
-        links = h.get("links") or []
-        if links:
-            lines = [f"• {html.escape(u)}" for u in links]
-            body = f"🎬 <b>{name}</b> ({len(links)} link(s))\n" + "\n".join(lines)
-        else:
-            body = (
-                f"⚠️ <b>{name}</b> — probe only (~{h.get('count')})\n"
-                f"No direct video links parsed from HTML. Open search page:\n"
-                f"• {html.escape(str(h.get('search_url') or ''))}"
-            )
-        await msg.reply_text(body, parse_mode="HTML", disable_web_page_preview=True)
+    if status_msg:
+        await status_msg.edit_text(progress, parse_mode="HTML")
+    else:
+        status_msg = await msg.reply_text(progress, parse_mode="HTML")
+
+    hits = await run_macro_search(username, sources, max_links)
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+    await send_macro_search_results(update, username, hits, len(sources), category=category)
+    if user:
+        push_search_history(int(user.id), query=username, category=category)
+    if hits:
+        await msg.reply_text(
+            f"Done. {len(hits)} site(s) with hits for @{username}.",
+            disable_web_page_preview=True,
+            reply_markup=macro_overlay_reply_keyboard(),
+        )
 
 
 async def cmd_macrosearch(
@@ -226,44 +372,180 @@ async def cmd_macrosearch(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     get_settings: _GetSettings,
+    force_category: str | None = None,
 ) -> None:
     msg = update.effective_message
+    user = update.effective_user
     if not msg:
         return
-    args = context.args or []
-    if not args:
+    args = list(context.args or [])
+    if not args and not force_category:
         await msg.reply_text(
-            "Usage: /macrosearch &lt;username&gt;\n\n"
-            "Scans all enabled <b>macro</b> sources (same list as the TBCC extension), "
-            "then sends video URLs from sites with hits.\n\n"
-            "Add sources: /macroaddsource (admin)",
+            "<b>Macrosearch</b> — Telegram twin of the OnlyFans overlay\n\n"
+            "<b>1)</b> AOF archive first (tags / emoji) → DM album\n"
+            "<b>2)</b> Else probe external sources (hits only + Open buttons)\n\n"
+            "<b>Examples</b>\n"
+            "• <code>/macrosearch modelname</code> — Macro family\n"
+            "• <code>/macrosearch of:modelname</code> — OnlyFans family\n"
+            "• <code>/macrosearch cams:modelname</code> — Live cams\n"
+            "• <code>/macrosearch videos:modelname</code> — Videos\n"
+            "• <code>/find milf pawg</code> — archive keywords only\n\n"
+            "Use the keyboard chips or /recent for history.",
+            parse_mode="HTML",
+            reply_markup=macro_overlay_reply_keyboard(),
+        )
+        return
+
+    category, query = parse_category_and_query(args)
+    if force_category:
+        category = normalize_search_category(force_category)
+        if not query and args:
+            query = " ".join(args).strip()
+    if not query:
+        context.user_data["ms_pending_cat"] = category
+        await msg.reply_text(
+            f"Category set to <b>{html.escape(category)}</b>.\n"
+            "Send a username (or <code>/macrosearch &lt;user&gt;</code>).",
+            parse_mode="HTML",
+            reply_markup=macro_overlay_reply_keyboard(),
+        )
+        return
+
+    from app.services.aof_macro_search_router import macro_search_aof_first_enabled
+
+    if macro_search_aof_first_enabled() and user and category == "macro":
+        status_msg = await msg.reply_text(
+            f"🔎 Checking <b>AOF archive</b> for <i>{html.escape(query[:120])}</i>…",
             parse_mode="HTML",
         )
-        return
-    username = normalize_macro_username(" ".join(args))
-    if not username:
-        await msg.reply_text("Please provide a valid username (letters/numbers/._-).")
-        return
-    st = await get_settings()
-    if not bool(st.get("video_finder_enabled", True)):
-        await msg.reply_text("Macro search is disabled in bot settings.")
-        return
-    sources = st.get("macro_search_sources") or []
-    if not sources:
-        await msg.reply_text("No macro search sources are configured.")
-        return
-    max_links = int(st.get("video_finder_max_links_per_source") or 8)
-    await msg.reply_text(
-        f"🔎 Macro search for <b>@{html.escape(username)}</b> — {len(sources)} source(s)…",
-        parse_mode="HTML",
-    )
-    hits = await run_macro_search(username, sources, max_links)
-    await send_macro_search_results(update, username, hits, len(sources))
-    if hits:
-        await msg.reply_text(
-            f"Done. {len(hits)} site(s) with hits for @{username}.",
-            disable_web_page_preview=True,
+        try:
+            from bots.macro_search_aof_bridge import try_aof_archive_delivery
+
+            archive_out = await asyncio.to_thread(try_aof_archive_delivery, int(user.id), query)
+        except Exception as e:
+            logger.warning("archive search bridge failed: %s", e)
+            archive_out = {"ok": False, "reason": "bridge_error"}
+        if archive_out.get("ok"):
+            await status_msg.edit_text(
+                archive_out.get("summary_html") or "<b>Archive results sent to your DM.</b>",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            return
+        await status_msg.edit_text(
+            "No archive hit — probing <b>external</b> sources…",
+            parse_mode="HTML",
         )
+        await _run_external_macro_probe(
+            update,
+            context,
+            get_settings=get_settings,
+            query=query,
+            category=category,
+            status_msg=status_msg,
+        )
+        return
+
+    await _run_external_macro_probe(
+        update, context, get_settings=get_settings, query=query, category=category
+    )
+
+
+async def cmd_recent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+    entries = list_search_history(int(user.id))
+    if not entries:
+        await msg.reply_text(
+            "No recent searches yet. Try /macrosearch &lt;username&gt;.",
+            parse_mode="HTML",
+            reply_markup=macro_overlay_reply_keyboard(),
+        )
+        return
+    kb = history_keyboard(entries)
+    await msg.reply_text(
+        "<b>Recent searches</b> — tap to re-run:",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+
+
+async def on_macro_overlay_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    get_settings: _GetSettings,
+) -> None:
+    query = update.callback_query
+    if not query or not query.data or not query.data.startswith("ms:"):
+        return
+    await query.answer()
+    parts = query.data.split(":", 3)
+    if len(parts) < 3:
+        return
+    kind = parts[1]
+    if kind == "cat" and len(parts) >= 4:
+        cat, username = parts[2], parts[3]
+        context.args = [f"{cat}:{username}"]
+        await cmd_macrosearch(update, context, get_settings=get_settings)
+        return
+    if kind == "hist" and len(parts) >= 4:
+        cat, username = parts[2], parts[3]
+        context.args = [f"{cat}:{username}"]
+        await cmd_macrosearch(update, context, get_settings=get_settings)
+
+
+async def on_macro_overlay_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    get_settings: _GetSettings,
+) -> None:
+    """Reply-keyboard chips + bare username when a category is pending."""
+    msg = update.effective_message
+    if not msg or not msg.text:
+        return
+    text = msg.text.strip()
+    action = reply_label_action(text)
+    if action == "search":
+        context.user_data["ms_pending_cat"] = "macro"
+        await msg.reply_text(
+            "Send a <b>username</b> to probe macro sources.\n"
+            "Or <code>/macrosearch of:name</code> for OnlyFans family.",
+            parse_mode="HTML",
+            reply_markup=macro_overlay_reply_keyboard(),
+        )
+        return
+    if action == "archive":
+        from bots.aof_search_telegram import cmd_find
+
+        context.args = []
+        await cmd_find(update, context, bot_kind="macro")
+        return
+    if action == "recent":
+        await cmd_recent(update, context)
+        return
+    if action in ("onlyfans", "livecams", "videos"):
+        context.user_data["ms_pending_cat"] = action
+        await msg.reply_text(
+            f"Category <b>{html.escape(action)}</b> — send a username.",
+            parse_mode="HTML",
+            reply_markup=macro_overlay_reply_keyboard(),
+        )
+        return
+
+    pending = (context.user_data or {}).get("ms_pending_cat")
+    if pending and not text.startswith("/"):
+        context.user_data.pop("ms_pending_cat", None)
+        context.args = [f"{pending}:{text}"]
+        await cmd_macrosearch(update, context, get_settings=get_settings)
+        return
+
+    if not text.startswith("/") and normalize_macro_username(text):
+        context.args = [text]
+        await cmd_macrosearch(update, context, get_settings=get_settings)
 
 
 async def _fetch_settings_overrides(get_settings: _GetSettings) -> tuple[list[dict[str, Any]], dict[str, bool]]:
@@ -420,14 +702,15 @@ async def cmd_macrodebug(
     if not args:
         await msg.reply_text("Usage: /macrodebug &lt;username&gt;", parse_mode="HTML")
         return
-    username = normalize_macro_username(" ".join(args))
+    category, username_raw = parse_category_and_query(list(args))
+    username = normalize_macro_username(username_raw)
     if not username:
         await msg.reply_text("Invalid username.")
         return
     st = await get_settings()
-    sources = st.get("macro_search_sources") or []
+    sources = resolve_sources_for_mode(st, category)
     max_links = int(st.get("video_finder_max_links_per_source") or 8)
-    await msg.reply_text(f"Debug scan for @{username} — {len(sources)} sources…")
+    await msg.reply_text(f"Debug scan ({category}) for @{username} — {len(sources)} sources…")
     sem = asyncio.Semaphore(MACRO_SEARCH_CONCURRENCY)
     headers = {
         "User-Agent": (
@@ -436,7 +719,6 @@ async def cmd_macrodebug(
         ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    lines: list[str] = []
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=20.0, headers=headers) as client:
 
@@ -488,7 +770,7 @@ async def cmd_macrolist(
     custom = st.get("macro_search_custom_sources") or []
     lines = [f"<b>Macro sources ({len(sources)})</b>"]
     for s in sources[:40]:
-        tag = "custom" if s.get("id", "").startswith("custom_") else "builtin"
+        tag = "custom" if str(s.get("id", "")).startswith("custom_") else "builtin"
         lines.append(f"• [{tag}] {html.escape(str(s.get('name') or s.get('id')))}")
     if len(sources) > 40:
         lines.append(f"… and {len(sources) - 40} more")
@@ -502,6 +784,7 @@ def build_macro_search_handlers(
     force_refresh_settings: Callable[[], Awaitable[None]] | None = None,
     *,
     command_filters: filters.BaseFilter | None = None,
+    include_overlay_text: bool = False,
 ) -> list:
     async def _refresh() -> None:
         if force_refresh_settings:
@@ -522,22 +805,39 @@ def build_macro_search_handlers(
     async def macrolist_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
         await cmd_macrolist(u, c, get_settings=get_settings)
 
-    async def name_step(u: Update, c: ContextTypes.DEFAULT_TYPE) -> int:
+    async def recent_cmd(u: Update, c: ContextTypes.DEFAULT_TYPE) -> None:
+        await cmd_recent(u, c)
+
+    async def got_name(u: Update, c: ContextTypes.DEFAULT_TYPE) -> int:
         return await macroadd_got_name(u, c, get_settings=get_settings, patch_custom=_patch)
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("macroaddsource", macroadd_start, filters=command_filters)],
         states={
-            MS_ADD_URL: [MessageHandler((command_filters or filters.ALL) & filters.TEXT & ~filters.COMMAND, macroadd_got_url)],
-            MS_ADD_USER: [MessageHandler((command_filters or filters.ALL) & filters.TEXT & ~filters.COMMAND, macroadd_got_user)],
-            MS_ADD_NAME: [MessageHandler((command_filters or filters.ALL) & filters.TEXT & ~filters.COMMAND, name_step)],
+            MS_ADD_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, macroadd_got_url)],
+            MS_ADD_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, macroadd_got_user)],
+            MS_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_name)],
         },
-        fallbacks=[CommandHandler("cancel", macroadd_cancel, filters=command_filters)],
+        fallbacks=[CommandHandler("cancel", macroadd_cancel)],
         allow_reentry=True,
     )
-    return [
+
+    handlers: list = [
         CommandHandler("macrosearch", macrosearch_cmd, filters=command_filters),
         CommandHandler("macrodebug", macrodebug_cmd, filters=command_filters),
-        conv,
         CommandHandler("macrolist", macrolist_cmd, filters=command_filters),
+        CommandHandler("recent", recent_cmd, filters=command_filters),
+        CallbackQueryHandler(
+            lambda u, c: on_macro_overlay_callback(u, c, get_settings=get_settings),
+            pattern=r"^ms:",
+        ),
+        conv,
     ]
+    if include_overlay_text:
+        handlers.append(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND & (command_filters or filters.ALL),
+                lambda u, c: on_macro_overlay_text(u, c, get_settings=get_settings),
+            )
+        )
+    return handlers
