@@ -76,6 +76,7 @@ async def _refresh_panel(query, bot, *, page: int = 0, note: str = "") -> None:
     if not ok or thread_id is None:
         return
     from app.services.qa_master_panel import ensure_qa_master_panel_at_thread
+    from app.services.qa_live_counter import ensure_qa_live_counter
 
     if note:
         with SessionLocal() as db:
@@ -85,8 +86,12 @@ async def _refresh_panel(query, bot, *, page: int = 0, note: str = "") -> None:
         chat_id=int(query.message.chat_id),
         message_thread_id=int(thread_id),
         page=page,
-        force_new=True,
+        force_new=False,
     )
+    try:
+        await ensure_qa_live_counter(bot, force_new=False)
+    except Exception:
+        logger.debug("qa live counter refresh on panel failed", exc_info=True)
 
 
 async def cmd_qa_master_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -101,8 +106,13 @@ async def cmd_qa_master_panel(update: Update, context: ContextTypes.DEFAULT_TYPE
             await msg.reply_text("❌ /qapanel only works inside Q&A | APPROVE / DENY | INTAKE.")
         return
     from app.services.qa_master_panel import ensure_qa_master_panel
+    from app.services.qa_live_counter import ensure_qa_live_counter
 
     out = await ensure_qa_master_panel(context.bot, force_new=False)
+    try:
+        await ensure_qa_live_counter(context.bot, force_new=False)
+    except Exception:
+        logger.debug("qa live counter on /qapanel failed", exc_info=True)
     msg = update.effective_message
     if msg:
         await msg.reply_text(f"🟡 Q&A master panel {out.get('action', 'updated')}.")
@@ -240,10 +250,43 @@ async def on_qa_master_panel_callback(update: Update, context: ContextTypes.DEFA
         note = "Queued vault staging flush"
         await query.answer(note)
     elif data == f"{CALLBACK_PREFIX}run:inbox":
+        from app.services.storage_hub_op_status import (
+            edit_hub_op_status,
+            format_inbox_now_status,
+            post_hub_op_status,
+        )
+        from app.services.telegram_queue_ops import (
+            clear_enrich_for_operator_intake,
+            promote_inbox_now_next,
+        )
         from app.workers.inbox_intake_worker import run_inbox_intake_now
 
-        run_inbox_intake_now.delay()
-        note = "Queued inbox deposit"
+        status_mid = None
+        chat = query.message.chat if query.message else None
+        thread_id = getattr(query.message, "message_thread_id", None) if query.message else None
+        if chat:
+            status_mid = post_hub_op_status(
+                chat_id=int(chat.id),
+                message_thread_id=int(thread_id) if thread_id else None,
+                text=format_inbox_now_status("start"),
+            )
+        cleared = clear_enrich_for_operator_intake()
+        if chat and status_mid and (cleared.get("removed") or cleared.get("revoked")):
+            detail = (
+                f"<i>Cleared {cleared.get('removed') or 0} queued + "
+                f"{cleared.get('revoked') or 0} active classify job(s).</i>"
+            )
+            edit_hub_op_status(
+                chat_id=int(chat.id),
+                message_id=int(status_mid),
+                text=format_inbox_now_status("clearing", detail=detail),
+            )
+        run_inbox_intake_now.delay(
+            status_chat_id=int(chat.id) if chat else None,
+            status_message_id=status_mid,
+        )
+        promote_inbox_now_next()
+        note = "Pulling inbox drop…"
         await query.answer(note)
     else:
         await query.answer("Unknown action", show_alert=True)

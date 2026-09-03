@@ -194,7 +194,7 @@ async def on_hub_lane_control_callback(update: Update, context: ContextTypes.DEF
             context.bot,
             chat_id=int(query.message.chat_id),
             message_thread_id=int(thread_id),
-            force_new=True,
+            force_new=False,
         )
         return True
     elif data == "rebundle:preview":

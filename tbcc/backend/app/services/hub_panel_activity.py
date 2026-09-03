@@ -46,7 +46,7 @@ async def repost_panels_after_deposit(
                 chat_id=int(chat_id),
                 message_thread_id=tid,
                 topic_title=topic_title or "",
-                force_new=True,
+                force_new=False,
             )
             out["panels"].append({"kind": "lane", **lane})
     except Exception as e:
@@ -61,7 +61,7 @@ async def repost_panels_after_deposit(
             bot,
             chat_id=int(chat_id),
             message_thread_id=master_tid,
-            force_new=True,
+            force_new=False,
         )
         out["panels"].append({"kind": "qa_master", **master})
     except Exception as e:

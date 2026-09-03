@@ -467,6 +467,8 @@ def operator_approve_media(
         micro_pull_lanes,
     )
     enqueue_vault_approved_media(media_id)
+    _maybe_cleanup_single_review_message(db, media)
+    _refresh_qa_live_counter_after_decide()
     return {
         "ok": True,
         "media_id": media_id,
@@ -776,6 +778,8 @@ def operator_reject_media(
         demote_info.get("streak"),
         demote_info.get("demoted"),
     )
+    _maybe_cleanup_single_review_message(db, media)
+    _refresh_qa_live_counter_after_decide()
     return {
         "ok": True,
         "media_id": media_id,
@@ -879,6 +883,14 @@ def send_quarantine_review_message(db: Session, media_id: int) -> dict[str, Any]
         copy_out = _telegram_api_post(token, "copyMessage", payload)
         if copy_out.get("ok"):
             result = copy_out.get("result") or {}
+            msg_id = int(result.get("message_id") or 0)
+            if msg_id > 0:
+                _persist_quarantine_review_message_ids(
+                    db,
+                    media,
+                    chat_id=int(dest_chat),
+                    message_ids=[msg_id],
+                )
             return {
                 "ok": True,
                 "media_id": media_id,
@@ -906,6 +918,14 @@ def send_quarantine_review_message(db: Session, media_id: int) -> dict[str, Any]
     if not text_out.get("ok"):
         return {"ok": False, "error": text_out.get("error"), "media_id": media_id}
     result = text_out.get("result") or {}
+    msg_id = int(result.get("message_id") or 0)
+    if msg_id > 0:
+        _persist_quarantine_review_message_ids(
+            db,
+            media,
+            chat_id=int(dest_chat),
+            message_ids=[msg_id],
+        )
     return {
         "ok": True,
         "media_id": media_id,
@@ -915,13 +935,61 @@ def send_quarantine_review_message(db: Session, media_id: int) -> dict[str, Any]
     }
 
 
+def _persist_quarantine_review_message_ids(
+    db: Session,
+    media: Any,
+    *,
+    chat_id: int,
+    message_ids: list[int],
+) -> None:
+    ids = sorted({int(x) for x in message_ids if int(x) > 0})
+    if not ids:
+        return
+    data = _classification_dict(media)
+    gk = data.get("gatekeeper") if isinstance(data.get("gatekeeper"), dict) else {}
+    gk = dict(gk)
+    gk["quarantine_review_chat_id"] = int(chat_id)
+    gk["quarantine_review_message_ids"] = ids
+    data["gatekeeper"] = gk
+    media.classification_json = json.dumps(data, ensure_ascii=False)
+    db.commit()
+
+
+def _refresh_qa_live_counter_after_decide() -> None:
+    try:
+        from app.workers.gatekeeper_review_worker import refresh_qa_live_counter_task
+
+        refresh_qa_live_counter_task.delay()
+    except Exception:
+        try:
+            from app.services.qa_live_counter import refresh_qa_live_counter_http
+
+            refresh_qa_live_counter_http()
+        except Exception:
+            logger.debug("qa live counter refresh failed", exc_info=True)
+
+
+def _maybe_cleanup_single_review_message(db: Session, media: Any) -> None:
+    gk = _classification_dict(media).get("gatekeeper") or {}
+    if gk.get("quarantine_review_batch"):
+        return
+    from app.services.quarantine_review_cleanup import cleanup_media_quarantine_messages
+
+    cleanup_media_quarantine_messages(db, int(media.id))
+
+
 def enqueue_quarantine_review(media_id: int) -> None:
-    """Queue Telegram review card (non-blocking)."""
+    """Queue Telegram review card (non-blocking).
+
+    When ``TBCC_VISION_AUTO_ROUTE_LANES=all``, soft inbox quarantine cards are
+    suppressed — vision enrich routes the item. Hard-blocked media still gets a card.
+    """
     if not review_notify_enabled():
         return
     try:
         from app.database.session import SessionLocal
         from app.models.media import Media
+        from app.services.auto_tag_enrich import vision_auto_route_is_all
         from app.services.inbox_intake_review import (
             inbox_intake_enabled,
             is_inbox_media,
@@ -938,6 +1006,24 @@ def enqueue_quarantine_review(media_id: int) -> None:
             media = db.query(Media).filter(Media.id == int(media_id)).first()
             if not media:
                 return
+            if (
+                vision_auto_route_is_all()
+                and inbox_intake_enabled()
+                and is_inbox_media(media)
+            ):
+                # Soft quarantine only — age/seller/zoo still needs a human card.
+                gk = (_classification_dict(media).get("gatekeeper") or {})
+                blocks = gk.get("blocks") or []
+                hard = any(
+                    str(b).startswith("hard_block:") or "age" in str(b).lower() or "zoo" in str(b).lower()
+                    for b in blocks
+                )
+                if not hard:
+                    logger.info(
+                        "suppress inbox quarantine card media_id=%s (vision auto-route=all)",
+                        media_id,
+                    )
+                    return
             if inbox_intake_enabled() and is_inbox_media(media):
                 out = queue_inbox_quarantine_media(int(media_id))
                 if out.get("flushing") and out.get("media_ids"):

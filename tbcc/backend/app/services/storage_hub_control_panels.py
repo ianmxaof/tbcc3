@@ -140,6 +140,15 @@ async def ensure_all_hub_control_panels(bot, *, force_new: bool = False) -> dict
             logger.warning("hub panel bootstrap failed panel=%s: %s", coro_name, e, exc_info=True)
             extra.append({"ok": False, "panel": coro_name, "error": str(e)[:200]})
 
+    try:
+        from app.services.qa_live_counter import ensure_qa_live_counter
+
+        counter = await ensure_qa_live_counter(bot, force_new=force_new)
+        extra.append({"panel": "qa_live_counter", **counter})
+    except Exception as e:
+        logger.warning("qa live counter bootstrap failed: %s", e, exc_info=True)
+        extra.append({"ok": False, "panel": "qa_live_counter", "error": str(e)[:200]})
+
     return {
         "ok": bool(lane_report.get("ok")) and all(r.get("ok") for r in extra),
         "lanes": lane_report,

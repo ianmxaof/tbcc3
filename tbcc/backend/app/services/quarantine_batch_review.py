@@ -63,12 +63,17 @@ def _store_batch(
     *,
     lane_key: str | None = None,
     lead_media_id: int | None = None,
+    telegram: dict[str, Any] | None = None,
 ) -> None:
     """Persist batch members + optional Storage Hub lane. Index lead → batch for toggle fan-out."""
+    existing = load_batch_payload(batch_id)
     payload = {
         "media_ids": [int(x) for x in media_ids],
-        "lane_key": (lane_key or "").strip().lower() or None,
-        "lead_media_id": int(lead_media_id) if lead_media_id else (int(media_ids[0]) if media_ids else None),
+        "lane_key": (lane_key or "").strip().lower() or existing.get("lane_key"),
+        "lead_media_id": int(lead_media_id)
+        if lead_media_id
+        else (int(media_ids[0]) if media_ids else existing.get("lead_media_id")),
+        "telegram": telegram if telegram is not None else existing.get("telegram"),
     }
     try:
         r = _redis()
@@ -78,6 +83,32 @@ def _store_batch(
             r.set(f"{BATCH_LEAD_PREFIX}{int(lead)}", batch_id, ex=BATCH_TTL_SECONDS)
     except Exception:
         logger.debug("quarantine batch store failed id=%s", batch_id, exc_info=True)
+
+
+def save_batch_telegram_meta(
+    batch_id: str,
+    *,
+    chat_id: int,
+    preview_message_ids: list[int] | None = None,
+    control_message_id: int | None = None,
+) -> None:
+    """Merge Telegram message ids for batch cleanup after operator decide."""
+    payload = load_batch_payload(batch_id)
+    if not payload.get("media_ids"):
+        return
+    tel = dict(payload.get("telegram") or {})
+    tel["chat_id"] = int(chat_id)
+    if preview_message_ids is not None:
+        tel["preview_message_ids"] = [int(x) for x in preview_message_ids if int(x) > 0]
+    if control_message_id is not None:
+        tel["control_message_id"] = int(control_message_id)
+    _store_batch(
+        batch_id,
+        list(payload.get("media_ids") or []),
+        lane_key=payload.get("lane_key"),
+        lead_media_id=payload.get("lead_media_id"),
+        telegram=tel,
+    )
 
 
 def load_batch_payload(batch_id: str) -> dict[str, Any]:
@@ -95,6 +126,7 @@ def load_batch_payload(batch_id: str) -> dict[str, Any]:
                 "media_ids": ids,
                 "lane_key": (data.get("lane_key") or None),
                 "lead_media_id": int(data["lead_media_id"]) if data.get("lead_media_id") else (ids[0] if ids else None),
+                "telegram": data.get("telegram") if isinstance(data.get("telegram"), dict) else None,
             }
     except Exception:
         logger.debug("quarantine batch load failed id=%s", batch_id, exc_info=True)
@@ -207,7 +239,10 @@ def format_batch_caption(
     lines.append("<code>" + html_escape("\n".join(numbered[:15])) + "</code>")
     if len(numbered) > 15:
         lines.append(f"<i>… +{len(numbered) - 15} more in batch</i>")
-    lines.append("<i>Batch = one lane choice for all items. Tap lane emoji(s), then Approve — or Reject entire batch.</i>")
+    lines.append(
+        "<i>Tap a lane emoji to route the whole batch now — or Reject. "
+        "Approve still works if you need multi-lane.</i>"
+    )
     from app.services.tbcc_caption_stamp import merge_quarantine_review_html
 
     return merge_quarantine_review_html("\n".join(lines), lane_key=lane_key)
@@ -249,6 +284,11 @@ def post_quarantine_batch(
     token = _bot_token()
     if not token:
         return {"ok": False, "reason": "bot_token_unset"}
+
+    from app.utils.telegram_forum import bot_api_forum_thread_id
+
+    dest = dict(dest)
+    dest["message_thread_id"] = bot_api_forum_thread_id(dest.get("message_thread_id"))
 
     batch_id = secrets.token_hex(4)
     album_size = review_batch_size()
@@ -297,6 +337,7 @@ def post_quarantine_batch(
 
     lead_preview = next((p for p in previews if int(p.get("media_id") or 0) == lead_id), None)
     control_sent = False
+    control_message_id: int | None = None
     if lead_preview and len(quarantine) > album_size:
         payload: dict[str, Any] = {
             "chat_id": dest["chat_id"],
@@ -310,6 +351,8 @@ def post_quarantine_batch(
             payload["message_thread_id"] = int(dest["message_thread_id"])
         sent = _telegram_api_post(token, "copyMessage", payload)
         control_sent = bool(sent.get("ok"))
+        if control_sent:
+            control_message_id = int((sent.get("result") or {}).get("message_id") or 0) or None
         if not control_sent:
             logger.info("quarantine lead copyMessage failed batch=%s", batch_id)
 
@@ -328,6 +371,15 @@ def post_quarantine_batch(
         sent = _telegram_api_post(token, "sendMessage", control_payload)
         if not sent.get("ok"):
             return {"ok": False, "error": sent.get("error"), "batch_id": batch_id, "media_ids": ids}
+        control_message_id = int((sent.get("result") or {}).get("message_id") or 0) or None
+        control_sent = True
+
+    save_batch_telegram_meta(
+        batch_id,
+        chat_id=int(dest["chat_id"]),
+        preview_message_ids=copied_ids,
+        control_message_id=control_message_id or 0,
+    )
 
     for m in quarantine:
         try:
@@ -339,17 +391,28 @@ def post_quarantine_batch(
             gk["quarantine_review_at"] = time.time()
             if lane_key:
                 gk["quarantine_review_lane"] = lane_key
+            msg_ids = list(copied_ids)
+            if control_message_id:
+                msg_ids.append(int(control_message_id))
+            if msg_ids:
+                gk["quarantine_review_chat_id"] = int(dest["chat_id"])
+                gk["quarantine_review_message_ids"] = sorted({int(x) for x in msg_ids if int(x) > 0})
             meta["gatekeeper"] = gk
             m.classification_json = json.dumps(meta, ensure_ascii=False)
         except Exception:
             pass
     db.commit()
 
+    from app.services.gatekeeper_review import _refresh_qa_live_counter_after_decide
+
+    _refresh_qa_live_counter_after_decide()
+
     return {
         "ok": True,
         "batch_id": batch_id,
         "media_ids": [int(m.id) for m in quarantine],
         "copied_preview_ids": copied_ids,
+        "control_message_id": control_message_id,
         "dest": dest,
         "lane_key": lane_key,
     }
@@ -472,6 +535,26 @@ def _lanes_for_batch_item(
     return None
 
 
+def operator_route_batch_to_lane(
+    db: Session,
+    batch_id: str,
+    lane_key: str,
+    *,
+    operator_id: int | None = None,
+) -> dict[str, Any]:
+    """One-tap: stamp a single lane on the whole batch and approve+route."""
+    lane = (lane_key or "").strip().lower()
+    if not lane:
+        return {"ok": False, "reason": "no_lane", "batch_id": batch_id}
+    ids = load_batch_media_ids(batch_id)
+    if not ids:
+        return {"ok": False, "reason": "batch_not_found", "batch_id": batch_id}
+    fanout_batch_lane_picks(batch_id, [lane])
+    out = operator_approve_batch(db, batch_id, operator_id=operator_id)
+    out["routed_lane"] = lane
+    return out
+
+
 def operator_approve_batch(db: Session, batch_id: str, *, operator_id: int | None = None) -> dict[str, Any]:
     from app.services.gatekeeper_lane_picker import get_picked_lanes
     from app.services.gatekeeper_review import operator_approve_media
@@ -501,6 +584,12 @@ def operator_approve_batch(db: Session, batch_id: str, *, operator_id: int | Non
         )
     ok = sum(1 for r in results if r.get("ok"))
     route_fail = sum(1 for r in results if r.get("ok") and r.get("route_enqueue_ok") is False)
+    from app.services.quarantine_review_cleanup import cleanup_batch_quarantine_messages
+
+    cleanup_batch_quarantine_messages(batch_id)
+    from app.services.gatekeeper_review import _refresh_qa_live_counter_after_decide
+
+    _refresh_qa_live_counter_after_decide()
     return {
         "ok": ok > 0,
         "batch_id": batch_id,
@@ -521,6 +610,12 @@ def operator_reject_batch(db: Session, batch_id: str, *, operator_id: int | None
     for mid in ids:
         results.append(operator_reject_media(db, mid, operator_id=operator_id))
     ok = sum(1 for r in results if r.get("ok"))
+    from app.services.quarantine_review_cleanup import cleanup_batch_quarantine_messages
+
+    cleanup_batch_quarantine_messages(batch_id)
+    from app.services.gatekeeper_review import _refresh_qa_live_counter_after_decide
+
+    _refresh_qa_live_counter_after_decide()
     return {"ok": ok > 0, "batch_id": batch_id, "rejected": ok, "total": len(ids), "results": results}
 
 

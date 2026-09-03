@@ -45,7 +45,9 @@ LANES_PER_PAGE = 6
 
 
 def panel_redis_key(chat_id: int, message_thread_id: int | None) -> str:
-    tid = int(message_thread_id or 0)
+    from app.utils.telegram_forum import normalize_hub_panel_thread_id
+
+    tid = normalize_hub_panel_thread_id(message_thread_id)
     return f"{REDIS_PANEL_PREFIX}:{int(chat_id)}:{tid}"
 
 
@@ -198,11 +200,17 @@ def format_qa_master_panel_html(db: Session, *, page: int = 0) -> str:
 def qa_master_panel_keyboard(*, page: int = 0) -> Any:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+    from app.services.admin_bridge import dashboard_public_base
+
     lim = get_deposit_limit()
+    dash_url = dashboard_public_base()
     rows: list[list[Any]] = [
         [
             InlineKeyboardButton("🔄 Refresh", callback_data=f"{CALLBACK_PREFIX}refresh:{page}"),
             InlineKeyboardButton("📋 Review", callback_data=f"{CALLBACK_PREFIX}review"),
+        ],
+        [
+            InlineKeyboardButton("🖥 Dashboard", url=dash_url[:512]),
         ],
         [
             InlineKeyboardButton(
@@ -321,9 +329,10 @@ async def ensure_qa_master_panel_at_thread(
 
     from app.database.session import SessionLocal
     from app.services.hub_panel_message import ensure_singleton_panel_message
+    from app.utils.telegram_forum import normalize_hub_panel_thread_id
 
     cid = int(chat_id)
-    tid = int(message_thread_id)
+    tid = normalize_hub_panel_thread_id(message_thread_id)
     with SessionLocal() as db:
         text = format_qa_master_panel_html(db, page=page)
     markup = qa_master_panel_keyboard(page=page)

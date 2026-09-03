@@ -70,6 +70,50 @@ def route_approved_lanes_task(media_id: int, lane_keys: list[str]) -> dict:
     return {"ok": True, "media_id": media_id, **out}
 
 
+@celery.task(name="app.workers.gatekeeper_review_worker.refresh_qa_live_counter")
+def refresh_qa_live_counter_task() -> dict:
+    from app.services.qa_live_counter import refresh_qa_live_counter_http
+
+    return refresh_qa_live_counter_http()
+
+
+@celery.task(name="app.workers.gatekeeper_review_worker.library_mirror_media")
+def library_mirror_media_task(media_id: int) -> dict:
+    """Re-upload one Storage Hub media row into the Archive of Filth lane subtopic."""
+    from app.database.session import SessionLocal
+    from app.models.media import Media
+    from app.services.aof_library_forum_mirror import mirror_hub_message_to_library_topic
+    from app.services.gatekeeper_review import resolve_media_lane_key
+    from app.services.telegram_admin import run_telegram_io
+
+    with SessionLocal() as db:
+        media = db.query(Media).filter(Media.id == int(media_id)).first()
+        if not media:
+            return {"ok": False, "reason": "not_found", "media_id": media_id}
+        lane = resolve_media_lane_key(db, media)
+        msg_id = int(getattr(media, "telegram_message_id", 0) or 0)
+
+    if not lane:
+        return {"ok": False, "reason": "no_lane", "media_id": media_id}
+    if msg_id <= 0:
+        return {"ok": False, "reason": "no_telegram_message_id", "media_id": media_id}
+
+    async def _run(storage):
+        return await mirror_hub_message_to_library_topic(
+            storage,
+            source_message_id=msg_id,
+            lane_key=lane,
+        )
+
+    try:
+        out = asyncio.run(run_telegram_io(_run))
+    except Exception as e:
+        logger.exception("library_mirror_media failed media_id=%s", media_id)
+        return {"ok": False, "media_id": media_id, "error": str(e)[:400]}
+
+    return {"ok": True, "media_id": media_id, "lane": lane, **out}
+
+
 @celery.task(name="app.workers.gatekeeper_review_worker.vault_approved_media")
 def vault_approved_media_task(media_id: int) -> dict:
     from app.database.session import SessionLocal

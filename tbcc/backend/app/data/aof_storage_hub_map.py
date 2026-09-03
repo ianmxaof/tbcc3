@@ -35,6 +35,11 @@ INBOX_CHANNEL_TITLE = "AOF INBOX #CHANNEL"
 # Operator quarantine review queue (forum subtopic). Set TBCC_GATEKEEPER_REVIEW_THREAD_ID if renamed.
 GATEKEEPER_REVIEW_TOPIC_TITLE = "Q&A | APPROVE / DENY | INTAKE"
 
+# Manual human review archive — intentionally disconnected from gatekeeper auto-pipe / Q&A cards.
+# t.me/c/3812457581/827
+REVIEW_TOPIC_ID = 827
+REVIEW_TOPIC_TITLE = "[ 🔞 ] REVIEW"
+
 
 @dataclass(frozen=True)
 class StorageTopicMap:
@@ -90,7 +95,7 @@ STORAGE_OTHER_TOPICS: tuple[StorageTopicMap, ...] = (
     StorageTopicMap(3090, "Remote Upload Links", "erome", notes="Erome upload lane — TBCC_EROME_STORAGE_TOPIC_ID"),
     StorageTopicMap(3054, "SSBBW", "", notes="unmapped"),
     StorageTopicMap(3243, "Spun", "", notes="unmapped"),
-    StorageTopicMap(827, "Top Tier", "", notes="unmapped"),
+    StorageTopicMap(827, REVIEW_TOPIC_TITLE, "", notes="manual review archive — t.me/c/3812457581/827"),
     StorageTopicMap(5976, "WEBCAM / ETHOT", "", notes="unmapped"),
     StorageTopicMap(3092, "Workshop", "", notes="workshop"),
     StorageTopicMap(1382, "dickflash", "", notes="unmapped"),

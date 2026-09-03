@@ -37,3 +37,16 @@ def bot_api_forum_thread_api_kwargs(message_thread_id: int | None) -> dict[str, 
     if api_thread:
         return {"message_thread_id": api_thread}
     return {}
+
+
+def normalize_hub_panel_thread_id(message_thread_id: int | None) -> int:
+    """Canonical Storage Hub panel redis key thread id (Q&A General topic → 1, not 0)."""
+    from app.data.aof_storage_hub_map import GATEKEEPER_REVIEW_TOPIC_ID
+
+    qa = int(GATEKEEPER_REVIEW_TOPIC_ID or 1)
+    if message_thread_id is None:
+        return qa
+    tid = int(message_thread_id)
+    if tid <= 0:
+        return qa
+    return tid

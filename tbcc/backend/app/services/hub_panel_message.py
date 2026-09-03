@@ -77,6 +77,16 @@ async def ensure_singleton_panel_message(
     if api_thread:
         send_kw["message_thread_id"] = api_thread
 
+    if stored_mid and force_new:
+        await delete_panel_message(
+            bot,
+            chat_id=int(chat_id),
+            message_id=int(stored_mid),
+            message_thread_id=message_thread_id,
+        )
+        set_stored_message_id(0)
+        stored_mid = None
+
     if stored_mid and not force_new:
         try:
             await bot.edit_message_text(message_id=int(stored_mid), **send_kw)

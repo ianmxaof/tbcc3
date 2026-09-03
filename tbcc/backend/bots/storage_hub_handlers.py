@@ -155,8 +155,9 @@ def register_storage_hub_handlers(app: Application, *, bot_label: str) -> None:
         )
     )
 
+    # gk:bt: = batch lane tap (one-tap route). Must include t — ^gk:b[ar]: silently dropped VOY/ASS taps.
     app.add_handler(CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:[atr]:"))
-    app.add_handler(CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b[ar]:"))
+    app.add_handler(CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:b(?:a|r|t):"))
     app.add_handler(CallbackQueryHandler(handle_gatekeeper_review_callback, pattern=r"^gk:p:"))
     app.add_handler(CallbackQueryHandler(handle_intake_control_callback, pattern=r"^intake:"))
     app.add_handler(CallbackQueryHandler(handle_hub_lane_control_callback, pattern=r"^hubctl:"))
