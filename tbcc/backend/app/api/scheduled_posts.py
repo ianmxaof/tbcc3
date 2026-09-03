@@ -243,6 +243,14 @@ def _patch_scheduled_post_core(
         post.checkout_referral_code = (v.strip().upper()[:16] if isinstance(v, str) and v.strip() else None)
     if "clear_auto_pause" in fs and body.clear_auto_pause:
         _clear_auto_pause_state(post)
+    if "pause" in fs and body.pause is not None:
+        if body.pause:
+            post.posting_auto_paused_at = datetime.utcnow()
+            post.posting_auto_pause_reason = (
+                (body.pause_reason or "").strip()[:512] or "manual pause"
+            )
+        else:
+            _clear_auto_pause_state(post)
     if "buffer_mirror_enabled" in fs:
         post.buffer_mirror_enabled = bool(body.buffer_mirror_enabled)
     if "buffer_publish_now" in fs:
@@ -371,6 +379,11 @@ class ScheduledPostUpdate(BaseModel):
         default=None,
         description="If true, clear auto-pause and send-failure streak (resume Celery beat for this job).",
     )
+    pause: bool | None = Field(
+        default=None,
+        description="Manual pause switch: true stops beat from enqueueing this recurring job (e.g. empty pool); false clears it same as clear_auto_pause.",
+    )
+    pause_reason: str | None = Field(default=None, max_length=512)
     media_ids: list[int] | None = None
     pool_id: int | None = None
     pool_collective_random: bool | None = None

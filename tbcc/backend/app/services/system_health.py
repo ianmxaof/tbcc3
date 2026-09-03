@@ -714,6 +714,9 @@ def _celery_inspect_scheduling_counts() -> dict[str, int] | None:
         n = str(name).lower()
         if "ops@" in n or "ops_growth" in n:
             ops += 1
+        elif "island-tg@" in n or "island_tg@" in n:
+            # Dedicated telegram-queue worker — not a celery-queue consumer.
+            continue
         elif "island-post@" in n or n.endswith("@post") or "scheduler@" in n:
             # Island worker_post consumes post_scheduler + post together.
             post += 1
@@ -729,6 +732,15 @@ def _celery_inspect_scheduling_counts() -> dict[str, int] | None:
     # it is down (missing from ping alone is not enough).
     if _revenue_island_active() and post > 0 and worker == 0:
         worker = 1
+
+    # docker-compose.revenue-island.yml `worker` service (-n island@%h) consumes
+    # celery,subscription,ops_growth,ops_relay in one process — it never answers to an
+    # "ops@" hostname. Hostname-only classification above leaves celery_ops permanently
+    # at 0 on island (false red) even though the main worker is up and draining
+    # ops_growth. Treat the main worker as the ops_growth consumer too when running as
+    # the revenue island.
+    if _revenue_island_active() and worker > 0 and ops == 0:
+        ops = worker
 
     # Beat does not answer ping; on island compose it is a sibling container.
     # Treat beat as up when any worker is reachable (same Redis broker).
