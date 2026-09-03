@@ -22,12 +22,13 @@ class VipMembershipSku:
     blurb: str
 
 
-# Locked 2026-07-27 — match https://aof69.gumroad.com/l/ynnulc tier prices ($18 floor).
-# Operator: update Gumroad product tiers + TBCC_GUMROAD_PRODUCT_MAP price:* keys (see handoff).
+# Locked 2026-09-03 — impulse table: $6/mo featured; multi-month terms stay in DB but stay
+# off the default shop keyboard. Gumroad ynnulc may still list older tiers until the operator
+# updates the product; Ping maps both 600¢ (current) and 1800¢ (legacy $18) to monthly.
 GUMROAD_VIP_PRODUCT_URL = "https://aof69.gumroad.com/l/ynnulc"
 
 # One-time intro price for first-time buyers (2026-08-03; extended to 90d 2026-08-17 — $10 holds for
-# the first 3 months, standard $18/mo ladder applies after). `name` kept as the original "Intro Month"
+# the first 3 months, then the $6/mo rate). `name` kept as the original "Intro Month"
 # literal on purpose: it's a DB identity key (is_vip_intro_plan_name, protected_main_vip_plan_names) that
 # existing rows match on — renaming it would orphan the live row. Only display copy reflects the real length.
 VIP_INTRO_SKU = VipMembershipSku(
@@ -44,9 +45,9 @@ VIP_MEMBERSHIP_SKUS: tuple[VipMembershipSku, ...] = (
     VipMembershipSku(
         name="AOF VIP — 1 Month",
         duration_days=30,
-        price_usd=18.0,
+        price_usd=6.0,
         gumroad_recurrence="monthly",
-        blurb="VIP · 30 days · daily god roll · clean vault · all lanes.",
+        blurb="Loot Room · 30 days · daily god roll · clean vault · all lanes.",
     ),
     VipMembershipSku(
         name="AOF VIP — 3 Months",
@@ -81,13 +82,13 @@ VIP_MEMBERSHIP_SKUS: tuple[VipMembershipSku, ...] = (
 # Gumroad price field is cents; used for Ping recurrence fallback when no EPO.
 # Legacy keys kept for grandfathered renewals — add new price:* keys in PRODUCT_MAP on deploy.
 VIP_PRICE_CENTS_TO_RECURRENCE: dict[int, str] = {
-    # Legacy (pre-2026-07-27)
+    # Legacy (pre-2026-07-27) + current $6 monthly
     600: "monthly",
     1500: "quarterly",
     3000: "biannually",
     5400: "yearly",
     10000: "every_two_years",
-    # Current ladder
+    # 2026-07-27 costume ladder (keep resolving old invoices / Ping)
     1800: "monthly",
     4800: "quarterly",
     9000: "biannually",

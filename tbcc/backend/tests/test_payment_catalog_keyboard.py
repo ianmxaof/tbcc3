@@ -29,7 +29,7 @@ def _plan(pid: int, name: str, stars: int, days: int) -> dict:
 # Full DB catalog: every term still exists as a row (Gumroad Ping / grandfathered renewals).
 FULL_MAIN_CATALOG = [
     _plan(1, "AOF VIP — Intro Month", 834, 90),
-    _plan(2, "AOF VIP — 1 Month", 1500, 30),
+    _plan(2, "AOF VIP — 1 Month", 500, 30),
     _plan(3, "AOF VIP — 3 Months", 4000, 90),
     _plan(4, "AOF VIP — 6 Months", 7500, 180),
     _plan(5, "AOF VIP — 1 Year", 14000, 365),
@@ -73,7 +73,7 @@ def test_env_escape_hatch_lists_every_term(monkeypatch):
 def test_vip_grid_one_row_per_tier_after_filtering():
     """Default grid is the impulse pair: standard month first, intro after it."""
     plans = [
-        {"id": 2, "name": "Loot Room — 1 Month", "price_stars": 1500, "duration_days": 30},
+        {"id": 2, "name": "Loot Room — 1 Month", "price_stars": 500, "duration_days": 30},
         {"id": 1, "name": "AOF VIP — Intro Month", "price_stars": 834, "duration_days": 90},
     ]
     rows = _plan_checkout_keyboard_rows(plans, multi_term=True, columns=3)
@@ -103,7 +103,7 @@ def test_single_remaining_term_keeps_the_stars_howto(monkeypatch):
         payment_bot.send_simple_plan_checkout(
             _Msg(),
             _Ctx(),
-            [_plan(2, "AOF VIP — 1 Month", 1500, 30)],
+            [_plan(2, "AOF VIP — 1 Month", 500, 30)],
         )
     )
     assert sent["parse_mode"] == "HTML"

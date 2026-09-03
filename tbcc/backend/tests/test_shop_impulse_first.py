@@ -76,10 +76,12 @@ def test_stars_howto_stops_teaching_the_ladder_floor(fn):
     assert "Standard renews" not in body
 
 
-def test_subscribe_header_has_no_ladder_pitch():
+def test_subscribe_header_leads_with_monthly_not_intro():
     from app.services.fiat_checkout_labels import fiat_vip_ladder_intro_html
 
+    body = fiat_vip_ladder_intro_html(include_intro=True)
+    assert "ladder" not in body.lower()
+    assert "$6/month" in body.replace(" ", "") or "$6</b>/month" in body
+    assert body.index("$6") < body.index("$10")
     for include_intro in (False, True):
-        body = fiat_vip_ladder_intro_html(include_intro=include_intro)
-        assert "ladder" not in body.lower()
-        assert "/month" in body
+        assert "/month" in fiat_vip_ladder_intro_html(include_intro=include_intro)

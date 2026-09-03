@@ -616,8 +616,7 @@ async def fetch_plans(
                 out = [p for p in out if not is_vip_intro_plan_name(str(p.get("name") or ""))]
     out.sort(
         key=lambda p: (
-            # Intro sorts after the standard month — it is a retention sweetener, not the pitch.
-            1 if _is_intro_plan_row(p) else 0,
+            # Cheapest sticker first ($6 month before $10 intro).
             int(p.get("price_stars") or 0),
             int(p.get("duration_days") or 0),
             int(p.get("id") or 0),

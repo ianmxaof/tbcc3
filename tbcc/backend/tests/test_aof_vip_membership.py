@@ -18,10 +18,10 @@ from app.services.gumroad_ping import (
 )
 
 
-def test_vip_ladder_matches_gumroad_ynnulc() -> None:
+def test_vip_ladder_matches_impulse_table() -> None:
     assert len(VIP_MEMBERSHIP_SKUS) == 5
     by_rec = {s.gumroad_recurrence: s for s in VIP_MEMBERSHIP_SKUS}
-    assert by_rec["monthly"].price_usd == 18.0
+    assert by_rec["monthly"].price_usd == 6.0
     assert by_rec["quarterly"].price_usd == 48.0
     assert by_rec["biannually"].price_usd == 90.0
     assert by_rec["yearly"].price_usd == 168.0
@@ -37,7 +37,7 @@ def test_vip_intro_stars_at_default_rate() -> None:
 
 
 def test_vip_stars_at_default_rate() -> None:
-    assert usd_to_stars(18.0, stars_per_usd=0.012) == 1500
+    assert usd_to_stars(6.0, stars_per_usd=0.012) == 500
     assert usd_to_stars(48.0, stars_per_usd=0.012) == 4000
     assert usd_to_stars(90.0, stars_per_usd=0.012) == 7500
     assert usd_to_stars(168.0, stars_per_usd=0.012) == 14000
@@ -48,9 +48,9 @@ def test_sku_lookups() -> None:
     assert sku_for_recurrence("yearly") is not None
     assert sku_for_duration_days(90).price_usd == 48.0
     assert sku_for_price_cents(5400).gumroad_recurrence == "yearly"
-    assert sku_for_price_cents(1800).gumroad_recurrence == "monthly"
+    assert sku_for_price_cents(1800).gumroad_recurrence == "monthly"  # legacy $18 invoices
+    assert sku_for_price_cents(600).gumroad_recurrence == "monthly"  # current $6
     assert sku_for_price_cents(1000).name == "AOF VIP — Intro Month"
-    assert sku_for_price_cents(600).gumroad_recurrence == "monthly"  # legacy grandfather
     legacy = {600, 1500, 3000, 5400, 10000}
     current = {1800, 4800, 9000, 16800, 30000}
     assert set(VIP_PRICE_CENTS_TO_RECURRENCE) == legacy | current
