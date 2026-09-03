@@ -22,7 +22,7 @@ If you still see ConnectTimeout, confirm outbound HTTPS to api.telegram.org is a
 
 Optional env (catalog):
   TBCC_BOT_MIN_SUBSCRIPTION_STARS — minimum Stars price for subscription rows in the bot (0 = off). Use e.g. 101 to hide a 100 ⭐ test SKU.
-  TBCC_SUBSCRIPTION_CATALOG_COLUMNS — subscription Stars/crypto keyboard: buttons per row, 1–4 (default 2).
+  TBCC_SUBSCRIPTION_CATALOG_COLUMNS — subscription Stars/crypto keyboard: buttons per row, 1–4 (default 3).
 """
 import asyncio
 import html
@@ -61,7 +61,14 @@ from app.services.telegram_stars_invoice import (
     plan_invoice_description,
     stars_invoice_payload,
 )
-from bots.shop_promo import send_shop_promo
+from bots.shop_promo import build_shop_inline_html, send_shop_promo
+from bots.payment_ui import clear_anchor, clear_preview_album, render_payment_ui
+from bots.pack_browser import (
+    handle_pack_browser_callback,
+    parse_pack_start_payload,
+    show_pack_catalog,
+    show_pack_detail,
+)
 from bots.macro_search_telegram import build_macro_search_handlers, cmd_macrosearch
 from bots.error_reporter import make_error_handler
 from telegram import (
@@ -100,10 +107,12 @@ _runtime_settings_loaded_at: float = 0.0
 _runtime_settings_ttl_s = 30.0
 
 _default_main_menu = [
-    [{"label": "🎫 Join the Insiders", "action": "menu_subscribe"}],
+    # Impulse first (2026-09-03): the 24h Loot Room key is the cheapest yes in the shop,
+    # so it owns the first tap. Insiders stays one row down — reachable, not the opener.
+    [{"label": "🗝 Loot Room — 24h key", "action": "menu_loot"}],
     [
-        {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
+        {"label": "🎫 Insiders", "action": "menu_subscribe"},
     ],
     [{"label": "🌐 Explore AOF network", "action": "menu_network"}],
     [
@@ -142,7 +151,7 @@ def _runtime_settings_defaults() -> dict:
         "loot_intro_html": "",
         "subscribe_title_main": "🎫 **Insiders Access**",
         "subscribe_title_loot": "🗝 **Loot Room Access**",
-        "subscription_catalog_columns": 2,
+        "subscription_catalog_columns": 3,
         "min_subscription_stars": _bot_min_subscription_stars(),
         "video_finder_enabled": True,
         "video_finder_sources": [
@@ -418,11 +427,11 @@ def _bot_min_subscription_stars() -> int:
 
 
 def _subscription_catalog_columns() -> int:
-    """Inline keyboard width for /subscribe plan grid (default 2)."""
+    """Inline keyboard width for /subscribe plan grid (default 3)."""
     try:
-        n = int((os.getenv("TBCC_SUBSCRIPTION_CATALOG_COLUMNS") or "2").strip() or "2")
+        n = int((os.getenv("TBCC_SUBSCRIPTION_CATALOG_COLUMNS") or "3").strip() or "3")
     except ValueError:
-        n = 2
+        n = 3
     return max(1, min(4, n))
 
 
@@ -592,15 +601,23 @@ async def fetch_plans(
         for p in await _fetch_plans_raw()
         if _plan_ok_for_stars_checkout(p, min_stars=min_stars) and _plan_in_bot_section(p, section)
     ]
-    if section.strip().lower() == "main" and telegram_user_id:
-        from app.data.aof_vip_membership import is_vip_intro_plan_name
+    if section.strip().lower() == "main":
+        from app.data.aof_vip_membership import is_hidden_ladder_plan_name, is_vip_intro_plan_name
 
-        eligible = await asyncio.to_thread(_user_eligible_for_vip_intro_db, int(telegram_user_id))
-        if not eligible:
-            out = [p for p in out if not is_vip_intro_plan_name(str(p.get("name") or ""))]
+        # Bury the multi-month ladder: the default grid sells one recurring term, not a
+        # price wall. Rows stay in the DB — checkout by plan id, Gumroad Ping and
+        # grandfathered renewals all still resolve them.
+        out = [p for p in out if not is_hidden_ladder_plan_name(str(p.get("name") or ""))]
+        if telegram_user_id:
+            eligible = await asyncio.to_thread(
+                _user_eligible_for_vip_intro_db, int(telegram_user_id)
+            )
+            if not eligible:
+                out = [p for p in out if not is_vip_intro_plan_name(str(p.get("name") or ""))]
     out.sort(
         key=lambda p: (
-            0 if _is_intro_plan_row(p) else 1,
+            # Intro sorts after the standard month — it is a retention sweetener, not the pitch.
+            1 if _is_intro_plan_row(p) else 0,
             int(p.get("price_stars") or 0),
             int(p.get("duration_days") or 0),
             int(p.get("id") or 0),
@@ -964,12 +981,12 @@ def welcome_html(settings: dict | None = None) -> str:
     body = (
         "👋 <b>Welcome to AOF Access</b>\n\n"
         + pay_line
-        + f"🔑 <b>{disp}</b> — full group access, daily drops, first look at everything.\n"
-        "🗝 <b>Loot Room</b> — 24-hour key, private pull room.\n"
-        "📦 <b>Digital packs</b> — curated one-time bundles.\n\n"
-        f"• /subscribe — {disp} membership\n"
-        "• /loot — Loot Room key\n"
+        + "🗝 <b>Loot Room</b> — 24-hour key, private pull room. Cheapest way in.\n"
+        "📦 <b>Digital packs</b> — curated one-time bundles.\n"
+        f"🔑 <b>{disp}</b> — recurring: full group access, daily drops, first look.\n\n"
+        "• /loot — Loot Room 24h key\n"
         "• /packs — Digital packs\n"
+        f"• /subscribe — {disp} membership\n"
         "• /shop — Full storefront, everything in one place\n\n"
         "📌 <b>Account</b>\n"
         "• /status — Purchases &amp; active access\n"
@@ -983,6 +1000,60 @@ def welcome_html(settings: dict | None = None) -> str:
         body += f"☕ <b>Tip jar:</b> {donate}\n\n"
     body += "<i>Tap a button below or run any command.</i>"
     return body
+
+
+async def send_welcome_menu(
+    *,
+    bot,
+    chat_id: int,
+    context: ContextTypes.DEFAULT_TYPE,
+    settings: dict | None = None,
+    edit_message=None,
+    force_fresh: bool = False,
+    reply_to_message_id: int | None = None,
+) -> None:
+    """Welcome screen — single anchor message; edits in place when navigated back."""
+    await clear_preview_album(bot, context, chat_id=chat_id)
+    if force_fresh:
+        clear_anchor(context)
+    st = settings if settings is not None else await _get_runtime_settings()
+    text = welcome_html(st)
+    kb = main_menu_keyboard(st)
+    try:
+        await render_payment_ui(
+            bot=bot,
+            chat_id=chat_id,
+            context=context,
+            text=text,
+            reply_markup=kb,
+            parse_mode="HTML",
+            edit_message=edit_message,
+            include_back=False,
+            force_fresh=force_fresh,
+            reply_to_message_id=reply_to_message_id,
+        )
+    except BadRequest as e:
+        logger.warning("send_welcome_menu HTML failed: %s", e)
+        fallback = (
+            "Welcome! Use /loot, /packs, /subscribe, /shop, /referral, /status — or tap a button below."
+        )
+        await render_payment_ui(
+            bot=bot,
+            chat_id=chat_id,
+            context=context,
+            text=fallback,
+            reply_markup=kb,
+            parse_mode=None,
+            edit_message=edit_message,
+            include_back=False,
+            force_fresh=force_fresh,
+            reply_to_message_id=reply_to_message_id,
+        )
+
+
+def _menu_target(msg, edit_message=None):
+    """Message used for inline navigation (callback message preferred)."""
+    return edit_message or msg
 
 
 async def cmd_resolve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1514,7 +1585,13 @@ async def cmd_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send_human_gate_prompt(msg, context, target=target, source=payload)
 
 
-async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def send_loot_room_message(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    edit_message=None,
+    inline_nav: bool = False,
+) -> None:
     """Dedicated Loot Room menu + plans from bot_section=loot."""
     if not msg:
         return
@@ -1530,28 +1607,34 @@ async def send_loot_room_message(msg, context: ContextTypes.DEFAULT_TYPE) -> Non
         "• Spoiler delivery — you peel what you earned\n\n"
         "<b>Select a key</b>"
     )
-    await msg.reply_text(
-        intro,
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🗝 Loot Room keys", callback_data="menu_loot_subscribe")],
+            [InlineKeyboardButton("🛍 Open Full Store", callback_data="menu_shop")],
+        ]
+    )
+    await render_payment_ui(
+        bot=context.bot,
+        chat_id=msg.chat_id,
+        context=context,
+        text=intro,
+        reply_markup=kb,
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("🗝 Loot Room keys", callback_data="menu_loot_subscribe")],
-                [InlineKeyboardButton("🛍 Open Full Store", callback_data="menu_shop")],
-            ]
-        ),
+        edit_message=_menu_target(msg, edit_message),
+        include_back=inline_nav,
     )
 
 
 async def cmd_loot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Loot Room offer section: 24h key + private group flow."""
     msg = update.effective_message
-    await send_loot_room_message(msg, context)
+    await send_loot_room_message(msg, context, inline_nav=True)
 
 
 async def cmd_companion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Companion reveal credit packs — tiered top-ups (Stars + crypto)."""
     msg = update.effective_message
-    await send_companion_credits_catalog_message(msg, context)
+    await send_companion_credits_catalog_message(msg, context, inline_nav=True)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1617,6 +1700,15 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if payload == "subscribe":
+        await send_subscription_catalog_message(msg, context, section="main")
+        return
+
+    pack_id = parse_pack_start_payload(payload)
+    if pack_id is not None:
+        plan = await fetch_plan_by_id(pack_id)
+        if plan and (plan.get("product_type") or "").lower() == "bundle":
+            await show_pack_detail(msg, context, plan, user_id=user.id)
+            return
         await send_subscription_catalog_message(msg, context, section="main")
         return
 
@@ -1708,18 +1800,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             db.close()
         return
 
-    try:
-        await msg.reply_text(
-            welcome_html(st),
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(st),
-        )
-    except BadRequest as e:
-        logger.warning("cmd_start welcome HTML failed: %s", e)
-        await msg.reply_text(
-            "Welcome! Use /shop, /loot, /subscribe, /packs, /referral, /status — or tap a button below.",
-            reply_markup=main_menu_keyboard(st),
-        )
+    await send_welcome_menu(
+        bot=context.bot,
+        chat_id=msg.chat_id,
+        context=context,
+        settings=st,
+        force_fresh=True,
+        reply_to_message_id=msg.message_id,
+    )
 
 
 async def cmd_shop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1731,7 +1819,14 @@ async def cmd_shop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await send_shop_promo(update, context)
 
 
-async def reply_referral(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def reply_referral(
+    msg,
+    user,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    edit_message=None,
+    inline_nav: bool = False,
+) -> None:
     """Send forward-ready message with user's unique referral code + link (persisted via API)."""
     if not msg or not user:
         return
@@ -1758,6 +1853,35 @@ async def reply_referral(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     group_name = rc["group_name"]
     mode = rc["mode"]
     is_community = mode == "community"
+
+    if inline_nav:
+        code_line = f"<b>Your code:</b> <code>{html.escape(ref_code)}</code>\n" if ref_code else ""
+        if is_community:
+            body = (
+                "🔗 <b>Your referral link</b>\n\n"
+                f"{code_line}"
+                f"<b>Link:</b> {html.escape(ref_link)}\n\n"
+                f"Share it — top referrers get early access when {html.escape(disp)} launches."
+            )
+        else:
+            body = (
+                "🔗 <b>Your referral link</b>\n\n"
+                f"{code_line}"
+                f"<b>Link:</b> {html.escape(ref_link)}\n"
+                f"Earn <b>{html.escape(reward_days)} days free</b> per referral when friends subscribe."
+            )
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=body,
+            reply_markup=None,
+            parse_mode="HTML",
+            edit_message=_menu_target(msg, edit_message),
+            include_back=True,
+            disable_web_page_preview=True,
+        )
+        return
 
     # Forward-ready message: user taps Forward, sends anywhere
     if is_community:
@@ -1812,7 +1936,7 @@ async def cmd_referral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     if not msg or not user:
         return
-    await reply_referral(msg, user, context)
+    await reply_referral(msg, user, context, inline_nav=True)
 
 
 def _truncate_btn(s: str, max_len: int = 64) -> str:
@@ -1901,15 +2025,43 @@ def _simple_crypto_btn_label(p: dict) -> str:
     return f"🪙 Pay {_plan_usd_price_hint(p)} crypto"
 
 
-def _plan_checkout_keyboard_rows(
-    plans: list[dict],
+def _compact_credit_stars_label(p: dict) -> str:
+    from app.data.companion_credit_packs import pack_for_plan_name
+
+    pack = pack_for_plan_name(str(p.get("name") or ""))
+    units = pack.credit_units if pack else "?"
+    stars = int(p.get("price_stars") or 0)
+    return _truncate_btn(f"📦{units} · {stars}⭐", 64)
+
+
+def _compact_stars_label(p: dict, *, credits: bool = False) -> str:
+    if credits:
+        return _compact_credit_stars_label(p)
+    from app.data.aof_vip_membership import is_vip_intro_plan_name
+
+    stars = int(p.get("price_stars") or 0)
+    if is_vip_intro_plan_name(str(p.get("name") or "")):
+        return _truncate_btn(f"Intro · {stars}⭐", 64)
+    badge = _subscription_duration_badge(p.get("duration_days", 30))
+    return _truncate_btn(f"{badge} · {stars}⭐", 64)
+
+
+def _compact_crypto_label(p: dict) -> str:
+    return _truncate_btn(f"🪙 {_plan_usd_price_hint(p)}", 64)
+
+
+def _compact_fiat_label(p: dict) -> str:
+    return _truncate_btn(f"💳 {_plan_usd_price_hint(p)}", 64)
+
+
+def _plan_payment_buttons_for_plan(
+    p: dict,
     *,
-    pack: bool = False,
-    credits: bool = False,
-    multi_term: bool = False,
-) -> list[list[InlineKeyboardButton]]:
-    """One row per payment option — price on the button, no catalog prose."""
-    rows: list[list[InlineKeyboardButton]] = []
+    pack: bool,
+    credits: bool,
+    compact: bool,
+) -> list[InlineKeyboardButton]:
+    """Stars + crypto + Gumroad buttons for one catalog row."""
     if credits:
         star_cb = "credit_"
         ext_cb = "ext_credit_"
@@ -1918,51 +2070,83 @@ def _plan_checkout_keyboard_rows(
         star_cb = "pack_" if pack else "plan_"
         ext_cb = "ext_pack_" if pack else "ext_plan_"
         gr_prefix = "gr_pack_" if pack else "gr_plan_"
-    for p in plans:
-        pid = int(p["id"])
-        if int(p.get("price_stars") or 0) > 0:
-            star_label = _subscription_stars_row_label(p) if multi_term else _simple_stars_btn_label(p)
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        _truncate_btn(star_label, 64),
-                        callback_data=f"{star_cb}{pid}",
-                    )
-                ]
-            )
-        if _plan_show_crypto_checkout(p):
-            crypto_label = _simple_crypto_btn_label(p)
-            if multi_term:
-                crypto_label = f"{crypto_label} · {_subscription_duration_badge(p.get('duration_days', 30))}"
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        _truncate_btn(crypto_label, 64),
-                        callback_data=f"{ext_cb}{pid}",
-                    )
-                ]
-            )
-        if _plan_show_gumroad_checkout(p):
-            from app.services.fiat_checkout_labels import (
-                fiat_checkout_button_label,
-                fiat_checkout_plan_button_label,
-            )
+
+    pid = int(p["id"])
+    buttons: list[InlineKeyboardButton] = []
+    if int(p.get("price_stars") or 0) > 0:
+        star_label = (
+            _compact_stars_label(p, credits=credits)
+            if compact
+            else (_simple_stars_btn_label(p) if credits else _subscription_stars_row_label(p))
+        )
+        buttons.append(
+            InlineKeyboardButton(_truncate_btn(star_label, 64), callback_data=f"{star_cb}{pid}")
+        )
+    if _plan_show_crypto_checkout(p):
+        crypto_label = _compact_crypto_label(p) if compact else _simple_crypto_btn_label(p)
+        buttons.append(
+            InlineKeyboardButton(_truncate_btn(crypto_label, 64), callback_data=f"{ext_cb}{pid}")
+        )
+    if _plan_show_gumroad_checkout(p):
+        if compact:
+            gr_label = _compact_fiat_label(p)
+        else:
+            from app.services.fiat_checkout_labels import fiat_checkout_button_label
 
             gr_label = fiat_checkout_button_label(price_hint=_plan_usd_price_hint(p))
-            if multi_term:
-                gr_label = fiat_checkout_plan_button_label(
-                    _subscription_duration_badge(p.get("duration_days", 30)),
-                    price_hint=_plan_usd_price_hint(p),
-                )
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        _truncate_btn(gr_label, 64),
-                        callback_data=f"{gr_prefix}{pid}",
-                    )
-                ]
+        buttons.append(
+            InlineKeyboardButton(_truncate_btn(gr_label, 64), callback_data=f"{gr_prefix}{pid}")
+        )
+    return buttons
+
+
+def _plan_checkout_keyboard_rows(
+    plans: list[dict],
+    *,
+    pack: bool = False,
+    credits: bool = False,
+    multi_term: bool = False,
+    columns: int = 3,
+) -> list[list[InlineKeyboardButton]]:
+    """Compact checkout grid — one row per VIP tier (or credit-pack price row)."""
+    columns = max(1, min(4, int(columns or 3)))
+
+    if credits and len(plans) > 1:
+        star_btns: list[InlineKeyboardButton] = []
+        crypto_btns: list[InlineKeyboardButton] = []
+        for p in plans:
+            for btn in _plan_payment_buttons_for_plan(
+                p, pack=pack, credits=True, compact=True
+            ):
+                if (btn.callback_data or "").startswith("credit_"):
+                    star_btns.append(btn)
+                elif (btn.callback_data or "").startswith("ext_credit_"):
+                    crypto_btns.append(btn)
+        rows: list[list[InlineKeyboardButton]] = []
+        if star_btns:
+            rows.extend(_inline_buttons_in_rows(star_btns, min(columns, len(star_btns))))
+        if crypto_btns:
+            rows.extend(_inline_buttons_in_rows(crypto_btns, min(columns, len(crypto_btns))))
+        return rows
+
+    if multi_term:
+        rows = []
+        for p in plans:
+            tier_btns = _plan_payment_buttons_for_plan(
+                p, pack=pack, credits=credits, compact=True
             )
-    return rows
+            if tier_btns:
+                rows.extend(_inline_buttons_in_rows(tier_btns, min(columns, len(tier_btns))))
+        return rows
+
+    all_btns: list[InlineKeyboardButton] = []
+    for p in plans:
+        all_btns.extend(
+            _plan_payment_buttons_for_plan(
+                p, pack=pack, credits=credits, compact=True
+            )
+        )
+    return _inline_buttons_in_rows(all_btns, columns)
 
 
 def _plan_show_gumroad_checkout(p: dict) -> bool:
@@ -1986,31 +2170,75 @@ async def send_simple_plan_checkout(
     *,
     pack: bool = False,
     credits: bool = False,
+    edit_message=None,
+    inline_nav: bool = False,
 ) -> None:
     """Dead-simple checkout: product name (if any) + Stars row + crypto row per plan."""
     if not msg:
         return
     if not plans:
-        await msg.reply_text("No products listed right now.")
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text="No products listed right now.",
+            reply_markup=None,
+            parse_mode=None,
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
+        )
         return
     multi_term = (not pack and not credits) and len(plans) > 1
-    rows = _plan_checkout_keyboard_rows(plans, pack=pack, credits=credits, multi_term=multi_term)
+    st = await _get_runtime_settings()
+    cols = int(st.get("subscription_catalog_columns") or _subscription_catalog_columns())
+    rows = _plan_checkout_keyboard_rows(
+        plans, pack=pack, credits=credits, multi_term=multi_term, columns=cols
+    )
     if not rows:
-        await msg.reply_text("No checkout options for these products.")
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text="No checkout options for these products.",
+            reply_markup=None,
+            parse_mode=None,
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
+        )
         return
     kb = InlineKeyboardMarkup(rows)
-    if len(plans) == 1:
+    parse_mode: str | None = None
+    # Burying the multi-month ladder can leave a single term on the main grid (a returning
+    # member past the intro window). That used to fall through to the bare name branch and
+    # lose the Stars how-to the multi-term header carries — keep both instead.
+    single_subscription = len(plans) == 1 and not pack and not credits
+    if single_subscription or multi_term:
         from app.data.aof_vip_membership import display_plan_name
-
-        text = display_plan_name(str(plans[0].get("name") or "")) or "·"
-    elif multi_term:
         from app.services.fiat_checkout_labels import fiat_vip_ladder_intro_html
 
         has_intro = any(_is_intro_plan_row(p) for p in plans)
         text = fiat_vip_ladder_intro_html(include_intro=has_intro)
+        if single_subscription:
+            name = display_plan_name(str(plans[0].get("name") or ""))
+            if name:
+                text = f"<b>{html.escape(name)}</b>\n\n{text}"
+        parse_mode = "HTML"
+    elif len(plans) == 1:
+        from app.data.aof_vip_membership import display_plan_name
+
+        text = display_plan_name(str(plans[0].get("name") or "")) or "·"
     else:
         text = "·"
-    await msg.reply_text(text, parse_mode="HTML" if multi_term else None, reply_markup=kb)
+    await render_payment_ui(
+        bot=context.bot,
+        chat_id=msg.chat_id,
+        context=context,
+        text=text,
+        reply_markup=kb,
+        parse_mode=parse_mode,
+        edit_message=_menu_target(msg, edit_message),
+        include_back=inline_nav,
+    )
 
 
 def _subscription_wallet_row_label(p: dict, c_label: str) -> str:
@@ -2060,6 +2288,8 @@ async def send_companion_credits_catalog_message(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     sku_filter: str | None = None,
+    edit_message=None,
+    inline_nav: bool = False,
 ) -> None:
     """Companion reveal credit packs — Stars + crypto checkout."""
     if not msg:
@@ -2072,9 +2302,18 @@ async def send_companion_credits_catalog_message(
         if pack:
             plans = [p for p in plans if str(p.get("name") or "") == pack.plan_name]
     if not plans:
-        await msg.reply_text(
-            "Companion credit packs are not listed yet. "
-            f"(Catalog source: {API_BASE.rstrip('/')}; run seed_companion_credit_packs.py.)"
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=(
+                "Companion credit packs are not listed yet. "
+                f"(Catalog source: {API_BASE.rstrip('/')}; run seed_companion_credit_packs.py.)"
+            ),
+            reply_markup=None,
+            parse_mode=None,
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
         )
         return
     intro = (
@@ -2085,9 +2324,27 @@ async def send_companion_credits_catalog_message(
     )
     rows = _plan_checkout_keyboard_rows(plans, credits=True)
     if not rows:
-        await msg.reply_text(intro, parse_mode="HTML")
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=intro,
+            reply_markup=None,
+            parse_mode="HTML",
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
+        )
         return
-    await msg.reply_text(intro, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
+    await render_payment_ui(
+        bot=context.bot,
+        chat_id=msg.chat_id,
+        context=context,
+        text=intro,
+        reply_markup=InlineKeyboardMarkup(rows),
+        parse_mode="HTML",
+        edit_message=_menu_target(msg, edit_message),
+        include_back=inline_nav,
+    )
 
 
 async def send_subscription_catalog_message(
@@ -2096,6 +2353,8 @@ async def send_subscription_catalog_message(
     *,
     section: str = "main",
     title: str = "🎫 **Insiders Access**",
+    edit_message=None,
+    inline_nav: bool = False,
 ) -> None:
     """Subscription checkout — price on each button, no instructional catalog prose."""
     if not msg:
@@ -2112,13 +2371,28 @@ async def send_subscription_catalog_message(
     )
     if not plans:
         section_hint = " (/loot section)" if section == "loot" else ""
-        await msg.reply_text(
-            f"No subscription plans are listed yet{section_hint}. "
-            f"(Catalog source: {API_BASE.rstrip('/')}; ensure TBCC-Backend is running.)",
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=(
+                f"No subscription plans are listed yet{section_hint}. "
+                f"(Catalog source: {API_BASE.rstrip('/')}; ensure TBCC-Backend is running.)"
+            ),
+            reply_markup=None,
+            parse_mode=None,
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
         )
         return
 
-    await send_simple_plan_checkout(msg, context, plans)
+    await send_simple_plan_checkout(
+        msg,
+        context,
+        plans,
+        edit_message=edit_message,
+        inline_nav=inline_nav,
+    )
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2126,7 +2400,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     msg = update.effective_message
     if not msg:
         return
-    await send_subscription_catalog_message(msg, context, section="main")
+    await send_subscription_catalog_message(msg, context, section="main", inline_nav=True)
 
 
 def _bundle_caption_html(p: dict) -> str:
@@ -2173,12 +2447,32 @@ def _bundle_pick_keyboard(bundles: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_TYPE, p: dict) -> None:
+async def send_single_bundle_detail_messages(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    p: dict,
+    *,
+    edit_message=None,
+    inline_nav: bool = False,
+) -> None:
     """Send one pack preview (optional promo images) + simple Stars / crypto buttons."""
     pid = p.get("id")
     promo_urls = _plan_promo_urls(p)[:10]
     cap = _bundle_caption_html(p)
     kb = InlineKeyboardMarkup(_plan_checkout_keyboard_rows([p], pack=True))
+    target = _menu_target(msg, edit_message)
+    if inline_nav and target is not None:
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=cap,
+            reply_markup=kb,
+            parse_mode="HTML",
+            edit_message=target,
+            include_back=True,
+        )
+        return
     try:
         resolved: list[InputFile | str] = []
         for u in promo_urls:
@@ -2223,40 +2517,25 @@ async def send_single_bundle_detail_messages(msg, context: ContextTypes.DEFAULT_
             logger.warning("bundle detail fallback send failed: %s", e2)
 
 
-async def send_bundle_catalog_message(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Digital packs: one intro + button grid (pick a pack). Full description + payments only after tap.
-    """
-    if not msg:
-        return
-
-    bundles = await fetch_bundles()
-    if not bundles:
-        await msg.reply_text(
-            "📦 **Digital packs**\n\n"
-            "No **bundle** products yet — this list is **only** for product type **Bundle** (digital zip packs).\n\n"
-            "**Insiders subscriptions** (AOF tiers, etc.) appear under **/subscribe**, not here.\n\n"
-            "In the **dashboard → Shop products**, create a **new** product and set type to **Bundle (digital pack)** "
-            "with a **Stars price** set and **active** checked.",
-            parse_mode="Markdown",
-        )
-        return
-
-    extra = ""
-    if len(bundles) > 100:
-        extra = f"\n\n<i>Showing buttons for the first 100 of {len(bundles)} packs.</i>"
-    c_hint = _nowpayments_currency_label(None)
-    await msg.reply_text(
-        f"📦 <b>Digital packs</b>\n\n"
-        f"Pick a pack — then <b>Buy</b> (Stars) or <b>crypto</b> ({html.escape(c_hint)} when fixed in settings)."
-        + extra,
-        parse_mode="HTML",
-        reply_markup=_bundle_pick_keyboard(bundles),
+async def send_bundle_catalog_message(
+    msg,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    edit_message=None,
+    inline_nav: bool = False,
+) -> None:
+    """Digital packs browser — catalog with ownership badges and spoiler previews."""
+    uid = getattr(getattr(msg, "from_user", None), "id", None) if msg else None
+    await show_pack_catalog(
+        msg,
+        context,
+        edit_message=edit_message,
+        user_id=int(uid) if uid else None,
     )
 
 
 async def handle_pick_pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """User chose a pack from the /packs button grid — send that pack’s detail + payment rows."""
+    """Legacy pick_pack_* callbacks — route to pack browser detail view."""
     query = update.callback_query
     if not query or not query.data:
         return
@@ -2281,7 +2560,14 @@ async def handle_pick_pack_callback(update: Update, context: ContextTypes.DEFAUL
         await query.answer("Invalid product.", show_alert=True)
         return
     await query.answer()
-    await send_single_bundle_detail_messages(msg, context, plan)
+    user = query.from_user
+    await show_pack_detail(
+        msg,
+        context,
+        plan,
+        edit_message=msg,
+        user_id=user.id if user else None,
+    )
 
 
 async def cmd_packs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2289,12 +2575,12 @@ async def cmd_packs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg:
         return
-    await send_bundle_catalog_message(msg, context)
+    await send_bundle_catalog_message(msg, context, inline_nav=True)
 
 
 async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline buttons from /start menu — edit the anchor message in place."""
     st = await _get_runtime_settings()
-    """Inline buttons from /start menu."""
     query = update.callback_query
     if not query or not query.data:
         return
@@ -2303,30 +2589,79 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     user = query.from_user
     if not msg or not user:
         return
-    if query.data == "menu_shop":
-        await send_shop_promo(update, context)
+    nav = dict(edit_message=msg, inline_nav=True)
+    if query.data == "menu_home":
+        await send_welcome_menu(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            settings=st,
+            edit_message=msg,
+        )
+    elif query.data == "menu_shop":
+        text, kb = await build_shop_inline_html()
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=text,
+            reply_markup=kb,
+            parse_mode="HTML",
+            edit_message=msg,
+            include_back=True,
+        )
     elif query.data == "menu_subscribe":
         await send_subscription_catalog_message(
-            msg, context, section="main", title=str(st.get("subscribe_title_main") or "🎫 **Insiders Access**")
+            msg,
+            context,
+            section="main",
+            title=str(st.get("subscribe_title_main") or "🎫 **Insiders Access**"),
+            **nav,
         )
     elif query.data == "menu_loot":
-        await send_loot_room_message(msg, context)
+        await send_loot_room_message(msg, context, **nav)
     elif query.data == "menu_loot_subscribe":
         await send_subscription_catalog_message(
-            msg, context, section="loot", title=str(st.get("subscribe_title_loot") or "🗝 **Loot Room Access**")
+            msg,
+            context,
+            section="loot",
+            title=str(st.get("subscribe_title_loot") or "🗝 **Loot Room Access**"),
+            **nav,
         )
     elif query.data == "menu_packs":
-        await send_bundle_catalog_message(msg, context)
+        await send_bundle_catalog_message(msg, context, **nav)
     elif query.data == "menu_companion":
-        await send_companion_credits_catalog_message(msg, context)
+        await send_companion_credits_catalog_message(msg, context, **nav)
     elif query.data == "menu_referral":
-        await reply_referral(msg, user, context)
+        await reply_referral(msg, user, context, **nav)
     elif query.data == "menu_status":
-        await reply_status(msg, user, context)
+        await reply_status(msg, user, context, **nav)
     elif query.data == "menu_network":
-        from app.services.bot_network_discovery import send_network_menu
+        from app.database.session import SessionLocal
+        from app.services.bot_network_discovery import (
+            NetworkCallback,
+            build_network_keyboard,
+            network_menu_html,
+        )
 
-        await send_network_menu(chat_id=msg.chat_id, context=context)
+        db = SessionLocal()
+        try:
+            vc = NetworkCallback(view="home")
+            text = network_menu_html(vc)
+            markup = build_network_keyboard(db, vc)
+        finally:
+            db.close()
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=text,
+            reply_markup=markup,
+            parse_mode="HTML",
+            edit_message=msg,
+            include_back=True,
+            disable_web_page_preview=True,
+        )
 
 
 async def handle_gumroad_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2712,12 +3047,29 @@ async def handle_product_callback(update: Update, context: ContextTypes.DEFAULT_
         logger.debug("edit_message_reply_markup after invoice: %s", e)
 
 
-async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def reply_status(
+    msg,
+    user,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    edit_message=None,
+    inline_nav: bool = False,
+) -> None:
     """Status text shared by /status and menu."""
     if not msg:
         return
     if not user:
-        await msg.reply_text("Use /status in a private chat with me to see your subscription status.")
+        text = "Use /status in a private chat with me to see your subscription status."
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=text,
+            reply_markup=None,
+            parse_mode=None,
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
+        )
         return
 
     subs = await fetch_user_subscriptions(user.id)
@@ -2727,11 +3079,20 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
     vip_lines = await asyncio.to_thread(_vip_member_status_lines_db, int(user.id), active)
 
     if not subs:
-        await msg.reply_text(
+        text = (
             "📋 **Your status**\n\n"
             "No purchases yet.\n"
-            "Use **/subscribe** for group access or **/packs** for digital packs.",
+            "Use **/subscribe** for group access or **/packs** for digital packs."
+        )
+        await render_payment_ui(
+            bot=context.bot,
+            chat_id=msg.chat_id,
+            context=context,
+            text=text,
+            reply_markup=None,
             parse_mode="Markdown",
+            edit_message=_menu_target(msg, edit_message),
+            include_back=inline_nav,
         )
         return
 
@@ -2757,7 +3118,16 @@ async def reply_status(msg, user, context: ContextTypes.DEFAULT_TYPE) -> None:
             lines.append(f"  … and {len(expired) - 3} more")
 
     lines.append("\nUse /subscribe or /packs to buy again.")
-    await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+    await render_payment_ui(
+        bot=context.bot,
+        chat_id=msg.chat_id,
+        context=context,
+        text="\n".join(lines),
+        reply_markup=None,
+        parse_mode="Markdown",
+        edit_message=_menu_target(msg, edit_message),
+        include_back=inline_nav,
+    )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2766,7 +3136,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user = update.effective_user
     if not msg:
         return
-    await reply_status(msg, user, context)
+    await reply_status(msg, user, context, inline_nav=True)
 
 
 async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2968,6 +3338,17 @@ async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 is_bundle=True,
                 replay=replay,
             )
+            try:
+                plan = await fetch_plan_by_id(plan_id)
+                if plan and update.message and update.effective_user:
+                    await show_pack_detail(
+                        update.message,
+                        context,
+                        plan,
+                        user_id=update.effective_user.id,
+                    )
+            except Exception as e:
+                logger.debug("post-purchase pack browser view skipped: %s", e)
             return
 
         link = sub.get("invite_link")
@@ -3077,6 +3458,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("status", "Your subscription & purchases"),
         BotCommand("resolve", "Unwrap supported ad/short links"),
         BotCommand("macrosearch", "Macro search + video URLs by username"),
+        BotCommand("find", "Search AOF archive (library / VIP)"),
         BotCommand("videofind", "Alias for /macrosearch"),
     ]
     try:
@@ -3209,6 +3591,10 @@ def main() -> None:
         _force_refresh_runtime_settings,
     ):
         app.add_handler(h)
+    from bots.aof_search_telegram import build_find_handlers
+
+    for h in build_find_handlers(bot_kind="payment"):
+        app.add_handler(h)
     # Handle /subscribe in channels (CommandHandler only matches message, not channel_post)
     app.add_handler(
         MessageHandler(
@@ -3259,11 +3645,12 @@ def main() -> None:
         CallbackQueryHandler(handle_human_gate_callback, pattern=r"^pay:human_ack:")
     )
     app.add_handler(
-        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(shop|loot|loot_subscribe|subscribe|packs|companion|referral|status|network)$")
+        CallbackQueryHandler(handle_menu_callback, pattern=r"^menu_(home|shop|loot|loot_subscribe|subscribe|packs|companion|referral|status|network)$")
     )
     from app.services.bot_network_discovery import on_network_callback
 
     app.add_handler(CallbackQueryHandler(on_network_callback, pattern=r"^aof_net:"))
+    app.add_handler(CallbackQueryHandler(handle_pack_browser_callback, pattern=r"^pb:"))
     app.add_handler(CallbackQueryHandler(handle_pick_pack_callback, pattern=r"^pick_pack_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_external_payment_callback, pattern=r"^ext_(plan|pack|credit)_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_gumroad_payment_callback, pattern=r"^gr_(plan|pack|credit)_\d+$"))
