@@ -70,7 +70,7 @@ def main_menu_keyboard(*, age_confirmed: bool = True, video_enabled: bool = True
         ]
     )
     rows.append([InlineKeyboardButton("🗑 Clear chat memory", callback_data="comp_menu:reset")])
-    rows.append([InlineKeyboardButton("🌐 Explore AOF", callback_data="aof_net:home")])
+    rows.append([InlineKeyboardButton("🌐 Explore AOF", callback_data="comp_menu:explore_aof")])
     return InlineKeyboardMarkup(rows)
 
 

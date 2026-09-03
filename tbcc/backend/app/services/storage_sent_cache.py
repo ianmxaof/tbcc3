@@ -81,6 +81,22 @@ def _media_bucket(media_type: str | None) -> str:
     return "video" if t == "video" else "photo"
 
 
+def _dedupe_buffer_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep first row per media_id (retries must not double-post the same clip)."""
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for row in items:
+        try:
+            mid = int(row.get("media_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if mid <= 0 or mid in seen:
+            continue
+        seen.add(mid)
+        out.append(row)
+    return out
+
+
 def _load_buffer(network_key: str) -> list[dict[str, Any]]:
     nk = (network_key or "").strip().lower()
     if not nk:
@@ -98,7 +114,7 @@ def _load_buffer(network_key: str) -> list[dict[str, Any]]:
                 out.append(row)
         except (TypeError, json.JSONDecodeError):
             continue
-    return out
+    return _dedupe_buffer_items(out)
 
 
 def _save_buffer(network_key: str, items: list[dict[str, Any]]) -> None:
@@ -109,7 +125,7 @@ def _save_buffer(network_key: str, items: list[dict[str, Any]]) -> None:
         pipe = _redis().pipeline()
         key = _buf_key(nk)
         pipe.delete(key)
-        for row in items:
+        for row in _dedupe_buffer_items(items):
             pipe.rpush(key, json.dumps(row))
         pipe.expire(key, BUF_TTL_SECONDS)
         pipe.execute()
@@ -173,14 +189,16 @@ async def _post_cache_album(
     medias = []
     source_msgs = []
     row_meta: list[dict[str, Any]] = []
-    for row in chunk:
+    seen_media: set[int] = set()
+    for row in _dedupe_buffer_items(chunk):
         try:
             old_mid = int(row.get("message_id") or 0)
             media_id = int(row.get("media_id") or 0)
         except (TypeError, ValueError):
             continue
-        if old_mid <= 0 or media_id <= 0:
+        if old_mid <= 0 or media_id <= 0 or media_id in seen_media:
             continue
+        seen_media.add(media_id)
         messages = await client.get_messages(hub_entity, ids=old_mid)
         msg = _coerce_message(messages)
         if not msg or not getattr(msg, "media", None):
@@ -388,7 +406,13 @@ async def move_deposit_batch_to_sent_cache(
         return {"moved": 0, "errors": len(stored_messages), "reason": "no_network_key"}
 
     pending = _load_buffer(nk)
+    pending_ids = {
+        int(r.get("media_id") or 0)
+        for r in pending
+        if int(r.get("media_id") or 0) > 0
+    }
     errors = 0
+    skipped_dup = 0
     for row in stored_messages:
         if not isinstance(row, dict):
             errors += 1
@@ -402,6 +426,11 @@ async def move_deposit_batch_to_sent_cache(
         if old_mid <= 0 or media_id <= 0:
             errors += 1
             continue
+        if media_id in pending_ids:
+            # Idempotent: Telethon import-io retries re-enter this path after Redis
+            # append already landed — do not stage the same clip twice.
+            skipped_dup += 1
+            continue
         rec = db.query(Media).filter(Media.id == media_id).first()
         media_type = (rec.media_type if rec else None) or row.get("media_type") or "photo"
         pending.append(
@@ -412,6 +441,7 @@ async def move_deposit_batch_to_sent_cache(
                 "ts": time.time(),
             }
         )
+        pending_ids.add(media_id)
 
     _save_buffer(nk, pending)
     flush_out = await flush_sent_cache_buffer(
@@ -425,6 +455,7 @@ async def move_deposit_batch_to_sent_cache(
     return {
         "moved": int(flush_out.get("moved") or 0),
         "errors": errors + int(flush_out.get("errors") or 0),
+        "skipped_dup": skipped_dup,
         "cache_topic_id": flush_out.get("cache_topic_id"),
         "caption": flush_out.get("caption"),
         "albums_posted": int(flush_out.get("albums_posted") or 0),

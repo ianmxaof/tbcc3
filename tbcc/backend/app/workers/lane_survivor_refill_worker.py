@@ -37,6 +37,21 @@ def refill_lanes_from_survivors_task() -> dict:
             execute=True,
             unpause=unpause,
         )
+        try:
+            from app.services.sent_vault_lane_refill import (
+                refill_dry_lanes_from_sent_vault_sync,
+                sent_vault_lane_refill_enabled,
+            )
+
+            if sent_vault_lane_refill_enabled():
+                vault = refill_dry_lanes_from_sent_vault_sync(db, execute=True, unpause=unpause)
+                report["sent_vault"] = vault
+                report["restored_total"] = int(report.get("restored_total") or 0) + int(
+                    vault.get("restored_total") or 0
+                )
+        except Exception as e:
+            logger.warning("sent vault lane refill after survivor failed: %s", e)
+            report["sent_vault_error"] = str(e)[:200]
     logger.info(
         "lane survivor refill: restored=%s probed=%s",
         report.get("restored_total"),

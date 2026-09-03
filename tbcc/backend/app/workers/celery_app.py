@@ -55,8 +55,10 @@ celery.conf.include = [
     "app.workers.topic_mirror_worker",
     "app.workers.storage_pool_seed_worker",
     "app.workers.lane_survivor_refill_worker",
+    "app.workers.sent_vault_lane_refill_worker",
     "app.workers.traffic_pulse_worker",
     "app.workers.inbox_intake_worker",
+    "app.workers.storage_auto_pipe_worker",
     "app.workers.vip_weekly_mega_worker",
     "app.workers.weekly_build_log_worker",
     "app.workers.revenue_brief_worker",
@@ -86,6 +88,8 @@ celery.conf.task_routes = {
     "app.workers.scrape_micro_pull_worker.*": {"queue": "telegram"},
     "app.workers.gatekeeper_review_worker.*": {"queue": "telegram"},
     "app.workers.inbox_intake_worker.*": {"queue": "telegram"},
+    # Hub lane auto-pipe queues Telethon deposits — must land on telegram, not default celery.
+    "app.workers.storage_auto_pipe_worker.*": {"queue": "telegram"},
     "app.workers.scheduler_worker.*": {"queue": "celery"},
     # Scheduler lane (Beat due rows + manual Post now) — isolated from pool auto-post.
     "app.workers.poster_worker.post_scheduled_text": {"queue": "post_scheduler"},
@@ -108,6 +112,7 @@ celery.conf.task_routes = {
     # Keep on telegram (not ops_growth) or seeds strand forever on revenue island.
     "app.workers.storage_pool_seed_worker.*": {"queue": "telegram"},
     "app.workers.lane_survivor_refill_worker.*": {"queue": "telegram"},
+    "app.workers.sent_vault_lane_refill_worker.*": {"queue": "telegram"},
     "app.workers.erome_analytics_worker.*": {"queue": "ops_erome"},
     # Light / user-facing tasks stay on the home worker.
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
@@ -334,7 +339,8 @@ if (os.getenv("TBCC_THIN_POOL_BACKFILL_ENABLED") or "0").strip().lower() in (
         "schedule": crontab(minute=55, hour="*/4"),
     }
 
-# Recycle posted/survivor stock into approved rotation (~2×/month). Opt-in; shares Telethon lock.
+# Recycle posted/survivor stock into approved rotation (monthly deep backfill; dry spells
+# use on-demand SENT VAULT pickup at send time — see sent_vault_lane_refill).
 if (os.getenv("TBCC_LANE_SURVIVOR_REFILL_ENABLED") or "0").strip().lower() in (
     "1",
     "true",
@@ -344,6 +350,18 @@ if (os.getenv("TBCC_LANE_SURVIVOR_REFILL_ENABLED") or "0").strip().lower() in (
     celery.conf.beat_schedule["lane-survivor-refill"] = {
         "task": "app.workers.lane_survivor_refill_worker.refill_lanes_from_survivors",
         "schedule": crontab(minute=20, hour=7, day_of_month="1,15"),
+    }
+
+# Dry lanes → SENT VAULT recycle (Beat backfill every 6h; send-time dry spell is on-demand).
+if (os.getenv("TBCC_SENT_VAULT_LANE_REFILL_ENABLED") or "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    celery.conf.beat_schedule["sent-vault-lane-refill"] = {
+        "task": "app.workers.sent_vault_lane_refill_worker.refill_dry_lanes_from_sent_vault",
+        "schedule": crontab(minute=15, hour="*/6"),
     }
 
 

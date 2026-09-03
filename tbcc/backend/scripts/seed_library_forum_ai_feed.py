@@ -46,10 +46,7 @@ from app.models.scheduled_text_post import ScheduledTextPost
 SCHED_NAME = "AOF LIBRARY — AI topic (twin)"
 AI_POOL_ID = 2  # AOF AI POOL — same approved media source as the public AI lane scheduler
 INTERVAL_MINUTES = 288  # matches network cadence standard (CADENCE track); independent row
-FALLBACK_CAPTION = (
-    "\U0001f5dd️ <b>Archive of Filth — AI</b>\n"
-    "Library feed. If you can read this, pool media wasn't picked up — flag it."
-)
+FALLBACK_CAPTION = "\U0001f5dd️ <b>Archive of Filth — AI</b>"
 
 
 def main() -> None:
