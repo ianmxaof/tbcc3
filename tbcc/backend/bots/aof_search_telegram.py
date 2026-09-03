@@ -13,10 +13,64 @@ from telegram.constants import ChatAction
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
+from app.data.aof_library_forum_topic_map import AOF_LIBRARY_FORUM_TOPIC_MAP
+from app.data.aof_storage_hub_map import category_emoji_for_network_key
+
 logger = logging.getLogger(__name__)
 
 _API_BASE = os.getenv("TBCC_API_URL", "http://localhost:8000").rstrip("/")
 _FIND_TIMEOUT = httpx.Timeout(connect=15.0, read=300.0, write=30.0, pool=5.0)
+
+# webcams has no product SKU (aof_library_forum_topic_map.py) — a lane button for
+# it would always 404 on pool lookup, so it's excluded from the picker.
+_MENU_EXCLUDE_LANES = frozenset({"webcams"})
+_LANE_LABELS: dict[str, str] = {
+    "ai": "AI",
+    "ass": "Ass",
+    "voyeur": "Voyeur",
+    "bop": "BOP",
+    "abg": "ABG",
+    "big_tits": "Big Tits",
+    "milf": "MILF",
+    "taboo": "Taboo",
+    "full_length": "Full Length",
+    "blowjob": "Blowjob",
+    "packs": "Packs",
+    "goon": "Goon",
+}
+_PENDING_LANE_KEY = "aof_find_pending_lane"
+
+
+def _lane_catalog() -> list[str]:
+    return [
+        row.network_key
+        for row in AOF_LIBRARY_FORUM_TOPIC_MAP
+        if row.network_key not in _MENU_EXCLUDE_LANES
+    ]
+
+
+def lane_menu_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for key in _lane_catalog():
+        emoji = category_emoji_for_network_key(key)
+        label = _LANE_LABELS.get(key, key.replace("_", " ").title())
+        row.append(InlineKeyboardButton(f"{emoji} {label}", callback_data=f"find:lane:{key}"))
+        if len(row) >= 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+def _lane_picked_keyboard(lane_key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🎲 Browse this lane", callback_data=f"find:browse:{lane_key}")],
+            [InlineKeyboardButton("◀️ Back to lanes", callback_data="find:menu")],
+        ]
+    )
 
 
 def _internal_headers() -> dict[str, str]:
@@ -82,6 +136,8 @@ async def cmd_find(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     bot_kind: str = "loot",
+    override_query: str | None = None,
+    override_surface: str | None = None,
 ) -> None:
     user = update.effective_user
     if not user:
@@ -90,29 +146,39 @@ async def cmd_find(
     if not msg:
         return
 
-    text = (msg.text or msg.caption or "").strip()
-    parts = text.split(maxsplit=1)
-    query = parts[1].strip() if len(parts) > 1 else ""
-    if not query:
-        await msg.reply_html(_find_help_html(bot_kind=bot_kind), disable_web_page_preview=True)
-        return
+    if override_query is not None:
+        query = override_query.strip()
+        surface_arg = override_surface
+        if surface_arg is None:
+            surface_arg = _default_surface(bot_kind)
+    else:
+        text = (msg.text or msg.caption or "").strip()
+        parts = text.split(maxsplit=1)
+        query = parts[1].strip() if len(parts) > 1 else ""
+        if not query:
+            await msg.reply_html(
+                _find_help_html(bot_kind=bot_kind),
+                reply_markup=lane_menu_keyboard(),
+                disable_web_page_preview=True,
+            )
+            return
 
-    surface_arg = None
-    if query.lower().startswith("vip:"):
-        surface_arg = "vip"
-        query = query[4:].strip()
-    elif query.lower().startswith("library:"):
-        surface_arg = "library"
-        query = query[8:].strip()
-    elif query.lower().startswith("loot:"):
-        surface_arg = "loot_room"
-        query = query[5:].strip()
-    if not query:
-        await msg.reply_html("Add keywords after the surface prefix.", disable_web_page_preview=True)
-        return
+        surface_arg = None
+        if query.lower().startswith("vip:"):
+            surface_arg = "vip"
+            query = query[4:].strip()
+        elif query.lower().startswith("library:"):
+            surface_arg = "library"
+            query = query[8:].strip()
+        elif query.lower().startswith("loot:"):
+            surface_arg = "loot_room"
+            query = query[5:].strip()
+        if not query:
+            await msg.reply_html("Add keywords after the surface prefix.", disable_web_page_preview=True)
+            return
 
-    if surface_arg is None:
-        surface_arg = _default_surface(bot_kind)
+        if surface_arg is None:
+            surface_arg = _default_surface(bot_kind)
 
     try:
         await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_PHOTO)
@@ -260,13 +326,107 @@ async def on_find_more_callback(update: Update, context: ContextTypes.DEFAULT_TY
         pass
 
 
+async def cmd_searchmenu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/searchmenu — post the lane picker as a fresh message (not an edit)."""
+    msg = update.effective_message
+    if not msg:
+        return
+    context.user_data.pop(_PENDING_LANE_KEY, None)
+    await msg.reply_html(
+        "<b>🔍 Search the AOF Archive</b>\nPick a lane, or run <code>/find keywords</code> directly.",
+        reply_markup=lane_menu_keyboard(),
+        disable_web_page_preview=True,
+    )
+
+
+async def on_find_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """◀️ Back to lanes — redraw the top-level picker in place."""
+    query_cb = update.callback_query
+    if not query_cb:
+        return
+    context.user_data.pop(_PENDING_LANE_KEY, None)
+    await query_cb.answer()
+    try:
+        await query_cb.edit_message_text(
+            "<b>🔍 Search the AOF Archive</b>\nPick a lane, or run <code>/find keywords</code> directly.",
+            parse_mode="HTML",
+            reply_markup=lane_menu_keyboard(),
+        )
+    except TelegramError:
+        pass
+
+
+async def on_find_lane_pick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A lane button was tapped — remember it and ask for the query text."""
+    query_cb = update.callback_query
+    if not query_cb or not query_cb.data:
+        return
+    lane_key = query_cb.data.split(":", 2)[-1]
+    context.user_data[_PENDING_LANE_KEY] = lane_key
+    await query_cb.answer()
+    emoji = category_emoji_for_network_key(lane_key)
+    label = _LANE_LABELS.get(lane_key, lane_key.replace("_", " ").title())
+    try:
+        await query_cb.edit_message_text(
+            f"<b>{emoji} {html.escape(label)}</b>\n"
+            "Send a few keywords to narrow it down, or just browse.",
+            parse_mode="HTML",
+            reply_markup=_lane_picked_keyboard(lane_key),
+        )
+    except TelegramError:
+        pass
+
+
+async def on_find_browse_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """🎲 Browse this lane — search on the lane emoji alone, no typed keywords."""
+    query_cb = update.callback_query
+    if not query_cb or not query_cb.data:
+        return
+    lane_key = query_cb.data.split(":", 2)[-1]
+    context.user_data.pop(_PENDING_LANE_KEY, None)
+    await query_cb.answer("Searching…")
+    emoji = category_emoji_for_network_key(lane_key)
+    bot_kind = str(context.bot_data.get("aof_find_bot_kind") or "loot")
+    await cmd_find(update, context, bot_kind=bot_kind, override_query=emoji)
+
+
+async def consume_find_pending_lane_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, *, bot_kind: str
+) -> bool:
+    """Call from a bot's own free-text handler. True = this text was the lane
+    query and has been dispatched to search; caller should stop processing it
+    as anything else. False = no lane was pending, caller's normal flow applies.
+    """
+    lane_key = (context.user_data or {}).pop(_PENDING_LANE_KEY, None)
+    if not lane_key:
+        return False
+    msg = update.effective_message
+    text = (msg.text if msg else "") or ""
+    emoji = category_emoji_for_network_key(lane_key)
+    await cmd_find(update, context, bot_kind=bot_kind, override_query=f"{emoji} {text}".strip())
+    return True
+
+
 def build_find_handlers(*, bot_kind: str = "loot"):
     from telegram.ext import CallbackQueryHandler, CommandHandler
 
     async def _cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.bot_data["aof_find_bot_kind"] = bot_kind
         await cmd_find(update, context, bot_kind=bot_kind)
+
+    async def _lane_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.bot_data["aof_find_bot_kind"] = bot_kind
+        await on_find_lane_pick_callback(update, context)
+
+    async def _browse(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        context.bot_data["aof_find_bot_kind"] = bot_kind
+        await on_find_browse_callback(update, context)
 
     return [
         CommandHandler("find", _cmd),
+        CommandHandler("searchmenu", cmd_searchmenu),
         CallbackQueryHandler(on_find_more_callback, pattern=r"^find:more:"),
+        CallbackQueryHandler(_lane_pick, pattern=r"^find:lane:"),
+        CallbackQueryHandler(_browse, pattern=r"^find:browse:"),
+        CallbackQueryHandler(on_find_menu_callback, pattern=r"^find:menu$"),
     ]

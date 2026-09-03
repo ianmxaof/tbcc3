@@ -536,6 +536,12 @@ async def on_macro_overlay_text(
         )
         return
 
+    if not text.startswith("/"):
+        from bots.aof_search_telegram import consume_find_pending_lane_text
+
+        if await consume_find_pending_lane_text(update, context, bot_kind="macro"):
+            return
+
     pending = (context.user_data or {}).get("ms_pending_cat")
     if pending and not text.startswith("/"):
         context.user_data.pop("ms_pending_cat", None)

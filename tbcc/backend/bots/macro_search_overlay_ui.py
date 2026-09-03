@@ -208,6 +208,7 @@ def bot_commands_public() -> list[tuple[str, str]]:
         ("macrosearch", "Probe sources by username / category"),
         ("videofind", "Alias for /macrosearch"),
         ("find", "Archive keyword → DM album"),
+        ("searchmenu", "Pick a lane by button, then type"),
         ("recent", "Your recent searches"),
         ("inbox", "Queue gallery URL for TBCC"),
         ("suggestsource", "Suggest a search site"),
