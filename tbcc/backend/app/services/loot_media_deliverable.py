@@ -64,6 +64,12 @@ def filter_roll_candidates(rows: list[Media]) -> list[Media]:
     return [r for r in rows if is_loot_media_roll_candidate(r)]
 
 
+def prefer_local_byte_candidates(rows: list[Media]) -> list[Media]:
+    """If any pick has bytes on disk, use only those so /roll does not wait on Telegram."""
+    local = [r for r in rows if loot_media_has_local_bytes(r)]
+    return local if local else list(rows)
+
+
 def quarantine_stale_saved_message(db: Session, media: Media, *, reason: str = "saved_message_missing") -> None:
     """Remove dead Saved Messages refs from the loot roll pool."""
     row = db.query(Media).filter(Media.id == int(media.id)).first()

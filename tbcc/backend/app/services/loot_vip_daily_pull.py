@@ -10,11 +10,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.loot import LootPlayerMediaSeen, LootPlayerStats, LootPoolEligibility
-from app.models.media import Media
 from app.services.loot_free_tease import pick_tease_lines
 from app.services.loot_player_stats import get_lifetime_roll_index
 from app.services.loot_roll_presentation import pick_tier_flavor
-from app.services.loot_roll_preview import _pools_for_tier, _weighted_choice
+from app.services.loot_roll_preview import _candidates_prefer_dedicated_then_shared, _weighted_choice
 from app.services.loot_tier_catalog import preview_summary_fields, roll_rarity_tier
 from app.services.subscription_access import is_aof_vip_subscriber
 
@@ -107,8 +106,19 @@ def build_vip_daily_pull_preview(
         .filter(LootPoolEligibility.loot_enabled.is_(True))
         .all()
     )
-    tier_pools = _pools_for_tier(eligible_rows, rarity)
-    eligible_pool_ids = [int(r.content_pool_id) for r in tier_pools]
+    seen_ids = [
+        int(x[0])
+        for x in db.query(LootPlayerMediaSeen.media_id)
+        .filter(LootPlayerMediaSeen.telegram_user_id == uid)
+        .all()
+    ]
+    tier_pools, eligible_pool_ids, candidates = _candidates_prefer_dedicated_then_shared(
+        db,
+        eligible_rows,
+        rarity,
+        seen_ids=seen_ids,
+        skip_seen=True,
+    )
     if not eligible_pool_ids:
         return {
             "ok": False,
@@ -116,21 +126,6 @@ def build_vip_daily_pull_preview(
             "roll_kind": "vip_daily",
             "rarity_tier": rarity,
         }
-
-    q = db.query(Media).filter(
-        Media.status == "approved",
-        Media.pool_id.in_(eligible_pool_ids),
-    )
-    seen_ids = [
-        int(x[0])
-        for x in db.query(LootPlayerMediaSeen.media_id)
-        .filter(LootPlayerMediaSeen.telegram_user_id == uid)
-        .all()
-    ]
-    if seen_ids:
-        q = q.filter(~Media.id.in_(seen_ids))
-
-    candidates = q.all()
     if not candidates:
         return {
             "ok": False,

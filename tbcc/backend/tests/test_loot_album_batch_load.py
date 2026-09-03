@@ -104,7 +104,7 @@ def test_batch_keeps_partial_results_when_one_item_dies():
     rows = [_media_row(1, 101), _media_row(2, 102)]
     fake = (b"\xff\xd8\xff" + b"z" * 80, "loot.jpg")
 
-    async def _fake_download(_storage, tg_id):
+    async def _fake_download(_storage, tg_id, peer="me"):
         if int(tg_id) == 102:
             raise ValueError(f"Saved message {tg_id} not found or has no media")
         return fake

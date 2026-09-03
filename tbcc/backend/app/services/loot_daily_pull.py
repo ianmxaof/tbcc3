@@ -17,12 +17,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.loot import LootPlayerMediaSeen, LootPlayerStats, LootPoolEligibility
-from app.models.media import Media
 from app.services.loot_free_tease import pick_tease_lines
 from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_roll_presentation import pick_tier_flavor
-from app.services.loot_roll_preview import _pools_for_tier, _weighted_choice
-from app.services.loot_media_deliverable import filter_roll_candidates
+from app.services.loot_roll_preview import _candidates_prefer_dedicated_then_shared, _weighted_choice
 from app.services.loot_tier_catalog import (
     DAILY_PULL_MAX_TIER,
     FREE_PULL_MAX_TIER,
@@ -151,8 +149,20 @@ def build_daily_pull_preview(
         .filter(LootPoolEligibility.loot_enabled.is_(True))
         .all()
     )
-    tier_pools = _pools_for_tier(eligible_rows, rarity)
-    eligible_pool_ids = [int(r.content_pool_id) for r in tier_pools]
+    seen_ids = [
+        int(x[0])
+        for x in db.query(LootPlayerMediaSeen.media_id)
+        .filter(LootPlayerMediaSeen.telegram_user_id == uid)
+        .all()
+    ]
+    tier_pools, eligible_pool_ids, candidates = _candidates_prefer_dedicated_then_shared(
+        db,
+        eligible_rows,
+        rarity,
+        seen_ids=seen_ids,
+        skip_seen=not operator,
+        exclude_ids=exclude_media_ids,
+    )
     if not eligible_pool_ids:
         return {
             "ok": False,
@@ -160,37 +170,6 @@ def build_daily_pull_preview(
             "roll_kind": "daily",
             "rarity_tier": rarity,
         }
-
-    q = db.query(Media).filter(
-        Media.status == "approved",
-        Media.pool_id.in_(eligible_pool_ids),
-    )
-    seen_ids = [
-        int(x[0])
-        for x in db.query(LootPlayerMediaSeen.media_id)
-        .filter(LootPlayerMediaSeen.telegram_user_id == uid)
-        .all()
-    ]
-    if seen_ids and not operator:
-        q = q.filter(~Media.id.in_(seen_ids))
-    ban = [int(x) for x in (exclude_media_ids or []) if x is not None]
-    if ban:
-        q = q.filter(~Media.id.in_(ban))
-
-    candidates = filter_roll_candidates(q.all())
-    if not candidates:
-        from app.services.sent_vault_lane_refill import refill_loot_pools_from_sent_vault_sync
-
-        refill_loot_pools_from_sent_vault_sync(db, eligible_pool_ids, need=8)
-        q = db.query(Media).filter(
-            Media.status == "approved",
-            Media.pool_id.in_(eligible_pool_ids),
-        )
-        if seen_ids and not operator:
-            q = q.filter(~Media.id.in_(seen_ids))
-        if ban:
-            q = q.filter(~Media.id.in_(ban))
-        candidates = filter_roll_candidates(q.all())
     if not candidates:
         return {
             "ok": False,

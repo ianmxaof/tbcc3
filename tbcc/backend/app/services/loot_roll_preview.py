@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import random
 from typing import Any
 
@@ -13,9 +15,10 @@ from app.models.loot import (
     LootPlayerMediaSeen,
     LootPoolEligibility,
 )
+from app.models.content_pool import ContentPool
 from app.models.media import Media
 from app.services.loot_composite_tier import compute_composite_tier, composite_tier_fields
-from app.services.loot_media_deliverable import filter_roll_candidates
+from app.services.loot_media_deliverable import filter_roll_candidates, prefer_local_byte_candidates
 from app.services.loot_operator_access import is_loot_operator
 from app.services.loot_player_modifiers import seen_modifier_ids
 from app.services.loot_player_stats import get_lifetime_roll_index
@@ -26,6 +29,8 @@ from app.services.loot_tier_catalog import (
     preview_summary_fields,
     roll_rarity_tier,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_probs(raw_json: str | None) -> list[float]:
@@ -57,23 +62,115 @@ def _weighted_choice(items: list[Any], weights: list[float], rng: random.Random)
     return items[-1]
 
 
-def _pools_for_tier(eligible_rows: list[LootPoolEligibility], rarity: int) -> list[LootPoolEligibility]:
+def loot_album_max_items() -> int:
+    """Paid rolls used to send up to 12 files; that stalls Telegram downloads past 10s."""
+    raw = (os.getenv("TBCC_LOOT_ALBUM_MAX") or "3").strip()
+    try:
+        return max(1, min(12, int(raw)))
+    except ValueError:
+        return 3
+
+
+def kick_loot_stock_background() -> None:
+    """Queue SENT VAULT restock on Celery. Never scan Telegram on the player /roll path."""
+    try:
+        from app.workers.sent_vault_lane_refill_worker import refill_dry_lanes_from_sent_vault_task
+
+        refill_dry_lanes_from_sent_vault_task.delay()
+    except Exception:
+        logger.debug("loot stock background kick skipped", exc_info=True)
+
+
+def _pool_names_for_rows(db: Session, rows: list[LootPoolEligibility]) -> dict[int, str]:
+    ids = [int(r.content_pool_id) for r in rows]
+    if not ids:
+        return {}
+    return {
+        int(p.id): (p.name or "")
+        for p in db.query(ContentPool).filter(ContentPool.id.in_(ids)).all()
+    }
+
+
+def _pools_for_tier(
+    eligible_rows: list[LootPoolEligibility],
+    rarity: int,
+    pool_names: dict[int, str] | None = None,
+) -> list[LootPoolEligibility]:
     """
     Pools eligible for a rarity roll.
 
-    Shared-library mode: use every loot_enabled row (bands are informational /
-    seeded as 1–10). If none are enabled, fall back to the input list.
+    Prefer dedicated LOOT ROOM* clones when those rows are enabled so public
+    channel posting does not empty the same deck the bot draws from.
+    Otherwise shared-library mode: every loot_enabled row (bands are informational).
     """
     enabled = [r for r in eligible_rows if bool(getattr(r, "loot_enabled", True))]
-    if enabled:
-        return enabled
-    out: list[LootPoolEligibility] = []
-    for r in eligible_rows:
-        lo = int(r.min_rarity_tier) if r.min_rarity_tier is not None else 1
-        hi = int(r.max_rarity_tier) if r.max_rarity_tier is not None else 10
-        if lo <= int(rarity) <= hi:
-            out.append(r)
-    return out or list(eligible_rows)
+    if not enabled:
+        out: list[LootPoolEligibility] = []
+        for r in eligible_rows:
+            lo = int(r.min_rarity_tier) if r.min_rarity_tier is not None else 1
+            hi = int(r.max_rarity_tier) if r.max_rarity_tier is not None else 10
+            if lo <= int(rarity) <= hi:
+                out.append(r)
+        return out or list(eligible_rows)
+    names = pool_names or {}
+    dedicated = [
+        r
+        for r in enabled
+        if str(names.get(int(r.content_pool_id), "")).upper().startswith("LOOT ROOM")
+    ]
+    if dedicated:
+        return dedicated
+    return enabled
+
+
+def _load_roll_candidates(
+    db: Session,
+    pool_ids: list[int],
+    *,
+    seen_ids: list[int],
+    skip_seen: bool,
+    exclude_ids: list[int] | None = None,
+) -> list[Media]:
+    if not pool_ids:
+        return []
+    q = db.query(Media).filter(
+        Media.status == "approved",
+        Media.pool_id.in_(pool_ids),
+    )
+    if seen_ids and skip_seen:
+        q = q.filter(~Media.id.in_(seen_ids))
+    ban = [int(x) for x in (exclude_ids or []) if x is not None]
+    if ban:
+        q = q.filter(~Media.id.in_(ban))
+    return prefer_local_byte_candidates(filter_roll_candidates(q.all()))
+
+
+def _candidates_prefer_dedicated_then_shared(
+    db: Session,
+    eligible_rows: list[LootPoolEligibility],
+    rarity: int,
+    *,
+    seen_ids: list[int],
+    skip_seen: bool,
+    exclude_ids: list[int] | None = None,
+) -> tuple[list[LootPoolEligibility], list[int], list[Media]]:
+    names = _pool_names_for_rows(db, eligible_rows)
+    tier_pools = _pools_for_tier(eligible_rows, rarity, pool_names=names)
+    pool_ids = [int(r.content_pool_id) for r in tier_pools]
+    candidates = _load_roll_candidates(
+        db, pool_ids, seen_ids=seen_ids, skip_seen=skip_seen, exclude_ids=exclude_ids
+    )
+    enabled = [r for r in eligible_rows if bool(getattr(r, "loot_enabled", True))]
+    enabled_ids = [int(r.content_pool_id) for r in enabled]
+    if not candidates and enabled_ids and set(enabled_ids) != set(pool_ids):
+        tier_pools = enabled or tier_pools
+        pool_ids = enabled_ids
+        candidates = _load_roll_candidates(
+            db, pool_ids, seen_ids=seen_ids, skip_seen=skip_seen, exclude_ids=exclude_ids
+        )
+    if not candidates:
+        kick_loot_stock_background()
+    return tier_pools, pool_ids, candidates
 
 
 def build_roll_preview(
@@ -104,66 +201,56 @@ def build_roll_preview(
         lifetime_roll_index=lifetime_idx,
     )
     bonus_draws = int(tier_row.bonus_album_draws or 0)
-    album_size = min(12, base_rarity + bonus_draws)
+    album_size = min(loot_album_max_items(), base_rarity + bonus_draws)
 
     eligible_rows = (
         db.query(LootPoolEligibility)
         .filter(LootPoolEligibility.loot_enabled.is_(True))
         .all()
     )
-    tier_pools = _pools_for_tier(eligible_rows, base_rarity)
-    eligible_pool_ids = [int(r.content_pool_id) for r in tier_pools]
-    pool_elig_map = {int(r.content_pool_id): r for r in eligible_rows}
-    if not eligible_pool_ids:
-        if not eligible_rows:
-            reason = (
+    if not eligible_rows:
+        return {
+            "ok": False,
+            "reason": (
                 "No pools in loot_pool_eligibility with loot_enabled=true. "
                 "Dashboard → Loot overseer: seed content pools (POST /loot/seed-content-pool-eligibility) "
                 "or loot room pools (POST /loot/seed-loot-room-eligibility) "
                 "or POST /loot/pool-eligibility per content pool."
-            )
-        else:
-            reason = (
-                f"No loot-eligible pools for rarity tier {base_rarity} "
-                f"(check min_rarity_tier / max_rarity_tier on loot_pool_eligibility rows)"
-            )
-        return {
-            "ok": False,
-            "reason": reason,
+            ),
             "interval_code": tier_row.code,
             "rarity_tier": base_rarity,
             "base_roll_tier": base_rarity,
         }
 
-    # Approved pool media — on disk, or SENT VAULT copies (filter_roll_candidates decides).
-
-    q = db.query(Media).filter(
-        Media.status == "approved",
-        Media.pool_id.in_(eligible_pool_ids),
-    )
     seen_ids: list[int] = []
-    if telegram_user_id and not is_loot_operator(telegram_user_id):
+    skip_seen = bool(telegram_user_id and not is_loot_operator(telegram_user_id))
+    if telegram_user_id and skip_seen:
         seen_ids = [
             int(x[0])
             for x in db.query(LootPlayerMediaSeen.media_id)
             .filter(LootPlayerMediaSeen.telegram_user_id == int(telegram_user_id))
             .all()
         ]
-        if seen_ids:
-            q = q.filter(~Media.id.in_(seen_ids))
 
-    candidates = filter_roll_candidates(q.all())
-    if not candidates:
-        from app.services.sent_vault_lane_refill import refill_loot_pools_from_sent_vault_sync
-
-        refill_loot_pools_from_sent_vault_sync(db, eligible_pool_ids, need=8)
-        q = db.query(Media).filter(
-            Media.status == "approved",
-            Media.pool_id.in_(eligible_pool_ids),
-        )
-        if seen_ids:
-            q = q.filter(~Media.id.in_(seen_ids))
-        candidates = filter_roll_candidates(q.all())
+    tier_pools, eligible_pool_ids, candidates = _candidates_prefer_dedicated_then_shared(
+        db,
+        eligible_rows,
+        base_rarity,
+        seen_ids=seen_ids,
+        skip_seen=skip_seen,
+    )
+    pool_elig_map = {int(r.content_pool_id): r for r in eligible_rows}
+    if not eligible_pool_ids:
+        return {
+            "ok": False,
+            "reason": (
+                f"No loot-eligible pools for rarity tier {base_rarity} "
+                f"(check min_rarity_tier / max_rarity_tier on loot_pool_eligibility rows)"
+            ),
+            "interval_code": tier_row.code,
+            "rarity_tier": base_rarity,
+            "base_roll_tier": base_rarity,
+        }
     if not candidates:
         return {
             "ok": False,

@@ -103,6 +103,9 @@ def stock(*, execute: bool, per_pool: int) -> dict:
             dest = _get_or_create_pool(db, dest_name) if execute else (
                 db.query(ContentPool).filter(ContentPool.name == dest_name).first()
             )
+            if execute and dest:
+                dest.auto_post_enabled = False
+                dest.interval_minutes = 0
             src_count = 0
             already = 0
             to_clone: list[Media] = []

@@ -8,7 +8,6 @@ import html
 import io
 import logging
 import random
-import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -282,21 +281,21 @@ async def _loot_telegram_io(fn):
 def _loot_album_batch_timeout_s() -> float:
     import os
 
-    raw = (os.getenv("TBCC_LOOT_ALBUM_BATCH_TIMEOUT_S") or "90").strip()
+    raw = (os.getenv("TBCC_LOOT_ALBUM_BATCH_TIMEOUT_S") or "10").strip()
     try:
-        return max(35.0, min(240.0, float(raw)))
+        return max(3.0, min(10.0, float(raw)))
     except ValueError:
-        return 90.0
+        return 10.0
 
 
 def _loot_album_item_timeout_s() -> float:
     import os
 
-    raw = (os.getenv("TBCC_LOOT_ALBUM_ITEM_TIMEOUT_S") or "20").strip()
+    raw = (os.getenv("TBCC_LOOT_ALBUM_ITEM_TIMEOUT_S") or "8").strip()
     try:
-        return max(5.0, min(60.0, float(raw)))
+        return max(3.0, min(10.0, float(raw)))
     except ValueError:
-        return 20.0
+        return 8.0
 
 
 def _is_missing_saved_message(exc: BaseException) -> bool:
@@ -330,7 +329,7 @@ async def _download_many_saved_media_bytes(
             if tg_id <= 0:
                 continue
             remaining = deadline - loop.time()
-            if remaining <= 3.0:
+            if remaining <= 0.5:
                 logger.warning("loot album batch deadline hit; %s item(s) unattempted", len(rows) - len(collected))
                 return
             mid = int(row.id)
@@ -367,7 +366,7 @@ async def _download_many_saved_media_bytes(
                 )
 
     try:
-        await asyncio.wait_for(_loot_telegram_io(_fn), timeout=budget + 45.0)
+        await asyncio.wait_for(_loot_telegram_io(_fn), timeout=budget + 1.0)
     except Exception as e:
         logger.warning("loot album batch telethon failed after %s item(s): %r", len(collected), e)
     return collected, missing
@@ -722,24 +721,30 @@ async def _send_loot_preview_to_chat_inner(
     from app.services.loot_border_reveal import loot_border_reveal_enabled
 
     border_mode = loot_border_reveal_enabled()
+    media_specs = preview.get("media") or []
+    payloads: list[tuple[Media, bytes, str]] = []
+    if media_specs:
+        ids = [int(m["id"]) for m in media_specs if m.get("id") is not None]
+        rows = db.query(Media).filter(Media.id.in_(ids)).all()
+        by_id = {int(r.id): r for r in rows}
+        ordered: list[Media] = []
+        for mid in ids:
+            row = by_id.get(mid)
+            if row:
+                ordered.append(row)
+        payloads, load_notes = await _batch_load_media_bytes(ordered, db=db)
+        for note in load_notes:
+            if note.startswith("skip media"):
+                logger.warning("loot preview %s", note)
+            delivery["notes"].append(note)
+
     center_jpeg: bytes | None = None
-    media_preview = preview.get("media") or []
-    for item in media_preview:
-        mid = item.get("id")
-        if mid is None:
-            continue
-        row = db.query(Media).filter(Media.id == int(mid)).first()
-        if not row:
-            continue
-        try:
-            data, _fname = await _load_media_bytes(row, db=db)
-            kind, _ext = sniff_media_kind(data)
-            if kind in ("photo", "gif", "video"):
-                center_jpeg = _bytes_to_center_jpeg(data)
-                break
-        except Exception as e:
-            logger.warning("reveal center from roll media skipped media_id=%s: %s", mid, e)
-    if border_mode and not center_jpeg and media_preview:
+    if payloads:
+        data = payloads[0][1]
+        kind, _ext = sniff_media_kind(data)
+        if kind in ("photo", "gif", "video"):
+            center_jpeg = _bytes_to_center_jpeg(data)
+    if border_mode and not center_jpeg and media_specs:
         delivery["notes"].append("tier card center:roll_media_missing")
 
     card_bytes: bytes | None = None
@@ -751,9 +756,12 @@ async def _send_loot_preview_to_chat_inner(
         try:
             opening = build_tier_opening_html(db, preview)
             effect_id = loot_roll_effect_id()
-            mp4_bytes, mp4_note = await _encode_reveal_card_mp4(
-                card_bytes or b"", preview, center_jpeg=center_jpeg
-            )
+            if payloads:
+                mp4_bytes, mp4_note = None, "skipped:album-already-loaded"
+            else:
+                mp4_bytes, mp4_note = await _encode_reveal_card_mp4(
+                    card_bytes or b"", preview, center_jpeg=center_jpeg
+                )
             if mp4_bytes:
                 border_video = border_mode
                 await _send_reveal_with_effects(
@@ -851,19 +859,6 @@ async def _send_loot_preview_to_chat_inner(
         )
         delivery["notes"].append("flavor")
 
-    preparing_msg = None
-    try:
-        preparing_msg = await bot.send_message(
-            chat_id=chat_id,
-            text=build_preparing_html(preview),
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        delivery["notes"].append("preparing")
-    except Exception as e:
-        logger.warning("loot preparing ping failed: %s", e)
-
-    media_specs = preview.get("media") or []
     mod_specs = preview.get("modifiers") or []
     mod_ids = [int(m["id"]) for m in mod_specs if m.get("id") is not None]
     link_mod_lines = format_modifier_caption_lines(mod_specs)
@@ -903,72 +898,26 @@ async def _send_loot_preview_to_chat_inner(
                 reply_markup=roll_kb,
             )
             delivery["notes"].append("deal failed empty media")
+    elif payloads:
+        await _send_media_plan(
+            bot,
+            chat_id,
+            payloads,
+            preview=preview,
+            spoiler_default=spoiler_default,
+            delivery=delivery,
+            album_caption=album_caption,
+            reply_markup=roll_kb,
+        )
     else:
-        ids = [int(m["id"]) for m in media_specs if m.get("id") is not None]
-        rows = db.query(Media).filter(Media.id.in_(ids)).all()
-        by_id = {int(r.id): r for r in rows}
-        ordered: list[Media] = []
-        for mid in ids:
-            row = by_id.get(mid)
-            if row:
-                ordered.append(row)
-
-        payloads: list[tuple[Media, bytes, str]] = []
-        load_started = time.monotonic()
-        still_pinged = False
-        try:
-            from telegram.constants import ChatAction
-
-            await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
-        except Exception:
-            pass
-        if (
-            preparing_msg is not None
-            and (time.monotonic() - load_started) > 12.0
-        ):
-            try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=int(preparing_msg.message_id),
-                    text=f"<i>{html.escape(pick_still_working_line())}</i>",
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-                delivery["notes"].append("still working ping")
-            except Exception:
-                pass
-        payloads, load_notes = await _batch_load_media_bytes(ordered, db=db)
-        for note in load_notes:
-            if note.startswith("skip media"):
-                logger.warning("loot preview %s", note)
-            delivery["notes"].append(note)
-
-        if payloads:
-            await _send_media_plan(
-                bot,
-                chat_id,
-                payloads,
-                preview=preview,
-                spoiler_default=spoiler_default,
-                delivery=delivery,
-                album_caption=album_caption,
-                reply_markup=roll_kb,
-            )
-        else:
-            delivery["notes"].append("could not load any album bytes")
-            await bot.send_message(
-                chat_id=chat_id,
-                text=pick_deal_failed_html(),
-                parse_mode="HTML",
-                reply_markup=roll_kb,
-            )
-            delivery["notes"].append("deal failed no bytes")
-
-    if preparing_msg is not None and int(delivery.get("media_sent") or 0) > 0:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=int(preparing_msg.message_id))
-        except Exception:
-            pass
+        delivery["notes"].append("could not load any album bytes")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=pick_deal_failed_html(),
+            parse_mode="HTML",
+            reply_markup=roll_kb,
+        )
+        delivery["notes"].append("deal failed no bytes")
 
     delivery["modifier_link_notes"] = []
     delivery["modifier_zip_notes"] = await _send_modifier_zips_last(bot, chat_id, mod_ids, db)
@@ -1032,6 +981,19 @@ async def _send_loot_free_pull_to_chat_inner(
     free_pulls_remaining: int,
     delivery: dict[str, Any],
 ) -> dict[str, Any]:
+    media_specs = preview.get("media") or []
+    payloads: list[tuple[Media, bytes, str]] = []
+    if media_specs:
+        mid = int(media_specs[0]["id"])
+        row = db.query(Media).filter(Media.id == mid).first()
+        if row:
+            try:
+                data, fname = await _load_media_bytes(row, db=db)
+                payloads = [(row, data, fname)]
+            except Exception as e:
+                logger.warning("free pull media skip id=%s: %s", mid, e)
+                delivery["notes"].append(f"skip media: {e}")
+
     divider = build_roll_divider_html(preview)
     await bot.send_message(
         chat_id=chat_id,
@@ -1067,64 +1029,32 @@ async def _send_loot_free_pull_to_chat_inner(
             parse_mode="HTML",
         )
 
-    try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=build_preparing_html(preview),
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        delivery["notes"].append("preparing")
-    except Exception as e:
-        logger.warning("free pull preparing ping failed: %s", e)
-
-    media_specs = preview.get("media") or []
-    if not media_specs:
-        delivery["notes"].append("no media")
+    if not media_specs or not payloads:
+        delivery["notes"].append("no media" if not media_specs else "could not load any album bytes")
         await bot.send_message(
             chat_id=chat_id,
             text=pick_deal_failed_html(),
             parse_mode="HTML",
             reply_markup=build_loot_roll_inline_markup(),
         )
+        if not payloads and media_specs:
+            delivery["notes"].append("deal failed no bytes")
     else:
-        mid = int(media_specs[0]["id"])
-        row = db.query(Media).filter(Media.id == mid).first()
-        if row:
-            try:
-                data, fname = await _load_media_bytes(row, db=db)
-                payloads = [(row, data, fname)]
-                simple_cap = build_album_caption_html(
-                    preview,
-                    modifier_lines=[],
-                    item_count=1,
-                )
-                await _send_media_plan(
-                    bot,
-                    chat_id,
-                    payloads,
-                    preview=preview,
-                    spoiler_default=spoiler_default,
-                    delivery=delivery,
-                    album_caption=simple_cap,
-                    reply_markup=None,
-                )
-            except Exception as e:
-                logger.warning("free pull media skip id=%s: %s", mid, e)
-                delivery["notes"].append(f"skip media: {e}")
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=pick_deal_failed_html(),
-                    parse_mode="HTML",
-                    reply_markup=build_loot_roll_inline_markup(),
-                )
-        else:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=pick_deal_failed_html(),
-                parse_mode="HTML",
-                reply_markup=build_loot_roll_inline_markup(),
-            )
+        simple_cap = build_album_caption_html(
+            preview,
+            modifier_lines=[],
+            item_count=1,
+        )
+        await _send_media_plan(
+            bot,
+            chat_id,
+            payloads,
+            preview=preview,
+            spoiler_default=spoiler_default,
+            delivery=delivery,
+            album_caption=simple_cap,
+            reply_markup=None,
+        )
 
     from app.services.loot_free_tease import (
         build_free_pull_tease_html,

@@ -8,6 +8,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.telegram_message_effects import EFFECT_SPARKLES
 
 
+def test_album_batch_timeout_defaults_to_10s_cap(monkeypatch):
+    from app.services.loot_preview_delivery import _loot_album_batch_timeout_s
+
+    monkeypatch.delenv("TBCC_LOOT_ALBUM_BATCH_TIMEOUT_S", raising=False)
+    assert _loot_album_batch_timeout_s() == 10.0
+    monkeypatch.setenv("TBCC_LOOT_ALBUM_BATCH_TIMEOUT_S", "90")
+    assert _loot_album_batch_timeout_s() == 10.0
+    monkeypatch.setenv("TBCC_LOOT_ALBUM_BATCH_TIMEOUT_S", "8")
+    assert _loot_album_batch_timeout_s() == 8.0
+
+
 def test_reveal_send_photo_passes_message_effect_id():
     from app.services.loot_preview_delivery import _send_loot_preview_to_chat_inner
 

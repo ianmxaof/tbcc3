@@ -63,6 +63,28 @@ def test_sent_vault_recycle_is_candidate_even_when_local_only():
     assert loot_telegram_fetch_peer(row) != "me"
 
 
+def test_prefer_local_byte_candidates_when_any_exist():
+    from app.services.loot_media_deliverable import prefer_local_byte_candidates
+
+    local = _row(mid=1, tg=0, fid="local:a")
+    remote = _row(mid=2, tg=50, tags="sent_vault_recycled")
+    with patch(
+        "app.services.loot_media_deliverable.loot_media_has_local_bytes",
+        side_effect=lambda r: int(r.id) == 1,
+    ):
+        out = prefer_local_byte_candidates([remote, local])
+    assert [int(r.id) for r in out] == [1]
+
+
+def test_prefer_local_byte_candidates_keeps_remote_when_none_local():
+    from app.services.loot_media_deliverable import prefer_local_byte_candidates
+
+    remote = _row(mid=2, tg=50, tags="sent_vault_recycled")
+    with patch("app.services.loot_media_deliverable.loot_media_has_local_bytes", return_value=False):
+        out = prefer_local_byte_candidates([remote])
+    assert [int(r.id) for r in out] == [2]
+
+
 def test_filter_roll_candidates():
     rows = [_row(mid=1, tg=0, fid="local:a"), _row(mid=2, tg=50)]
     with patch(
