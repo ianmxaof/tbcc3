@@ -3,6 +3,7 @@ Flashy /shop promo: hero + section images (env + per-product promo_image_url) + 
 """
 from __future__ import annotations
 
+import html
 import logging
 import os
 from typing import Any
@@ -230,3 +231,31 @@ async def send_shop_promo(update: Any, context: Any) -> None:
 def shop_keyboard() -> InlineKeyboardMarkup:
     """Exported for payment_bot if needed."""
     return _shop_keyboard()
+
+
+async def build_shop_inline_html() -> tuple[str, InlineKeyboardMarkup]:
+    """Single-screen shop summary for edit-in-place menu navigation (no photo sequence)."""
+    raw = await _fetch_plans_raw()
+    subs = _active_subs(raw)
+    bundles = _active_bundles(raw)
+    min_sub = _min_stars(subs)
+    min_pack = _min_stars(bundles)
+    disp = html.escape(vip_display_name())
+    lines = [
+        "🔥 <b>AOF Store</b>",
+        "",
+        "⏳ <b>Limited spots</b> — we don't keep the door open forever.",
+        f"🎫 <b>{disp}</b> = full group / channel access.",
+        "📦 <b>Packs</b> = exclusive drops — grab them before they rotate out.",
+    ]
+    price_bits: list[str] = []
+    if min_sub is not None:
+        price_bits.append(f"Subscriptions from <b>{min_sub}</b> ⭐")
+    if min_pack is not None:
+        price_bits.append(f"Packs from <b>{min_pack}</b> ⭐")
+    if price_bits:
+        lines.append("")
+        lines.append(" · ".join(price_bits))
+    lines.append("")
+    lines.append("<i>Tap a section below — Stars in-app; crypto &amp; card on the same products.</i>")
+    return "\n".join(lines), _shop_keyboard()
