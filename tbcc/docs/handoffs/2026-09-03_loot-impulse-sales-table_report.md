@@ -222,3 +222,77 @@ fallback menu.
 ---
 
 **Phase 1 done — STOP for Cursor `/cc-report`. Phase 2 not started.**
+
+---
+
+## Cursor `/cc-report` (2026-09-03)
+
+**Verdict: wait** — do not start Phase 2. Do not deploy from the dirty tree.
+
+Git matches the report: `fa6ff60` (shop helpers + copy + tests), `f68b898` / `4fb3113` (report). Prices in `VIP_MEMBERSHIP_SKUS` still $18–$300. `payment_bot.py` still dirty with `payment_ui` / `pack_browser` imports; `tests/test_payment_catalog_keyboard.py` is untracked — I2 filter is **not** on HEAD.
+
+Island check (raw overrides, not only effective): `GET https://api.powercore.app/payment-bot-settings` → `overrides.main_menu: null` (no saved menu). `effective.main_menu` still opens on Join the Insiders because the island image is pre-`fa6ff60`. After a **clean** deploy, the committed `DEFAULT_MAIN_MENU` will take effect without a PATCH.
+
+Pick recipe **A** when ready to land I2 (payment_ui WIP first, then catalog test). Recipe B mixes tracks — fence said no.
+
+`CURRENT_DIRECTIVE.md` currently points at island-ops empty-pools Phase 2, not this file. Pricing Phase 2 stays unauthorized.
+
+---
+
+## Phase 1b — verify recipe A landed (2026-09-03)
+
+**Verify-only, per fence. No price change, no deploy, no push.**
+
+| Field | Value |
+|---|---|
+| **checked commits** | `79e3b3a` (`feat(payment-bot): single-anchor UI + pack browser`), `fda4274` (`test(shop): default catalog hides the multi-month VIP ladder`) |
+| **HEAD vs origin** | `ahead 2`, **not pushed** (working agreement said don't) |
+| **prices** | unchanged — `VIP_MEMBERSHIP_SKUS` still $18–$300, loot keys still 150/220/320/480⭐ |
+
+**I2 filter confirmed on HEAD.** `bots/payment_bot.py::fetch_plans()` (main section):
+
+```python
+from app.data.aof_vip_membership import is_hidden_ladder_plan_name, is_vip_intro_plan_name
+out = [p for p in out if not is_hidden_ladder_plan_name(str(p.get("name") or ""))]
+```
+
+This is my held-back Phase 1 patch landed verbatim — same hide-not-drop seam, same intro
+de-featuring, same sort key. `git show 79e3b3a --stat` is `pack_browser.py` (new, 667 lines),
+`payment_bot.py` (+717/−165, folds in the /subscribe hide), `payment_ui.py` (new, 247 lines),
+plus `test_pack_browser.py` and `test_payment_ui.py`. `git show fda4274 --stat` is the single
+rewritten `test_payment_catalog_keyboard.py` (+133), matching what Phase 1 held back.
+
+**Debug file-writer removal confirmed.** `payment_ui.py` at HEAD has no `open(..., "w")`,
+`write_text`, or `json.dump` calls — grepped clean.
+
+**Single-term Stars-howto fix also present.** The Phase 1 follow-on fix
+(`single_subscription` branch keeping `fiat_vip_ladder_intro_html` on a 1-plan `/subscribe`
+screen) is in `payment_bot.py` at the same lines I left it — not dropped in the rebase onto
+the payment_ui work.
+
+**Verification (pinned command):**
+
+```
+cd tbcc/backend && py -3.13 -m pytest tests/test_payment_catalog_keyboard.py \
+  tests/test_shop_impulse_first.py tests/test_payment_ui.py tests/test_pack_browser.py \
+  tests/test_aof_vip_membership.py -x -q --tb=short
+35 passed in 3.87s
+```
+
+(35, not the 28 quoted for Phase 1 — the extra 7 are `test_payment_ui.py` +
+`test_pack_browser.py`, new in `79e3b3a`, not part of the original Phase 1 slice.)
+
+Re-ran the same wide sweep as Phase 1 against this HEAD:
+
+```
+py -3.13 -m pytest tests/ -q --tb=line --ignore=tests/test_userbot_event_bridge.py \
+  -k "vip or payment or checkout or stars or shop or gumroad or subscribe or loot or menu"
+3 failed, 395 passed, 1814 deselected in 47.68s
+```
+
+Same 3 pre-existing failures as Phase 1 (`test_links_hub_menu_variants` ×2,
+`test_stars_bait_copy` seed count) — unchanged, still unrelated to this slice.
+
+**Result: I2 is real on HEAD, tests pass, nothing pushed, Phase 2 not touched.**
+
+**Phase 1b done — STOP for Cursor `/cc-report`.**
