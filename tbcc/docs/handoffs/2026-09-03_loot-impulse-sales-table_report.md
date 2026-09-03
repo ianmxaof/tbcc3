@@ -72,6 +72,17 @@ Gumroad Ping and existing renewals keep resolving. Intro also de-featured: the s
   same I4 class (a test encoding the old table as correct) and would otherwise have shipped red.
   `test_ladder_intro_html_surfaces_ten` still passes untouched.
 
+**Follow-on fix caught in review — single-term checkout kept its Stars how-to.**
+`send_simple_plan_checkout` picks its header by count: `multi_term` (>1 plan) renders
+`fiat_vip_ladder_intro_html()` *including the Stars how-to*, while a 1-plan screen fell through to a
+bare plan name. Before the filter the main section always returned 5–6 plans, so `multi_term` was
+always true. After it, an intro-**ineligible** user — a returning member, i.e. exactly the renewal
+audience — gets **one** plan and would have lost the Stars education on the one screen that sells
+the recurring term. The text-selection branch now renders plan name **+** the how-to header for a
+single subscription (packs and companion credits keep the bare-name behaviour). Covered by
+`test_single_remaining_term_keeps_the_stars_howto`. This lives in `payment_bot.py`, so it rides with
+the held-back half.
+
 **Binding proof:** the new assertions were checked against the HEAD blobs — HEAD's
 `DEFAULT_MAIN_MENU` first row is `Join the Insiders` / `menu_subscribe`, HEAD has no
 `default_hidden_vip_plan_names` (ImportError), and HEAD's how-to + fiat labels still contain
@@ -83,18 +94,26 @@ Gumroad Ping and existing renewals keep resolving. Intro also de-featured: the s
 cd tbcc/backend && py -3.13 -m pytest tests/test_payment_catalog_keyboard.py \
   tests/test_aof_vip_membership.py tests/test_shop_impulse_first.py \
   tests/test_telegram_stars_howto.py -x -q --tb=short
-27 passed in 1.29s
+28 passed in 3.49s
 ```
 
 `test_aof_vip_membership.py` still asserts the $18–$300 ladder and still passes — expected, that is
 Phase 2. Baseline before any edit was 10 passed on the fence's two files.
 
-Wider sweep (`-k "vip or payment or checkout or stars or shop or gumroad or subscribe or loot or menu"`):
-**393 passed, 2 failed** — both **pre-existing, not this slice**:
+Wider sweep, run after every edit above:
+
+```
+py -3.13 -m pytest tests/ -q --tb=line --ignore=tests/test_userbot_event_bridge.py \
+  -k "vip or payment or checkout or stars or shop or gumroad or subscribe or loot or menu"
+3 failed, 395 passed, 1814 deselected in 45.75s
+```
+
+All 3 failures are **pre-existing, not this slice**:
 
 | Failure | Why it is not mine |
 |---|---|
-| `test_links_hub_menu_variants.py` (2 asserts) | `aof_links_hub_menu_variants.py` — untouched here; 17 variants exist vs 14 expected (other dirty-tree work) |
+| `test_links_hub_menu_variants.py::test_build_all_menu_variants` | `aof_links_hub_menu_variants.py` — untouched here; 17 variants exist vs 14 expected (other dirty-tree work) |
+| `test_links_hub_menu_variants.py::test_interactive_ai_menu_has_motionmuse_button` | same module, same cause |
 | `test_stars_bait_copy.py::test_seed_stars_bait_funnel_strategies_idempotent` | seed count `n1 == 0`, DB state; the module imports only `vip_display_name`, which I did not change |
 
 `tests/test_userbot_event_bridge.py` also fails collection at HEAD
@@ -117,8 +136,8 @@ Wider sweep (`-k "vip or payment or checkout or stars or shop or gumroad or subs
 
 | File | Change |
 |---|---|
-| `bots/payment_bot.py` | `_default_main_menu` mirror, `fetch_plans` hide + intro de-feature, `welcome_html` order |
-| `tests/test_payment_catalog_keyboard.py` | rewritten (imports `payment_bot`) |
+| `bots/payment_bot.py` | `_default_main_menu` mirror, `fetch_plans` hide + intro de-feature, `welcome_html` order, single-term checkout keeps the Stars how-to |
+| `tests/test_payment_catalog_keyboard.py` | rewritten, 8 tests (imports `payment_bot`) |
 
 ## Blocked — operator decision needed to commit the payment_bot half
 
@@ -164,10 +183,12 @@ fallback menu.
    `subscribe_title_main` and `loot_intro_html` all come from the `payment_bot_settings` row
    (id=1); `_normalize_main_menu` falls back to `DEFAULT_MAIN_MENU` only when `main_menu_json` is
    null or empty. **If the island has a saved `main_menu_json`, this change is invisible live.**
-   Check before declaring the shop repositioned:
+   Check before declaring the shop repositioned — and read the **raw row**, not just `effective`:
+   `effective` renders the fallback, so a loot-first menu there does not prove no override exists.
    ```bash
-   curl -sS https://api.powercore.app/payment-bot-settings | head -c 400
-   # if main_menu_json is set: PATCH /payment-bot-settings with the new order, or null it
+   curl -sS https://api.powercore.app/payment-bot-settings | head -c 600
+   # inspect the stored/raw main_menu_json, not the rendered effective.main_menu
+   # if it is set: PATCH /payment-bot-settings with the new order, or null it
    ```
    Same caveat for a custom `welcome_html` — it wins over the reordered copy entirely.
 2. **Not deployed.** Home tree is dirty; per the fence I did not run `deploy-island-live`. The island
@@ -177,9 +198,12 @@ fallback menu.
 4. **Intro still visible, just not first.** `AOF VIP — Intro Month` ($10 / 90d) remains in the grid
    for eligible users, sorted after the monthly. Hiding it outright is a one-line follow-up — not
    something I decided here.
-5. **`/shop` (`bots/shop_promo.py`) untouched** — dirty and not named in Scope, so
-   `build_shop_inline_html` may still present the full ladder on the storefront screen. Worth a look
-   in Phase 2.
+5. **`/shop` (`bots/shop_promo.py`) untouched — but checked.** It keeps its *own* `_fetch_plans_raw`
+   and never calls `payment_bot.fetch_plans`, so it bypasses the new filter. It does **not** list
+   individual terms, though: `build_shop_inline_html` renders only a floor line
+   ("Subscriptions from **N** ⭐") computed over the unfiltered catalog, and it still leads with
+   Insiders copy rather than the Loot Room. So no ladder leak — but `/shop` is the one storefront
+   surface this phase did not reposition. Candidate for Phase 2.
 6. **No bots started, no deploy, no Gumroad login, no `.env` written.** The
    `TBCC_SHOW_FULL_VIP_LADDER` escape hatch is documented here rather than added to the dirty
    `tbcc/.env.example`.
@@ -188,7 +212,7 @@ fallback menu.
 
 | Gate | Result |
 |---|---|
-| Tests | **pass** — 27 targeted; 393 in the wider sweep, 2 pre-existing failures attributed above |
+| Tests | **pass** — 28 targeted; 395 passed in the wider sweep, 3 pre-existing failures attributed above |
 | Migration | **skip** — no models/schema touched |
 | Stack | **pass** — no bot spawned, no island deploy, no `docker cp` |
 | Extension version | **skip** — nothing under `tbcc/extension/` |
