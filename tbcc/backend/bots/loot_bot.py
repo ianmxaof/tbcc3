@@ -1603,6 +1603,7 @@ async def post_init(application: Application) -> None:
     commands = [
         BotCommand("start", "Welcome + action menu"),
         BotCommand("roll", "Claim a complimentary pull"),
+        BotCommand("find", "Search archive by keyword or emoji"),
         BotCommand("referral", "Your referral link"),
         BotCommand("model", "Submit creator promo (DM review queue)"),
         BotCommand("help", "Show menu and shortcuts"),
@@ -1698,6 +1699,10 @@ def main() -> None:
     application.add_handler(CommandHandler("roll", cmd_roll))
     application.add_handler(CommandHandler("daily", cmd_daily))
     application.add_handler(CommandHandler("viproll", cmd_viproll))
+    from bots.aof_search_telegram import build_find_handlers
+
+    for h in build_find_handlers(bot_kind="loot"):
+        application.add_handler(h)
     application.add_handler(CommandHandler("referral", cmd_referral))
     application.add_handler(CommandHandler("model", cmd_model))
     application.add_handler(CommandHandler("status", cmd_status))
