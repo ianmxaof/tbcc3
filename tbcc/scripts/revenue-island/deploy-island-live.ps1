@@ -132,7 +132,7 @@ grep -q '^TBCC_WORKER_IMAGE=' $RemoteDir/infra/$envFile && sed -i 's|^TBCC_WORKE
 # 5) Recreate stack
 Write-Host "`n[5/7] Recreate api + workers + bots" -ForegroundColor Yellow
 Invoke-Compose "up -d --pull never --force-recreate api worker worker_telegram worker_post beat"
-Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot companion_bot secretary_bot album_composer_bot"
+Invoke-Compose "--profile bots up -d --pull never --force-recreate payment_bot loot_bot companion_bot secretary_bot album_composer_bot macro_search_bot"
 
 # 6) Migrations + seeds
 if (-not $SkipSeeds) {

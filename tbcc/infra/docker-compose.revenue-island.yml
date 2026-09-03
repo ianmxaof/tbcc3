@@ -250,6 +250,19 @@ services:
       - redis
       - postgres
 
+  # @aof_macrosearch_bot — OF overlay twin (username probe + archive /find). Keep home macro_search Off.
+  macro_search_bot:
+    <<: *island-image
+    profiles: ["bots"]
+    command: python -m bots.macro_search_bot
+    environment:
+      PYTHONPATH: /app
+      TBCC_API_URL: http://api:8000
+    depends_on:
+      - api
+      - redis
+      - postgres
+
   # @aof_spicybot_bot — LLM chat + undress webhooks (API serves /webhooks/companion/*).
   companion_bot:
     <<: *island-image

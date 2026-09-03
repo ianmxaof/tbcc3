@@ -31,5 +31,5 @@ else
 fi
 
 cd "$INFRA"
-docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island --profile bots up -d payment_bot loot_bot companion_bot secretary_bot
+docker compose -f docker-compose.revenue-island.yml --env-file .env.revenue-island --profile bots up -d payment_bot loot_bot companion_bot secretary_bot macro_search_bot
 echo "Island bots up. Smoke: payment /start, loot /roll, @aof_spicybot_bot /start, @aof_secretary_bot /inbox; GET /companion/ops."
