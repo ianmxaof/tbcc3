@@ -512,3 +512,79 @@ def refill_pool_from_sent_vault_for_search_sync(
             need_n,
         )
     return count
+
+
+def build_loot_sent_vault_refill_plan(
+    db: Session,
+    pool_ids: list[int],
+    *,
+    need: int = 8,
+) -> dict[str, SentVaultRefillPlan]:
+    """Plan vault copies into loot-enabled pools.
+
+    Channel recycle skips ``main`` (Loot Room). Loot still needs files, so skipped
+    keys get filled from every content lane in SENT VAULT.
+    """
+    need_n = max(1, min(60, int(need)))
+    content_keys = [
+        ch.key for ch in AOF_NETWORK_CHANNELS if ch.key not in SENT_VAULT_RECYCLE_SKIP_KEYS
+    ]
+    plan: dict[str, SentVaultRefillPlan] = {}
+    leftover: list[tuple[int, str]] = []
+    for raw_id in pool_ids:
+        try:
+            pid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        pool = db.query(ContentPool).filter(ContentPool.id == pid).first()
+        if not pool:
+            continue
+        name = str(pool.name or "")
+        key = network_key_for_pool_name(name)
+        if key and key not in SENT_VAULT_RECYCLE_SKIP_KEYS and key not in plan:
+            plan[key] = SentVaultRefillPlan(
+                key=key,
+                pool_id=pid,
+                pool_name=name,
+                approved=0,
+                need=need_n,
+            )
+        else:
+            leftover.append((pid, name))
+
+    extra_keys = [k for k in content_keys if k not in plan]
+    per_lane = max(1, min(4, need_n))
+    if leftover and extra_keys:
+        pid, name = leftover[0]
+        for key in extra_keys:
+            plan[key] = SentVaultRefillPlan(
+                key=key,
+                pool_id=pid,
+                pool_name=name,
+                approved=0,
+                need=per_lane,
+            )
+    return plan
+
+
+def refill_loot_pools_from_sent_vault_sync(
+    db: Session,
+    pool_ids: list[int],
+    *,
+    need: int = 8,
+) -> int:
+    """Copy SENT VAULT posts into loot pools when a roll would otherwise be empty."""
+    if not sent_vault_dry_spell_refill_enabled():
+        return 0
+    plan = build_loot_sent_vault_refill_plan(db, pool_ids, need=need)
+    if not plan:
+        return 0
+    try:
+        restored = asyncio.run(_apply_sent_vault_refill_async(db, plan, unpause=False))
+    except Exception as e:
+        logger.warning("loot sent vault refill failed: %s", e)
+        return 0
+    total = sum(int(v or 0) for v in restored.values())
+    if total:
+        logger.info("loot sent vault refill restored=%s pools=%s", total, pool_ids)
+    return total

@@ -211,8 +211,15 @@ def _try_local_or_cached_bytes(row: Media) -> tuple[bytes, str] | None:
 async def _download_saved_media_from_storage(
     storage,
     telegram_message_id: int,
+    *,
+    peer: str = "me",
 ) -> tuple[bytes, str]:
-    raw = await storage.client.get_messages("me", ids=telegram_message_id)
+    entity: object = "me"
+    if peer and peer != "me":
+        from app.utils.telegram_peer import resolve_telethon_entity
+
+        entity = await resolve_telethon_entity(storage.client, peer)
+    raw = await storage.client.get_messages(entity, ids=telegram_message_id)
     if isinstance(raw, list):
         msg = next((m for m in raw if m is not None), None)
     else:
@@ -230,8 +237,15 @@ async def _download_saved_media_from_storage(
 async def _download_saved_thumb_from_storage(
     storage,
     telegram_message_id: int,
+    *,
+    peer: str = "me",
 ) -> tuple[bytes, str] | None:
-    raw = await storage.client.get_messages("me", ids=telegram_message_id)
+    entity: object = "me"
+    if peer and peer != "me":
+        from app.utils.telegram_peer import resolve_telethon_entity
+
+        entity = await resolve_telethon_entity(storage.client, peer)
+    raw = await storage.client.get_messages(entity, ids=telegram_message_id)
     if isinstance(raw, list):
         msg = next((m for m in raw if m is not None), None)
     else:
@@ -321,9 +335,12 @@ async def _download_many_saved_media_bytes(
                 return
             mid = int(row.id)
             slot = min(per_item, remaining)
+            from app.services.loot_media_deliverable import loot_telegram_fetch_peer
+
+            peer = loot_telegram_fetch_peer(row)
             try:
                 collected[mid] = await asyncio.wait_for(
-                    _download_saved_media_from_storage(storage, tg_id), timeout=slot
+                    _download_saved_media_from_storage(storage, tg_id, peer=peer), timeout=slot
                 )
                 continue
             except Exception as primary:
@@ -331,7 +348,7 @@ async def _download_many_saved_media_bytes(
                 if not confirmed_missing and (row.media_type or "").lower() == "video":
                     try:
                         thumb = await asyncio.wait_for(
-                            _download_saved_thumb_from_storage(storage, tg_id),
+                            _download_saved_thumb_from_storage(storage, tg_id, peer=peer),
                             timeout=min(per_item, max(1.0, deadline - loop.time())),
                         )
                     except Exception:

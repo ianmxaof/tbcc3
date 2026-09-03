@@ -10,6 +10,7 @@ from app.services.sent_vault_lane_refill import (
     SENT_VAULT_RECYCLE_SKIP_KEYS,
     _sample_vault_buckets,
     approve_media_from_vault_message,
+    build_loot_sent_vault_refill_plan,
     lane_key_from_vault_caption,
     network_key_for_pool_name,
     vault_caption_matches_lane,
@@ -104,3 +105,20 @@ def test_approve_media_revives_posted_row(db):
     assert row.id == old.id
     assert row.status == "approved"
     assert row.telegram_message_id == 9002
+
+
+def test_loot_vault_plan_fills_loot_room_from_content_lanes(db):
+    from app.models.content_pool import ContentPool
+
+    pool = ContentPool(name="AOF LOOT ROOM POOL", channel_id=99)
+    db.add(pool)
+    db.commit()
+
+    plan = build_loot_sent_vault_refill_plan(db, [int(pool.id)], need=6)
+    assert plan
+    assert "main" not in plan
+    assert any(entry.pool_id == int(pool.id) for entry in plan.values())
+    assert "blowjob" in plan or "ass" in plan or "big_tits" in plan
+    for key in plan:
+        assert key not in SENT_VAULT_RECYCLE_SKIP_KEYS
+

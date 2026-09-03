@@ -13,6 +13,25 @@ from app.services.saved_messages_policy import loot_local_bytes_only
 
 logger = logging.getLogger(__name__)
 
+SENT_VAULT_RECYCLE_TAG = "sent_vault_recycled"
+
+
+def media_is_sent_vault_recycle(media: Media) -> bool:
+    tags = [t.strip() for t in (getattr(media, "tags", None) or "").split(",") if t.strip()]
+    if SENT_VAULT_RECYCLE_TAG in tags:
+        return True
+    src = str(getattr(media, "source_channel", "") or "").lower()
+    return "#topic:" in src or "sent_vault" in src
+
+
+def loot_telegram_fetch_peer(media: Media) -> str:
+    """Telethon chat to load this row from: Storage Hub for vault copies, else Saved Messages."""
+    if media_is_sent_vault_recycle(media):
+        from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
+
+        return STORAGE_HUB_IDENT
+    return "me"
+
 
 def loot_media_has_local_bytes(media: Media) -> bool:
     if not (is_local_pool_media(media) or str(getattr(media, "file_id", "") or "").startswith("local:")):
@@ -26,16 +45,18 @@ def is_loot_media_roll_candidate(media: Media) -> bool:
     """
     Eligible for roll selection.
 
-    When TBCC_LOOT_LOCAL_BYTES_ONLY=1 (default): only rows with bytes on disk.
-    Legacy mode: Saved Messages refs allowed until audit quarantines them.
+    Prefer bytes on disk. SENT VAULT copies (archive posts) are allowed even when
+    TBCC_LOOT_LOCAL_BYTES_ONLY=1. Other Saved Messages refs need legacy mode.
     """
     if (media.status or "").strip().lower() != "approved":
         return False
     if loot_media_has_local_bytes(media):
         return True
+    tg_id = int(getattr(media, "telegram_message_id", 0) or 0)
+    if media_is_sent_vault_recycle(media) and tg_id > 0:
+        return True
     if loot_local_bytes_only():
         return False
-    tg_id = int(getattr(media, "telegram_message_id", 0) or 0)
     return tg_id > 0
 
 

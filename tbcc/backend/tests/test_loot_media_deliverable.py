@@ -12,12 +12,22 @@ from app.services.loot_media_deliverable import (
 )
 
 
-def _row(*, mid: int, tg: int, fid: str = "x", status: str = "approved") -> Media:
+def _row(
+    *,
+    mid: int,
+    tg: int,
+    fid: str = "x",
+    status: str = "approved",
+    tags: str = "",
+    source_channel: str = "",
+) -> Media:
     m = MagicMock(spec=Media)
     m.id = mid
     m.telegram_message_id = tg
     m.file_id = fid
     m.status = status
+    m.tags = tags
+    m.source_channel = source_channel
     return m
 
 
@@ -41,6 +51,16 @@ def test_local_with_bytes_included():
     row = _row(mid=3, tg=0, fid="local:abc.jpg")
     with patch("app.services.loot_media_deliverable.loot_media_has_local_bytes", return_value=True):
         assert is_loot_media_roll_candidate(row) is True
+
+
+def test_sent_vault_recycle_is_candidate_even_when_local_only():
+    from app.services.loot_media_deliverable import loot_telegram_fetch_peer
+
+    row = _row(mid=4, tg=9001, tags="sent_vault_recycled")
+    with patch("app.services.loot_media_deliverable.loot_local_bytes_only", return_value=True):
+        with patch("app.services.loot_media_deliverable.loot_media_has_local_bytes", return_value=False):
+            assert is_loot_media_roll_candidate(row) is True
+    assert loot_telegram_fetch_peer(row) != "me"
 
 
 def test_filter_roll_candidates():

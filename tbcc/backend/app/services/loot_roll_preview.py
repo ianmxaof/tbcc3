@@ -135,28 +135,13 @@ def build_roll_preview(
             "base_roll_tier": base_rarity,
         }
 
-    # Approved pool media — local disk (default) or legacy Saved Messages when allowed.
-    from sqlalchemy import and_
-
-    from app.services.saved_messages_policy import loot_local_bytes_only
+    # Approved pool media — on disk, or SENT VAULT copies (filter_roll_candidates decides).
 
     q = db.query(Media).filter(
         Media.status == "approved",
         Media.pool_id.in_(eligible_pool_ids),
     )
-    if loot_local_bytes_only():
-        q = q.filter(
-            and_(Media.telegram_message_id == 0, Media.file_id.like("local:%")),
-        )
-    else:
-        from sqlalchemy import or_
-
-        q = q.filter(
-            or_(
-                and_(Media.telegram_message_id == 0, Media.file_id.like("local:%")),
-                Media.telegram_message_id > 0,
-            ),
-        )
+    seen_ids: list[int] = []
     if telegram_user_id and not is_loot_operator(telegram_user_id):
         seen_ids = [
             int(x[0])
@@ -168,6 +153,17 @@ def build_roll_preview(
             q = q.filter(~Media.id.in_(seen_ids))
 
     candidates = filter_roll_candidates(q.all())
+    if not candidates:
+        from app.services.sent_vault_lane_refill import refill_loot_pools_from_sent_vault_sync
+
+        refill_loot_pools_from_sent_vault_sync(db, eligible_pool_ids, need=8)
+        q = db.query(Media).filter(
+            Media.status == "approved",
+            Media.pool_id.in_(eligible_pool_ids),
+        )
+        if seen_ids:
+            q = q.filter(~Media.id.in_(seen_ids))
+        candidates = filter_roll_candidates(q.all())
     if not candidates:
         return {
             "ok": False,

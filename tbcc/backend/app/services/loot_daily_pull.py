@@ -179,6 +179,19 @@ def build_daily_pull_preview(
 
     candidates = filter_roll_candidates(q.all())
     if not candidates:
+        from app.services.sent_vault_lane_refill import refill_loot_pools_from_sent_vault_sync
+
+        refill_loot_pools_from_sent_vault_sync(db, eligible_pool_ids, need=8)
+        q = db.query(Media).filter(
+            Media.status == "approved",
+            Media.pool_id.in_(eligible_pool_ids),
+        )
+        if seen_ids and not operator:
+            q = q.filter(~Media.id.in_(seen_ids))
+        if ban:
+            q = q.filter(~Media.id.in_(ban))
+        candidates = filter_roll_candidates(q.all())
+    if not candidates:
         return {
             "ok": False,
             "reason": "no_media_candidates",
