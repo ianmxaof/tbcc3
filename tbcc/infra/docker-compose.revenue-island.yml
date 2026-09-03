@@ -111,6 +111,11 @@ services:
       PYTHONPATH: /app
       TBCC_REVENUE_ISLAND_ACTIVE: "1"
       TELEGRAM_SESSION_PATH: /sessions/admin
+      # Loot durability survivor probe (scripts/loot_durability_check.py) needs its own
+      # dedicated session — without this it defaults to a bare "admin_album" stem inside
+      # the container's ephemeral filesystem instead of the real logged-in session here.
+      TBCC_ALBUM_COMPOSER_TELEGRAM_SESSION: /sessions/admin_album
+      TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION: "1"
       TBCC_RELAY_USE_BOT_API: ${TBCC_RELAY_USE_BOT_API:-0}
       # Beat seed (ops_growth until next GHCR bake routes seed → telegram).
       TBCC_STORAGE_POOL_SEED_ENABLED: "1"
