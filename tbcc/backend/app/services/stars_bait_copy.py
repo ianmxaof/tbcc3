@@ -128,13 +128,16 @@ def bait_handoff_payload(product: StarsBaitProduct) -> str:
     }[product]
 
 
-def _product_labels() -> dict:
-    from app.data.aof_vip_membership import vip_display_name
+def _product_labels(*, subscription_stars: int | None = None) -> dict:
+    from app.data.aof_vip_membership import VIP_MEMBERSHIP_SKUS, vip_display_name
+    from app.data.loot_lane_economy import usd_to_stars
 
+    monthly = VIP_MEMBERSHIP_SKUS[0]
+    sub_stars = int(subscription_stars or usd_to_stars(monthly.price_usd, stars_per_usd=0.012))
     return {
         StarsBaitProduct.LOOT_KEY: ("24h Loot Room key", "150", "🗝"),
         StarsBaitProduct.DAY_PASS: ("Lane Pass — 24h", "250", "🎫"),
-        StarsBaitProduct.SUBSCRIPTION: (f"AOF {vip_display_name()} — 30d", "1500", "🔑"),
+        StarsBaitProduct.SUBSCRIPTION: (f"AOF {vip_display_name()} — 30d", str(sub_stars), "🔑"),
     }
 
 
@@ -144,7 +147,8 @@ def _build_variation(
     *,
     plan_ids: dict[str, int | None],
 ) -> StarsBaitVariation:
-    label, stars_hint, emoji = _product_labels()[product]
+    labels = _product_labels()
+    label, stars_hint, emoji = labels[product]
     handoff = bait_handoff_payload(product)
     checkout = checkout_start_payload(product, plan_ids)
 

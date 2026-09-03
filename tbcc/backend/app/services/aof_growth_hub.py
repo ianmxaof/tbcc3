@@ -246,8 +246,23 @@ def network_pool_names() -> frozenset[str]:
 
 
 def resolve_group_access_plan_id(db: Session) -> int:
-    """Primary VIP checkout plan for network posts — prefer $10 intro when seeded."""
-    from app.data.aof_vip_membership import VIP_INTRO_PLAN_NAME, VIP_MEMBERSHIP_SKUS
+    """Primary VIP checkout plan for network posts — featured $6/mo first, then intro."""
+    from app.data.aof_vip_membership import VIP_INTRO_PLAN_NAME, VIP_MEMBERSHIP_SKUS, featured_vip_sku
+
+    monthly_name = featured_vip_sku().name
+    row = (
+        db.query(SubscriptionPlan)
+        .filter(
+            SubscriptionPlan.is_active.is_(True),
+            SubscriptionPlan.product_type == "subscription",
+            SubscriptionPlan.bot_section == "main",
+            SubscriptionPlan.name == monthly_name,
+            SubscriptionPlan.price_stars > 0,
+        )
+        .first()
+    )
+    if row:
+        return int(row.id)
 
     intro = (
         db.query(SubscriptionPlan)
@@ -263,19 +278,6 @@ def resolve_group_access_plan_id(db: Session) -> int:
     if intro:
         return int(intro.id)
 
-    monthly_name = VIP_MEMBERSHIP_SKUS[0].name
-    row = (
-        db.query(SubscriptionPlan)
-        .filter(
-            SubscriptionPlan.is_active.is_(True),
-            SubscriptionPlan.product_type == "subscription",
-            SubscriptionPlan.bot_section == "main",
-            SubscriptionPlan.name == monthly_name,
-        )
-        .first()
-    )
-    if row:
-        return int(row.id)
     row = (
         db.query(SubscriptionPlan)
         .filter(
