@@ -54,6 +54,8 @@ AOF_LIBRARY_FORUM_TOPIC_MAP: tuple[LibraryForumTopic, ...] = (
     LibraryForumTopic(73, "full length", "full_length"),
     LibraryForumTopic(75, "blowjob", "blowjob"),
     LibraryForumTopic(77, "webcams", "webcams"),
+    LibraryForumTopic(166, "packs", "packs"),  # t.me/c/3790667061/166
+    LibraryForumTopic(168, "goon", "goon"),  # t.me/c/3790667061/168
 )
 
 

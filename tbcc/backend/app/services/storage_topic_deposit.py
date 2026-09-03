@@ -74,6 +74,29 @@ def storage_deposit_index_only_enabled() -> bool:
     )
 
 
+def resolve_deposit_sent_cache(
+    *,
+    network_key: str | None,
+    sent_cache: bool | None,
+    auto_pipe: bool,
+) -> bool:
+    """Whether a /deposit or intake import should vault into SENT CACHE immediately.
+
+    Inbox intake must stay in the hub topic until vision/enrich + quarantine routing —
+    sent_cache deletes source messages and breaks classify downloads.
+    """
+    from app.services.storage_sent_cache import storage_sent_cache_enabled
+
+    if auto_pipe:
+        return False
+    nk = (network_key or "").strip().lower()
+    if nk == "inbox":
+        return False
+    if sent_cache is not None:
+        return bool(sent_cache)
+    return storage_sent_cache_enabled() and bool(nk)
+
+
 def resolve_deposit_limit(limit: int | None) -> int:
     if limit is None:
         return storage_pool_seed_batch_size()
@@ -648,13 +671,11 @@ def queue_storage_topic_deposit(
     index_only = storage_deposit_index_only_enabled() and not apply_watermark
     from app.services.storage_sent_cache import storage_sent_cache_enabled
 
-    sent_cache_val = (
-        bool(sent_cache)
-        if sent_cache is not None
-        else (storage_sent_cache_enabled() and bool(row.network_key))
+    sent_cache_val = resolve_deposit_sent_cache(
+        network_key=row.network_key,
+        sent_cache=sent_cache,
+        auto_pipe=auto_pipe,
     )
-    if auto_pipe:
-        sent_cache_val = False
 
     job = create_channel_import_job(
         db,

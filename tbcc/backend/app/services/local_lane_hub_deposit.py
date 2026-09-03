@@ -162,7 +162,7 @@ async def _do_upload(
 
     use_direct = local_lane_hub_direct_post() or not storage_hub_album_intake_enabled()
     if use_direct:
-        return await storage.post_bytes_to_channel(
+        result = await storage.post_bytes_to_channel(
             STORAGE_HUB_IDENT,
             [(raw, mt)],
             tid,
@@ -170,16 +170,37 @@ async def _do_upload(
             send_silent=False,
             skip_watermark=skip_wm,
         )
-    result = enqueue_storage_hub_media(raw=raw, media_type=mt, message_thread_id=tid)
-    if isinstance(result, dict) and not result.get("buffered") and result.get("error"):
-        return await storage.post_bytes_to_channel(
-            STORAGE_HUB_IDENT,
-            [(raw, mt)],
-            tid,
-            caption=cap or None,
-            send_silent=False,
-            skip_watermark=skip_wm,
-        )
+    else:
+        result = enqueue_storage_hub_media(raw=raw, media_type=mt, message_thread_id=tid)
+        if isinstance(result, dict) and not result.get("buffered") and result.get("error"):
+            result = await storage.post_bytes_to_channel(
+                STORAGE_HUB_IDENT,
+                [(raw, mt)],
+                tid,
+                caption=cap or None,
+                send_silent=False,
+                skip_watermark=skip_wm,
+            )
+
+    if isinstance(result, dict) and result.get("ok"):
+        msg_ids = [int(x) for x in (result.get("message_ids") or []) if int(x) > 0]
+        if msg_ids:
+            try:
+                from app.services.aof_library_forum_mirror import mirror_hub_message_to_library_topic
+
+                result["library_mirror"] = await mirror_hub_message_to_library_topic(
+                    storage,
+                    source_message_id=msg_ids[0],
+                    lane_key=target.network_key,
+                )
+            except Exception as e:
+                logger.warning(
+                    "local lane hub library mirror failed lane=%s msg=%s: %s",
+                    target.network_key,
+                    msg_ids[0],
+                    e,
+                )
+                result["library_mirror"] = {"ok": False, "error": str(e)[:200]}
     return result
 
 

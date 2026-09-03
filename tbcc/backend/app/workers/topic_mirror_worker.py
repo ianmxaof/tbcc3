@@ -187,7 +187,31 @@ def mirror_after_deposit_job(
             stored,
             stats.get("forwarded"),
         )
-        return {"ok": True, "stored": stored, "import_job_id": import_job_id, **stats}
+        library_stats: dict = {}
+        try:
+            from app.services.aof_library_forum_mirror import mirror_storage_topic_to_library_sync
+
+            library_stats = mirror_storage_topic_to_library_sync(
+                int(storage_thread_id),
+                limit=int(limit),
+                media_types=media_types,
+                use_worker_loop=True,
+            )
+        except Exception as lib_err:
+            logger.warning(
+                "library mirror after deposit failed job=%s thread=%s: %s",
+                import_job_id,
+                storage_thread_id,
+                lib_err,
+            )
+            library_stats = {"ok": False, "error": str(lib_err)[:200]}
+        return {
+            "ok": True,
+            "stored": stored,
+            "import_job_id": import_job_id,
+            "library_mirror": library_stats,
+            **stats,
+        }
     except Exception as e:
         logger.exception("mirror_after_deposit_job failed job=%s: %s", import_job_id, e)
         return {"ok": False, "error": str(e)[:300], "import_job_id": import_job_id}

@@ -71,6 +71,18 @@ class ForwardRestrictedStorageError(Exception):
     """Channel forbids forwarding; scraper must skip (no download_media fallback)."""
 
 
+def _message_ids_from_send_result(result: Any) -> list[int]:
+    ids: list[int] = []
+    if result is None:
+        return ids
+    items = result if isinstance(result, list) else [result]
+    for item in items:
+        mid = int(getattr(item, "id", 0) or 0)
+        if mid > 0:
+            ids.append(mid)
+    return ids
+
+
 def _document_video_attributes(document) -> list[DocumentAttributeVideo] | None:
     if not document:
         return None
@@ -736,10 +748,18 @@ class TelegramStorage:
     ) -> dict:
         """Post downloaded bot media bytes to a channel/topic (album chunks ≤10)."""
         from app.services.scheduled_post_service import _apply_telethon_html_to_kwargs
+        from app.utils.telegram_peer import resolve_poster_peer
 
         cap = (caption or "").strip() or None
         silent_kw = {"silent": True} if send_silent else {}
         base_send_kw: dict = {"reply_to": message_thread_id, **silent_kw}
+
+        dest = channel
+        if isinstance(channel, str) and channel.strip().lstrip("-").isdigit():
+            try:
+                dest = await resolve_poster_peer(self.client, str(channel))
+            except Exception as e:
+                return {"ok": False, "sent_chunks": 0, "errors": [str(e)]}
 
         prepared: list[tuple[io.BytesIO, dict, str]] = []
         for data, hint in items:
@@ -758,10 +778,15 @@ class TelegramStorage:
             if reply_markup is not None:
                 kw["buttons"] = reply_markup
             _apply_telethon_html_to_kwargs(kw, cap or "", field="caption")
-            await self._send_album_chunk_refs(
-                [promo_prepared], caption=cap, destination=channel, send_kwargs=kw
+            promo_sent = await self._send_album_chunk_refs(
+                [promo_prepared], caption=cap, destination=dest, send_kwargs=kw
             )
-            return {"ok": True, "sent_chunks": 1, "errors": []}
+            return {
+                "ok": True,
+                "sent_chunks": 1,
+                "errors": [],
+                "message_ids": _message_ids_from_send_result(promo_sent),
+            }
 
         runs = self._runs_contiguous_same_bucket(prepared)
         promo_run_idx: int | None = None
@@ -773,6 +798,7 @@ class TelegramStorage:
 
         sent = 0
         errs: list[str] = []
+        message_ids: list[int] = []
         buttons_attached = False
         for run_idx, run in enumerate(runs):
             if promo_prepared is not None and run_idx == promo_run_idx:
@@ -786,14 +812,15 @@ class TelegramStorage:
                     if chunk_markup is not None:
                         kw["buttons"] = chunk_markup
                     _apply_telethon_html_to_kwargs(kw, cap or "", field="caption")
-                    await self._send_album_chunk_refs(
-                        chunk, caption=cap, destination=channel, send_kwargs=kw
+                    chunk_sent = await self._send_album_chunk_refs(
+                        chunk, caption=cap, destination=dest, send_kwargs=kw
                     )
+                    message_ids.extend(_message_ids_from_send_result(chunk_sent))
                     buttons_attached = buttons_attached or chunk_markup is not None
                     sent += 1
                 except Exception as e:
                     errs.append(str(e))
-        return {"ok": not errs, "sent_chunks": sent, "errors": errs}
+        return {"ok": not errs, "sent_chunks": sent, "errors": errs, "message_ids": message_ids}
 
     async def _send_bytes_to_me(
         self,

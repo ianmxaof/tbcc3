@@ -252,6 +252,14 @@ def maybe_auto_approve_storage_deposit_media(
 
     )
 
+    try:
+        from app.services.aof_library_forum_mirror import enqueue_library_mirror_for_media
+
+        mirror_enqueue = enqueue_library_mirror_for_media(int(media_id))
+    except Exception:
+        logger.debug("library mirror enqueue after auto-approve failed media_id=%s", media_id, exc_info=True)
+        mirror_enqueue = {"ok": False, "reason": "enqueue_exception"}
+
     return {
 
         "applied": True,
@@ -265,6 +273,8 @@ def maybe_auto_approve_storage_deposit_media(
         "mode": mode,
 
         "clip_tags": out.get("clip_tags"),
+
+        "library_mirror_enqueue": mirror_enqueue,
 
     }
 

@@ -25,6 +25,11 @@ def test_auto_approve_immediate_without_clip(monkeypatch):
     monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE", "1")
     monkeypatch.setenv("TBCC_STORAGE_DEPOSIT_AUTO_APPROVE_REQUIRES_CLIP", "0")
     monkeypatch.setenv("TBCC_MEDIA_GATEKEEPER_ENABLED", "0")
+    enqueue = MagicMock(return_value={"ok": True, "queued": True, "media_id": 9})
+    monkeypatch.setattr(
+        "app.services.aof_library_forum_mirror.enqueue_library_mirror_for_media",
+        enqueue,
+    )
     media = MagicMock()
     media.id = 9
     media.status = "pending"
@@ -41,6 +46,8 @@ def test_auto_approve_immediate_without_clip(monkeypatch):
     assert out["applied"] is True
     assert out["mode"] == "immediate"
     assert media.status == "approved"
+    assert out["library_mirror_enqueue"]["queued"] is True
+    enqueue.assert_called_once_with(9)
     db.commit.assert_called()
 
 

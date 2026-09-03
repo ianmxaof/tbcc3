@@ -73,6 +73,24 @@ async def route_media_to_lane_topics(storage, media: Any, lane_keys: list[str]) 
                     "topic_title": row.topic_title,
                 }
             )
+            try:
+                from app.services.aof_library_forum_mirror import mirror_hub_message_to_library_topic
+
+                lib_out = await mirror_hub_message_to_library_topic(
+                    storage,
+                    source_message_id=msg_id,
+                    lane_key=lane,
+                )
+                if lib_out.get("ok") and not lib_out.get("skipped"):
+                    routed[-1]["library_mirror"] = lib_out
+            except Exception as lib_err:
+                logger.warning(
+                    "library forum mirror failed media_id=%s lane=%s: %s",
+                    getattr(media, "id", "?"),
+                    lane,
+                    lib_err,
+                )
+                errors.append({"lane": lane, "error": f"library_mirror:{lib_err}"[:200]})
         except Exception as e:
             logger.warning(
                 "gatekeeper route failed media_id=%s lane=%s: %s",
