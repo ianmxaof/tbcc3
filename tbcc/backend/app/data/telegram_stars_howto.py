@@ -38,7 +38,7 @@ def vip_monthly_stars() -> int:
 
 
 def stars_howto_html(*, compact: bool = False) -> str:
-    """HTML block for payment-bot / Insiders captions (Telegram HTML)."""
+    """HTML block for payment-bot / Loot Room membership captions (Telegram HTML)."""
     tier = vip_display_name()
     if compact:
         return (

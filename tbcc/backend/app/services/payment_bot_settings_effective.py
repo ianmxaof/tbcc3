@@ -12,11 +12,11 @@ ROW_ID = 1
 
 DEFAULT_MAIN_MENU: list[list[dict[str, str]]] = [
     # Impulse first (2026-09-03): the 24h Loot Room key is the cheapest yes in the shop,
-    # so it owns the first tap. Insiders stays one row down — reachable, not the opener.
+    # so it owns the first tap. Recurring membership sits one row down — reachable, not the opener.
     [{"label": "🗝 Loot Room — 24h key", "action": "menu_loot"}],
     [
         {"label": "📦 Digital packs", "action": "menu_packs"},
-        {"label": "🎫 Insiders", "action": "menu_subscribe"},
+        {"label": "🎫 Join the Loot Room", "action": "menu_subscribe"},
     ],
     [{"label": "🌐 Explore AOF network", "action": "menu_network"}],
     [
@@ -187,7 +187,7 @@ def get_effective_payment_bot_settings(db: Session) -> dict[str, Any]:
         ),
         "subscribe_title_main": _str_or_default(
             getattr(r, "subscribe_title_main", None) if r else None,
-            "🎫 **Insiders Access**",
+            "🎫 **Loot Room Access**",
         ),
         "subscribe_title_loot": _str_or_default(
             getattr(r, "subscribe_title_loot", None) if r else None,

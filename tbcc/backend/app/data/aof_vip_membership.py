@@ -143,7 +143,8 @@ def vip_display_name() -> str:
     protected_main_vip_plan_names) all stay keyed on the literal "AOF VIP …" strings above — only what
     the customer reads is renamed here. Override via TBCC_VIP_DISPLAY_NAME.
     """
-    return (os.getenv("TBCC_VIP_DISPLAY_NAME") or "").strip() or "Insiders"
+    # Generic customer brand (2026-09-03): "Insiders" retired — shop leads as Loot Room.
+    return (os.getenv("TBCC_VIP_DISPLAY_NAME") or "").strip() or "Loot Room"
 
 
 def display_plan_name(name: str | None) -> str:

@@ -20,7 +20,7 @@ def test_vip_primary_invite_url_default():
 
 def test_vip_welcome_message_contains_link():
     html = vip_welcome_message_html(invite_link="https://t.me/+Zm7pKVfEgjI4ZDVh")
-    assert "AOF Insiders" in html
+    assert "AOF Loot Room" in html
     assert "Zm7pKVfEgjI4ZDVh" in html
     assert "/viproll" in html
 

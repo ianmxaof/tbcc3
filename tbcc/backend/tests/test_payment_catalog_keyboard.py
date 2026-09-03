@@ -73,7 +73,7 @@ def test_env_escape_hatch_lists_every_term(monkeypatch):
 def test_vip_grid_one_row_per_tier_after_filtering():
     """Default grid is the impulse pair: standard month first, intro after it."""
     plans = [
-        {"id": 2, "name": "Insiders — 1 Month", "price_stars": 1500, "duration_days": 30},
+        {"id": 2, "name": "Loot Room — 1 Month", "price_stars": 1500, "duration_days": 30},
         {"id": 1, "name": "AOF VIP — Intro Month", "price_stars": 834, "duration_days": 90},
     ]
     rows = _plan_checkout_keyboard_rows(plans, multi_term=True, columns=3)
@@ -108,7 +108,7 @@ def test_single_remaining_term_keeps_the_stars_howto(monkeypatch):
     )
     assert sent["parse_mode"] == "HTML"
     assert "My Stars" in sent["text"]
-    assert "Insiders — 1 Month" in sent["text"]
+    assert "Loot Room — 1 Month" in sent["text"]
 
 
 def test_companion_credits_grid_two_rows():

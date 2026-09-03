@@ -108,11 +108,11 @@ _runtime_settings_ttl_s = 30.0
 
 _default_main_menu = [
     # Impulse first (2026-09-03): the 24h Loot Room key is the cheapest yes in the shop,
-    # so it owns the first tap. Insiders stays one row down — reachable, not the opener.
+    # so it owns the first tap. Recurring membership sits one row down — reachable, not the opener.
     [{"label": "🗝 Loot Room — 24h key", "action": "menu_loot"}],
     [
         {"label": "📦 Digital packs", "action": "menu_packs"},
-        {"label": "🎫 Insiders", "action": "menu_subscribe"},
+        {"label": "🎫 Join the Loot Room", "action": "menu_subscribe"},
     ],
     [{"label": "🌐 Explore AOF network", "action": "menu_network"}],
     [
@@ -149,7 +149,7 @@ def _runtime_settings_defaults() -> dict:
         "main_menu": _default_main_menu,
         "welcome_html": "",
         "loot_intro_html": "",
-        "subscribe_title_main": "🎫 **Insiders Access**",
+        "subscribe_title_main": "🎫 **Loot Room Access**",
         "subscribe_title_loot": "🗝 **Loot Room Access**",
         "subscription_catalog_columns": 3,
         "min_subscription_stars": _bot_min_subscription_stars(),
@@ -2352,7 +2352,7 @@ async def send_subscription_catalog_message(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     section: str = "main",
-    title: str = "🎫 **Insiders Access**",
+    title: str = "🎫 **Loot Room Access**",
     edit_message=None,
     inline_nav: bool = False,
 ) -> None:
@@ -2615,7 +2615,7 @@ async def handle_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             msg,
             context,
             section="main",
-            title=str(st.get("subscribe_title_main") or "🎫 **Insiders Access**"),
+            title=str(st.get("subscribe_title_main") or "🎫 **Loot Room Access**"),
             **nav,
         )
     elif query.data == "menu_loot":
@@ -3452,7 +3452,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("help", "Commands & what this bot does"),
         BotCommand("shop", "Open the store"),
         BotCommand("loot", "Loot Room 24h key + private group"),
-        BotCommand("subscribe", "Insiders — Stars, crypto & fiat"),
+        BotCommand("subscribe", "Loot Room — Stars, crypto & fiat"),
         BotCommand("packs", "Digital packs"),
         BotCommand("referral", "Your code, link & rewards"),
         BotCommand("status", "Your subscription & purchases"),

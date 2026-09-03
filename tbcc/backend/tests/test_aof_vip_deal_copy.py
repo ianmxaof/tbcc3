@@ -35,7 +35,7 @@ def test_build_vip_deal_caption_has_checkout_cta():
     )
     with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=6):
         html = build_vip_deal_caption_html(db, 6)
-    assert "AOF Insiders" in html
+    assert "AOF Loot Room" in html
     assert "Pay ⭐" in html
     assert "What you get" in html
     assert "Hall Pass" in html
@@ -53,7 +53,7 @@ def test_build_vip_deal_caption_full_stack_is_default():
         with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=6):
             html = build_vip_deal_caption_html(db, 6)
     assert "THE HALL PASS" in html
-    assert "Public vs Insiders" in html
+    assert "Public vs Loot Room" in html
 
 
 def test_build_vip_deal_caption_intro_variant():
@@ -77,7 +77,7 @@ def test_build_vip_deal_caption_minimal_when_env_set():
     with patch.dict("os.environ", {"TBCC_VIP_CHECKOUT_CAPTION_MINIMAL": "1"}):
         with patch("app.services.aof_vip_deal_copy.resolve_group_access_plan_id", return_value=6):
             html = build_vip_deal_caption_html(db, 6)
-    assert "AOF Insiders" in html
+    assert "AOF Loot Room" in html
     assert "What you get" not in html
 
 

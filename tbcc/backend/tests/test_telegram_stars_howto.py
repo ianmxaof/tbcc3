@@ -31,7 +31,7 @@ def test_stars_howto_teaches_card_purchase_and_leads_with_the_key():
 
 
 def test_entry_button_intro_vs_standard():
-    assert stars_pay_entry_button_label(price_stars=834, plan_name=VIP_INTRO_PLAN_NAME) == "Insiders $10 · 834⭐"
+    assert stars_pay_entry_button_label(price_stars=834, plan_name=VIP_INTRO_PLAN_NAME) == "Loot Room $10 · 834⭐"
     assert stars_pay_entry_button_label(price_stars=1500, plan_name="AOF VIP — 1 Month") == "Pay ⭐ 1500"
 
 

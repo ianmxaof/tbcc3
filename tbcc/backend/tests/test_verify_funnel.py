@@ -49,7 +49,7 @@ def test_post_verify_vip_upgrade_when_not_subscribed(monkeypatch):
         return_value={"subscription": 10, "loot_key": 2, "day_pass": None},
     ):
         html, kb_rows = post_verify_response_html(_Db(), telegram_user_id=999001, target="vip")
-    assert "Insiders" in html
+    assert "Loot Room" in html
     assert kb_rows is not None
     assert kb_rows[0][0]["url"].startswith("https://t.me/")
 
