@@ -39,12 +39,14 @@ def _post_find(
     telegram_user_id: int,
     query: str,
     surface: str | None,
+    session_token: str | None = None,
 ) -> dict:
     url = f"{_API_BASE}/aof-search/find"
     body = {
         "telegram_user_id": int(telegram_user_id),
         "query": query,
         "surface": surface,
+        "session_token": session_token,
     }
     with httpx.Client(timeout=_FIND_TIMEOUT) as client:
         r = client.post(url, json=body, headers=_internal_headers())
@@ -52,6 +54,12 @@ def _post_find(
         return {"ok": False, "forbidden": True, "detail": r.json()}
     r.raise_for_status()
     return r.json()
+
+
+def _more_keyboard(session_token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🔍 Still want more?", callback_data=f"find:more:{session_token}")]]
+    )
 
 
 def _find_help_html(*, bot_kind: str) -> str:
@@ -156,7 +164,8 @@ async def cmd_find(
         reason = result.get("reason") or "no_matches"
         await status.edit_text(
             f"<b>No matches</b> for <code>{html.escape(query[:80])}</code>\n"
-            f"<i>{html.escape(str(reason))}</i>",
+            f"<i>{html.escape(str(reason))}</i>\n\n"
+            f"Try the web archive instead:\n<code>/macrosearch {html.escape(query[:80])}</code>",
             parse_mode="HTML",
         )
         return
@@ -166,17 +175,98 @@ async def cmd_find(
     emoji = res.get("primary_emoji") or "🔍"
     remaining = (result.get("access") or {}).get("searches_remaining")
     rem_note = f" · {remaining} searches left today" if remaining is not None else ""
+    note = ""
+    if res.get("loosened"):
+        note = "\n<i>Widened the match — exact tags ran out.</i>"
+    elif res.get("vault_pulled"):
+        note = "\n<i>Pulled a few fresh ones from the vault.</i>"
     await status.edit_text(
-        f"<b>{emoji} Sent {sent} item(s) to your DM</b>{html.escape(rem_note)}",
+        f"<b>{emoji} Sent {sent} item(s) to your DM</b>{html.escape(rem_note)}{note}",
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
 
+    session_token = result.get("session_token")
+    if result.get("has_more") and session_token:
+        try:
+            await msg.reply_html(
+                "Still want more?",
+                reply_markup=_more_keyboard(session_token),
+                disable_web_page_preview=True,
+            )
+        except TelegramError:
+            pass
+
+
+async def on_find_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query_cb = update.callback_query
+    if not query_cb or not query_cb.data:
+        return
+    user = update.effective_user
+    if not user:
+        return
+    token = query_cb.data.split(":", 2)[-1]
+    await query_cb.answer("Searching…")
+
+    try:
+        import asyncio
+
+        result = await asyncio.to_thread(
+            _post_find,
+            telegram_user_id=int(user.id),
+            query="",
+            surface=None,
+            session_token=token,
+        )
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            detail = str(e.response.json())
+        except Exception:
+            detail = (e.response.text or str(e))[:300] if e.response else str(e)
+        await query_cb.message.reply_html(f"<b>Search failed</b>\n<code>{html.escape(detail)}</code>")
+        return
+    except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.ConnectError):
+        await query_cb.message.reply_html("<b>TBCC is catching up</b>\nTap again in a few seconds.")
+        return
+
+    if result.get("forbidden") or not result.get("ok"):
+        detail = result.get("detail") or {}
+        message = detail.get("message") or result.get("reason") or "No more matches."
+        try:
+            await query_cb.edit_message_text(f"<i>{html.escape(str(message))}</i>", parse_mode="HTML")
+        except TelegramError:
+            pass
+        return
+
+    sent = int((result.get("delivery") or {}).get("media_sent") or 0)
+    res = result.get("result") or {}
+    emoji = res.get("primary_emoji") or "🔍"
+    note = ""
+    if res.get("loosened"):
+        note = "\n<i>Widened the match — exact tags ran out.</i>"
+    elif res.get("vault_pulled"):
+        note = "\n<i>Pulled a few fresh ones from the vault.</i>"
+
+    new_token = result.get("session_token") or token
+    kb = _more_keyboard(new_token) if result.get("has_more") else None
+    try:
+        await query_cb.edit_message_text(
+            f"<b>{emoji} Sent {sent} more item(s) to your DM</b>{note}",
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
+    except TelegramError:
+        pass
+
 
 def build_find_handlers(*, bot_kind: str = "loot"):
-    from telegram.ext import CommandHandler
+    from telegram.ext import CallbackQueryHandler, CommandHandler
 
     async def _cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cmd_find(update, context, bot_kind=bot_kind)
 
-    return [CommandHandler("find", _cmd)]
+    return [
+        CommandHandler("find", _cmd),
+        CallbackQueryHandler(on_find_more_callback, pattern=r"^find:more:"),
+    ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -19,6 +20,8 @@ from app.data.aof_library_forum_topic_map import (
 )
 from app.services.aof_search_surfaces import AofSearchSurface, pool_ids_for_surface
 from app.services.loot_media_deliverable import filter_roll_candidates
+
+logger = logging.getLogger(__name__)
 
 _EMOJI_TO_LANE: dict[str, str] = {
     emoji: key for key, emoji in STORAGE_CATEGORY_EMOJI.items()
@@ -107,7 +110,16 @@ def search_approved_media(
     surface: AofSearchSurface = "loot_room",
     limit: int = 6,
     pool_ids: list[int] | None = None,
+    exclude_ids: list[int] | None = None,
+    loosen: bool = False,
 ) -> dict[str, Any]:
+    """Tier 1 (tight) / Tier 2 (``loosen=True``, lane-only) match.
+
+    ``exclude_ids`` keeps a "still want more?" continuation from re-showing
+    items already delivered this session. ``loosen`` drops the tag filter so
+    a Tier 2 retry falls back to "anything unseen from this lane" instead of
+    an exact-ish tag match.
+    """
     parsed = parse_search_query(query)
     if not parsed.raw and not parsed.lane_keys and not parsed.tag_tokens:
         return {
@@ -135,9 +147,14 @@ def search_approved_media(
 
     q = db.query(Media).filter(Media.status == "approved", Media.pool_id.in_(pool_ids))
 
-    if parsed.tag_tokens:
+    if exclude_ids:
+        q = q.filter(~Media.id.in_([int(x) for x in exclude_ids][:500]))
+
+    if parsed.tag_tokens and not loosen:
         clauses = [Media.tags.ilike(f"%{tok}%") for tok in parsed.tag_tokens[:8]]
         q = q.filter(or_(*clauses))
+
+    total_matching = q.count()
 
     fetch_limit = max(limit * 4, 24)
     rows = q.order_by(Media.id.desc()).limit(fetch_limit).all()
@@ -168,9 +185,90 @@ def search_approved_media(
         "primary_emoji": category_emoji_for_network_key(primary_lane) if primary_lane else None,
         "library_link": library_link,
         "pool_ids": pool_ids,
+        "loosened": loosen,
+        "has_more": total_matching > len(deliverable),
         "total_candidates": len(rows),
         "items": [_media_summary(m) for m in deliverable],
     }
+
+
+def search_tier3_sent_vault_enabled() -> bool:
+    import os
+
+    return (os.getenv("TBCC_AOF_SEARCH_TIER3_VAULT") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def continue_search(
+    db: Session,
+    query: str,
+    *,
+    surface: AofSearchSurface = "loot_room",
+    limit: int = 6,
+    pool_ids: list[int] | None = None,
+    exclude_ids: list[int] | None = None,
+) -> dict[str, Any]:
+    """Tier 1 → Tier 2 (loosened) → Tier 3 (on-demand SENT VAULT pull) → give up.
+
+    Callers chain Tier 4 (external macro-search SEO) themselves when this
+    still returns ``ok=False`` — that fallback already lives in
+    aof_macro_search_router and has nothing to do with the internal archive.
+    """
+    result = search_approved_media(
+        db, query, surface=surface, limit=limit, pool_ids=pool_ids, exclude_ids=exclude_ids
+    )
+    if result.get("ok"):
+        return result
+
+    loosened = search_approved_media(
+        db,
+        query,
+        surface=surface,
+        limit=limit,
+        pool_ids=result.get("pool_ids") or pool_ids,
+        exclude_ids=exclude_ids,
+        loosen=True,
+    )
+    if loosened.get("ok"):
+        return loosened
+
+    if not search_tier3_sent_vault_enabled():
+        return loosened
+
+    vault_pool_ids = loosened.get("pool_ids") or []
+    if not vault_pool_ids:
+        return loosened
+
+    from app.services.sent_vault_lane_refill import refill_pool_from_sent_vault_for_search_sync
+
+    restored_any = False
+    for pid in vault_pool_ids[:3]:
+        try:
+            restored = refill_pool_from_sent_vault_for_search_sync(db, int(pid), need=max(limit * 2, 6))
+        except Exception:
+            logger.exception("search tier3 vault refill failed pool_id=%s", pid)
+            restored = 0
+        if restored:
+            restored_any = True
+
+    if not restored_any:
+        return loosened
+
+    retried = search_approved_media(
+        db,
+        query,
+        surface=surface,
+        limit=limit,
+        pool_ids=vault_pool_ids,
+        exclude_ids=exclude_ids,
+        loosen=True,
+    )
+    retried["vault_pulled"] = True
+    return retried
 
 
 def _pool_name(db: Session, pool_id: int) -> str | None:

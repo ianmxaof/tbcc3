@@ -13,7 +13,11 @@ from telegram import Bot
 from telegram.request import HTTPXRequest
 
 from app.database.session import SessionLocal, get_db
-from app.services.aof_content_search import aof_content_search_enabled, search_approved_media
+from app.services.aof_content_search import (
+    aof_content_search_enabled,
+    continue_search,
+    search_approved_media,
+)
 from app.services.aof_search_access import (
     album_size_for_tier,
     consume_search_quota,
@@ -21,6 +25,11 @@ from app.services.aof_search_access import (
     resolve_search_tier,
 )
 from app.services.aof_search_deliver import build_search_result_caption, send_aof_search_album
+from app.services.aof_search_session import (
+    extend_search_session,
+    get_search_session,
+    start_search_session,
+)
 from app.services.loot_bot_settings_effective import get_effective_loot_bot_settings, resolve_bot_token_raw
 
 logger = logging.getLogger(__name__)
@@ -42,9 +51,10 @@ def _run_async(coro):
 
 
 class AofSearchFindBody(BaseModel):
-    query: str = Field(..., min_length=1, max_length=200)
+    query: str = Field(default="", max_length=200)
     telegram_user_id: int = Field(..., ge=1)
     surface: str | None = None
+    session_token: str | None = Field(default=None, max_length=32)
 
 
 @router.get("/status")
@@ -107,12 +117,36 @@ def aof_search_find(
   Keyword / emoji search → DM album via @aof_lootgod_bot.
 
   Surfaces: loot_room (default), library (loot key+), vip (VIP+).
+  Pass ``session_token`` from a prior response to continue a "still want
+  more?" chain — the token carries query/surface/already-shown ids, so
+  each tap fetches the next unseen batch (Tier 1 → loosened → SENT VAULT
+  pull, see aof_content_search.continue_search) without repeats.
   """
     if not aof_content_search_enabled():
         raise HTTPException(status_code=503, detail="AOF search disabled")
 
     uid = int(body.telegram_user_id)
-    access = evaluate_search_access(db, uid, surface=body.surface)
+
+    continuation = None
+    query = body.query
+    surface_hint = body.surface
+    exclude_ids: list[int] = []
+    if body.session_token:
+        continuation = get_search_session(body.session_token)
+        if continuation and int(continuation.get("user_id") or 0) == uid:
+            query = continuation.get("query") or body.query
+            surface_hint = continuation.get("surface") or body.surface
+            exclude_ids = [int(x) for x in (continuation.get("shown_ids") or [])]
+        else:
+            continuation = None  # expired / foreign token — fall back to a fresh search
+
+    if not query.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="query is required unless session_token resolves to a live continuation",
+        )
+
+    access = evaluate_search_access(db, uid, surface=surface_hint)
     if not access.get("can_search"):
         if access.get("surface") is None:
             raise HTTPException(
@@ -136,11 +170,12 @@ def aof_search_find(
     tier = resolve_search_tier(db, uid)
     limit = album_size_for_tier(tier)
     surface = access["surface"]
-    result = search_approved_media(
+    result = continue_search(
         db,
-        body.query,
+        query,
         surface=surface,
         limit=limit,
+        exclude_ids=exclude_ids,
     )
     if not result.get("ok"):
         return {
@@ -167,7 +202,7 @@ def aof_search_find(
     rows = db.query(Media).filter(Media.id.in_(media_ids)).all()
     by_id = {int(m.id): m for m in rows}
     ordered = [by_id[mid] for mid in media_ids if mid in by_id]
-    caption = build_search_result_caption(result, query=body.query)
+    caption = build_search_result_caption(result, query=query)
 
     async def _run():
         worker_db = SessionLocal()
@@ -194,6 +229,15 @@ def aof_search_find(
         }
 
     quota = consume_search_quota(uid, limit=int(access.get("daily_limit") or 3))
+
+    if body.session_token and continuation:
+        extend_search_session(body.session_token, new_shown_ids=media_ids)
+        session_token = body.session_token
+    else:
+        session_token = start_search_session(
+            user_id=uid, surface=surface, query=query, shown_ids=media_ids
+        )
+
     return {
         "ok": True,
         "sent_to": uid,
@@ -201,4 +245,6 @@ def aof_search_find(
         "quota": quota,
         "result": result,
         "delivery": delivery,
+        "session_token": session_token,
+        "has_more": bool(result.get("has_more")),
     }

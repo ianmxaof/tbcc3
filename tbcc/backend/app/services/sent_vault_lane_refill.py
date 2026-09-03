@@ -452,3 +452,63 @@ def refill_pool_from_sent_vault_on_demand_sync(
             need_n,
         )
     return count
+
+
+def refill_pool_from_sent_vault_for_search_sync(
+    db: Session,
+    pool_id: int,
+    *,
+    need: int,
+    unpause: bool = False,
+) -> int:
+    """Search-miss path: pull vault matches into approved rotation on demand.
+
+    Unlike ``refill_pool_from_sent_vault_on_demand_sync`` this is not gated on
+    the pool's overall approved count — a lane can easily clear
+    ``dry_lane_min_approved`` in aggregate while still returning nothing new
+    for one specific query once already-shown items are excluded. Search Tier
+    3 (aof_content_search.continue_search) calls this only after Tier 1/2 both
+    come up empty, so the trigger condition is already "this query found
+    nothing," not "this pool is thin."
+    """
+    if not sent_vault_dry_spell_refill_enabled():
+        return 0
+    need_n = max(1, min(60, int(need)))
+    key = network_key_for_pool_id(db, int(pool_id))
+    if not key or key in SENT_VAULT_RECYCLE_SKIP_KEYS:
+        return 0
+    pool = db.query(ContentPool).filter(ContentPool.id == int(pool_id)).first()
+    if not pool:
+        return 0
+    approved = (
+        db.query(Media).filter(Media.pool_id == int(pool_id), Media.status == "approved").count()
+    )
+    plan = {
+        key: SentVaultRefillPlan(
+            key=key,
+            pool_id=int(pool_id),
+            pool_name=str(pool.name or ""),
+            approved=int(approved),
+            need=need_n,
+        )
+    }
+    try:
+        restored = asyncio.run(_apply_sent_vault_refill_async(db, plan, unpause=unpause))
+    except Exception as e:
+        logger.warning(
+            "sent vault search-miss refill failed pool_id=%s key=%s: %s",
+            pool_id,
+            key,
+            e,
+        )
+        return 0
+    count = int(restored.get(key) or 0)
+    if count > 0:
+        logger.info(
+            "sent vault search-miss refill pool_id=%s key=%s restored=%s need=%s",
+            pool_id,
+            key,
+            count,
+            need_n,
+        )
+    return count

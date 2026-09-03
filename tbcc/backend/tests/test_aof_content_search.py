@@ -103,3 +103,151 @@ def test_get_model_search_sites_for_mode_onlyfans():
     sites = get_model_search_sites_for_mode(mode="onlyfans")
     assert sites
     assert all(s.get("category") == "onlyfans" for s in sites)
+
+
+def _seed_media(db, *, pool_id, tags, file_unique_id):
+    from app.models.media import Media
+
+    row = Media(
+        telegram_message_id=1,
+        file_id="f",
+        file_unique_id=file_unique_id,
+        media_type="photo",
+        source_channel="storage_hub:milf",
+        tags=tags,
+        pool_id=pool_id,
+        status="approved",
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_search_approved_media_exclude_ids(db, monkeypatch):
+    from app.services.aof_content_search import search_approved_media
+
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
+    a = _seed_media(db, pool_id=1, tags="office milf", file_unique_id="a")
+    _seed_media(db, pool_id=1, tags="office milf", file_unique_id="b")
+
+    out = search_approved_media(db, "office", surface="loot_room", limit=5, pool_ids=[1])
+    assert out["ok"] is True
+    assert len(out["items"]) == 2
+
+    out2 = search_approved_media(
+        db, "office", surface="loot_room", limit=5, pool_ids=[1], exclude_ids=[a.id]
+    )
+    assert len(out2["items"]) == 1
+    assert out2["items"][0]["id"] != a.id
+
+
+def test_search_approved_media_loosen_drops_tag_filter(db, monkeypatch):
+    from app.services.aof_content_search import search_approved_media
+
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
+    _seed_media(db, pool_id=1, tags="thick pawg", file_unique_id="c")
+
+    tight = search_approved_media(db, "nonexistent_tag_xyz", surface="loot_room", limit=5, pool_ids=[1])
+    assert tight["ok"] is False
+
+    loose = search_approved_media(
+        db, "nonexistent_tag_xyz", surface="loot_room", limit=5, pool_ids=[1], loosen=True
+    )
+    assert loose["ok"] is True
+    assert loose["loosened"] is True
+
+
+def test_continue_search_tier1_success_no_tier2_needed(db, monkeypatch):
+    from app.services.aof_content_search import continue_search
+
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
+    _seed_media(db, pool_id=1, tags="office milf", file_unique_id="d")
+
+    out = continue_search(db, "office", surface="loot_room", limit=5, pool_ids=[1])
+    assert out["ok"] is True
+    assert out.get("loosened") is False
+    assert not out.get("vault_pulled")
+
+
+def test_continue_search_falls_to_tier2_when_tier1_empty(db, monkeypatch):
+    from app.services.aof_content_search import continue_search
+
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
+    _seed_media(db, pool_id=1, tags="thick pawg", file_unique_id="e")
+
+    out = continue_search(db, "nonexistent_tag_xyz", surface="loot_room", limit=5, pool_ids=[1])
+    assert out["ok"] is True
+    assert out["loosened"] is True
+
+
+def test_continue_search_tier3_vault_pull_on_full_miss(db, monkeypatch):
+    from app.services.aof_content_search import continue_search
+
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
+    monkeypatch.setenv("TBCC_AOF_SEARCH_TIER3_VAULT", "1")
+    # Empty pool 1 — tier1 and tier2 both come up empty.
+
+    def _fake_refill(db_, pool_id, *, need, unpause=False):
+        _seed_media(db_, pool_id=pool_id, tags="fresh from vault", file_unique_id="vault-1")
+        return 1
+
+    with patch(
+        "app.services.sent_vault_lane_refill.refill_pool_from_sent_vault_for_search_sync",
+        side_effect=_fake_refill,
+    ):
+        out = continue_search(db, "anything", surface="loot_room", limit=5, pool_ids=[1])
+
+    assert out["ok"] is True
+    assert out.get("vault_pulled") is True
+
+
+def test_continue_search_tier3_disabled_returns_tier2_result(db, monkeypatch):
+    from app.services.aof_content_search import continue_search
+
+    monkeypatch.setenv("TBCC_LOOT_LOCAL_BYTES_ONLY", "0")
+    monkeypatch.setenv("TBCC_AOF_SEARCH_TIER3_VAULT", "0")
+
+    with patch(
+        "app.services.sent_vault_lane_refill.refill_pool_from_sent_vault_for_search_sync"
+    ) as refill:
+        out = continue_search(db, "anything", surface="loot_room", limit=5, pool_ids=[1])
+
+    refill.assert_not_called()
+    assert out["ok"] is False
+
+
+def test_aof_search_session_round_trip():
+    from app.services import aof_search_session as mod
+
+    store: dict[str, str] = {}
+
+    class _FakeRedis:
+        def setex(self, key, ttl, value):
+            store[key] = value
+
+        def get(self, key):
+            return store.get(key)
+
+    with patch.object(mod, "_redis_client", return_value=_FakeRedis()):
+        token = mod.start_search_session(
+            user_id=42, surface="loot_room", query="milf office", shown_ids=[1, 2, 3]
+        )
+        assert token
+        session = mod.get_search_session(token)
+        assert session["user_id"] == 42
+        assert session["shown_ids"] == [1, 2, 3]
+
+        mod.extend_search_session(token, new_shown_ids=[3, 4])
+        session2 = mod.get_search_session(token)
+        assert session2["shown_ids"] == [1, 2, 3, 4]
+
+
+def test_aof_search_session_missing_token_returns_none():
+    from app.services import aof_search_session as mod
+
+    class _FakeRedis:
+        def get(self, key):
+            return None
+
+    with patch.object(mod, "_redis_client", return_value=_FakeRedis()):
+        assert mod.get_search_session("nope") is None
