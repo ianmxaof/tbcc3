@@ -1,4 +1,4 @@
-"""Telegram Stars how-to copy + $10 VIP entry labeling."""
+"""Telegram Stars how-to copy — impulse-first education + intro entry labeling."""
 
 from __future__ import annotations
 
@@ -17,16 +17,17 @@ def test_vip_intro_stars_default_rate():
     assert vip_intro_stars() == 834
 
 
-def test_stars_howto_mentions_card_and_ten():
+def test_stars_howto_teaches_card_purchase_and_leads_with_the_key():
+    """Stars education anchors on the 24h key, not on a ladder floor (locked 2026-09-03)."""
     plain = stars_howto_plain()
-    assert "credit/debit card" in plain.lower() or "credit/debit card" in plain
-    assert "$10" in plain
-    assert "834" in plain
+    assert "credit/debit card" in plain.lower()
+    assert "/loot" in plain
     assert "@aofsubscriptions_bot" in plain
+    assert "ladder" not in plain.lower()
     html = stars_howto_html(compact=True)
-    assert "$10" in html
-    assert "834" in html
     assert "My Stars" in html
+    assert "/loot" in html
+    assert "ladder" not in html.lower()
 
 
 def test_entry_button_intro_vs_standard():

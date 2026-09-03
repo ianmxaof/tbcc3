@@ -7,7 +7,7 @@ import re
 
 _GUMROAD_WORD = re.compile(r"\bgumroad\b", re.I)
 
-_DEFAULT_BUTTON = "💳 Card / USD — from $10"
+_DEFAULT_BUTTON = "💳 Card / USD"
 _DEFAULT_DISPLAY = "Card / USD"
 _DEFAULT_SHORT = "Card"
 _DEFAULT_OPEN_PAY = "Pay with card →"
@@ -83,17 +83,18 @@ def fiat_vip_ladder_intro_html(*, include_intro: bool = False) -> str:
     intro_usd = int(VIP_INTRO_SKU.price_usd)
     intro_stars = vip_intro_stars()
     monthly = int(VIP_MEMBERSHIP_SKUS[0].price_usd)
+    # No ladder pitch on the first screen: one recurring month, priced from the SKUs.
     if include_intro:
         return (
             f"✨ <b>First {period} ${intro_usd}</b> (~{intro_stars}⭐) — new members only.\n"
-            f"🔑 Standard ladder from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
+            f"🔑 Then <b>${monthly}</b>/month on Stars / crypto / <b>{disp}</b>.\n\n"
             f"{howto}\n\n"
-            f"Pick a term:"
+            f"Pick your entry:"
         )
     return (
-        f"🔑 <b>AOF {tier}</b> — from <b>${monthly}</b> on Stars / crypto / <b>{disp}</b>.\n\n"
+        f"🔑 <b>AOF {tier}</b> — <b>${monthly}</b>/month on Stars / crypto / <b>{disp}</b>.\n\n"
         f"{howto}\n\n"
-        f"Pick a term:"
+        f"Pick your entry:"
     )
 
 

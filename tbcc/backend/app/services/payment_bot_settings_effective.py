@@ -11,10 +11,12 @@ from app.services.model_search_engine import get_macro_search_sites, merge_model
 ROW_ID = 1
 
 DEFAULT_MAIN_MENU: list[list[dict[str, str]]] = [
-    [{"label": "🎫 Join the Insiders", "action": "menu_subscribe"}],
+    # Impulse first (2026-09-03): the 24h Loot Room key is the cheapest yes in the shop,
+    # so it owns the first tap. Insiders stays one row down — reachable, not the opener.
+    [{"label": "🗝 Loot Room — 24h key", "action": "menu_loot"}],
     [
-        {"label": "🗝 Loot Room (24h key)", "action": "menu_loot"},
         {"label": "📦 Digital packs", "action": "menu_packs"},
+        {"label": "🎫 Insiders", "action": "menu_subscribe"},
     ],
     [{"label": "🌐 Explore AOF network", "action": "menu_network"}],
     [

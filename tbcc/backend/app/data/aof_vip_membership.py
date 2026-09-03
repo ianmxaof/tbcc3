@@ -157,3 +157,41 @@ def display_plan_name(name: str | None) -> str:
     if n.startswith("VIP"):
         return disp + n[len("VIP") :]
     return n
+
+
+# --- Default shop table (2026-09-03) -------------------------------------------------
+# The first screen sells impulse: 24h Loot Room keys, then a single recurring month.
+# The multi-month terms stay in the DB and keep resolving for Gumroad Ping + grandfathered
+# renewals (sku_for_price_cents / sku_for_recurrence are untouched) — they are only filtered
+# out of the default catalog keyboard. Set TBCC_SHOW_FULL_VIP_LADDER=1 to list every term.
+
+FEATURED_VIP_TERM_DAYS = 30
+
+
+def featured_vip_sku() -> VipMembershipSku:
+    """The one recurring term the shop leads with."""
+    return sku_for_duration_days(FEATURED_VIP_TERM_DAYS) or VIP_MEMBERSHIP_SKUS[0]
+
+
+def default_hidden_vip_plan_names() -> frozenset[str]:
+    """Multi-month ladder terms buried on the default shop grid (never deleted)."""
+    return frozenset(
+        sku.name for sku in VIP_MEMBERSHIP_SKUS if sku.duration_days > FEATURED_VIP_TERM_DAYS
+    )
+
+
+def show_full_vip_ladder() -> bool:
+    """Escape hatch — list every term again without a redeploy of the catalog logic."""
+    return (os.getenv("TBCC_SHOW_FULL_VIP_LADDER") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def is_hidden_ladder_plan_name(name: str | None) -> bool:
+    """True when a plan row is a buried multi-month term (default catalogs skip it)."""
+    if show_full_vip_ladder():
+        return False
+    return (name or "").strip() in default_hidden_vip_plan_names()

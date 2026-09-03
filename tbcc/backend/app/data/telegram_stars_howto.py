@@ -1,8 +1,9 @@
 """Canonical Telegram Stars purchase education for AOF checkout surfaces.
 
 Adapted from swipe ``telegram-stars-howto-vip-pricing-v1`` (competitor pricing/bots
-stripped). Entry price doctrine: surface the **$10 intro** (~834⭐) everywhere VIP
-is sold; standard ladder starts at $18 / ~1500⭐.
+stripped). Entry doctrine (2026-09-03): lead with the **impulse buy** — a 24h Loot Room
+key via /loot — then the single recurring month. Anchor on the product, not on a ladder
+floor; every dollar figure here is read from the SKUs so it never needs re-editing.
 """
 
 from __future__ import annotations
@@ -38,43 +39,34 @@ def vip_monthly_stars() -> int:
 
 def stars_howto_html(*, compact: bool = False) -> str:
     """HTML block for payment-bot / Insiders captions (Telegram HTML)."""
-    from app.data.aof_vip_membership import vip_intro_period_label
-
-    intro_usd = int(VIP_INTRO_SKU.price_usd) if VIP_INTRO_SKU.price_usd == int(VIP_INTRO_SKU.price_usd) else VIP_INTRO_SKU.price_usd
-    intro_stars = vip_intro_stars()
     tier = vip_display_name()
-    period = vip_intro_period_label()
     if compact:
         return (
             f"⚠️ <b>Need Stars?</b> Buy them in Telegram with a credit/debit card "
             f"(Settings → My Stars, or the ⭐ on any invoice) — then tap Pay.\n"
-            f"✨ {tier} starts at <b>${intro_usd}</b> / <b>{intro_stars}⭐</b> (first {period} intro)."
+            f"🗝 <b>Fastest way in:</b> /loot — a 24-hour Loot Room key."
         )
     return (
         f"⚠️ <b>Paying with Telegram Stars</b>\n"
         f"✅ Stars can be bought with a credit/debit card <b>inside Telegram</b>\n"
         f"✅ Settings → <b>My Stars</b> (or tap ⭐ on any invoice) → Buy Stars\n"
         f"✅ Come back here and tap <b>Pay ⭐</b>\n\n"
-        f"✨ <b>{tier} from ${intro_usd}</b> — first {period} intro (~{intro_stars}⭐). "
-        f"Standard renews from ${int(VIP_MEMBERSHIP_SKUS[0].price_usd)}."
+        f"🗝 <b>Fastest way in:</b> /loot — a 24-hour Loot Room key, one tap on Stars.\n"
+        f"✨ <b>{tier}</b> — recurring access from <b>${int(VIP_MEMBERSHIP_SKUS[0].price_usd)}</b>/month."
     )
 
 
 def stars_howto_plain() -> str:
     """Plain-text variant for caption_snippets / Buffer."""
-    from app.data.aof_vip_membership import vip_intro_period_label
-
-    intro_usd = int(VIP_INTRO_SKU.price_usd)
-    intro_stars = vip_intro_stars()
     monthly = int(VIP_MEMBERSHIP_SKUS[0].price_usd)
     return (
         "⚠️ Paying with Telegram Stars?\n"
         "✅ Buy Stars with a credit/debit card inside Telegram\n"
         "✅ Settings → My Stars (or tap ⭐ on any invoice) → Buy Stars\n"
         "✅ Return and tap Pay ⭐\n\n"
-        f"✨ AOF {vip_display_name()} starts at ${intro_usd} / ~{intro_stars}⭐ (first {vip_intro_period_label()} intro).\n"
-        f"Standard ladder from ${monthly}/mo.\n"
-        "👉 /subscribe on @aofsubscriptions_bot"
+        f"🗝 Fastest way in: /loot — a 24-hour Loot Room key.\n"
+        f"✨ AOF {vip_display_name()} — recurring access from ${monthly}/month.\n"
+        "👉 /loot or /subscribe on @aofsubscriptions_bot"
     )
 
 
