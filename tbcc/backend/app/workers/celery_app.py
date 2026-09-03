@@ -56,6 +56,7 @@ celery.conf.include = [
     "app.workers.storage_pool_seed_worker",
     "app.workers.lane_survivor_refill_worker",
     "app.workers.sent_vault_lane_refill_worker",
+    "app.workers.tag_backfill_worker",
     "app.workers.traffic_pulse_worker",
     "app.workers.inbox_intake_worker",
     "app.workers.storage_auto_pipe_worker",
@@ -113,6 +114,8 @@ celery.conf.task_routes = {
     "app.workers.storage_pool_seed_worker.*": {"queue": "telegram"},
     "app.workers.lane_survivor_refill_worker.*": {"queue": "telegram"},
     "app.workers.sent_vault_lane_refill_worker.*": {"queue": "telegram"},
+    # NSFW/CLIP classify still hits the Telethon download path for non-local media.
+    "app.workers.tag_backfill_worker.*": {"queue": "telegram"},
     "app.workers.erome_analytics_worker.*": {"queue": "ops_erome"},
     # Light / user-facing tasks stay on the home worker.
     "app.workers.loot_promo_worker.*": {"queue": "celery"},
@@ -362,6 +365,20 @@ if (os.getenv("TBCC_SENT_VAULT_LANE_REFILL_ENABLED") or "1").strip().lower() in 
     celery.conf.beat_schedule["sent-vault-lane-refill"] = {
         "task": "app.workers.sent_vault_lane_refill_worker.refill_dry_lanes_from_sent_vault",
         "schedule": crontab(minute=15, hour="*/6"),
+    }
+
+# Thin-tag trickle backfill — off by default; the bulk catch-up is the manual
+# script (scripts/backfill_media_tags.py). Enable this only for an ongoing
+# low-rate top-up once the initial backlog is cleared.
+if (os.getenv("TBCC_TAG_BACKFILL_SWEEP_ENABLED") or "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+):
+    celery.conf.beat_schedule["tag-backfill-sweep"] = {
+        "task": "app.workers.tag_backfill_worker.tag_backfill_sweep_tick",
+        "schedule": crontab(minute=45, hour="*/2"),
     }
 
 
