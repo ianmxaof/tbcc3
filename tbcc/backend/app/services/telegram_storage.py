@@ -1784,70 +1784,118 @@ class TelegramStorage:
                 continue
             candidates.append(message)
 
+        # A protected (noforwards) source — the Storage Hub is one — refuses every
+        # ForwardMessages call. Re-upload is the only delivery path there. The first
+        # restricted error flips this flag so later batches skip the doomed forward
+        # attempts instead of burning a round trip per message on a serialized worker.
+        source_forward_restricted = False
+        forward_restricted = 0
+
+        async def _deliver_one(message) -> str:
+            """Deliver one message: forward if allowed, else re-upload.
+
+            Returns "forwarded", "uploaded", "skipped" (no delivery possible) or "error".
+            """
+            nonlocal source_forward_restricted, forward_restricted
+            if source_forward_restricted:
+                forward_restricted += 1
+            else:
+                try:
+                    await self.client.forward_messages(
+                        dest_entity,
+                        message,
+                        from_peer=source_entity,
+                        reply_to=dest_thread,
+                        **silent_kw,
+                    )
+                    return "forwarded"
+                except Exception as one_err:
+                    if is_forward_restricted_error(one_err):
+                        source_forward_restricted = True
+                        forward_restricted += 1
+                        logger.info(
+                            "mirror source %s is protected (noforwards) — re-uploading "
+                            "for the rest of this run",
+                            source_channel,
+                        )
+                    else:
+                        logger.debug(
+                            "mirror forward failed msg_id=%s, trying re-upload: %s",
+                            getattr(message, "id", "?"),
+                            one_err,
+                        )
+            try:
+                delivered = await self._upload_mirror_media(
+                    dest_entity,
+                    message,
+                    dest_thread=dest_thread,
+                    silent_kw=silent_kw,
+                )
+            except Exception:
+                logger.exception(
+                    "forward_storage_topic_to_main_topic failed msg_id=%s",
+                    getattr(message, "id", "?"),
+                )
+                return "error"
+            return "uploaded" if delivered else "skipped"
+
         for batch in batch_messages_for_album_mirror(candidates, require_full_albums=True):
             if forwarded + uploaded >= target_forwards:
                 break
             batch = batch[: max(0, target_forwards - (forwarded + uploaded))]
             if not batch:
                 break
-            try:
-                await self.client.forward_messages(
-                    dest_entity,
-                    batch,
-                    from_peer=source_entity,
-                    reply_to=dest_thread,
-                    **silent_kw,
-                )
-                forwarded += len(batch)
-                albums_sent += 1
-                for message in batch:
-                    msg_id = int(getattr(message, "id", 0) or 0)
-                    if msg_id and on_mirrored:
-                        on_mirrored(src_thread, msg_id)
-            except Exception:
+            sent_as_album = False
+            if not source_forward_restricted:
+                try:
+                    await self.client.forward_messages(
+                        dest_entity,
+                        batch,
+                        from_peer=source_entity,
+                        reply_to=dest_thread,
+                        **silent_kw,
+                    )
+                    forwarded += len(batch)
+                    albums_sent += 1
+                    for message in batch:
+                        msg_id = int(getattr(message, "id", 0) or 0)
+                        if msg_id and on_mirrored:
+                            on_mirrored(src_thread, msg_id)
+                    sent_as_album = True
+                except Exception as batch_err:
+                    if is_forward_restricted_error(batch_err):
+                        source_forward_restricted = True
+            if not sent_as_album:
+                # Protected sources land here and are re-uploaded one at a time, so an
+                # album from a protected topic arrives as singles. That matches what the
+                # pre-existing non-restricted fallback already did.
                 for message in batch:
                     if forwarded + uploaded >= target_forwards:
                         break
                     msg_id = int(getattr(message, "id", 0) or 0)
-                    try:
-                        await self.client.forward_messages(
-                            dest_entity,
-                            message,
-                            from_peer=source_entity,
-                            reply_to=dest_thread,
-                            **silent_kw,
-                        )
+                    outcome = await _deliver_one(message)
+                    if outcome == "forwarded":
                         forwarded += 1
-                        if msg_id and on_mirrored:
-                            on_mirrored(src_thread, msg_id)
-                    except Exception as e2:
-                        if is_forward_restricted_error(e2):
-                            skipped_forward_restricted += 1
-                            continue
-                        try:
-                            if await self._upload_mirror_media(
-                                dest_entity,
-                                message,
-                                dest_thread=dest_thread,
-                                silent_kw=silent_kw,
-                            ):
-                                uploaded += 1
-                                if msg_id and on_mirrored:
-                                    on_mirrored(src_thread, msg_id)
-                            else:
-                                errors += 1
-                        except Exception:
-                            logger.exception(
-                                "forward_storage_topic_to_main_topic failed msg_id=%s",
-                                msg_id,
-                            )
-                            errors += 1
+                    elif outcome == "uploaded":
+                        uploaded += 1
+                    elif outcome == "skipped" and source_forward_restricted:
+                        skipped_forward_restricted += 1
+                        continue
+                    else:
+                        errors += 1
+                        continue
+                    if msg_id and on_mirrored:
+                        on_mirrored(src_thread, msg_id)
             await asyncio.sleep(0.45)
 
         return {
             "forwarded": forwarded,
             "uploaded": uploaded,
             "albums_sent": albums_sent,
+            # Messages the source refused to forward. These are re-uploaded, so a non-zero
+            # value here is normal for a protected source and is NOT a failure signal —
+            # check skipped_forward_restricted for messages that got no delivery at all.
+            "forward_restricted": forward_restricted,
             "skipped_forward_restricted": skipped_forward_restricted,
             "skipped_media_type": skipped_media_type,
             "skipped_no_media": skipped_no_media,

@@ -1,4 +1,9 @@
-"""Forward approved quarantine media from hub inbox → lane Storage Hub topics."""
+"""Route approved quarantine media from hub inbox → lane Storage Hub topics.
+
+The Storage Hub is a content-protected (noforwards) chat, so ForwardMessages is refused
+for its own messages even when source and destination are the same supergroup. Media is
+downloaded once and re-uploaded into each selected lane topic instead.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +19,11 @@ logger = logging.getLogger(__name__)
 
 async def route_media_to_lane_topics(storage, media: Any, lane_keys: list[str]) -> dict[str, Any]:
     """
-    Forward one hub message into each selected lane subtopic (same supergroup).
-    Requires telegram_message_id on the Media row.
+    Copy one hub message into each selected lane subtopic (same supergroup).
+
+    Requires telegram_message_id on the Media row. The source message is fetched and
+    downloaded once, then re-uploaded per lane — the Hub is protected, so forwarding it
+    raises ChatForwardsRestrictedError and delivers nothing.
     """
     msg_id = int(getattr(media, "telegram_message_id", 0) or 0)
     if msg_id <= 0:
@@ -25,7 +33,23 @@ async def route_media_to_lane_topics(storage, media: Any, lane_keys: list[str]) 
     if not lanes:
         return {"ok": False, "reason": "no_lanes"}
 
+    from app.services.telegram_storage import _channel_message_media_kind
+
     hub_entity = await resolve_telethon_entity(storage.client, STORAGE_HUB_IDENT)
+
+    source_msg = await storage.client.get_messages(hub_entity, ids=msg_id)
+    if not source_msg or not getattr(source_msg, "media", None):
+        return {"ok": False, "reason": "no_media", "source_message_id": msg_id}
+
+    kind = _channel_message_media_kind(source_msg) or "photo"
+    # One download for every lane — the bytes are re-prepared per send because
+    # _prepare_file_for_send hands back a BytesIO that the send consumes.
+    data = await storage.client.download_media(source_msg, bytes)
+    if not data:
+        return {"ok": False, "reason": "download_empty", "source_message_id": msg_id}
+
+    existing_caption = (getattr(source_msg, "message", None) or "").strip()
+
     routed: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
@@ -36,36 +60,25 @@ async def route_media_to_lane_topics(storage, media: Any, lane_keys: list[str]) 
             continue
         dest_thread = int(row.message_thread_id)
         try:
-            import os
-
-            from telethon.tl.functions.messages import ForwardMessagesRequest
-
-            req = ForwardMessagesRequest(
-                from_peer=hub_entity,
-                id=[msg_id],
-                to_peer=hub_entity,
-                top_msg_id=dest_thread,
-                random_id=[int.from_bytes(os.urandom(8), "big", signed=True)],
-            )
-            result = await storage.client(req)
-            fwd_msgs = storage.client._get_response_message(req, result, hub_entity) or []
             from app.services.tbcc_caption_stamp import hub_intake_caption
 
-            for fm in fwd_msgs:
-                if not fm:
-                    continue
-                stamped = hub_intake_caption(lane, getattr(fm, "message", None) or "")
-                if stamped and stamped != (getattr(fm, "message", None) or "").strip():
-                    try:
-                        await storage.client.edit_message(hub_entity, fm.id, text=stamped)
-                    except Exception:
-                        logger.debug(
-                            "gatekeeper lane caption stamp skipped media_id=%s lane=%s msg=%s",
-                            getattr(media, "id", "?"),
-                            lane,
-                            getattr(fm, "id", "?"),
-                            exc_info=True,
-                        )
+            # skip_watermark: the media is already inside the Hub and was stamped at
+            # intake. Re-watermarking on a hub→hub copy would double-mark it. Same
+            # reasoning as TelegramStorage._upload_mirror_media.
+            f, kwargs, _bucket = storage._prepare_file_for_send(
+                data,
+                kind,
+                skip_watermark=True,
+                source_message=source_msg,
+            )
+            caption = hub_intake_caption(lane, existing_caption)
+            await storage.client.send_file(
+                hub_entity,
+                f,
+                reply_to=dest_thread,
+                caption=caption or None,
+                **kwargs,
+            )
             routed.append(
                 {
                     "lane": lane,
