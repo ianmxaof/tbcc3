@@ -155,16 +155,23 @@ async def on_hub_lane_control_callback(update: Update, context: ContextTypes.DEF
         set_deposit_limit(lim)
         note = f"Preset → {lim}"
         await query.answer(note)
-    elif data == "deposit":
-        await query.answer("Queuing deposit…")
-        from bots.storage_deposit_control_handlers import _run_deposit_from_panel
+    elif data == "drain":
+        from app.services.storage_lane_drain import is_lane_draining, start_lane_drain
 
-        await _run_deposit_from_panel(
-            update,
-            context,
-            thread_id=thread_id,
-            repost_panels=True,
+        if is_lane_draining(network_key):
+            await query.answer("Already draining this lane", show_alert=True)
+            return True
+        out = start_lane_drain(
+            network_key,
+            chat_id=int(query.message.chat_id),
+            message_thread_id=int(thread_id),
         )
+        if not out.get("ok"):
+            await query.answer(f"Drain failed to start: {out.get('error')}", show_alert=True)
+        elif out.get("already_running"):
+            await query.answer("Already draining this lane", show_alert=True)
+        else:
+            await query.answer("Draining…")
         return True
     elif data.startswith("autopipe:"):
         parts = data.split(":")

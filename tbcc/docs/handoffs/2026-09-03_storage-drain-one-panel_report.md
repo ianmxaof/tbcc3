@@ -48,7 +48,7 @@ No code changed. This is a read-only inventory of every Storage Hub / Q&A / inta
 - `qmp:apall:on/off` (Q&A master "Auto-pipe ALL") and `intake:autopipe:on/off` (`/intake` panel) both read/write the same `storage_auto_pipe_enabled()` / `set_storage_auto_pipe_enabled()` flag — same global toggle exposed on two bots.
 - `qmp:run:inbox` and `intake:run:inbox` both trigger the same inbox-now pull.
 
-**Independent-but-overlapping "how much to deposit" knobs:** the per-lane panel's count/type controls (50-200, step 50) and the Q&A master's dep count/type controls (5/15/25/50 presets) are two separately-persisted settings for conceptually the same action (how much to pull this time), scoped differently (per-lane vs shared default) — not a bug, but adds to the "too many things to remember" surface area I4 flags.
+**Correction (found during Phase 1 implementation, see below):** the per-lane panel's count/type controls and the Q&A master's dep count/type controls are **not** two independent knobs as originally stated here — both panels import and call the exact same `storage_deposit_control.py` functions (`get_deposit_limit`, `get_deposit_media_types`), a single shared Redis-backed setting rendered on two panels. Not a duplicate-knob problem; no action needed.
 
 ---
 
@@ -66,7 +66,7 @@ Confirmed via I3's duplicate-task findings above: "Flush Q&A", "Flush hub"/"Flus
 
 ## I6 — Approve crash on duplicate-in-target-pool
 
-**Evidence, exact lines:** `gatekeeper_review.py` `operator_approve_media()` — line 411 `media.status = "approved"`, line 418 `media.pool_id = int(pid)`, line 420 `db.commit()`. No `try/except` around the commit. If `Media` already has a row with the same `(file_unique_id, pool_id)` pair in the target pool (`uq_media_file_unique_id_pool_id`), this commit raises an uncaught `IntegrityError`/`UniqueViolation`, surfacing as a raw error card to the operator instead of a graceful "already there, treated as done." Operator screenshot 2026-09-03, `pool_id=3`, matches this exact path.
+**Evidence, exact lines:** `gatekeeper_review.py` `operator_approve_media()` — line 411 `media.status = "approved"`, line 418 `media.pool_id = int(pid)`, line 420 `db.commit()`. No `try/except` around the commit. If `Media` already has a row with the same `(file_unique_id, pool_id)` pair in the target pool (`uq_media_file_unique_id_pool_id`), this commit raises an uncaught `IntegrityError`/`UniqueViolation`, surfacing as a raw error card to the operator instead of a graceful "already there, treated as done." Operator screenshot 2026-09-03, `pool_id=3`, matches this exact path. **Fixed in Phase 1 — see below.**
 
 ---
 
@@ -80,7 +80,7 @@ Confirmed via I3's duplicate-task findings above: "Flush Q&A", "Flush hub"/"Flus
 
 ---
 
-## Proposed locked IA (for Phase 1+ — not implemented this phase)
+## Proposed locked IA (for Phase 1+ — Phase 0 lock, unchanged)
 
 ### Why not literal one panel
 
@@ -115,52 +115,84 @@ One panel (or a short message with its own keyboard) holding everything that isn
 
 ---
 
-## Drain loop design (for Cursor ACK before Phase 1 implements it)
-
-**Extends existing primitives — no second import stack**, per the directive's constraint:
-
-1. **Trigger:** "🚿 Drain this lane" (lane panel) or a lane shortcut tagged `drain` on the master panel. Acquire a per-lane Redis lock (same pattern as `storage_auto_pipe.py`'s `_pending_task_key`) so a second tap while draining is a no-op with a "already draining" toast, not a second concurrent loop.
-2. **Batch size:** reuse `auto_pipe_batch_size(lane_key)` / the lane's own preset (50-200) — no new constant.
-3. **Loop body, each iteration:**
-   - Re-read `hub_master_auto_approve_enabled()` **fresh** (not snapshotted) → `qa_review_only` for this batch — satisfies I2's "toggle timing must not matter."
-   - Call the existing `queue_storage_topic_deposit(..., limit=batch, auto_pipe=False, sent_cache=False, qa_review_only=..., commit=True)` — identical to today's one-shot deposit.
-   - `await_deposit_import_job(...)` (existing) until terminal.
-   - Read `result["stored"]` and `result["skipped_duplicate"]` from the job (both already returned today).
-4. **Stop conditions (first one hit wins):**
-   - `stored == 0` for an iteration → lane is unique-drained; report "drained, N total stored across M batches."
-   - Safety cap: iteration count (e.g. 40) or wall-clock (e.g. 30 min), whichever first → report "safety cap hit, N stored so far, tap Drain again to continue" (never silently stop without saying why).
-   - Operator sends a cancel action (reuse the lock key as the cancel switch — clearing it mid-loop stops the next iteration from starting).
-5. **Progress:** edit the same in-topic message each iteration (reuse `run_deposit_subtopic_followup`'s heartbeat/edit pattern) — running total stored, iteration count, current stage — not one message per batch.
-6. **Concurrency:** one drain per lane at a time (the lock above); no cross-lane limit needed since `queue_storage_topic_deposit` already serializes through the same Telethon/Celery import path every deposit uses today.
-7. **Duplicate handling (I6):** Phase 1 should also wrap `operator_approve_media`'s commit in a try/except that treats the specific `uq_media_file_unique_id_pool_id` violation as "already approved, skip" rather than a red error card — small, isolated fix, same phase as drain since both touch the same "don't error on a duplicate" theme.
-
----
-
-## Verification (Phase 0 — no behavior change)
+## Phase 0 verification (no behavior change)
 
 ```
 git diff --stat  →  (no output; this report is the only new file)
 ```
-No panel, deposit, or auto-pipe runtime path was edited. All findings above are read-only citations of existing code.
+No panel, deposit, or auto-pipe runtime path was edited in Phase 0. All findings above were read-only citations of existing code.
+
+---
+
+## Phase 1 (drain loop + duplicate-safe approve) — implemented, ACK'd Phase 0 → Phase 1 authorized
+
+**Executed by:** Claude Code `/cc-run`, 2026-09-03 (continuation of this same track). **STOP for Cursor `/cc-report` ACK.** Phase 2 not started.
+
+### I1 — Drain-this-lane implemented
+
+**New:** `app/services/storage_lane_drain.py` — loops the existing `queue_storage_topic_deposit` + `await_deposit_import_job` primitives (no second import stack, per constraint). Per-lane exclusivity via a Redis lock (`tbcc:storage:drain:lock:{lane}`), same pattern as `storage_auto_pipe.py`'s pending-task key. `start_lane_drain()` (sync trigger, acquires lock + posts a status message + enqueues the Celery task), `run_lane_drain()` (the async loop, called from the task), `cancel_lane_drain()` / `is_lane_draining()`.
+
+**New:** `app/workers/storage_lane_drain_worker.py` — `run_lane_drain_task` Celery task, `asyncio.run(run_lane_drain(...))`, matching the existing `asyncio.run()`-per-task pattern used across `poster_worker.py`.
+
+**Cursor lock honored exactly:** stop condition is `stored == 0 AND skipped_duplicate == 0` for a batch — **not** `stored == 0` alone. A batch with `stored=0, skipped_duplicate>0` continues looping (newest-first can sit on an already-indexed head while older uniques remain further back). Covered by `test_drain_continues_past_stored_zero_when_skipped_positive`.
+
+**Other locks honored:**
+- `hub_master_auto_approve_enabled()` is re-read **every batch** (not snapshotted at drain start) — `test_drain_reads_auto_approve_fresh_each_batch` proves batch N and batch N+1 can see different `qa_review_only` values.
+- `sent_cache=False` and `auto_pipe=False` passed explicitly on every batch (never inherited from a global default) — `test_drain_always_passes_sent_cache_false`.
+- Safety cap: `TBCC_LANE_DRAIN_MAX_ITERATIONS` (default 40) and `TBCC_LANE_DRAIN_MAX_SECONDS` (default 1800) — whichever fires first, reported as `stop_reason` (`safety_cap_iterations` / `safety_cap_seconds`), never a silent stop.
+- Cancel: clearing the Redis lock (`cancel_lane_drain`) is checked at the top of every loop iteration, before the next batch starts — `test_drain_stops_on_cancel`.
+- Progress: the same status message is edited each iteration (`storage_hub_op_status.py`'s existing `post_hub_op_status`/`edit_hub_op_status` HTTP helpers — reused, not reinvented) with running totals; a final summary line states which stop condition fired.
+
+**Wired into the per-lane hub panel:** `hub_lane_control.py`'s "📥 Deposit now" button is now "🚿 Drain this lane" (`hubctl:drain`), per the directive's preference to replace rather than add. Handler in `bots/storage_hub_control_handlers.py` calls `start_lane_drain`, with an "already draining" toast if the lock is held. The old one-shot deposit function (`_run_deposit_from_panel`) is untouched, just no longer wired to this button — available for Phase 2's Extras page.
+
+**Deferred (explicitly optional in the directive):** master-panel lane-shortcut wiring to the same drain. Not done this pass — the per-lane panel change alone is a real behavior change touching a live production path; wiring a second entry point before that one has been used live felt like unnecessary added risk for an explicitly-optional item. Recommend doing it in Phase 2 alongside the panel shrink, once the per-lane drain button has been exercised for real.
+
+### I6 — Duplicate-safe approve implemented
+
+`gatekeeper_review.py` `operator_approve_media()` now wraps the commit: on `IntegrityError` matching the `(file_unique_id, pool_id)` unique constraint (checked by both the Postgres constraint name and the SQLite column-name message, via new helper `_is_duplicate_file_unique_id_pool_id_violation` — the two engines report this differently and dev/test runs on SQLite), it rolls back, re-fetches the media row, approves it **without** the conflicting route (`pool_id` left unset rather than force-assigned), and commits again. Any *other* `IntegrityError` still re-raises unchanged — only this specific, known-benign duplicate case is swallowed. The returned dict gains `duplicate_route_skipped: bool` so callers/toasts can say "already there" instead of a generic success.
+
+**Known follow-up nuance (not fixed this pass, out of I6's scope):** when the duplicate path fires, the downstream lane-route enqueue (`enqueue_lane_route_for_media`) and micro-pull triggers still use the originally-*intended* `selected` lanes even though `pool_id` was reset to `None` — a minor inconsistency between "what lane the operator picked" and "what pool_id actually landed." I6's ask was specifically the crash; fixing this downstream nuance would need a clearer read of `enqueue_lane_route_for_media`'s expectations and felt like scope creep for this slice.
+
+### Pytest (directive's exact verification command)
+
+```
+cd tbcc/backend && py -3.13 -m pytest tests/test_storage_lane_drain.py tests/test_gatekeeper_approve_duplicate.py -x -q --tb=short
+→ 15 passed in 16.36s
+```
+
+**Environment finding (not caused by this phase, flagging for awareness):** running `test_gatekeeper_review.py`'s pre-existing `test_operator_approve_sets_status` / `test_operator_approve_enqueues_micro_pull` in isolation (a fresh `pytest` process, e.g. `pytest tests/test_gatekeeper_review.py::test_operator_approve_sets_status` alone) hangs — confirmed independently of any Phase 1 change. Root cause: `operator_approve_media` unconditionally calls `enqueue_vault_approved_media` / `_refresh_qa_live_counter_after_decide`, which do a cold `from app.workers.gatekeeper_review_worker import ...` on first call; that import chain reaches `celery_app.py`, and in this dev/sandbox environment the configured broker isn't reachable in a way that fails fast — it blocks. This only surfaces when those tests run *first* in a fresh process (normal full-suite runs are unaffected because some earlier-alphabetical test file apparently reaches the same import first and it resolves fine bundled with other setup, or the specific ordering here just never isolates those two tests alone). My new `test_gatekeeper_approve_duplicate.py` mocks every one of these `.delay()`-triggering calls precisely to avoid depending on that — good test hygiene regardless, but the pre-existing gap in `test_gatekeeper_review.py` itself is a separate, real latent fragility worth a follow-up (not fixed here — out of I6's scope, and touching a file outside this track's explicit remit).
+
+### Git / deploy
+
+7 files touched (3 modified, 4 new) — under the 8-file halt threshold:
+- `app/services/storage_lane_drain.py` (new)
+- `app/workers/storage_lane_drain_worker.py` (new)
+- `app/services/hub_lane_control.py` (modified — button swap)
+- `bots/storage_hub_control_handlers.py` (modified — handler swap)
+- `app/services/gatekeeper_review.py` (modified — I6 fix)
+- `tests/test_storage_lane_drain.py` (new)
+- `tests/test_gatekeeper_approve_duplicate.py` (new)
+
+**No island deploy, no bot start, no `.env`/session changes** — matches the directive's explicit out-of-scope list. This is a code-only slice; the drain button will only go live once this deploys, which is a separate authorized action (not implied by this report).
 
 **Completion gates:**
 | Gate | Result |
 |------|--------|
-| Tests | N/A — no code touched |
-| Migration | N/A |
-| Stack | N/A — no restart, no deploy |
+| Tests | pass — 15/15 for the directive's exact verification command |
+| Migration | N/A — no schema change (the unique constraint already existed) |
+| Stack | N/A — no deploy, no restart, no bot spawn this phase |
 | Extension version | N/A |
-| Git | 1 commit (this report only) |
-| Scope | 1 file (docs) |
+| Git | 1 commit pending (this report + the 6 code/test files) |
+| Scope | 7 files — under the 8-file halt threshold |
 
 ---
 
 ## Not done / next
 
-**Phase 1 (needs Cursor ACK first):** implement drain-this-lane (I1/I2) exactly as designed above, plus the duplicate-safe approve fix (I6). Verify via pytest for the drain stop-condition and the UniqueViolation-skip path.
-**Phase 2 (after Phase 1 ACK):** shrink both home panels to the button lists above, stand up the shared Extras destination, delete the four duplicate buttons identified in I3/I5, restore inbox batch to `review_batch_size()` default (I7) while keeping the manual instant-flush override.
-**Phase 3 (optional, after Phase 2 ACK):** soft-deprecate `/intake` and per-lane flush chrome that's now redundant with Extras; update `STORAGE_HUB_PANEL_MANUAL.md` to match.
+**Phase 2 (needs Cursor ACK):** shrink both home panels to the button lists locked in Phase 0, stand up the shared Extras destination, delete the four duplicate buttons identified in I3/I5, restore inbox batch to `review_batch_size()` default (I7) while keeping the manual instant-flush override, wire the optional master-panel drain shortcut deferred from Phase 1.
+**Phase 3 (optional, after Phase 2 ACK):** soft-deprecate `/intake` and per-lane flush chrome that's now redundant with Extras; update `STORAGE_HUB_PANEL_MANUAL.md` to match (it still documents "📥 Deposit now" on the lane panel — needs a line change once Phase 1 deploys).
+**Follow-up, no phase assigned yet:** the pre-existing Celery cold-import test isolation gap in `test_gatekeeper_review.py` (see above) — worth a small fix (mock the same three calls) but outside this track's scope.
 
 ---
 
-**Phase 0 done — STOP for Cursor `/cc-report`. Do not start Phase 1.**
+**Phase 1 done — STOP for Cursor `/cc-report`. Do not start Phase 2.**

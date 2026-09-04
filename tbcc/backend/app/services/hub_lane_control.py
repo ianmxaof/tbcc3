@@ -110,7 +110,7 @@ def lane_hub_control_keyboard(network_key: str | None) -> Any:
             InlineKeyboardButton("+ type", callback_data="hubctl:mt:+1"),
         ],
         [
-            InlineKeyboardButton("📥 Deposit now", callback_data="hubctl:deposit"),
+            InlineKeyboardButton("🚿 Drain this lane", callback_data="hubctl:drain"),
         ],
     ]
     if nk:

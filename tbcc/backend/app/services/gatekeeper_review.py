@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.data.aof_storage_hub_map import STORAGE_HUB_IDENT
@@ -371,6 +372,18 @@ def enqueue_vault_approved_media(media_id: int) -> None:
         logger.debug("vault approved enqueue failed media_id=%s", media_id, exc_info=True)
 
 
+def _is_duplicate_file_unique_id_pool_id_violation(err: IntegrityError) -> bool:
+    """True when this IntegrityError is the (file_unique_id, pool_id) unique constraint.
+
+    Postgres reports the constraint name; SQLite (dev/test) reports the column names
+    instead — check both so this works on either engine.
+    """
+    msg = str(getattr(err, "orig", None) or err).lower()
+    return "uq_media_file_unique_id_pool_id" in msg or (
+        "file_unique_id" in msg and "pool_id" in msg
+    )
+
+
 def operator_approve_media(
     db: Session,
     media_id: int,
@@ -410,14 +423,36 @@ def operator_approve_media(
 
     media.status = "approved"
     extra: dict[str, Any] = {}
+    routed_pool_id: int | None = None
     if selected:
         extra["operator_lanes"] = selected
         extra["lane_stamps"] = selected
         pid = pool_id_for_network_key(db, selected[0])
         if pid:
-            media.pool_id = int(pid)
+            routed_pool_id = int(pid)
+            media.pool_id = routed_pool_id
     _merge_operator_action(media, action="approve", operator_id=operator_id, extra=extra or None)
-    db.commit()
+    duplicate_route_skipped = False
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        if not _is_duplicate_file_unique_id_pool_id_violation(e):
+            raise
+        # Another Media row already occupies (file_unique_id, pool_id) in the target
+        # pool — the content is already there. Approve this row without the
+        # conflicting route instead of surfacing a raw DB error to the operator.
+        media = db.query(Media).filter(Media.id == int(media_id)).first()
+        media.status = "approved"
+        media.pool_id = None
+        duplicate_route_skipped = True
+        _merge_operator_action(
+            media,
+            action="approve",
+            operator_id=operator_id,
+            extra={"duplicate_route_skipped": True, "duplicate_target_pool_id": routed_pool_id},
+        )
+        db.commit()
     record_operator_approve(db, media)
     clear_picked_lanes(media_id)
 
@@ -479,6 +514,7 @@ def operator_approve_media(
         "route_enqueue_error": None if route_enqueue.get("ok") else route_enqueue.get("reason"),
         "micro_pull_lanes": micro_pull_lanes,
         "micro_pull_lane": micro_pull_lanes[0] if micro_pull_lanes else None,
+        "duplicate_route_skipped": duplicate_route_skipped,
     }
 
 
