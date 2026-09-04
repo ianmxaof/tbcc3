@@ -73,7 +73,12 @@ if ($UseGhcrPull) {
   Invoke-Remote "cd $RemoteDir/infra && docker compose -f $composeFile --env-file $envFile pull api worker worker_telegram worker_post beat payment_bot loot_bot companion_bot secretary_bot || true"
 } elseif (-not $SkipBuild) {
   Write-Host "`n[4/7] Rsync backend + docker build on island ($localTag)" -ForegroundColor Yellow
-  Invoke-Remote "mkdir -p $RemoteDir/backend-src"
+  # Staging dir: the compose bind-mounts $RemoteDir/backend-src/{app,bots} into every running
+  # container, so writing the new tree straight into backend-src would pull the code out from
+  # under live containers for the whole docker-build. Unpack + build from staging instead, then
+  # sync into backend-src at the last moment, immediately before the recreate in step 5.
+  $stageDir = "$RemoteDir/backend-src.staging"
+  Invoke-Remote "mkdir -p $RemoteDir/backend-src $stageDir"
   $tgz = Join-Path $env:TEMP "tbcc-backend-deploy.tgz"
   # GNU tar (MSYS2/Git for Windows) — put its dir first so `tar` AND its `gzip`
   # dependency resolve together; --force-local keeps GNU tar from reading the
@@ -115,12 +120,31 @@ if ($UseGhcrPull) {
     if ($tarExit -ne 0 -or -not (Test-Path $tgz)) { throw "local tar packaging failed (exit $tarExit) - nothing valid to ship" }
     & scp $tgz "${HostName}:/tmp/tbcc-backend-deploy.tgz"
     if ($LASTEXITCODE -ne 0) { throw "scp backend tarball failed" }
-    Invoke-Remote "rm -rf $RemoteDir/backend-src/* && tar xzf /tmp/tbcc-backend-deploy.tgz -C $RemoteDir/backend-src && rm -f /tmp/tbcc-backend-deploy.tgz"
+    # Unpack into staging, NOT into the live bind-mount source.
+    Invoke-Remote "rm -rf $stageDir && mkdir -p $stageDir && tar xzf /tmp/tbcc-backend-deploy.tgz -C $stageDir && rm -f /tmp/tbcc-backend-deploy.tgz"
   } else {
-    & scp -r "$backend\*" "${HostName}:$RemoteDir/backend-src/"
+    Invoke-Remote "rm -rf $stageDir && mkdir -p $stageDir"
+    & scp -r "$backend\*" "${HostName}:$stageDir/"
     if ($LASTEXITCODE -ne 0) { throw "scp backend failed" }
   }
-  Invoke-Remote "docker build -t $localTag $RemoteDir/backend-src"
+  # Sanity-gate the staged tree before it is allowed anywhere near the live one. A truncated
+  # scp or a half-written tar must fail the deploy, not silently ship an empty app/.
+  Invoke-Remote @"
+test -f $stageDir/app/main.py || { echo 'STAGING INVALID: app/main.py missing'; exit 1; }
+test -d $stageDir/bots || { echo 'STAGING INVALID: bots/ missing'; exit 1; }
+n=`$(find $stageDir -name '*.py' | wc -l); test "`$n" -ge 800 || { echo "STAGING INVALID: only `$n .py files"; exit 1; }
+echo "staging ok (`$n .py files)"
+"@
+  # Build from staging — containers keep running the current code for the whole build.
+  Invoke-Remote "docker build -t $localTag $stageDir"
+  # Now swap the live tree. rsync updates in place, so the bind-mount inode never changes and
+  # containers are never left without code; only changed files are touched. Step 5 recreates
+  # immediately after, which is what makes the new modules actually load.
+  Invoke-Remote @"
+command -v rsync >/dev/null || { echo 'rsync missing on island - refusing unsafe rm -rf swap'; exit 1; }
+rsync -a --delete --exclude='__pycache__' $stageDir/ $RemoteDir/backend-src/
+rm -rf $stageDir
+"@
   # Point compose at local tag
   Invoke-Remote @"
 grep -q '^TBCC_WORKER_IMAGE=' $RemoteDir/infra/$envFile && sed -i 's|^TBCC_WORKER_IMAGE=.*|TBCC_WORKER_IMAGE=$localTag|' $RemoteDir/infra/$envFile || echo 'TBCC_WORKER_IMAGE=$localTag' >> $RemoteDir/infra/$envFile

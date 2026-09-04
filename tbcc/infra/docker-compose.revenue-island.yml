@@ -86,6 +86,8 @@ services:
       TBCC_LOOT_LOCAL_BYTES_ONLY: "0"
       TBCC_POOL_IMPORT_LOCAL: "1"
     volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
       - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
     ports:
@@ -141,6 +143,8 @@ services:
       TBCC_AFFILIATE_BEACON_WRAP: "1"
       TBCC_CLICK_BEACON_INSTANT: "1"
     volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
       - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
@@ -172,6 +176,8 @@ services:
       TBCC_POOL_IMPORT_LOCAL: "1"
       TBCC_STORAGE_HUB_R2_EXPORT_ENABLED: "1"
     volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
       - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
@@ -200,6 +206,8 @@ services:
       TBCC_POSTER_AUTO_COPY_ADMIN_SESSION: "1"
       TBCC_MEDIA_FILES_DIR: /uploads/media-files
     volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
       - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
@@ -210,6 +218,9 @@ services:
 
   beat:
     <<: *island-image
+    volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
     command: >
       celery -A app.workers.celery_app beat
       -l info
@@ -240,6 +251,8 @@ services:
       TBCC_LOOT_LOCAL_BYTES_ONLY: "1"
       TBCC_POOL_IMPORT_LOCAL: "1"
     volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
       - api
@@ -248,6 +261,9 @@ services:
 
   loot_bot:
     <<: *island-image
+    volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
     profiles: ["bots"]
     command: python -m bots.loot_bot
     depends_on:
@@ -258,6 +274,9 @@ services:
   # @aof_macrosearch_bot — OF overlay twin (username probe + archive /find). Keep home macro_search Off.
   macro_search_bot:
     <<: *island-image
+    volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
     profiles: ["bots"]
     command: python -m bots.macro_search_bot
     environment:
@@ -271,6 +290,9 @@ services:
   # @aof_spicybot_bot — LLM chat + undress webhooks (API serves /webhooks/companion/*).
   companion_bot:
     <<: *island-image
+    volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
     profiles: ["bots"]
     command: python -m bots.companion_bot
     depends_on:
@@ -281,6 +303,9 @@ services:
   # @aof_secretary_bot — admin inbox + Traffic Pulse DMs (keep home secretary Off to avoid 409).
   secretary_bot:
     <<: *island-image
+    volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
     profiles: ["bots"]
     command: python -m bots.secretary_bot
     depends_on:
@@ -306,6 +331,8 @@ services:
       TBCC_ALBUM_COMPOSER_TELEGRAM_SESSION: /sessions/admin_album
       TBCC_ALBUM_COMPOSER_AUTO_COPY_ADMIN_SESSION: "1"
     volumes:
+      - /opt/tbcc/backend-src/app:/app/app
+      - /opt/tbcc/backend-src/bots:/app/bots
       - /opt/tbcc/sessions:/sessions:rw
       - /opt/tbcc/uploads:/uploads:rw
     depends_on:
