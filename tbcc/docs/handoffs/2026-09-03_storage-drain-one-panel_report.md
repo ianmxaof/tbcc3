@@ -187,12 +187,56 @@ cd tbcc/backend && py -3.13 -m pytest tests/test_storage_lane_drain.py tests/tes
 
 ---
 
-## Not done / next
+## Phase 1b (celery wire-up — ship gate) — implemented, ACK'd Phase 1 → 1b authorized
 
-**Phase 2 (needs Cursor ACK):** shrink both home panels to the button lists locked in Phase 0, stand up the shared Extras destination, delete the four duplicate buttons identified in I3/I5, restore inbox batch to `review_batch_size()` default (I7) while keeping the manual instant-flush override, wire the optional master-panel drain shortcut deferred from Phase 1.
-**Phase 3 (optional, after Phase 2 ACK):** soft-deprecate `/intake` and per-lane flush chrome that's now redundant with Extras; update `STORAGE_HUB_PANEL_MANUAL.md` to match (it still documents "📥 Deposit now" on the lane panel — needs a line change once Phase 1 deploys).
-**Follow-up, no phase assigned yet:** the pre-existing Celery cold-import test isolation gap in `test_gatekeeper_review.py` (see above) — worth a small fix (mock the same three calls) but outside this track's scope.
+**Executed by:** Claude Code `/cc-run`, 2026-09-03 (continuation). **STOP for Cursor `/cc-report` ACK.** Phase 2 not started. No island deploy performed — Cursor authorizes that separately after this ACK.
+
+**Gap Cursor caught:** `app.workers.storage_lane_drain_worker` (new in Phase 1) was never added to `celery.conf.include` in `app/workers/celery_app.py`, and had no `task_routes` entry. The "Drain this lane" button would successfully call `.delay(...)` (Celery doesn't validate task existence at enqueue time), but no running worker process imports that module, so the task would sit unconsumed in the queue forever — a silent no-op from the operator's perspective, not a crash. Correctly caught before any deploy.
+
+**Fix, mirrors `storage_auto_pipe_worker` exactly (same job class — Telethon-backed lane deposit):**
+- `celery_app.py` `conf.include`: added `"app.workers.storage_lane_drain_worker"` immediately after `storage_auto_pipe_worker`'s entry.
+- `celery_app.py` `conf.task_routes`: added `"app.workers.storage_lane_drain_worker.*": {"queue": "telegram"}` immediately after `storage_auto_pipe_worker`'s route, same `telegram` queue (drain uses the identical Telethon deposit primitive, so it belongs on the same queue for the same reason auto-pipe does).
+
+**Test:** extended the existing `test_celery_island_beat_gates.py` (which already had this exact assertion shape for `network_liveness_worker`/`storage_auto_pipe_worker`) with `test_storage_lane_drain_worker_is_included_and_registered` — checks `include`, `task_routes`, **and** that the task name (`app.workers.storage_lane_drain_worker.run_lane_drain`) is actually present in `celery.tasks` after import, which is the real "would a worker recognize this" signal (stronger than just checking `include`, which only proves the module *would* get imported on worker startup, not that it exports the expected task name).
+
+### Verification (directive's exact commands)
+
+```
+py -3.13 -c "from app.workers.celery_app import celery; assert 'app.workers.storage_lane_drain_worker' in (celery.conf.include or [])"
+→ passes (no AssertionError)
+
+py -3.13 -m pytest tests/test_storage_lane_drain.py tests/test_gatekeeper_approve_duplicate.py -x -q --tb=short
+→ 15 passed
+
+py -3.13 -m pytest tests/test_celery_island_beat_gates.py -x -q --tb=short
+→ 5 passed (new registration test included)
+```
+
+### Git
+
+1 file modified (`celery_app.py`) + 1 file modified (`test_celery_island_beat_gates.py`) = 2 files, well under the 8-file threshold.
+
+**Completion gates:**
+| Gate | Result |
+|------|--------|
+| Tests | pass — 20/20 combined (15 Phase 1 + 5 celery registration) |
+| Migration | N/A |
+| Stack | N/A — config-only change, no restart/deploy performed this phase |
+| Extension version | N/A |
+| Git | 1 commit pending |
+| Scope | 2 files |
+
+**Island deploy is still pending** — this phase only fixes the code; the running island `worker`/`worker_post` containers need the updated `celery_app.py` to actually pick up the include/route before "Drain this lane" works live. That deploy is explicitly Cursor's call per the directive ("Island deploy — Cursor authorizes separately after 1b").
 
 ---
 
-**Phase 1 done — STOP for Cursor `/cc-report`. Do not start Phase 2.**
+## Not done / next
+
+**Before Phase 2:** island deploy of the Phase 1 + 1b code (drain loop, I6 fix, celery wire-up) — not performed this pass, awaiting Cursor authorization.
+**Phase 2 (needs Cursor ACK):** shrink both home panels to the button lists locked in Phase 0, stand up the shared Extras destination, delete the four duplicate buttons identified in I3/I5, restore inbox batch to `review_batch_size()` default (I7) while keeping the manual instant-flush override, wire the optional master-panel drain shortcut deferred from Phase 1.
+**Phase 3 (optional, after Phase 2 ACK):** soft-deprecate `/intake` and per-lane flush chrome that's now redundant with Extras; update `STORAGE_HUB_PANEL_MANUAL.md` to match (it still documents "📥 Deposit now" on the lane panel — needs a line change once this deploys).
+**Follow-up, no phase assigned yet:** the pre-existing Celery cold-import test isolation gap in `test_gatekeeper_review.py` (see Phase 1 section above) — worth a small fix (mock the same three calls) but outside this track's scope.
+
+---
+
+**Phase 1b done — STOP for Cursor `/cc-report`. Do not start Phase 2. No island deploy performed.**

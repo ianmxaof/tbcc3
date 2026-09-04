@@ -60,6 +60,7 @@ celery.conf.include = [
     "app.workers.traffic_pulse_worker",
     "app.workers.inbox_intake_worker",
     "app.workers.storage_auto_pipe_worker",
+    "app.workers.storage_lane_drain_worker",
     "app.workers.vip_weekly_mega_worker",
     "app.workers.weekly_build_log_worker",
     "app.workers.revenue_brief_worker",
@@ -91,6 +92,8 @@ celery.conf.task_routes = {
     "app.workers.inbox_intake_worker.*": {"queue": "telegram"},
     # Hub lane auto-pipe queues Telethon deposits — must land on telegram, not default celery.
     "app.workers.storage_auto_pipe_worker.*": {"queue": "telegram"},
+    # Drain-this-lane loops the same Telethon deposit primitive — same queue as auto-pipe.
+    "app.workers.storage_lane_drain_worker.*": {"queue": "telegram"},
     "app.workers.scheduler_worker.*": {"queue": "celery"},
     # Scheduler lane (Beat due rows + manual Post now) — isolated from pool auto-post.
     "app.workers.poster_worker.post_scheduled_text": {"queue": "post_scheduler"},
