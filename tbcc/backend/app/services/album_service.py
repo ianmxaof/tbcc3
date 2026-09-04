@@ -33,8 +33,8 @@ async def post_album(
     reply_markup=None,
 ) -> list[int]:
     """
-    Posts a Telegram album using media from Saved Messages (by telegram_message_id).
-    Fetches messages from "me" and sends their media — no re-upload.
+    Posts a Telegram album using pool media (Saved Messages or Storage Hub refs).
+    Media is downloaded and re-uploaded so noforwards/protected sources can deliver.
     Telegram requires all items in an album to be the same type (photos with photos, etc).
     reply_to: forum topic id (same as Bot API message_thread_id) for supergroups with topics.
     Returns Telegram message ids for the send (empty list on skip/failure).
@@ -44,24 +44,54 @@ async def post_album(
     from app.services.content_performance import message_ids_from_send
     from app.services.media_message_resolve import fetch_album_medias
 
-    medias = await fetch_album_medias(client, media_items)
-    if len(medias) != len(media_items):
+    raw_medias = await fetch_album_medias(client, media_items)
+    if len(raw_medias) != len(media_items):
         logger.warning("Could not fetch all media; skipping album to avoid partial send")
         return []
     cap = caption.strip() if caption else None
     silent_kw = {"silent": True} if send_silent else {}
-    from app.services.scheduled_post_service import _apply_telethon_html_to_kwargs
+    from app.services.scheduled_post_service import (
+        _apply_telethon_html_to_kwargs,
+        _is_forward_restricted_send_error,
+        _materialize_pool_media_for_send,
+        _send_prepared_medias,
+    )
     from app.services.telegram_content_protection import telethon_protect_context
 
-    file_kw: dict = {"reply_to": reply_to, **silent_kw}
+    async def _materialize_all() -> list:
+        out = []
+        for i, raw in enumerate(raw_medias):
+            out.append(await _materialize_pool_media_for_send(client, raw, media_items[i]))
+        return out
+
+    file_kw: dict = {"reply_to": reply_to, "force_document": False, **silent_kw}
     if reply_markup is not None:
         file_kw["buttons"] = reply_markup
     _apply_telethon_html_to_kwargs(file_kw, cap or "", field="caption")
+
     try:
+        send_medias = await _materialize_all()
         async with telethon_protect_context(client):
-            result = await client.send_file(channel, medias, **file_kw)
+            result = await _send_prepared_medias(client, channel, send_medias, file_kw)
+        if result is None:
+            logger.warning("Album send skipped — no sendable media after poster filter")
+            return []
         return message_ids_from_send(result)
     except Exception as e:
+        if _is_forward_restricted_send_error(e):
+            logger.warning(
+                "Album send forward-restricted — retrying with forced download: %s",
+                e,
+            )
+            try:
+                send_medias = await _materialize_all()
+                async with telethon_protect_context(client):
+                    result = await _send_prepared_medias(client, channel, send_medias, file_kw)
+                if result is None:
+                    return []
+                return message_ids_from_send(result)
+            except Exception:
+                pass
         # Telegram sometimes rejects SendMultiMediaRequest (invalid mix, API quirks, forum edge cases).
         # Fall back to one message per item so valid items still post.
         logger.warning(
@@ -71,14 +101,16 @@ async def post_album(
         )
         msg_ids: list[int] = []
         async with telethon_protect_context(client):
-            for idx, single in enumerate(medias):
-                kw: dict = {"reply_to": reply_to, **silent_kw}
+            for idx, raw in enumerate(raw_medias):
+                kw: dict = {"reply_to": reply_to, "force_document": False, **silent_kw}
                 if idx == 0:
                     if reply_markup is not None:
                         kw["buttons"] = reply_markup
                     _apply_telethon_html_to_kwargs(kw, cap or "", field="caption")
-                single_result = await client.send_file(channel, single, **kw)
-                msg_ids.extend(message_ids_from_send(single_result))
+                single = await _materialize_pool_media_for_send(client, raw, media_items[idx])
+                single_result = await _send_prepared_medias(client, channel, [single], kw)
+                if single_result is not None:
+                    msg_ids.extend(message_ids_from_send(single_result))
         return msg_ids
 
 

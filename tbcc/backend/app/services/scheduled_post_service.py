@@ -8,6 +8,7 @@ import random
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 from telethon import TelegramClient
 from telethon.errors.rpcerrorlist import ChatRestrictedError
@@ -204,16 +205,56 @@ def _resolve_effective_pool_id(post: ScheduledTextPost, db: Session) -> int | No
     return post.pool_id
 
 
+def _select_pool_media_rows(
+    post: ScheduledTextPost,
+    db: Session,
+    *,
+    effective_pool_id: int,
+    pool,
+    album_size: int,
+    randomize: bool,
+    skip_exclusive: bool,
+) -> list[Media]:
+    from app.services.media_album_dedupe import (
+        filter_media_older_than_schedule_min_age,
+        select_unique_pool_media,
+    )
+    from app.services.aof_vip_exclusive import filter_media_for_public_vip_exclusive
+
+    def _apply_public_exclusive(rows: list) -> list:
+        if skip_exclusive:
+            return rows
+        return filter_media_for_public_vip_exclusive(rows, pool=pool)
+
+    q = db.query(Media).filter(Media.pool_id == effective_pool_id, Media.status == "approved")
+    candidate_cap = min(500, max(album_size * 20, album_size))
+    if randomize:
+        rows = _apply_public_exclusive(filter_media_older_than_schedule_min_age(q.all()))
+        return select_unique_pool_media(rows, album_size, randomize=True)
+    try:
+        from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
+
+        if rank_picks_enabled():
+            ranked = rank_pool_media(db, effective_pool_id, candidate_cap, randomize=False)
+            if ranked:
+                ranked = _apply_public_exclusive(ranked)
+                return select_unique_pool_media(ranked, album_size, randomize=False)
+    except Exception:
+        pass
+    rows = _apply_public_exclusive(
+        filter_media_older_than_schedule_min_age(
+            q.order_by(Media.id.asc()).limit(candidate_cap).all()
+        )
+    )
+    return select_unique_pool_media(rows, album_size, randomize=False)
+
+
 def _load_pool_media_items(
     post: ScheduledTextPost,
     db: Session,
     album_order_mode: str,
 ) -> list[Media]:
-    from app.services.media_album_dedupe import (
-        dedupe_media_for_album,
-        filter_media_older_than_schedule_min_age,
-        select_unique_pool_media,
-    )
+    from app.services.media_album_dedupe import dedupe_media_for_album
 
     effective_pool_id = _resolve_effective_pool_id(post, db)
     if not effective_pool_id:
@@ -234,47 +275,48 @@ def _load_pool_media_items(
     else:
         randomize = bool(pool and getattr(pool, "randomize_queue", False))
     from app.models.channel import Channel
-    from app.services.aof_vip_exclusive import filter_media_for_public_vip_exclusive
+    from app.data.aof_network import AOF_VIP_IDENT
 
     vip_channel = (
         db.query(Channel).filter(Channel.id == int(post.channel_id)).first()
         if post.channel_id
         else None
     )
-    from app.data.aof_network import AOF_VIP_IDENT
 
     skip_exclusive = bool(
         vip_channel and str(getattr(vip_channel, "identifier", "")) == AOF_VIP_IDENT
     )
 
-    def _apply_public_exclusive(rows: list) -> list:
-        if skip_exclusive:
-            return rows
-        return filter_media_for_public_vip_exclusive(rows, pool=pool)
-
-    q = db.query(Media).filter(Media.pool_id == effective_pool_id, Media.status == "approved")
-    candidate_cap = min(500, max(album_size * 20, album_size))
-    # Randomize means random *selection* from the full approved pool.
-    # Album order mode (static/shuffle/carousel) is applied later to the selected batch.
-    if randomize:
-        rows = _apply_public_exclusive(filter_media_older_than_schedule_min_age(q.all()))
-        return select_unique_pool_media(rows, album_size, randomize=True)
-    try:
-        from app.services.export_flywheel_service import rank_pool_media, rank_picks_enabled
-
-        if rank_picks_enabled():
-            ranked = rank_pool_media(db, effective_pool_id, candidate_cap, randomize=False)
-            if ranked:
-                ranked = _apply_public_exclusive(ranked)
-                return select_unique_pool_media(ranked, album_size, randomize=False)
-    except Exception:
-        pass
-    rows = _apply_public_exclusive(
-        filter_media_older_than_schedule_min_age(
-            q.order_by(Media.id.asc()).limit(candidate_cap).all()
-        )
+    items = _select_pool_media_rows(
+        post,
+        db,
+        effective_pool_id=int(effective_pool_id),
+        pool=pool,
+        album_size=album_size,
+        randomize=randomize,
+        skip_exclusive=skip_exclusive,
     )
-    return select_unique_pool_media(rows, album_size, randomize=False)
+    if not items:
+        from app.services.sent_vault_lane_refill import (
+            refill_pool_from_sent_vault_on_demand_sync,
+            sent_vault_dry_spell_refill_enabled,
+        )
+
+        if sent_vault_dry_spell_refill_enabled():
+            restored = refill_pool_from_sent_vault_on_demand_sync(
+                db, int(effective_pool_id), need=album_size
+            )
+            if restored > 0:
+                items = _select_pool_media_rows(
+                    post,
+                    db,
+                    effective_pool_id=int(effective_pool_id),
+                    pool=pool,
+                    album_size=album_size,
+                    randomize=randomize,
+                    skip_exclusive=skip_exclusive,
+                )
+    return items
 
 
 def _gather_media_items_for_send(
@@ -325,6 +367,168 @@ def _detect_image_ext(data: bytes) -> str:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
     return "jpg"
+
+
+def _is_forward_restricted_send_error(err: BaseException) -> bool:
+    """True when Telethon tried to forward/copy media from a noforwards/protected source."""
+    msg = str(err).lower()
+    return "can't forward" in msg or "cannot forward" in msg or "protected chat" in msg
+
+
+async def _materialize_pool_media_for_send(client: TelegramClient, raw, db_media: Media):
+    """
+    Download hub/Saved Messages media so scheduled sends upload bytes instead of forwarding.
+
+    Passing MessageMedia from get_messages() makes SendMediaRequest act like a forward;
+    protected/noforwards source chats reject that with ChatForwardsRestrictedError.
+
+    Videos return PreparedSendFile (custom poster thumb) or a skip marker when no usable
+    poster can be extracted. Photos/documents remain BytesIO (or raw TL fallback).
+    """
+    from app.services.video_poster import PreparedSendFile, prepare_video_send_file
+
+    if isinstance(raw, PreparedSendFile):
+        return raw
+    if isinstance(raw, io.BytesIO):
+        raw.seek(0)
+        return raw
+
+    data = await client.download_media(raw, bytes)
+    if not data:
+        logger.warning(
+            "scheduled send: download_media empty media_id=%s — falling back to raw TL media",
+            getattr(db_media, "id", None),
+        )
+        return raw
+
+    media_type = (db_media.media_type or "document").lower()
+    mid = int(getattr(db_media, "id", 0) or 0) or None
+    if media_type == "photo" or _is_image_data(data):
+        ext = _detect_image_ext(data)
+        f = io.BytesIO(data)
+        f.name = f"image.{ext}"
+        logger.info(
+            "Re-uploading pool media as photo: media_id=%s size=%s",
+            mid,
+            len(data),
+        )
+        return f
+    if media_type in ("video", "gif"):
+        prepared = prepare_video_send_file(data, media_id=mid, filename="video.mp4")
+        if prepared.skip:
+            logger.warning(
+                "scheduled send: skip video media_id=%s reason=%s",
+                mid,
+                prepared.skip_reason,
+            )
+        else:
+            logger.info(
+                "Re-uploading pool media as video: media_id=%s size=%s thumb=%s",
+                mid,
+                len(data),
+                bool(prepared.thumb),
+            )
+        return prepared
+    f = io.BytesIO(data)
+    f.name = "media.bin"
+    logger.info(
+        "Re-uploading pool media as document: media_id=%s size=%s",
+        mid,
+        len(data),
+    )
+    return f
+
+
+def _send_file_kwargs_for_prepared(prepared, base_kw: dict) -> tuple[Any, dict]:
+    """Unpack PreparedSendFile / BytesIO into (file, kwargs) for client.send_file."""
+    from app.services.video_poster import PreparedSendFile
+
+    kw = dict(base_kw)
+    if isinstance(prepared, PreparedSendFile):
+        f = prepared.file
+        if hasattr(f, "seek"):
+            f.seek(0)
+        if prepared.thumb is not None:
+            prepared.thumb.seek(0)
+            kw["thumb"] = prepared.thumb
+        if prepared.attributes:
+            kw["attributes"] = list(prepared.attributes)
+        if prepared.supports_streaming:
+            kw["supports_streaming"] = True
+        if prepared.mime_type:
+            kw["mime_type"] = prepared.mime_type
+        return f, kw
+    if hasattr(prepared, "seek"):
+        prepared.seek(0)
+    return prepared, kw
+
+
+def _filter_sendable_medias(prepared_list: list) -> list:
+    """Drop videos marked skip (no usable poster)."""
+    from app.services.video_poster import PreparedSendFile
+
+    out = []
+    for item in prepared_list:
+        if isinstance(item, PreparedSendFile) and item.skip:
+            continue
+        out.append(item)
+    return out
+
+
+async def _send_prepared_medias(client: TelegramClient, peer, prepared_list: list, base_kw: dict):
+    """
+    Send one or many prepared medias with per-video thumbs.
+
+    Multi-item albums cannot share one Telethon thumb= — videos with custom posters
+    are uploaded as InputMediaUploadedDocument so each keeps its own thumb.
+    """
+    from telethon.tl.types import InputMediaUploadedDocument
+
+    from app.services.video_poster import PreparedSendFile
+
+    items = _filter_sendable_medias(prepared_list)
+    if not items:
+        return None
+
+    async def _as_input_media(prep: PreparedSendFile):
+        prep.file.seek(0)
+        uploaded = await client.upload_file(prep.file)
+        thumb_up = None
+        if prep.thumb is not None:
+            prep.thumb.seek(0)
+            thumb_up = await client.upload_file(prep.thumb)
+        return InputMediaUploadedDocument(
+            file=uploaded,
+            mime_type=prep.mime_type or "video/mp4",
+            attributes=list(prep.attributes or []),
+            thumb=thumb_up,
+            force_file=False,
+        )
+
+    if len(items) == 1:
+        item = items[0]
+        if isinstance(item, PreparedSendFile):
+            if item.thumb is not None:
+                media = await _as_input_media(item)
+                return await client.send_file(peer, media, **base_kw)
+            f, kw = _send_file_kwargs_for_prepared(item, base_kw)
+            return await client.send_file(peer, f, **kw)
+        f, kw = _send_file_kwargs_for_prepared(item, base_kw)
+        return await client.send_file(peer, f, **kw)
+
+    # Album / multi: promote any PreparedSendFile with thumb to InputMedia so posters stick.
+    send_list: list[Any] = []
+    for item in items:
+        if isinstance(item, PreparedSendFile) and item.thumb is not None:
+            send_list.append(await _as_input_media(item))
+        elif isinstance(item, PreparedSendFile):
+            f, _ = _send_file_kwargs_for_prepared(item, {})
+            send_list.append(f)
+        else:
+            if hasattr(item, "seek"):
+                item.seek(0)
+            send_list.append(item)
+    return await client.send_file(peer, send_list, **base_kw)
 
 
 def _is_image_document(media) -> bool:
@@ -573,10 +777,14 @@ async def _execute_telegram_scheduled_send(
     reply_markup,
     silent_kw: dict,
     reply_to: int | None,
+    allow_text_without_media: bool = True,
 ):
     """
     Low-level Telegram send using pre-resolved caption, media list, and promo URLs.
     promo_ordered is used only when media_items is empty.
+
+    When ``allow_text_without_media`` is False (pool-only library feeds), unresolved
+    or empty media returns None instead of posting a text-only flag caption.
     """
     sent_result = None
 
@@ -600,26 +808,9 @@ async def _execute_telegram_scheduled_send(
             send_medias = []
             for i, raw in enumerate(raw_medias):
                 db_media = items[i]
-                if not isinstance(raw, MessageMediaDocument):
-                    send_medias.append(raw)
-                    continue
-                maybe_image = (
-                    (db_media.media_type or "").lower() == "photo"
-                    or _is_image_document(raw)
+                send_medias.append(
+                    await _materialize_pool_media_for_send(client, raw, db_media)
                 )
-                size = getattr(getattr(raw, "document", None), "size", 0) or 0
-                if maybe_image or (size > 0 and size < 15 * 1024 * 1024):
-                    data = await client.download_media(raw, bytes)
-                    if data and _is_image_data(data):
-                        ext = _detect_image_ext(data)
-                        f = io.BytesIO(data)
-                        f.name = f"image.{ext}"
-                        send_medias.append(f)
-                        logger.info("Re-uploading as photo: media_id=%s size=%s", db_media.id, len(data))
-                    else:
-                        send_medias.append(raw)
-                else:
-                    send_medias.append(raw)
             file_kw: dict = {
                 "buttons": reply_markup,
                 "reply_to": reply_to,
@@ -627,23 +818,45 @@ async def _execute_telegram_scheduled_send(
                 **silent_kw,
             }
             _apply_telethon_html_to_kwargs(file_kw, caption, field="caption")
-            if len(send_medias) == 1 and isinstance(send_medias[0], io.BytesIO):
-                # Pass BytesIO directly — pre-uploaded InputFile can drop inline buttons on some Telethon builds.
-                f = send_medias[0]
-                f.seek(0)
-                sent_result = await client.send_file(channel_identifier, f, **file_kw)
-            elif len(send_medias) == 1:
-                sent_result = await client.send_file(channel_identifier, send_medias[0], **file_kw)
-            else:
-                sent_result = await client.send_file(channel_identifier, send_medias, **file_kw)
-        else:
-            if media_items:
-                ids = [int(getattr(m, "id", 0) or 0) for m in media_items]
-                logger.error(
-                    "Scheduled post media unresolved — sending text-only (media_ids=%s). "
-                    "Check tbcc/uploads/media-files for local: files or re-import pool media.",
-                    ids,
+            try:
+                sent_result = await _send_prepared_medias(
+                    client, channel_identifier, send_medias, file_kw
                 )
+                if sent_result is None and send_medias:
+                    logger.warning(
+                        "scheduled send: all videos skipped (no usable poster) media_ids=%s",
+                        [int(getattr(m, "id", 0) or 0) for m in items],
+                    )
+                    if not allow_text_without_media:
+                        return None
+            except Exception as send_err:
+                if not _is_forward_restricted_send_error(send_err):
+                    raise
+                logger.warning(
+                    "scheduled send forward-restricted — retrying with forced download: %s",
+                    send_err,
+                )
+                send_medias = []
+                for i, raw in enumerate(raw_medias):
+                    db_media = items[i]
+                    send_medias.append(
+                        await _materialize_pool_media_for_send(client, raw, db_media)
+                    )
+                sent_result = await _send_prepared_medias(
+                    client, channel_identifier, send_medias, file_kw
+                )
+                if sent_result is None and send_medias and not allow_text_without_media:
+                    return None
+        else:
+            ids = [int(getattr(m, "id", 0) or 0) for m in media_items]
+            logger.error(
+                "Scheduled post media unresolved — skip text fallback=%s (media_ids=%s). "
+                "Check Storage Hub message ids / tbcc/uploads/media-files.",
+                not allow_text_without_media,
+                ids,
+            )
+            if not allow_text_without_media:
+                return None
             msg_kw: dict = {
                 "buttons": reply_markup,
                 "reply_to": reply_to,
@@ -671,6 +884,11 @@ async def _execute_telegram_scheduled_send(
                     b.seek(0)
                 sent_result = await client.send_file(channel_identifier, send_bufs, **promo_kw)
         else:
+            if not allow_text_without_media:
+                logger.warning(
+                    "pool-only scheduled send has no media/promo — skipping text-only caption"
+                )
+                return None
             msg_kw2: dict = {
                 "buttons": reply_markup,
                 "reply_to": reply_to,
@@ -787,6 +1005,8 @@ async def send_scheduled_post(
         scheduled_thread_id=getattr(post, "message_thread_id", None),
         rotation_index=getattr(post, "caption_rotation_index", None),
     )
+    # Pool-only library / twin feeds must never spam a text "flag" when media resolve fails.
+    allow_text_without_media = not bool(getattr(post, "pool_only_mode", False))
 
     try:
         from app.services.telegram_content_protection import telethon_protect_context
@@ -801,10 +1021,20 @@ async def send_scheduled_post(
                 reply_markup=reply_markup,
                 silent_kw=silent_kw,
                 reply_to=reply_to,
+                allow_text_without_media=allow_text_without_media,
             )
     except ChatRestrictedError:
         _log_chat_restricted_help(str(channel_identifier))
         raise
+
+    if not sent_result:
+        logger.warning(
+            "scheduled post %s skipped (no Telegram send) pool_only=%s media=%s",
+            getattr(post, "id", None),
+            not allow_text_without_media,
+            [int(getattr(m, "id", 0) or 0) for m in media_items],
+        )
+        return None
 
     if sent_result and media_items:
         from app.services.media_album_dedupe import mark_media_rows_posted

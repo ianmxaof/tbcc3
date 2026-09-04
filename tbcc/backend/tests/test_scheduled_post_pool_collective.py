@@ -46,3 +46,38 @@ def test_load_pool_media_items_collective_uses_chosen_pool():
 
     assert len(items) == 2
     assert {m.id for m in items} == {10, 11}
+
+
+def test_load_pool_media_items_triggers_sent_vault_dry_spell_refill():
+    post = ScheduledTextPost(
+        content="hi",
+        channel_id=1,
+        pool_id=3,
+        album_size=1,
+        pool_randomize=True,
+    )
+    db = MagicMock()
+    pool = SimpleNamespace(id=3, album_size=1, randomize_queue=True)
+    db.query.return_value.filter.return_value.first.return_value = pool
+
+    empty_then_one = [[], [_mock_media(99, 3)]]
+
+    def _select_rows(*_args, **_kwargs):
+        batch = empty_then_one.pop(0) if empty_then_one else [_mock_media(99, 3)]
+        return batch
+
+    with patch.object(svc, "_select_pool_media_rows", side_effect=_select_rows):
+        with patch(
+            "app.services.sent_vault_lane_refill.refill_pool_from_sent_vault_on_demand_sync",
+            return_value=1,
+        ) as refill:
+            with patch(
+                "app.services.sent_vault_lane_refill.sent_vault_dry_spell_refill_enabled",
+                return_value=True,
+            ):
+                items = svc._load_pool_media_items(post, db, "static")
+
+    refill.assert_called_once_with(db, 3, need=1)
+    assert len(items) == 1
+    assert items[0].id == 99
+
