@@ -3,6 +3,10 @@
 Cursor lock (Phase 1 authorization): do NOT stop on the first batch with stored==0
 alone if skipped_duplicate>0 — only stop when a batch is fully empty (stored==0 AND
 skipped_duplicate==0), or a safety cap fires.
+
+Phase 3 (2026-09-04): the drain no longer dispatches its import onto the telegram queue
+it is occupying and then polls for it. It runs the job in-process via
+_run_import_job_inline, which is what these tests now stub.
 """
 
 from __future__ import annotations
@@ -77,7 +81,7 @@ def test_drain_stops_when_stored_and_skipped_both_zero(monkeypatch):
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
     )
     monkeypatch.setattr(
-        "app.services.storage_topic_deposit.await_deposit_import_job", fake_await_job
+        "app.services.storage_lane_drain._run_import_job_inline", fake_await_job
     )
 
     out = _run()
@@ -112,7 +116,7 @@ def test_drain_continues_past_stored_zero_when_skipped_positive(monkeypatch):
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
     )
     monkeypatch.setattr(
-        "app.services.storage_topic_deposit.await_deposit_import_job", fake_await_job
+        "app.services.storage_lane_drain._run_import_job_inline", fake_await_job
     )
 
     out = _run()
@@ -137,7 +141,7 @@ def test_drain_stops_on_safety_cap_iterations(monkeypatch):
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
     )
     monkeypatch.setattr(
-        "app.services.storage_topic_deposit.await_deposit_import_job", fake_await_job
+        "app.services.storage_lane_drain._run_import_job_inline", fake_await_job
     )
 
     out = _run()
@@ -160,7 +164,7 @@ def test_drain_stops_on_cancel(monkeypatch):
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
     )
     monkeypatch.setattr(
-        "app.services.storage_topic_deposit.await_deposit_import_job", fake_await_job
+        "app.services.storage_lane_drain._run_import_job_inline", fake_await_job
     )
 
     out = _run()
@@ -219,7 +223,7 @@ def test_drain_reads_auto_approve_fresh_each_batch(monkeypatch):
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
     )
     monkeypatch.setattr(
-        "app.services.storage_topic_deposit.await_deposit_import_job", fake_await_job
+        "app.services.storage_lane_drain._run_import_job_inline", fake_await_job
     )
 
     _run()
@@ -244,7 +248,7 @@ def test_drain_always_passes_sent_cache_false(monkeypatch):
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
     )
     monkeypatch.setattr(
-        "app.services.storage_topic_deposit.await_deposit_import_job", fake_await_job
+        "app.services.storage_lane_drain._run_import_job_inline", fake_await_job
     )
 
     _run()

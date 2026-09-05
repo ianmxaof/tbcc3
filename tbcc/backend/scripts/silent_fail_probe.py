@@ -5,11 +5,17 @@ Usage (from tbcc/backend):
 
   py -3.13 scripts/silent_fail_probe.py intake --lane inbox
   py -3.13 scripts/silent_fail_probe.py intake --all
+  py -3.13 scripts/silent_fail_probe.py drain
+  py -3.13 scripts/silent_fail_probe.py drain --lane taboo
   py -3.13 scripts/silent_fail_probe.py r2-export
   py -3.13 scripts/silent_fail_probe.py enrich-backlog
+  py -3.13 scripts/silent_fail_probe.py vault-ingest
+  py -3.13 scripts/silent_fail_probe.py money-path
   py -3.13 scripts/silent_fail_probe.py all
 
 No bot Start, no restarts. Requires REDIS_URL for intake; DATABASE_URL for r2-export.
+money-path is public HTTP only; writes llm-rag .../3-Resources/Revenue/money-path-health.md
+unless --no-write.
 """
 
 from __future__ import annotations
@@ -25,6 +31,12 @@ def _bootstrap() -> None:
     backend = Path(__file__).resolve().parents[1]
     if str(backend) not in sys.path:
         sys.path.insert(0, str(backend))
+    try:
+        from app.utils.load_tbcc_dotenv import load_tbcc_dotenv
+
+        load_tbcc_dotenv()
+    except Exception:
+        pass
 
 
 def _print_result(payload: dict[str, Any], *, as_json: bool) -> int:
@@ -56,6 +68,12 @@ def cmd_intake(args: argparse.Namespace) -> int:
         probe_intake_lane(args.lane, stale_mult=args.stale_mult),
         as_json=args.json,
     )
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    from app.services.silent_fail_probes import probe_lane_drain
+
+    return _print_result(probe_lane_drain(args.lane), as_json=args.json)
 
 
 def cmd_r2(args: argparse.Namespace) -> int:
@@ -118,6 +136,19 @@ def cmd_all(args: argparse.Namespace) -> int:
             }
         )
 
+    try:
+        from app.services.silent_fail_probes import probe_lance_vault_ingest
+
+        results.append(probe_lance_vault_ingest())
+    except Exception as e:
+        results.append(
+            {
+                "id": "lance_vault_ingest",
+                "verdict": "blocked",
+                "error": str(e)[:300],
+            }
+        )
+
     order = {"never_seen": 0, "stale": 1, "blocked": 2, "ok": 3, "idle": 4}
     worst = min(results, key=lambda r: order.get(str(r.get("verdict")), 9))
     payload = {
@@ -151,6 +182,12 @@ def main() -> int:
     intake.add_argument("--all", action="store_true", help="All content lanes")
     intake.set_defaults(func=cmd_intake)
 
+    drain = sub.add_parser(
+        "drain", help="Lane drain lock vs real work (no celery inspect — see probe docstring)"
+    )
+    drain.add_argument("--lane", default=None, help="Lane key (default: every content lane)")
+    drain.set_defaults(func=cmd_drain)
+
     r2 = sub.add_parser("r2-export", help="Pilot D — storage-hub-r2-export exported_at")
     r2.add_argument("--sample", type=int, default=80, help="Media rows to scan for stamps")
     r2.add_argument(
@@ -167,7 +204,38 @@ def main() -> int:
     )
     enrich.set_defaults(func=cmd_enrich)
 
-    all_p = sub.add_parser("all", help="Intake aggregate + r2-export + enrich-backlog")
+    def cmd_vault_ingest(args: argparse.Namespace) -> int:
+        from app.services.silent_fail_probes import probe_lance_vault_ingest
+
+        return _print_result(
+            probe_lance_vault_ingest(stale_hours=args.stale_hours),
+            as_json=args.json,
+        )
+
+    vault = sub.add_parser("vault-ingest", help="Lance vs knowledge/inbox freshness")
+    vault.add_argument("--stale-hours", type=float, default=24.0)
+    vault.set_defaults(func=cmd_vault_ingest)
+
+    def cmd_money_path(args: argparse.Namespace) -> int:
+        from app.services.money_path_health import probe_money_path
+
+        return _print_result(
+            probe_money_path(write_vault=not args.no_write),
+            as_json=args.json,
+        )
+
+    money = sub.add_parser(
+        "money-path",
+        help="Public CTA/checkout HTTP sweep + vault money-path-health.md",
+    )
+    money.add_argument(
+        "--no-write",
+        action="store_true",
+        help="Probe only; do not overwrite 3-Resources/Revenue/money-path-health.md",
+    )
+    money.set_defaults(func=cmd_money_path)
+
+    all_p = sub.add_parser("all", help="Intake aggregate + r2-export + enrich-backlog + vault-ingest")
     all_p.add_argument("--sample", type=int, default=80)
     all_p.set_defaults(func=cmd_all)
 

@@ -242,6 +242,26 @@ def format_deposit_complete_text(
             f"{_lbl('Error', html=False, markdown=markdown)}: {err}"
         )
 
+    if status in ("still_queued", "timeout"):
+        # The job has not finished, so there is no result to read. Falling through to the
+        # counters below would print "No new media imported" for work that is still pending.
+        note = job_body.get("error") or "still waiting on the telegram worker"
+        if html:
+            return (
+                "⏳ <b>Storage deposit still running</b>\n\n"
+                f"<b>Topic:</b> {topic}\n"
+                f"<b>Pool:</b> {pool}\n"
+                f"<b>Job:</b> <code>{job_id}</code>\n"
+                f"{_esc(note, html=True)}"
+            )
+        return (
+            f"⏳ {_lbl('Storage deposit still running', html=False, markdown=markdown)}\n\n"
+            f"{_lbl('Topic', html=False, markdown=markdown)}: {topic}\n"
+            f"{_lbl('Pool', html=False, markdown=markdown)}: {pool}\n"
+            f"{_lbl('Job', html=False, markdown=markdown)}: {_mono(job_id, html=False, markdown=markdown)}\n"
+            f"{note}"
+        )
+
     result = job_body.get("result") if isinstance(job_body.get("result"), dict) else {}
     stored = int(result.get("stored") or 0)
     skipped_dup = int(result.get("skipped_duplicate") or 0)
@@ -340,8 +360,19 @@ async def await_deposit_import_job(
     timeout_s: float | None = None,
     poll_s: float = 2.0,
     on_wait: Callable[[float, str], Awaitable[None]] | None = None,
+    queued_patience_s: float | None = 90.0,
 ) -> dict[str, Any] | None:
-    """Poll until a channel import job reaches a terminal state (or timeout)."""
+    """Poll until a channel import job reaches a terminal state (or timeout).
+
+    queued_patience_s bounds how long the job may sit in `queued` before we call it
+    never-started. None disables that fuse and lets the real timeout govern.
+
+    A job sitting in `queued` is not evidence of a broken worker — on the serialized
+    telegram queue it routinely means "your turn has not come up yet". On 2026-09-04 a
+    lane drain declared `import_never_started` after 90s; the job was picked up 23 minutes
+    later and stored 105 items. Every give-up path below therefore re-reads the row first
+    and reports what the job actually did.
+    """
     from app.database.session import SessionLocal
     from app.models.import_job import ImportJob
     from app.services.channel_import_runner import channel_import_timeout_s
@@ -372,13 +403,18 @@ async def await_deposit_import_job(
             if job and job.status == "queued":
                 if queued_since is None:
                     queued_since = loop.time()
-                elif loop.time() - queued_since >= 90.0:
+                elif queued_patience_s is not None and (
+                    loop.time() - queued_since >= float(queued_patience_s)
+                ):
+                    waited = int(loop.time() - queued_since)
                     return {
                         "job_id": job_id,
-                        "status": "failed",
+                        "status": "still_queued",
                         "error": (
-                            "import_never_started — TBCC Celery worker may be offline "
-                            "(telegram queue). Restart TBCC worker and retry /deposit."
+                            f"import_still_queued — the job has waited {waited}s for the "
+                            "telegram worker and has not started yet. The worker processes "
+                            "one task at a time, so this is normal when the queue is busy. "
+                            "The import is still pending, not lost — do not restart anything."
                         ),
                     }
             else:
@@ -397,6 +433,27 @@ async def await_deposit_import_job(
 
         await asyncio.sleep(poll_s)
 
+    # Deadline hit. Never report "nothing happened" without looking: the job may have
+    # finished between the last poll and now, and even an unfinished one has a real status
+    # worth surfacing instead of None.
+    db = SessionLocal()
+    try:
+        job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+        if job and job.status in TERMINAL_STATUSES:
+            return job_to_public_dict(job)
+        if job:
+            return {
+                "job_id": job_id,
+                "status": "timeout",
+                "job_status": job.status,
+                "stage": job.stage,
+                "error": (
+                    f"import_wait_timeout — gave up waiting after {int(timeout_s)}s; the job "
+                    f"is still {job.status}. It has not been cancelled and may still complete."
+                ),
+            }
+    finally:
+        db.close()
     return None
 
 
@@ -607,10 +664,16 @@ def queue_storage_topic_deposit(
     sent_cache: bool | None = None,
     auto_pipe: bool = False,
     qa_review_only: bool = False,
+    enqueue: bool = True,
 ) -> dict[str, Any]:
     """
     Import up to `limit` NEW deduped items from one Storage Hub forum topic into its pool.
     Scans newest-first (same rules as import/from-channel).
+
+    enqueue=False creates the ImportJob but does NOT dispatch it to Celery, so the caller
+    can run it in-process. The lane drain needs this: it already occupies the single solo
+    telegram worker, so a job it dispatches there waits behind the whole backlog — measured
+    at ~24 minutes on 2026-09-04 while the drain's own patience was 90 seconds.
     """
     from app.services.import_pipeline import (
         create_channel_import_job,
@@ -697,6 +760,9 @@ def queue_storage_topic_deposit(
 
     if auto_pipe:
         include_topic_mirror = False
+    if not enqueue:
+        # Caller runs the job itself; dispatching it as well would double-import.
+        include_topic_mirror = False
     mirror_limit = int(lim)
     mirror_report: dict[str, Any] | None = None
     task_id: str | None = None
@@ -764,7 +830,7 @@ def queue_storage_topic_deposit(
         except Exception as e:
             mirror_report = {"ok": False, "error": str(e)[:200]}
             task_id = enqueue_channel_import_job(job.id, countdown=max(0, int(countdown)))
-    else:
+    elif enqueue:
         task_id = enqueue_channel_import_job(job.id, countdown=max(0, int(countdown)))
 
     if task_id or mirror_task_id:
@@ -791,6 +857,7 @@ def queue_storage_topic_deposit(
             "auto_pipe": bool(auto_pipe),
             "qa_review_only": bool(qa_review_only),
             "staged": bool(message_ids),
+            "enqueued": bool(task_id or mirror_task_id),
             "topic_mirror": mirror_report,
         }
     )

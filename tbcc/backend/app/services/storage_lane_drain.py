@@ -1,8 +1,11 @@
 """Drain-this-lane: loop the existing deposit primitive until a batch finds nothing
 new and nothing duplicate, or a safety cap is hit.
 
-No second import stack — reuses queue_storage_topic_deposit + await_deposit_import_job
-(storage_topic_deposit.py), the same primitive every one-shot deposit already calls.
+No second import stack — reuses queue_storage_topic_deposit (storage_topic_deposit.py),
+the same primitive every one-shot deposit already calls. The job is created there but run
+here, in-process: this task already holds the single solo telegram worker, so dispatching
+the job back onto that queue makes it wait behind the drain's own backlog.
+
 Per-lane exclusivity via a Redis lock (same pattern as storage_auto_pipe.py's pending
 task key); cancel a running drain by clearing that lock.
 """
@@ -11,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import os
 import time
@@ -53,11 +57,82 @@ def drain_max_seconds() -> float:
         return 1800.0
 
 
-def is_lane_draining(lane_key: str) -> bool:
+def drain_heartbeat_stale_s() -> float:
+    """How long a *running* drain may go without a heartbeat before it counts as dead.
+
+    One batch is the unit here: an in-process import measured ~110s on 2026-09-04, and a
+    large batch can run longer, so this is deliberately generous.
+    """
+    raw = (os.getenv("TBCC_LANE_DRAIN_HEARTBEAT_STALE_S") or "900").strip()
     try:
-        return bool(_redis().get(_lock_key(lane_key)))
+        return max(120.0, min(3600.0, float(raw)))
+    except ValueError:
+        return 900.0
+
+
+def _lock_payload(token: str, state: str, *, iterations: int = 0, stored: int = 0) -> str:
+    return json.dumps(
+        {
+            "token": token,
+            "state": state,
+            "ts": time.time(),
+            "iterations": int(iterations),
+            "stored": int(stored),
+        }
+    )
+
+
+def read_lane_drain_lock(lane_key: str) -> dict[str, Any] | None:
+    """Current lock contents, or None. Tolerates the pre-heartbeat bare-token format."""
+    try:
+        raw = _redis().get(_lock_key(lane_key))
     except Exception:
-        return False
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and data.get("token"):
+            return data
+    except (ValueError, TypeError):
+        pass
+    return {"token": str(raw), "state": "unknown", "ts": None}
+
+
+def lane_drain_state(lane_key: str) -> dict[str, Any]:
+    """Honest answer to 'what is this drain doing?'.
+
+    A held lock does not mean work is happening. `queued` means the task is still waiting
+    for the single solo telegram worker — normal on a busy queue, and the panel should say
+    so rather than implying progress. `stale` means a running drain stopped heartbeating
+    and its lock should be cleared.
+    """
+    lock = read_lane_drain_lock(lane_key)
+    if not lock:
+        return {"lane_key": _lane_key(lane_key), "held": False, "state": "idle"}
+    ts = lock.get("ts")
+    age = (time.time() - float(ts)) if ts else None
+    state = str(lock.get("state") or "unknown")
+    stale = bool(state == "running" and age is not None and age > drain_heartbeat_stale_s())
+    return {
+        "lane_key": _lane_key(lane_key),
+        "held": True,
+        "state": "stale" if stale else state,
+        "age_s": int(age) if age is not None else None,
+        "iterations": lock.get("iterations"),
+        "stored": lock.get("stored"),
+        "stale": stale,
+    }
+
+
+def is_lane_draining(lane_key: str) -> bool:
+    """True while the lane is claimed — queued or running.
+
+    Kept boolean for existing callers. Use lane_drain_state() when the difference between
+    "waiting for a worker" and "actually importing" matters, which for anything the
+    operator reads it does.
+    """
+    return bool(read_lane_drain_lock(lane_key))
 
 
 def cancel_lane_drain(lane_key: str) -> bool:
@@ -95,7 +170,9 @@ def start_lane_drain(
     try:
         r = _redis()
         lock_key = _lock_key(key)
-        if not r.set(lock_key, token, nx=True, ex=int(drain_max_seconds()) + 300):
+        if not r.set(
+            lock_key, _lock_payload(token, "queued"), nx=True, ex=int(drain_max_seconds()) + 300
+        ):
             return {"ok": True, "already_running": True, "lane_key": key}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200], "lane_key": key}
@@ -105,7 +182,7 @@ def start_lane_drain(
     status_message_id = post_hub_op_status(
         chat_id=int(chat_id),
         message_thread_id=tid,
-        text=f"<i>Draining {html.escape(key)}…</i>",
+        text=f"<i>{html.escape(key)} drain queued…</i>",
     )
 
     try:
@@ -131,6 +208,48 @@ def start_lane_drain(
         "lane_key": key,
         "status_message_id": status_message_id,
     }
+
+
+async def _run_import_job_inline(job_id: str) -> dict[str, Any] | None:
+    """Run one already-created ImportJob on this worker instead of dispatching it.
+
+    Returns the runner's own dict when it produced one, otherwise falls back to reading
+    the ImportJob row. The row is the source of truth — never report "nothing stored"
+    because an in-memory result was missing.
+    """
+    from app.services.channel_import_runner import run_channel_import_job_sync
+
+    out: dict[str, Any] | None = None
+    try:
+        out = await asyncio.to_thread(run_channel_import_job_sync, job_id)
+    except Exception as e:
+        logger.warning("inline import job %s raised: %s", job_id, e, exc_info=True)
+
+    if isinstance(out, dict) and out.get("status"):
+        return out
+    return _read_import_job(job_id)
+
+
+def _read_import_job(job_id: str) -> dict[str, Any] | None:
+    from app.database.session import SessionLocal
+    from app.models.import_job import ImportJob
+    from app.services.import_pipeline import job_to_public_dict
+
+    try:
+        with SessionLocal() as db:
+            job = db.query(ImportJob).filter(ImportJob.id == job_id).first()
+            return job_to_public_dict(job) if job else None
+    except Exception:
+        logger.debug("could not read import job %s", job_id, exc_info=True)
+        return None
+
+
+def _import_counts(job_body: dict[str, Any]) -> dict[str, Any]:
+    """Counters live at the top level from the runner, nested under `result` from the row."""
+    nested = job_body.get("result")
+    if isinstance(nested, dict) and ("stored" in nested or "skipped_duplicate" in nested):
+        return nested
+    return job_body
 
 
 def _format_drain_status(lane_key: str, iterations: int, total_stored: int) -> str:
@@ -177,10 +296,7 @@ async def run_lane_drain(
     from app.services.hub_intake_policy import hub_master_auto_approve_enabled
     from app.services.storage_deposit_control import get_deposit_limit, get_deposit_media_types
     from app.services.storage_hub_op_status import edit_hub_op_status
-    from app.services.storage_topic_deposit import (
-        await_deposit_import_job,
-        queue_storage_topic_deposit,
-    )
+    from app.services.storage_topic_deposit import queue_storage_topic_deposit
 
     key = _lane_key(lane_key)
     lock_key = _lock_key(key)
@@ -194,9 +310,31 @@ async def run_lane_drain(
 
     def _still_holds_lock() -> bool:
         try:
-            return _redis().get(lock_key) == token
+            lock = read_lane_drain_lock(key)
         except Exception:
             return True  # transient redis error must not look like an operator cancel
+        if lock is None:
+            return False  # operator cancelled, or the TTL expired
+        return str(lock.get("token") or "") == token
+
+    def _heartbeat(state: str = "running") -> None:
+        """Re-stamp the lock so a dead worker is distinguishable from a slow one.
+
+        Only refreshes a lock we still own — never resurrect one an operator cancelled.
+        """
+        try:
+            lock = read_lane_drain_lock(key)
+            if not lock or str(lock.get("token") or "") != token:
+                return
+            r = _redis()
+            ttl = r.ttl(lock_key)
+            payload = _lock_payload(token, state, iterations=iterations, stored=total_stored)
+            if isinstance(ttl, int) and ttl > 0:
+                r.set(lock_key, payload, ex=ttl)
+            else:
+                r.set(lock_key, payload, ex=int(drain_max_seconds()) + 300)
+        except Exception:
+            logger.debug("drain heartbeat failed lane=%s", key, exc_info=True)
 
     def _report(text: str) -> None:
         if not status_message_id:
@@ -218,6 +356,7 @@ async def run_lane_drain(
             break
 
         iterations += 1
+        _heartbeat("running")
         qa_review_only = not hub_master_auto_approve_enabled()
         limit = get_deposit_limit()
         media_types = get_deposit_media_types()
@@ -235,6 +374,13 @@ async def run_lane_drain(
                 auto_pipe=False,
                 qa_review_only=qa_review_only,
                 commit=True,
+                # Run it here rather than dispatching to the queue we are sitting on.
+                # This task holds the single solo telegram worker; a job dispatched from
+                # here waits behind the whole backlog. Measured 2026-09-04: queued 24.5
+                # minutes, ran 110 seconds, while the drain's patience was 90 seconds — so
+                # every drain reported "worker may be offline" and quit after one batch
+                # even though the import went on to store 105 items.
+                enqueue=False,
             )
 
         if not report.get("ok"):
@@ -242,21 +388,19 @@ async def run_lane_drain(
             break
 
         job_id = str(report.get("job_id") or report.get("id") or "")
-        job_body = await await_deposit_import_job(
-            job_id,
-            limit=limit,
-            media_types=media_types,
-            index_only=bool(report.get("index_only")),
-            sent_cache=False,
-        )
+        if not job_id:
+            stop_reason = "error:no_job_id"
+            break
+
+        job_body = await _run_import_job_inline(job_id)
         if not job_body:
-            stop_reason = "import_timeout"
+            stop_reason = "import_no_result"
             break
         if str(job_body.get("status") or "").strip().lower() == "failed":
             stop_reason = f"import_failed:{job_body.get('error') or 'unknown'}"
             break
 
-        result = job_body.get("result") if isinstance(job_body.get("result"), dict) else {}
+        result = _import_counts(job_body)
         stored = int(result.get("stored") or 0)
         skipped = int(result.get("skipped_duplicate") or 0)
         total_stored += stored

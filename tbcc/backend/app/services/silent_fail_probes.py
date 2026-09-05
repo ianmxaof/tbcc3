@@ -10,6 +10,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -426,3 +427,164 @@ def probe_enrich_backlog(
         "stop_kind": "redis",
         "stop_evidence": f"tbcc:enrich_backlog:last_success={last}",
     }
+
+
+def probe_lance_vault_ingest(
+    *,
+    now: float | None = None,
+    stale_hours: float = 24.0,
+) -> dict[str, Any]:
+    """
+    Class-2 probe: knowledge/inbox newer than Lance DB directory mtime → stale.
+
+    Read-only filesystem check (home workstation). Disabled when paths missing → blocked.
+    """
+    monorepo = Path(__file__).resolve().parents[5]
+    inbox = monorepo / "llm-rag" / "knowledge" / "inbox"
+    lance = monorepo / "llm-rag" / "data" / "lancedb_obsidian"
+    override_inbox = (os.getenv("TBCC_VAULT_INBOX_PATH") or "").strip()
+    if override_inbox:
+        inbox = Path(override_inbox).expanduser()
+
+    if not inbox.is_dir():
+        return {
+            "id": "lance_vault_ingest",
+            "verdict": "blocked",
+            "error": f"inbox missing: {inbox}",
+            "stop_kind": "file",
+        }
+
+    md_files = [p for p in inbox.glob("*.md") if p.is_file()]
+    if not md_files:
+        return {
+            "id": "lance_vault_ingest",
+            "verdict": "idle",
+            "inbox_files": 0,
+            "stop_kind": "file",
+            "stop_evidence": "inbox empty",
+        }
+
+    newest_inbox = max(p.stat().st_mtime for p in md_files)
+    if not lance.exists():
+        return {
+            "id": "lance_vault_ingest",
+            "verdict": "never_seen",
+            "inbox_files": len(md_files),
+            "newest_inbox_ts": newest_inbox,
+            "stop_kind": "file",
+            "stop_evidence": f"lancedb_obsidian missing; inbox_files={len(md_files)}",
+        }
+
+    lance_mtime = lance.stat().st_mtime
+    now_f = float(now if now is not None else time.time())
+    age_inbox_vs_lance = max(0.0, newest_inbox - lance_mtime)
+    stale_s = max(3600.0, float(stale_hours) * 3600.0)
+    verdict = "stale" if age_inbox_vs_lance > stale_s else "ok"
+
+    return {
+        "id": "lance_vault_ingest",
+        "verdict": verdict,
+        "inbox_files": len(md_files),
+        "newest_inbox_ts": newest_inbox,
+        "lance_dir_mtime": lance_mtime,
+        "inbox_ahead_of_lance_s": age_inbox_vs_lance,
+        "stale_hours": stale_hours,
+        "stop_kind": "file",
+        "stop_evidence": (
+            f"inbox_files={len(md_files)} newest_inbox={int(newest_inbox)} "
+            f"lance_mtime={int(lance_mtime)} ahead_s={int(age_inbox_vs_lance)}"
+        ),
+    }
+
+
+def probe_lane_drain(lane_key: str | None = None) -> dict[str, Any]:
+    """Readonly drain-lock probe: does a held lock correspond to real work?
+
+    Deliberately does NOT use `celery inspect`. A `-P solo` worker mid-download misses the
+    broadcast reply window even at `-t 30`, so inspect reports a healthy worker as absent —
+    that false positive is exactly what produced the "zombie lock" misdiagnosis on
+    2026-09-04. Redis lock state plus queue depth is the honest signal.
+
+    Verdicts:
+      idle        no lock held
+      ok          lock held and the drain is heartbeating
+      queued      lock held, task still waiting for the solo telegram worker (normal, but
+                  the panel must not imply progress)
+      stale       lock says running but the heartbeat has aged out — clear it
+      blocked     could not read Redis
+    """
+    from app.data.aof_storage_hub_map import CONTENT_LANE_NETWORK_KEYS
+    from app.services.storage_lane_drain import drain_heartbeat_stale_s, lane_drain_state
+
+    lanes = (
+        [(lane_key or "").strip().lower()]
+        if lane_key
+        else sorted(k for k in CONTENT_LANE_NETWORK_KEYS if k not in ("inbox", "packs"))
+    )
+
+    try:
+        depth = _telegram_queue_depth()
+    except Exception as e:
+        return {
+            "id": "lane_drain_lock",
+            "verdict": "blocked",
+            "error": str(e)[:200],
+            "stop_kind": "redis",
+        }
+
+    held: list[dict[str, Any]] = []
+    for lane in lanes:
+        try:
+            state = lane_drain_state(lane)
+        except Exception as e:
+            return {
+                "id": "lane_drain_lock",
+                "verdict": "blocked",
+                "lane_key": lane,
+                "error": str(e)[:200],
+                "stop_kind": "redis",
+            }
+        if state.get("held"):
+            held.append(state)
+
+    if not held:
+        verdict = "idle"
+    elif any(s.get("state") == "stale" for s in held):
+        verdict = "stale"
+    elif any(s.get("state") == "queued" for s in held):
+        verdict = "queued"
+    else:
+        verdict = "ok"
+
+    return {
+        "id": "lane_drain_lock",
+        "verdict": verdict,
+        "held": held,
+        "lanes_checked": len(lanes),
+        "telegram_queue_depth": depth,
+        "heartbeat_stale_s": drain_heartbeat_stale_s(),
+        "hint": (
+            "clear with cancel_lane_drain(<lane>)"
+            if verdict == "stale"
+            else (
+                "task is waiting its turn on the solo telegram worker — not a failure"
+                if verdict == "queued"
+                else ""
+            )
+        ),
+        "stop_kind": "redis",
+    }
+
+
+def _telegram_queue_depth() -> int | None:
+    """Length of the Celery `telegram` list. None when Redis is unreachable."""
+    import os
+
+    import redis
+
+    url = (os.getenv("REDIS_URL") or "redis://localhost:6379/0").strip()
+    client = redis.from_url(url, decode_responses=True, socket_connect_timeout=2)
+    try:
+        return int(client.llen("telegram"))
+    except Exception:
+        return None
