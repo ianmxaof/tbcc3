@@ -118,7 +118,7 @@ def _run_drain(fake_redis, *, job_results, token="tok"):
     results = list(job_results)
 
     async def _inline(job_id):
-        return results.pop(0) if results else {"status": "done", "stored": 0, "skipped_duplicate": 0}
+        return results.pop(0) if results else {"status": "done", "stored": 0, "skipped_duplicate": 0, "messages_scanned": 0}
 
     with patch.object(drain, "_run_import_job_inline", side_effect=_inline), patch(
         "app.services.storage_topic_deposit.queue_storage_topic_deposit",
@@ -147,7 +147,8 @@ def _run_drain(fake_redis, *, job_results, token="tok"):
 def test_drain_does_not_dispatch_its_import_to_its_own_queue(fake_redis):
     """enqueue=False is the whole fix — dispatching self-queues behind the drain."""
     _out, deposits = _run_drain(
-        fake_redis, job_results=[{"status": "done", "stored": 0, "skipped_duplicate": 0}]
+        fake_redis,
+        job_results=[{"status": "done", "stored": 0, "skipped_duplicate": 0, "messages_scanned": 0}],
     )
 
     assert deposits, "deposit was never attempted"
@@ -159,8 +160,9 @@ def test_drain_counts_what_the_import_actually_stored(fake_redis):
     out, _ = _run_drain(
         fake_redis,
         job_results=[
-            {"status": "done", "stored": 105, "skipped_duplicate": 79},
-            {"status": "done", "stored": 0, "skipped_duplicate": 0},
+            {"status": "done", "stored": 105, "skipped_duplicate": 79,
+             "messages_scanned": 207, "oldest_scanned_message_id": 74600},
+            {"status": "done", "stored": 0, "skipped_duplicate": 0, "messages_scanned": 0},
         ],
     )
 
@@ -175,8 +177,11 @@ def test_drain_reads_counters_nested_under_result_too(fake_redis):
     out, _ = _run_drain(
         fake_redis,
         job_results=[
-            {"status": "done", "result": {"stored": 12, "skipped_duplicate": 3}},
-            {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0}},
+            {"status": "done", "result": {"stored": 12, "skipped_duplicate": 3,
+                                          "messages_scanned": 15,
+                                          "oldest_scanned_message_id": 900}},
+            {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0,
+                                          "messages_scanned": 0}},
         ],
     )
 
@@ -184,13 +189,15 @@ def test_drain_reads_counters_nested_under_result_too(fake_redis):
     assert out["total_skipped_duplicate"] == 3
 
 
-def test_drain_loops_until_a_batch_is_fully_empty(fake_redis):
+def test_drain_loops_until_the_cursor_exhausts_the_topic(fake_redis):
     out, deposits = _run_drain(
         fake_redis,
         job_results=[
-            {"status": "done", "stored": 10, "skipped_duplicate": 0},
-            {"status": "done", "stored": 0, "skipped_duplicate": 4},
-            {"status": "done", "stored": 0, "skipped_duplicate": 0},
+            {"status": "done", "stored": 10, "skipped_duplicate": 0,
+             "messages_scanned": 12, "oldest_scanned_message_id": 900},
+            {"status": "done", "stored": 0, "skipped_duplicate": 4,
+             "messages_scanned": 4, "oldest_scanned_message_id": 880},
+            {"status": "done", "stored": 0, "skipped_duplicate": 0, "messages_scanned": 0},
         ],
     )
 
@@ -205,7 +212,7 @@ def test_drain_marks_lock_running_on_first_batch(fake_redis):
     async def _inline_capture(job_id):
         lock = drain.read_lane_drain_lock("taboo")
         seen_states.append(lock and lock.get("state"))
-        return {"status": "done", "stored": 0, "skipped_duplicate": 0}
+        return {"status": "done", "stored": 0, "skipped_duplicate": 0, "messages_scanned": 0}
 
     fake_redis.set(drain._lock_key("taboo"), drain._lock_payload("tok", "queued"), ex=2100)
     with patch.object(drain, "_run_import_job_inline", side_effect=_inline_capture), patch(

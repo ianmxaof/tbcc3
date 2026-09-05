@@ -1340,6 +1340,7 @@ class TelegramStorage:
         apply_watermark: bool = False,
         index_only: bool = False,
         message_ids: list[int] | None = None,
+        offset_id: int | None = None,
     ) -> dict[str, int]:
         """
         Pull channel/group media into a pool (local disk by default when TBCC_POOL_IMPORT_LOCAL=1).
@@ -1348,6 +1349,10 @@ class TelegramStorage:
 
         `limit` = max NEW items to store (deduped). Scans newest-first, skipping items
         already in the pool, until `limit` fresh rows are indexed or the scan cap is hit.
+
+        `offset_id` resumes below a message id instead of starting at the topic head, so a
+        caller looping batches advances instead of re-reading the same newest messages. The
+        result carries `oldest_scanned_message_id` to feed the next call.
         """
         from app.utils.telegram_peer import resolve_telethon_entity
 
@@ -1362,7 +1367,11 @@ class TelegramStorage:
         stored_messages: list[dict[str, int]] = []
         duplicate_lane_message_ids: list[int] = []
         entity = await resolve_telethon_entity(self.client, channel_identifier)
+        oldest_scanned_message_id: int | None = None
         iter_kw: dict = {}
+        if offset_id:
+            # Telethon walks newest-first, so offset_id yields strictly older messages.
+            iter_kw["offset_id"] = int(offset_id)
         if message_thread_id is not None:
             iter_kw["reply_to"] = int(message_thread_id)
 
@@ -1438,6 +1447,11 @@ class TelegramStorage:
         else:
             async for message in self.client.iter_messages(entity, **iter_kw):
                 scanned += 1
+                mid_seen = int(getattr(message, "id", 0) or 0)
+                if mid_seen and (
+                    oldest_scanned_message_id is None or mid_seen < oldest_scanned_message_id
+                ):
+                    oldest_scanned_message_id = mid_seen
                 if scanned > max_scan:
                     break
                 if selected_for_batch >= target_stored:
@@ -1498,6 +1512,10 @@ class TelegramStorage:
             "scan_cap_reached": scanned >= max_scan and selected_for_batch < target_stored,
             "stored_messages": stored_messages,
             "duplicate_lane_message_ids": duplicate_lane_message_ids,
+            # Cursor for a batching caller: pass this back as offset_id to continue below
+            # what this call already read. None means nothing was scanned at all.
+            "oldest_scanned_message_id": oldest_scanned_message_id,
+            "offset_id": int(offset_id) if offset_id else None,
         }
 
     async def forward_channel_to_forum_topic(

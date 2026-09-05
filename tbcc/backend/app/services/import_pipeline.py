@@ -201,6 +201,7 @@ def create_channel_import_job(
     message_ids: list[int] | None = None,
     auto_pipe: bool = False,
     qa_review_only: bool = False,
+    offset_id: int | None = None,
 ) -> ImportJob:
     job_id = new_import_job_id()
     ids = [int(x) for x in (message_ids or []) if int(x) > 0][:200]
@@ -215,6 +216,8 @@ def create_channel_import_job(
         "index_only": bool(index_only),
         "network_key": (network_key or "").strip() or None,
         "sent_cache": bool(sent_cache),
+        # Batch cursor: resume below this message id instead of the topic head.
+        "offset_id": int(offset_id) if offset_id else None,
         "auto_pipe": bool(auto_pipe),
         "qa_review_only": bool(qa_review_only),
     }

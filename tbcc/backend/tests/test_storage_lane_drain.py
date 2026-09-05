@@ -68,9 +68,13 @@ def test_drain_stops_when_stored_and_skipped_both_zero(monkeypatch):
         return {"ok": True, "job_id": f"job{calls['n']}"}
 
     results = [
-        {"status": "done", "result": {"stored": 10, "skipped_duplicate": 0}},
-        {"status": "done", "result": {"stored": 3, "skipped_duplicate": 2}},
-        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0}},
+        {"status": "done", "result": {"stored": 10, "skipped_duplicate": 0,
+                                      "messages_scanned": 20, "oldest_scanned_message_id": 900}},
+        {"status": "done", "result": {"stored": 3, "skipped_duplicate": 2,
+                                      "messages_scanned": 15, "oldest_scanned_message_id": 850}},
+        # Cursor reached the bottom of the topic: nothing scanned at all.
+        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0,
+                                      "messages_scanned": 0}},
     ]
 
     async def fake_await_job(job_id, **kwargs):
@@ -103,9 +107,12 @@ def test_drain_continues_past_stored_zero_when_skipped_positive(monkeypatch):
         return {"ok": True, "job_id": f"job{calls['n']}"}
 
     results = [
-        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 5}},
-        {"status": "done", "result": {"stored": 2, "skipped_duplicate": 0}},
-        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0}},
+        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 5,
+                                      "messages_scanned": 5, "oldest_scanned_message_id": 900}},
+        {"status": "done", "result": {"stored": 2, "skipped_duplicate": 0,
+                                      "messages_scanned": 8, "oldest_scanned_message_id": 850}},
+        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0,
+                                      "messages_scanned": 0}},
     ]
 
     async def fake_await_job(job_id, **kwargs):
@@ -135,7 +142,11 @@ def test_drain_stops_on_safety_cap_iterations(monkeypatch):
         return {"ok": True, "job_id": "job"}
 
     async def fake_await_job(job_id, **kwargs):
-        return {"status": "done", "result": {"stored": 5, "skipped_duplicate": 0}}
+        return {
+            "status": "done",
+            "result": {"stored": 5, "skipped_duplicate": 0, "messages_scanned": 10,
+                       "oldest_scanned_message_id": 900},
+        }
 
     monkeypatch.setattr(
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
@@ -158,7 +169,11 @@ def test_drain_stops_on_cancel(monkeypatch):
         return {"ok": True, "job_id": "job"}
 
     async def fake_await_job(job_id, **kwargs):
-        return {"status": "done", "result": {"stored": 5, "skipped_duplicate": 0}}
+        return {
+            "status": "done",
+            "result": {"stored": 5, "skipped_duplicate": 0, "messages_scanned": 10,
+                       "oldest_scanned_message_id": 900},
+        }
 
     monkeypatch.setattr(
         "app.services.storage_topic_deposit.queue_storage_topic_deposit", fake_deposit
@@ -211,8 +226,12 @@ def test_drain_reads_auto_approve_fresh_each_batch(monkeypatch):
         return {"ok": True, "job_id": f"job{calls['n']}"}
 
     results = [
-        {"status": "done", "result": {"stored": 1, "skipped_duplicate": 0}},
-        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0}},
+        {"status": "done", "result": {"stored": 1, "skipped_duplicate": 0,
+                                      "messages_scanned": 4, "oldest_scanned_message_id": 900}},
+        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0,
+                                      "messages_scanned": 3, "oldest_scanned_message_id": 880}},
+        {"status": "done", "result": {"stored": 0, "skipped_duplicate": 0,
+                                      "messages_scanned": 0}},
     ]
 
     async def fake_await_job(job_id, **kwargs):
@@ -228,7 +247,8 @@ def test_drain_reads_auto_approve_fresh_each_batch(monkeypatch):
 
     _run()
     # First batch: auto_approve True -> qa_review_only False. Second: auto_approve False -> True.
-    assert seen_qa_review_only == [False, True]
+    # A third batch runs to exhaust the cursor; approve_states is empty by then so it reads False.
+    assert seen_qa_review_only[:2] == [False, True]
 
 
 def test_drain_always_passes_sent_cache_false(monkeypatch):

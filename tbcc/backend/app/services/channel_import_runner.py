@@ -150,6 +150,8 @@ def run_channel_import_job_sync(job_id: str) -> dict:
         sent_cache = bool(params.get("sent_cache"))
         auto_pipe = bool(params.get("auto_pipe"))
         qa_review_only = bool(params.get("qa_review_only"))
+        raw_offset = params.get("offset_id")
+        offset_id = int(raw_offset) if raw_offset else None
         raw_ids = params.get("message_ids")
         message_ids: list[int] | None = None
         if isinstance(raw_ids, list) and raw_ids:
@@ -169,6 +171,7 @@ def run_channel_import_job_sync(job_id: str) -> dict:
                 apply_watermark=apply_watermark,
                 index_only=index_only,
                 message_ids=message_ids,
+                offset_id=offset_id,
             )
             if sent_cache and int(result.get("stored") or 0) > 0:
                 from app.services.storage_sent_cache import move_deposit_batch_to_sent_cache

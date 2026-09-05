@@ -305,8 +305,15 @@ async def run_lane_drain(
 
     total_stored = 0
     total_skipped = 0
+    total_scanned = 0
     iterations = 0
     stop_reason = "unknown"
+    # Scan cursor. Without it every batch restarts at the topic head, so once the head is
+    # fully indexed the loop re-reads the same messages until the iteration cap and can
+    # never satisfy its own stop condition. Measured 2026-09-04: 40 batches x 184 messages
+    # = 7360 duplicates, 0 stored, and a `safety_cap_iterations` verdict on a lane that was
+    # simply already indexed.
+    cursor: int | None = None
 
     def _still_holds_lock() -> bool:
         try:
@@ -381,6 +388,7 @@ async def run_lane_drain(
                 # every drain reported "worker may be offline" and quit after one batch
                 # even though the import went on to store 105 items.
                 enqueue=False,
+                offset_id=cursor,
             )
 
         if not report.get("ok"):
@@ -403,12 +411,24 @@ async def run_lane_drain(
         result = _import_counts(job_body)
         stored = int(result.get("stored") or 0)
         skipped = int(result.get("skipped_duplicate") or 0)
+        scanned = int(result.get("messages_scanned") or 0)
+        oldest = result.get("oldest_scanned_message_id")
         total_stored += stored
         total_skipped += skipped
+        total_scanned += scanned
 
-        # Cursor lock: newest-first can sit on already-indexed heads while older uniques
-        # remain further back — only stop when a batch is fully empty, not just stored==0.
-        if stored == 0 and skipped == 0:
+        if oldest:
+            # Next batch starts strictly below what this one already read.
+            cursor = int(oldest)
+        elif scanned == 0:
+            # Nothing left below the cursor: the topic is exhausted, not merely deduped.
+            stop_reason = "drained"
+            break
+
+        # With a cursor advancing each batch, an empty scan is the honest end of the topic.
+        # stored==0 with duplicates only means "this stretch is already indexed" — older
+        # uniques may still sit further back, so keep walking.
+        if scanned == 0:
             stop_reason = "drained"
             break
 
@@ -423,6 +443,8 @@ async def run_lane_drain(
         "iterations": iterations,
         "total_stored": total_stored,
         "total_skipped_duplicate": total_skipped,
+        "total_scanned": total_scanned,
+        "last_cursor_message_id": cursor,
         "stop_reason": stop_reason,
     }
     await asyncio.to_thread(_report, _format_drain_done(summary))

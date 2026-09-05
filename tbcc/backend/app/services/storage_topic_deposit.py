@@ -665,6 +665,7 @@ def queue_storage_topic_deposit(
     auto_pipe: bool = False,
     qa_review_only: bool = False,
     enqueue: bool = True,
+    offset_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Import up to `limit` NEW deduped items from one Storage Hub forum topic into its pool.
@@ -756,6 +757,7 @@ def queue_storage_topic_deposit(
         message_ids=message_ids,
         auto_pipe=bool(auto_pipe),
         qa_review_only=bool(qa_review_only),
+        offset_id=offset_id,
     )
 
     if auto_pipe:
